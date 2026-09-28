@@ -1,31 +1,43 @@
 `timescale 1ns/1ps
-// tb_rv_dcache: rv_dcache against a golden memory and a reference translation (stage 1: loads).
+// tb_rv_dcache: rv_dcache against a golden memory image and a reference translation.
 //
-// MEMORY. A memory-port model with up to NOUT reads in flight, each with its own latency (a draw
-// of LATMIN..LATMAX cycles), served in request order unless +reorder, in which case any response
-// whose latency has passed may go first. A read returns its line in four 128-bit beats, in order.
-// The request channel is back-pressured at random. Memory holds a fixed pattern of its address,
-// so every answer is checkable.
+// MEMORY. A memory-port model with up to NOUT transactions in flight, each with its own latency (a
+// draw of LATMIN..LATMAX cycles), served in request order unless +reorder, in which case any one
+// whose latency has passed may go first. A read returns its line in four 128-bit beats, in order;
+// a write completes with one cw pulse. The model is as late as the port allows: a read returns
+// the memory as it was when the read was taken, and a write reaches the memory only when it
+// completes. The request channel is back-pressured at random.
+//
+// TWO IMAGES. `dram` is the memory behind the port. `gold` is the architectural memory: every
+// store the cache took is in it from the cycle wr_acc says so. Every load answer is checked
+// against gold. Both start as a pattern of the address.
 //
 // TRANSLATION. NVP virtual pages map onto NPP physical pages at random, so several virtual pages
 // -- of different colours, VA[15:12] -- share one physical page (synonyms). Every REMAP cycles
-// one mapping changes and the cache is told (ep_bump), as an sfence.vma would; wraps included.
+// one mapping changes -- half the time a page among the last 8 accessed -- and the cache is told
+// (ep_bump), as an sfence.vma would; wraps included.
+// As in the core, where sfence.vma waits for the store queue to drain, a remap waits until no
+// store is presented: a request's translation holds in the epoch it is taken in.
 //
-// REQUESTERS. 16 tags; each has at most one read outstanding. A read is 1, 2, 4 or 8 bytes,
-// naturally aligned, at a random offset of a random virtual page, with the PA of the mapping at
-// issue. The answer must be that PA's bytes, under that tag, within TIMEOUT cycles.
+// REQUESTERS. 16 load tags, each with at most one load outstanding, and one committed store at a
+// time. An access is 1, 2, 4 or 8 bytes, naturally aligned, at a random offset of a random virtual
+// page -- half the time in the line of one of the last 8 accesses -- with the PA of the mapping at
+// issue. As the core's store queue guarantees, no store is presented to a chunk a load in flight
+// reads, and no load to the chunk of a store not yet taken. A load's answer must be gold's bytes,
+// under its tag, within TIMEOUT cycles.
 `include "tb_rand.vh"
 module tb;
    reg clk = 0, reset = 1;
    always #5 clk = ~clk;
-   localparam NTAG = 16, NVP = 48, NPP = 24, NOUT = 8;
+   localparam NTAG = 16, NVP = 48, NPP = 24, NOUT = 8, NMSHR = 8;
    localparam [63:0] PBASE = 64'h8000_0000;
-   integer seed, cycles, reorder, latmin, latmax, remap, timeout;
+   integer seed, cycles, reorder, latmin, latmax, remap, timeout, stpct;
    `TB_RAND(rnd, rs)
 
    // ---- the DUT
    reg         rd_req;  reg [63:0] rd_va, rd_pa;  reg [3:0] rd_tag;
    wire        rd_ack, rd_valid;  wire [63:0] rd_data, rd_resp_addr;  wire [3:0] rd_resp_tag;
+   reg         wr_req;  reg [63:0] wr_va, wr_pa, wr_data;  reg [7:0] wr_mask;  wire wr_acc;
    reg         ep_bump;  wire inv_busy;
    wire        cq_valid, cq_we;  reg cq_ready;  wire [3:0] cq_slot;  wire [57:0] cq_addr;
    wire [63:0] cq_wmask;  wire [511:0] cq_wdata;
@@ -35,6 +47,7 @@ module tb;
    rv_dcache dut (.clk(clk), .reset(reset),
       .rd_req(rd_req), .rd_va(rd_va), .rd_pa(rd_pa), .rd_tag(rd_tag), .rd_ack(rd_ack),
       .rd_valid(rd_valid), .rd_data(rd_data), .rd_resp_tag(rd_resp_tag), .rd_resp_addr(rd_resp_addr),
+      .wr_req(wr_req), .wr_va(wr_va), .wr_pa(wr_pa), .wr_data(wr_data), .wr_mask(wr_mask), .wr_acc(wr_acc),
       .ep_bump(ep_bump), .inv_busy(inv_busy),
       .cq_valid(cq_valid), .cq_ready(cq_ready), .cq_slot(cq_slot), .cq_we(cq_we), .cq_addr(cq_addr),
       .cq_wmask(cq_wmask), .cq_wdata(cq_wdata),
@@ -42,40 +55,56 @@ module tb;
       .cw_valid(cw_valid), .cw_slot(cw_slot),
       .perf_access(perf_access), .perf_miss(perf_miss), .err(err));
 
-   // ---- the golden memory: 8 bytes per chunk, a function of the chunk's PA
-   function [63:0] mem_chunk; input [63:0] pa; reg [63:0] a; begin
-      a = {pa[63:3], 3'b000};
-      mem_chunk = (a * 64'h9E37_79B9_7F4A_7C15) ^ {a[31:0], a[63:32]} ^ 64'h0123_4567_89AB_CDEF;
-   end endfunction
+   // ---- the two images, 8 bytes a word, over the NPP physical pages
+   localparam NWD = NPP * 512;
+   reg [63:0] gold [0:NWD-1], dram [0:NWD-1];
+   function integer wi; input [63:0] pa; wi = (pa - PBASE) >> 3; endfunction
+   function [63:0] bytes; input [7:0] m; integer b; begin for (b = 0; b < 8; b = b + 1) bytes[b*8 +: 8] = {8{m[b]}}; end endfunction
 
    // ---- the translation
    reg [63:0] vp_va [0:NVP-1];                 // each virtual page's VA (distinct pages, all colours)
    reg [5:0]  vp_pp [0:NVP-1];                 // its physical page
-   integer k;
+   integer k, b;
    function [63:0] pp_pa; input [5:0] p; pp_pa = PBASE + {52'd0, p, 12'd0} * 64'd1; endfunction
 
-   // ---- the memory model: outstanding reads, then their beats
-   reg [57:0] mo_line [0:NOUT-1];  reg [3:0] mo_slot [0:NOUT-1];  reg [31:0] mo_due [0:NOUT-1];
-   reg        mo_v [0:NOUT-1];  integer mo_seq [0:NOUT-1];  integer seqn;
-   integer    beating;                          // the outstanding read whose beats are going out, or -1
-   integer    bi;                               // its next beat
+   // ---- the memory model: transactions in flight, then their beats or completion
+   reg        mo_v [0:NOUT-1];  reg mo_we [0:NOUT-1];  reg [57:0] mo_line [0:NOUT-1];  reg [3:0] mo_slot [0:NOUT-1];
+   reg [31:0] mo_due [0:NOUT-1];  integer mo_seq [0:NOUT-1];  reg [511:0] mo_data [0:NOUT-1];  reg [63:0] mo_mask [0:NOUT-1];
+   integer    seqn, beating, bi, n_rd, n_wr;
    reg [31:0] now;
 
    // ---- the requesters
    reg        out_v [0:NTAG-1];  reg [63:0] out_pa [0:NTAG-1];  reg [1:0] out_sz [0:NTAG-1];
    reg [31:0] out_t [0:NTAG-1];
-   integer    n_req, n_resp, n_remap, n_miss, n_access, errors;
-   integer    hp [0:7], ho [0:7], hw;     // the last 8 requests' page and offset: locality
-   integer    c_rst, c_drop, c_merge, c_alloc, c_wait, c_wrap, n_out;   // coverage: every miss outcome occurs
-   reg [63:0] expv, mask;  integer t, p, off, sz, pick, best;
-   // acceptance is decided at the edge, by the pre-edge rd_ack
+   reg        st_pend;  reg [31:0] st_t;         // a store presented, not yet taken
+   reg        rm_due;                            // a remap waits for the store to be taken
+   integer    n_req, n_resp, n_st, n_remap, n_miss, n_access, errors;
+   integer    hp [0:7], ho [0:7], hw;           // the last 8 accesses' page and offset: locality
+   // coverage: every outcome the cache has occurs
+   integer    c_own, c_drop, c_merge, c_alloc, c_wait, c_wrap, c_swr, c_smg, c_sal, c_ro, c_blk, c_def, n_out;
+   reg [63:0] expv, mask, pa;  integer t, p, off, sz, pick, best, w;
+   // acceptance is decided at the edge, by the pre-edge handshake
    reg        took;  reg [3:0] took_tag;
    always @(posedge clk) begin took <= rd_req & rd_ack & ~reset; took_tag <= rd_tag; end
-   // ...and so is a memory request's
-   reg        mq_took, mq_we;  reg [57:0] mq_addr;  reg [3:0] mq_slot;
+   reg        mq_took, mq_we;  reg [57:0] mq_addr;  reg [3:0] mq_slot;  reg [511:0] mq_wdata;  reg [63:0] mq_wmask;
    always @(posedge clk) begin
       mq_took <= cq_valid & cq_ready & ~reset;  mq_we <= cq_we;  mq_addr <= cq_addr;  mq_slot <= cq_slot;
+      mq_wdata <= cq_wdata;  mq_wmask <= cq_wmask;
    end
+
+   // the chunk of a pa overlaps an outstanding load, or the store not yet taken
+   function ld_busy; input [63:0] a; integer q; begin
+      ld_busy = took && (out_pa[took_tag][63:3] == a[63:3]);
+      for (q = 0; q < NTAG; q = q + 1) if (out_v[q] && out_pa[q][63:3] == a[63:3]) ld_busy = 1'b1;
+   end endfunction
+   // an access: a page and an offset, half the time in a recent line
+   task pick_access; begin
+      p   = rnd(0) % NVP;
+      sz  = rnd(0) % 4;
+      off = (rnd(0) % 4096) & ~((1 << sz) - 1);
+      if (rnd(0) % 2 == 0) begin k = rnd(0) % 8;  p = hp[k];  off = (ho[k] & ~63) | (off & 63); end
+      hp[hw] = p;  ho[hw] = off;  hw = (hw + 1) % 8;
+   end endtask
 
    initial begin
       if (!$value$plusargs("seed=%d", seed)) seed = 1;
@@ -86,6 +115,12 @@ module tb;
       if (!$value$plusargs("latmax=%d", latmax)) latmax = 60;
       if (!$value$plusargs("remap=%d", remap)) remap = 3000;
       if (!$value$plusargs("timeout=%d", timeout)) timeout = 5000;
+      if (!$value$plusargs("stores=%d", stpct)) stpct = 30;     // percent of cycles a store is offered
+      for (k = 0; k < NWD; k = k + 1) begin
+         pa = PBASE + 64'(k) * 8;
+         gold[k] = (pa * 64'h9E37_79B9_7F4A_7C15) ^ {pa[31:0], pa[63:32]} ^ 64'h0123_4567_89AB_CDEF;
+         dram[k] = gold[k];
+      end
       // pages: virtual pages spread over many colours; physical pages fewer, so synonyms abound
       for (k = 0; k < NVP; k = k + 1) begin
          vp_va[k] = 64'h0000_0010_0000_0000 + (64'(k * 37 + 5) << 12);   // distinct VPNs, every colour
@@ -94,11 +129,13 @@ module tb;
       for (k = 0; k < NTAG; k = k + 1) out_v[k] = 1'b0;
       for (k = 0; k < NOUT; k = k + 1) mo_v[k] = 1'b0;
       rd_req = 0; rd_va = 0; rd_pa = 0; rd_tag = 0; ep_bump = 0; cq_ready = 0;
+      wr_req = 0; wr_va = 0; wr_pa = 0; wr_data = 0; wr_mask = 0; st_pend = 0; st_t = 0; rm_due = 0;
       cr_valid = 0; cr_last = 0; cr_slot = 0; cr_beat = 0; cr_data = 0; cw_valid = 0; cw_slot = 0;
-      n_req = 0; n_resp = 0; n_remap = 0; n_miss = 0; n_access = 0; errors = 0;
+      n_req = 0; n_resp = 0; n_st = 0; n_remap = 0; n_miss = 0; n_access = 0; errors = 0; n_rd = 0; n_wr = 0;
       for (k = 0; k < 8; k = k + 1) begin hp[k] = 0; ho[k] = 0; end
-      hw = 0;
-      c_rst = 0; c_drop = 0; c_merge = 0; c_alloc = 0; c_wait = 0; c_wrap = 0; seqn = 0; beating = -1; bi = 0; now = 0;
+      hw = 0;  seqn = 0;  beating = -1;  bi = 0;  now = 0;
+      c_own = 0; c_drop = 0; c_merge = 0; c_alloc = 0; c_wait = 0; c_wrap = 0;
+      c_swr = 0; c_smg = 0; c_sal = 0; c_ro = 0; c_blk = 0; c_def = 0;
       repeat (3) @(posedge clk);
       reset = 0;
       while (dut.inv_busy) @(posedge clk);
@@ -106,12 +143,12 @@ module tb;
       n_out = 1;
       for (now = 0; now < cycles || (n_out != 0 && now < cycles + timeout + 1); now = now + 1) begin
          @(negedge clk);
-         // ---- check this cycle's response (registered by the DUT at the last edge)
+         // ---- this cycle's load answer (registered by the DUT at the last edge), against gold
          if (rd_valid) begin
             t = rd_resp_tag;
             if (!out_v[t]) begin $display("FAIL c=%0d: a response for tag %0d, which has nothing outstanding", now, t); errors = errors + 1; end
             else begin
-               expv = mem_chunk(out_pa[t]) >> (8 * out_pa[t][2:0]);
+               expv = gold[wi(out_pa[t])] >> (8 * out_pa[t][2:0]);
                mask = (out_sz[t] == 3) ? ~64'd0 : ((64'd1 << (8 << out_sz[t])) - 1);
                if (((rd_data ^ expv) & mask) != 0) begin
                   $display("FAIL c=%0d tag %0d pa %h size %0d: got %h expected %h", now, t, out_pa[t], 1 << out_sz[t], rd_data & mask, expv & mask);
@@ -123,61 +160,102 @@ module tb;
          end
          if (perf_access) n_access = n_access + 1;
          if (perf_miss)   n_miss = n_miss + 1;
-         c_rst = c_rst + dut.m_restamp;  c_drop = c_drop + dut.m_drop;  c_merge = c_merge + dut.m_merge;
+         c_own = c_own + dut.m_own;  c_drop = c_drop + dut.m_drop;  c_merge = c_merge + dut.m_merge;
          c_alloc = c_alloc + dut.m_alloc;  c_wait = c_wait + dut.m_wait;  c_wrap = c_wrap + dut.ep_wrap;
-         // ---- the request taken at the last edge
+         c_swr = c_swr + dut.s_write;  c_smg = c_smg + dut.m_smerge;  c_sal = c_sal + (dut.m_alloc & dut.s1_st);
+         c_ro = c_ro + (dut.ro_need & ~dut.ro_block & ~dut.wb_block);  c_blk = c_blk + dut.blk_st;  c_def = c_def + dut.m_defer;
+         // ---- the load taken at the last edge
          if (took) begin out_v[took_tag] = 1'b1; out_t[took_tag] = now; n_req = n_req + 1; end
-         // ---- a new request: a free tag, a random page and offset
+         // ---- the store: taken at the last edge (wr_acc), into gold; else perhaps a new one
+         if (wr_acc) begin
+            if (!st_pend) begin $display("FAIL c=%0d: wr_acc with no store presented", now); errors = errors + 1; end
+            w = wi(wr_pa);  gold[w] = (gold[w] & ~bytes(wr_mask)) | (wr_data & bytes(wr_mask));
+            st_pend = 0;  wr_req = 0;  n_st = n_st + 1;
+         end
+         if (st_pend && (now - st_t > timeout)) begin $display("FAIL c=%0d: a store at %h not taken for %0d cycles", now, wr_pa, timeout); errors = errors + 1; st_pend = 0; wr_req = 0; end
+         if (!st_pend && now < cycles && (rnd(0) % 100) < stpct) begin
+            pick_access;
+            pa = pp_pa(vp_pp[p]) + off;
+            if (!ld_busy(pa)) begin
+               st_pend = 1;  st_t = now;  wr_req = 1;
+               wr_va = vp_va[p] + off;  wr_pa = pa;
+               wr_mask = (sz == 3) ? 8'hFF : (((8'd1 << (1 << sz)) - 8'd1) << off[2:0]);
+               wr_data = {rnd(0), rnd(0)};           // the lanes outside the mask are noise
+            end
+         end
+         // ---- a new load: a free tag, not to the chunk of the store not yet taken
          rd_req = 1'b0;
          t = rnd(0) % NTAG;
          if (now < cycles && !out_v[t] && !(took && took_tag == t[3:0]) && (rnd(0) % 4 != 0)) begin
-            p   = rnd(0) % NVP;
-            sz  = rnd(0) % 4;
-            off = (rnd(0) % 4096) & ~((1 << sz) - 1);
-            if (rnd(0) % 2 == 0) begin           // half the time, a recent request's line
-               k = rnd(0) % 8;  p = hp[k];  off = (ho[k] & ~63) | (off & 63);
+            pick_access;
+            pa = pp_pa(vp_pp[p]) + off;
+            if (!(st_pend && wr_pa[63:3] == pa[63:3])) begin
+               rd_req = 1'b1;  rd_tag = t[3:0];
+               rd_va = vp_va[p] + off;  rd_pa = pa;
+               out_pa[t] = rd_pa;  out_sz[t] = sz[1:0];
             end
-            hp[hw] = p;  ho[hw] = off;  hw = (hw + 1) % 8;
-            rd_req = 1'b1;  rd_tag = t[3:0];
-            rd_va = vp_va[p] + off;  rd_pa = pp_pa(vp_pp[p]) + off;
-            out_pa[t] = rd_pa;  out_sz[t] = sz[1:0];
          end
          // ---- a remap: one mapping changes, and the cache hears of it
          ep_bump = 1'b0;
-         if ((now % remap) == remap - 1) begin
-            p = rnd(0) % NVP;  vp_pp[p] = rnd(0) % NPP;
+         if ((now % remap) == remap - 1) rm_due = 1;
+         if (rm_due && !st_pend) begin
+            rm_due = 0;
+            p = (rnd(0) % 2) ? hp[rnd(0) % 8] : rnd(0) % NVP;   // half the time a page in use
+            vp_pp[p] = rnd(0) % NPP;
             ep_bump = 1'b1;  n_remap = n_remap + 1;
          end
-         // ---- the memory model's response side (one beat per cycle)
-         cr_valid = 1'b0;  cr_last = 1'b0;
+         // ---- the memory model's response side: one beat and one write completion per cycle
+         cr_valid = 1'b0;  cr_last = 1'b0;  cw_valid = 1'b0;
          if (beating < 0) begin
             best = -1;
-            for (k = 0; k < NOUT; k = k + 1)
-               if (mo_v[k] && (mo_due[k] <= now) && (best < 0 || (!reorder && mo_seq[k] < mo_seq[best]) || (reorder && (rnd(0) & 1))))
-                  best = k;
-            // in order: only the oldest may answer, and only once due
-            if (!reorder) begin
+            if (reorder) begin
+               for (k = 0; k < NOUT; k = k + 1)
+                  if (mo_v[k] && !mo_we[k] && mo_due[k] <= now && (best < 0 || (rnd(0) & 1))) best = k;
+            end else begin                        // in order: only the oldest may go, once due
                pick = -1;
                for (k = 0; k < NOUT; k = k + 1) if (mo_v[k] && (pick < 0 || mo_seq[k] < mo_seq[pick])) pick = k;
-               best = (pick >= 0 && mo_due[pick] <= now) ? pick : -1;
+               if (pick >= 0 && !mo_we[pick] && mo_due[pick] <= now) best = pick;
             end
             if (best >= 0) begin beating = best; bi = 0; end
          end
          if (beating >= 0) begin
             cr_valid = 1'b1;  cr_slot = mo_slot[beating];  cr_beat = bi[1:0];  cr_last = (bi == 3);
-            cr_data = {mem_chunk({mo_line[beating], 6'd0} + 16 * bi + 8), mem_chunk({mo_line[beating], 6'd0} + 16 * bi)};
+            cr_data = mo_data[beating][bi*128 +: 128];
             bi = bi + 1;
             if (bi == 4) begin mo_v[beating] = 1'b0; beating = -1; end
          end
-         // ---- the request side: back-pressured at random; a taken read gets a slot and a latency
+         best = -1;
+         if (reorder) begin
+            for (k = 0; k < NOUT; k = k + 1)
+               if (mo_v[k] && mo_we[k] && mo_due[k] <= now && (best < 0 || (rnd(0) & 1))) best = k;
+         end else if (beating < 0) begin
+            pick = -1;
+            for (k = 0; k < NOUT; k = k + 1) if (mo_v[k] && (pick < 0 || mo_seq[k] < mo_seq[pick])) pick = k;
+            if (pick >= 0 && mo_we[pick] && mo_due[pick] <= now) best = pick;
+         end
+         if (best >= 0) begin                     // a write completes: now it is in the memory
+            for (w = 0; w < 8; w = w + 1)
+               dram[wi({mo_line[best], 6'd0}) + w] = (dram[wi({mo_line[best], 6'd0}) + w] & ~bytes(mo_mask[best][w*8 +: 8]))
+                                                    | (mo_data[best][w*64 +: 64] & bytes(mo_mask[best][w*8 +: 8]));
+            cw_valid = 1'b1;  cw_slot = mo_slot[best];  mo_v[best] = 1'b0;
+         end
+         // ---- the request side: back-pressured at random; a taken request gets a latency, a read its data now
          if (mq_took) begin
-            if (mq_we) begin $display("FAIL c=%0d: a write request in stage 1", now); errors = errors + 1; end
             pick = -1;
             for (k = NOUT - 1; k >= 0; k = k - 1) if (!mo_v[k]) pick = k;
-            if (pick < 0) begin $display("FAIL c=%0d: more than %0d reads outstanding", now, NOUT); errors = errors + 1; end
+            if (pick < 0) begin $display("FAIL c=%0d: more than %0d transactions outstanding", now, NOUT); errors = errors + 1; end
             else begin
-               mo_v[pick] = 1'b1;  mo_line[pick] = mq_addr;  mo_slot[pick] = mq_slot;  mo_seq[pick] = seqn;  seqn = seqn + 1;
+               if (!mq_we && mq_slot >= NMSHR) begin $display("FAIL c=%0d: a read on write slot %0d", now, mq_slot); errors = errors + 1; end
+               if ( mq_we && mq_slot <  NMSHR) begin $display("FAIL c=%0d: a write on read slot %0d", now, mq_slot); errors = errors + 1; end
+               mo_v[pick] = 1'b1;  mo_we[pick] = mq_we;  mo_line[pick] = mq_addr;  mo_slot[pick] = mq_slot;
+               mo_seq[pick] = seqn;  seqn = seqn + 1;
                mo_due[pick] = now + latmin + (rnd(0) % (latmax - latmin + 1));
+               mo_mask[pick] = mq_wmask;
+               if (mq_we) begin mo_data[pick] = mq_wdata;  n_wr = n_wr + 1; end
+               else begin
+                  for (w = 0; w < 8; w = w + 1) mo_data[pick][w*64 +: 64] = dram[wi({mq_addr, 6'd0}) + w];
+                  n_rd = n_rd + 1;
+               end
             end
          end
          pick = 0;  for (k = 0; k < NOUT; k = k + 1) if (mo_v[k]) pick = pick + 1;
@@ -191,15 +269,16 @@ module tb;
          if (errors > 10) begin $display("DCACHE-TB FAIL: too many errors"); $finish; end
          n_out = 0;
          for (k = 0; k < NTAG; k = k + 1) n_out = n_out + out_v[k];
-         n_out = n_out + took + rd_req;
+         n_out = n_out + took + rd_req + st_pend;
       end
-      if (n_req != n_resp) begin $display("FAIL: %0d requests, %0d answered after the drain", n_req, n_resp); errors = errors + 1; end
-      if (c_rst == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 || c_wrap == 0) begin
-         $display("FAIL: a miss outcome never occurred"); errors = errors + 1;
+      if (n_req != n_resp) begin $display("FAIL: %0d loads, %0d answered after the drain", n_req, n_resp); errors = errors + 1; end
+      if (c_own == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 || c_wrap == 0 ||
+          c_swr == 0 || c_smg == 0 || c_sal == 0 || c_ro == 0 || c_blk == 0 || c_def == 0 || n_wr == 0) begin
+         $display("FAIL: an outcome never occurred"); errors = errors + 1;
       end
-      $display("DCACHE-TB %s seed=%0d %s: %0d requests answered, %0d lookups, %0d misses (%0d re-stamp, %0d drop, %0d merge, %0d alloc, %0d wait), %0d remaps, %0d wraps",
-               errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_access, n_miss,
-               c_rst, c_drop, c_merge, c_alloc, c_wait, n_remap, c_wrap);
+      $display("DCACHE-TB %s seed=%0d %s: %0d loads, %0d stores; %0d lookups: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d write-backs; %0d remaps, %0d wraps",
+               errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_st, n_access,
+               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap);
       $finish;
    end
 endmodule
