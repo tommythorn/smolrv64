@@ -1002,11 +1002,15 @@ cycle is legal and was lost once).
   copy back and keeps it clean; cbo.flush/inval drop it, written back if dirty; cbo.zero drops
   it unwritten and fills an MSHR whose merge buffer is a line of zeros. A CBO or NC store
   completes at `wr_cpl`, once memory has its write. `fence.i`'s clean (`inv_req`) waits for
-  the store in flight and any dirty merge buffer, then walks every physical slot and writes
-  each dirty line back, keeping it; `inv_busy` holds until memory has them all.
+  the store in flight and any dirty merge buffer, then walks the 64 rows -- each row's slots
+  read at once, the dirty ones written back and kept -- so a clean is 64 cycles plus one per
+  dirty line; `inv_busy` holds until memory has them all. The boot runs 3,867 fence.i in its
+  first 60 M cycles: a slot-by-slot walk spent 8.09 M cycles there at 128 KiB, the row walk
+  0.60 M (+10.5% retired).
 - **Phase 1: every request by PA** (`VIRT=0` in `rv_soc_top`). The core translates before it
   asks, so a virtual hit would shorten nothing yet: the D$ runs as a 128 KiB, 2-way PIPT
-  cache and its virtual stamps stay empty. Phase 2 of the plan, with the queue-side
+  cache and its virtual stamps stay empty. 64 KiB (`DC_KB`): 128 KiB retired +0.36% on the 60 M
+  lockstep for twice the block RAMs, on a route-bound design. Phase 2 of the plan, with the queue-side
   translate (C4b), presents VAs and turns on the virtual hit.
 - **No access spans an 8-byte chunk**: the LSU splits them (the no-span alignment), and the
   D$ answers the chunk shifted to the access's byte.
@@ -1048,9 +1052,9 @@ read-only module of its own (Stage 4 increment 0, `docs/PLAN-2026-09-24-frontend
 
 | | I$ (`rv_icache`) | D$ (`rv_dcache`) |
 |---|---|---|
-| Size | 64 KB | **128 KB** (`DC_KB`) |
+| Size | 64 KB | 64 KB (`DC_KB`; the module is built for up to 128) |
 | Associativity | 2-way, not skewed | 2-way, not skewed |
-| Sets | 512 | 1024, 16 colours (VA[15:12]) |
+| Sets | 512 | 512, 8 colours (VA[14:12]) |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | VHPR built; **PIPT** in phase 1 (`VIRT=0`) |
 | Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one lookup a cycle, answered at T+2 by tag |
@@ -1068,9 +1072,9 @@ read-modify-write of one chunk, no cross-bank RMW.
 Neither cache skews: a VHPR cache's physical probe finds the same-offset synonym candidates by a
 straight index, and a tag-XORed index would scatter them across sets.
 
-**The D$ (`rv_dcache`).** Physical state per (way, colour): 32 LUTRAM arrays of 64 rows, all read
-at PA[11:6], hold the physical tag, pvalid and dirty, so the 32 places a line can live come out
-of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
+**The D$ (`rv_dcache`).** Physical state per (way, colour): 16 LUTRAM arrays of 64 rows (32 at 128
+KiB), all read at PA[11:6], hold the physical tag, pvalid and dirty, so every place a line can live
+comes out of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
 (tag, 2-bit epoch, vvalid per way and set) sit beside them for phase 2. A miss's fill is a
 four-beat burst into the reserved way, a cycle after each beat; the line installs the cycle
 after its last beat is written and its waiters replay: a load's answer comes 5 cycles after
@@ -1250,14 +1254,14 @@ Neither BTB nor corrector bank has a valid bit — validity is the tag match (§
 
 ### 10.3 Memory system
 
-The D$ (`rv_dcache`, 128 KiB):
+The D$ (`rv_dcache`, 64 KiB):
 
 | array | shape | width | bits | storage |
 |---|---|---|---|---|
-| data banks | 4 × 4096 | 64 | 1 048 576 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
-| `pt` / `pv` / `pd` | 32 × 64 | 24 / 1 / 1 | 53 248 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
-| `rr` | 1024 | 1 | 1 024 | LUTRAM — round-robin victim per set |
-| `vt`/`ep`/`vv` ×2 | 1024 | 23 / 2 / 1 | 53 248 | LUTRAM, unused at `VIRT=0` (pruned) |
+| data banks | 4 × 2048 | 64 | 524 288 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
+| `pt` / `pv` / `pd` | 16 × 64 | 24 / 1 / 1 | 26 624 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
+| `wrr` | 512 | 1 | 512 | LUTRAM — round-robin victim per set |
+| `vt`/`ep`/`vv` ×2 | 512 | 24 / 2 / 1 | 27 648 | LUTRAM, unused at `VIRT=0` (pruned) |
 | MSHRs, merge buffers | 8, 8 × 8 chunks | -- / 72 | ~5 400 | flops |
 | waiters | 33 | ~135 | ~4 500 | flops (one per requester tag, one for the store) |
 | write-back lines | 2 | 512 | 1 024 | flops |

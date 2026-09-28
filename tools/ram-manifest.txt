@@ -87,7 +87,8 @@ tlb_ppn : iTLB/dTLB
 tlb_perm: iTLB/dTLB
 
 # ---- the D$'s physical state: one LUTRAM per (way, colour), 64 rows, read at two rows -------
-ptw[*].pt_k x32 : D$ physical tags; the probe reads all 32 at one row, one array each
-ptw[*].pv_k x32 : D$ pvalid
-ptw[*].pd_k x32 : D$ dirty
+# (16 at DC_KB=64: 2 ways x 8 colours)
+ptw[*].pt_k x16 : D$ physical tags; the probe reads all of them at one row, one array each
+ptw[*].pv_k x16 : D$ pvalid
+ptw[*].pd_k x16 : D$ dirty
 wrr     : D$ round-robin victim per set

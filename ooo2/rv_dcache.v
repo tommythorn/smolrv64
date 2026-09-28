@@ -65,8 +65,9 @@
 // A line still in the write-back buffer, or being filled, holds any of them off until it is done.
 //
 // INV_REQ (fence.i) cleans the whole cache. With the door shut, it waits until no dirty bytes sit
-// outside the arrays (the store in flight, a merge buffer), then a walk of the physical slots
-// writes every dirty line back and keeps it; inv_busy holds until memory has them all.
+// outside the arrays (the store in flight, a merge buffer), then a walk of the 64 rows, each read
+// across every (way, colour) at once, writes every dirty line back and keeps it; inv_busy holds
+// until memory has them all.
 //
 // A REQUEST'S TRANSLATION holds in the epoch it is taken in: the core bumps the epoch only with
 // the store queue drained (sfence.vma and satp writes serialise on it). A request taken in an
@@ -148,7 +149,6 @@ module rv_dcache #(
    localparam SETS  = (SIZE_KB * 1024) / (2 * 64);
    localparam IB    = $clog2(SETS);               // 10: VA[15:6]
    localparam COLB  = IB - 6;                     // colour bits: VA[15:12] at 128 KiB
-   localparam CLW   = COLB + 7;                   // a physical slot {way, colour, row}
    localparam NCOL  = 1 << COLB;
    localparam VTB   = VAW - OFFB - IB;            // virtual tag VA[38:16]
    localparam PTB   = PABITS - 12;                // physical tag PA[35:12]
@@ -236,7 +236,7 @@ module rv_dcache #(
    reg            nc_v, nc_we, nc_sent, nc_rdy;
    reg  [57:0]    nc_pl;  reg [63:0] nc_pa;  reg [RTW-1:0] nc_tag;  reg [63:0] nc_wd, nc_data;  reg [7:0] nc_wm;
    // ---------------------------------------------------------------- the clean walk (inv_req)
-   reg            cl_pend, cl_on, cl_wait;  reg [CLW-1:0] cl_i;   // {k, row} of the physical slot it is at
+   reg            cl_pend, cl_on, cl_wait;  reg [5:0] cl_r;   // the row it is at
 
    // ---------------------------------------------------------------- the lookup input
    reg        door;                               // registered: open unless a scan runs
@@ -491,13 +491,17 @@ module rv_dcache #(
       if (tw1_we) begin vt1[tw_a] <= tw_vt; ep1[tw_a] <= tw_ep; end
       if (t_inst) wrr[ms_set[im]] <= ~ms_way[im];
    end
-   // the clean walk's slot, and whether it steps this cycle: with the lookup empty, no install, and
-   // a dirty line only when the read-out and a write-back entry are free
-   wire [COLB:0]  cl_k    = cl_i[CLW-1:6];
-   wire [5:0]     cl_r    = cl_i[5:0];
-   wire           cl_dty  = pv_c[cl_k] & pd_c[cl_k];
-   wire           cl_step = cl_on & ~s1_v & ~t_inst & (~cl_dty | (~ro_on & wb_free_v));
-   wire           cl_ro   = cl_step & cl_dty;
+   // the clean walk goes by ROW: the row's 2*NCOL slots are read at once, the lowest dirty one is
+   // written back (with the lookup empty, no install, the read-out and a write-back entry free),
+   // and the walk moves on when the row is clean -- 64 steps and one per dirty line
+   wire [2*NCOL-1:0] cl_dv = pv_c & pd_c;
+   reg  [COLB:0]  cl_k;
+   always @* begin
+      cl_k = 0;
+      for (i = 2*NCOL - 1; i >= 0; i = i - 1) if (cl_dv[i]) cl_k = i[COLB:0];
+   end
+   wire           cl_ro   = cl_on & (|cl_dv) & ~s1_v & ~t_inst & ~ro_on & wb_free_v;
+   wire           cl_adv  = cl_on & ~(|cl_dv) & ~s1_v;
    // the physical state: one write statement per (way, colour) array and field
    genvar gk;
    generate for (gk = 0; gk < 2*NCOL; gk = gk + 1) begin : ptw
@@ -645,10 +649,10 @@ module rv_dcache #(
          end
          // the clean walk, then the wait for its write-backs to reach memory
          if (inv_req) cl_pend <= 1'b1;
-         if ((inv_req | cl_pend) & ~cl_on & ~cl_wait & ~st_busy & ~ms_dirty) begin cl_pend <= 1'b0;  cl_on <= 1'b1;  cl_i <= {CLW{1'b0}}; end
-         else if (cl_step) begin
-            cl_i <= cl_i + 1'b1;
-            if (&cl_i) begin cl_on <= 1'b0;  cl_wait <= 1'b1; end
+         if ((inv_req | cl_pend) & ~cl_on & ~cl_wait & ~st_busy & ~ms_dirty) begin cl_pend <= 1'b0;  cl_on <= 1'b1;  cl_r <= 6'd0; end
+         else if (cl_adv) begin
+            cl_r <= cl_r + 1'b1;
+            if (&cl_r) begin cl_on <= 1'b0;  cl_wait <= 1'b1; end
          end
          if (cl_wait & ~ro_on & ~wb_any) cl_wait <= 1'b0;
          // the door: shut during a scan and the clean

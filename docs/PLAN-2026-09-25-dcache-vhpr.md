@@ -349,6 +349,13 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      ns at 6 ns).
    First measurement, IW=3 Linux lockstep (tiny128 boot): 19,122,783 -> 29,278,185 retires at
    60 M cycles (+53.1%), 91,331,479 -> 123,843,694 at 300 M (+35.6%).
+   - **fence.i's clean walks rows, not slots.** The boot runs 3,867 fence.i in 60 M cycles; the
+     slot walk spent 8.09 M cycles there, the row walk (all of a row's slots read at once)
+     0.60 M: 29,278,185 -> 32,343,542 retires (+10.5%).
+   - **The D$ ships at 64 KiB for now.** With the clean cheap, 128 KiB retires +0.36% over 64 KiB
+     on the 60 M boot (32,343,542 vs 32,227,679), and the first 128 KiB build missed timing by
+     0.244 ns across the whole core (a route-bound plateau, not the D$'s logic). The GB5
+     checkpoints judge the size next; `DC_KB` is the one knob.
 3. **The store port.** The SQ drains one store per cycle: the LSU's S_ST/`take_next` chain
    becomes a stream.
 4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.

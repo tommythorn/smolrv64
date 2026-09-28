@@ -62,7 +62,11 @@ module tb;
    // broke -- and that is exactly what must never reach a bitstream.
    always @(posedge clk) if (|dut.u_errlog.sticky)
       $fatal(1, "tb: integrity log sticky=%h first=%0d @%0d rose without a $fatal", dut.u_errlog.sticky, dut.u_errlog.first_idx, dut.u_errlog.first_cyc);
+`ifdef TB_DC_KB                  // the D$ size, for an A/B: -DTB_DC_KB=128
+   rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB)) dut
+`else
    rv_soc_top #(.RESET_PC(`TB_RESET_PC)) dut
+`endif
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
@@ -565,10 +569,10 @@ module tb;
    // those, cycles a younger entry -- a load (it has a destination) -- is ready and could issue if
    // the queue issued out of order; split by whether the blocked head is a load or a store.
    localparam integer MS_NL = 12;            // u_iq_l's entries (ooo2_core NL)
-   reg [63:0] ms_fill, ms_fills, ms_park, ms_stmem, ms_stmem_fill, ms_stmem_park, ms_live, ms_wbfull;
+   reg [63:0] ms_fill, ms_fills, ms_park, ms_stmem, ms_stmem_fill, ms_stmem_park, ms_live, ms_wbfull, ms_cln, ms_clnc;
    reg [63:0] ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth;
    initial begin ms_fill = 0; ms_fills = 0; ms_park = 0; ms_stmem = 0; ms_stmem_fill = 0; ms_stmem_park = 0;
-                 ms_live = 0; ms_wbfull = 0; ms_hblk = 0; ms_byp = 0; ms_byp_ldh = 0; ms_byp_sth = 0; end
+                 ms_live = 0; ms_wbfull = 0; ms_cln = 0; ms_clnc = 0; ms_hblk = 0; ms_byp = 0; ms_byp_ldh = 0; ms_byp_sth = 0; end
    always @(posedge clk) if (!reset) begin : memsim
       reg fv, park, hrdy, yld;
       integer g, h;
@@ -578,6 +582,8 @@ module tb;
       if (dut.u_dcache.m_alloc)  ms_fills  <= ms_fills + 1;
       if (park)                  ms_park   <= ms_park + 1;
       if (dut.u_dcache.ob_wbfull) ms_wbfull <= ms_wbfull + 1;
+      if (dut.u_dcache.inv_req)   ms_cln    <= ms_cln + 1;                          // fence.i's cleans
+      if (dut.u_dcache.cl_pend | dut.u_dcache.cl_on | dut.u_dcache.cl_wait) ms_clnc <= ms_clnc + 1;
       if (dut.core.st_mem) begin
          ms_stmem <= ms_stmem + 1;
          if (fv)   ms_stmem_fill <= ms_stmem_fill + 1;
@@ -976,8 +982,8 @@ module tb;
       $display("FRING-EMPTY immu=%0d page=%0d icache-door=%0d in-flight=%0d other=%0d",
                fe_mmu, fe_page, fe_door, fe_infl, fe_oth);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
-      $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
-               ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull,
+      $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
+               ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,
                ms_stmem, ms_stmem_fill, ms_stmem_park);
       $display("MEM-SIM iq_l head-not-ready=%0d younger-load-ready=%0d (head a load=%0d, head a store=%0d)",
                ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth);
