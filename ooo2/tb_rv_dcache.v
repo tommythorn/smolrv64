@@ -14,18 +14,14 @@
 // REQUESTERS. 16 tags; each has at most one read outstanding. A read is 1, 2, 4 or 8 bytes,
 // naturally aligned, at a random offset of a random virtual page, with the PA of the mapping at
 // issue. The answer must be that PA's bytes, under that tag, within TIMEOUT cycles.
+`include "tb_rand.vh"
 module tb;
    reg clk = 0, reset = 1;
    always #5 clk = ~clk;
    localparam NTAG = 16, NVP = 48, NPP = 24, NOUT = 8;
    localparam [63:0] PBASE = 64'h8000_0000;
    integer seed, cycles, reorder, latmin, latmax, remap, timeout;
-   // xorshift64*: Verilator's rnd(0) walks a degenerate sequence
-   reg [63:0] rs;
-   function automatic [31:0] rnd(input dummy);
-      rs = rs ^ (rs >> 12);  rs = rs ^ (rs << 25);  rs = rs ^ (rs >> 27);
-      rnd = 32'((rs * 64'h2545_F491_4F6C_DD1D) >> 32);
-   endfunction
+   `TB_RAND(rnd, rs)
 
    // ---- the DUT
    reg         rd_req;  reg [63:0] rd_va, rd_pa;  reg [3:0] rd_tag;
@@ -83,7 +79,7 @@ module tb;
 
    initial begin
       if (!$value$plusargs("seed=%d", seed)) seed = 1;
-      rs = 64'h9E37_79B9_7F4A_7C15 ^ 64'(seed);
+      rs = `TB_SEED(seed);
       if (!$value$plusargs("cycles=%d", cycles)) cycles = 200000;
       reorder = $test$plusargs("reorder");
       if (!$value$plusargs("latmin=%d", latmin)) latmin = 20;

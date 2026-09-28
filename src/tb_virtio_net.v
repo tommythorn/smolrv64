@@ -10,6 +10,7 @@
 //   ./ooo2/run-ooo2-vnet-tb.sh          VNET-TB PASS tx=<cycles/frame> rx=<cycles/frame>
 `timescale 1ns/1ps
 `default_nettype none
+`include "tb_rand.vh"
 module tb;
    localparam QS   = 256;                 // the board's queue depth
    localparam RLAT = 28, WLAT = 15;       // DDR through the MIG, measured 2026-09-04 (mean cycles)
@@ -69,7 +70,8 @@ module tb;
       integer b; begin merge = old; for (b = 0; b < 8; b = b + 1) if (s[b]) merge[b*8 +: 8] = d[b*8 +: 8]; end
    endfunction
    reg [30:0] wa; reg [63:0] wd; reg [7:0] ws; reg aw_got = 0, w_got = 0; integer wcnt = 0, rcnt = 0;
-   reg jit = 0; integer jseed = 3;
+   reg jit = 0;
+   `TB_RAND(vrnd, vrs)
    function integer jitter(input integer base); begin jitter = jit ? base + ($urandom % 9) : base; end endfunction
    integer n_wr = 0, n_rd = 0;
    always @(posedge clk) begin
@@ -172,17 +174,17 @@ module tb;
       // the AXI slave's AW/W/R timing jittered, RX buffers posted one at a time and sometimes
       // not at all (the drop path), TX batches of up to 3 descriptors per notify. ==========
       begin : stress
-         integer q, tn, rn, nb, b, dir, seed, want_drop;
+         integer q, tn, rn, nb, b, dir, want_drop;
          reg [30:0] ba;
-         seed = 7; tn = 8; rn = 8;                                 // avail/used indices continue from the directed cases
+         vrs = `TB_SEED(7); tn = 8; rn = 8;                                 // avail/used indices continue from the directed cases
          for (q = 0; q < 200; q = q + 1) begin
-            dir = $urandom(seed) % 2; seed = seed + 1;
+            dir = vrnd(0) % 2;
             jit = 1;
             if (dir == 0) begin                                       // ---- TX, 1..3 descriptors in one notify
-               nb = 1 + ($urandom(seed) % 3); seed = seed + 1;
+               nb = 1 + (vrnd(0) % 3);
                for (b = 0; b < nb; b = b + 1) begin
-                  flen = 14 + ($urandom(seed) % 1501); seed = seed + 1;
-                  off  = $urandom(seed) % 8; seed = seed + 1;
+                  flen = 14 + (vrnd(0) % 1501);
+                  off  = vrnd(0) % 8;
                   ba = 31'h40000 + ((tn + b) % 64) * 31'h1000 + off;
                   for (i = 0; i < 12; i = i + 1) put8(ba + i, 8'h00);
                   for (i = 0; i < flen; i = i + 1) put8(ba + 12 + i, pat(i + tn + b));
@@ -200,15 +202,15 @@ module tb;
                   chk(sent_len == stress_len[b], "STRESS TX: send length");
                   for (i = 0; i < stress_len[b]; i = i + 1) if (txbuf[i] !== pat(i + stress_key[b])) begin errors = errors + 1; if (errors < 8) $display("FAIL STRESS TX frame %0d byte %0d: %h want %h", tn + b, i, txbuf[i], pat(i + stress_key[b])); end
                   chk(txbuf[stress_len[b]] == 8'hEE, "STRESS TX: wrote past the frame");
-                  tx_busy = 1; repeat (3 + ($urandom(seed) % 40)) step; seed = seed + 1; tx_busy = 0;
+                  tx_busy = 1; repeat (3 + (vrnd(0) % 40)) step; tx_busy = 0;
                end
                i = 0; while (get16(txu[30:0] + 2) != ((tn + nb) & 16'hFFFF) && i < 8000) begin step; i = i + 1; end
                chk(get16(txu[30:0] + 2) == ((tn + nb) & 16'hFFFF), "STRESS TX: used.idx");
                tn = tn + nb;
             end else begin                                            // ---- RX, one frame; sometimes no buffer
-               flen = 14 + ($urandom(seed) % 1501); seed = seed + 1;
-               off  = $urandom(seed) % 8; seed = seed + 1;
-               want_drop = ($urandom(seed) % 8) == 0; seed = seed + 1;
+               flen = 14 + (vrnd(0) % 1501);
+               off  = vrnd(0) % 8;
+               want_drop = (vrnd(0) % 8) == 0;
                ba = 31'h80000 + (rn % 64) * 31'h1000 + off;
                for (i = -8; i < 12 + flen + 8; i = i + 1) put8(ba + i, 8'hA5);
                if (!want_drop) begin

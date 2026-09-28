@@ -13,6 +13,7 @@
 // it DMAs non-coherently into the behavioral DDR and mirrors every write into the reference
 // (B6, 2026-09-17). The default tiny128 DTB carries no virtio node, so without +disk the
 // region is never touched and the run is the plain initrd boot.
+`include "tb_rand.vh"
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
 `ifdef OOO2_MEM_SIZE_LG2
@@ -135,7 +136,7 @@ module tb;
    localparam [63:0] LBASE  = BASE >> 6;
    localparam integer DDR_NOUT = 8;
    reg [511:0] lram [0:NLINES-1];
-   integer ddr_seed = 1;
+   `TB_RAND(ddr_rnd, ddr_rs)
    reg         ddr_reorder;
    initial ddr_reorder = $test$plusargs("ddr_reorder");
    reg         dq_v   [0:DDR_NOUT-1];
@@ -174,7 +175,7 @@ module tb;
          if (ddr_q_valid && ddr_q_ready) begin
             dq_v[d_free]  <= 1'b1;  dq_we[d_free] <= ddr_q_we;  dq_id[d_free] <= ddr_q_id;
             dq_ad[d_free] <= ddr_q_addr;  dq_seq[d_free] <= d_seq;  d_seq <= d_seq + 1;
-            dq_due[d_free] <= d_now + {48'd0, 8'd0, ddr_draw(ddr_q_we)} + ({$random(ddr_seed)} % (`DDR_JIT + 1));
+            dq_due[d_free] <= d_now + {48'd0, 8'd0, ddr_draw(ddr_q_we)} + (ddr_rnd(0) % (`DDR_JIT + 1));
             dlfsr <= {dlfsr[14:0], dlfsr[15]^dlfsr[13]^dlfsr[12]^dlfsr[10]};
             if (ddr_q_we) begin
                line = ({6'd0, ddr_q_addr} - LBASE) & (NLINES-1);

@@ -82,5 +82,11 @@ lint_top ooo2 rv_soc_top $(ooo2_sources)
 # folds the other call sites to 0 (rename port A wrote p0 on four bitstreams, 2026-09-06).
 ../tools/check-func-ram-reads.py ../ooo2/*.v ../src/*.v || fail=1
 
+# Benches draw from src/tb_rand.vh. Under Verilator a seeded $random or $urandom walks a
+# degenerate sequence, so a bench drawing from one runs the same stimulus whatever its seed.
+if grep -nE '^[^/]*\$u?random *\(' ../ooo2/tb_*.v ../src/tb_*.v; then
+   echo "lint: a seeded \$random/\$urandom in a bench -- draw from src/tb_rand.vh"; fail=1
+fi
+
 [ $fail -ne 0 ] && exit 1
 echo "lint: clean"

@@ -14,12 +14,16 @@
 // to show nothing above depends on the order.
 //
 //   +n=N (transactions, default 20000)  +ratio=N (clk_m:clk_p, default 2)  +ooo  +seed=N
+`include "tb_rand.vh"
 module tb;
    integer ntrans, ratio, seedv, ooo;
+   `TB_RAND(mrnd, mrs)   // the memory side (clk_m)
+   `TB_RAND(prnd, prs)   // the port side (clk_p)
    initial begin
       if (!$value$plusargs("n=%d", ntrans)) ntrans = 20000;
       if (!$value$plusargs("ratio=%d", ratio)) ratio = 2;
       if (!$value$plusargs("seed=%d", seedv)) seedv = 1;
+      mrs = `TB_SEED(seedv);  prs = `TB_SEED(seedv + 1);
       ooo = $test$plusargs("ooo");
    end
    // clk_m free-running; clk_p = clk_m / ratio, synchronous (BUFGCE_DIV-like)
@@ -181,7 +185,7 @@ module tb;
    end
    always @(posedge clk_m) if (!reset_m) begin
       now <= now + 1;
-      rnd = $random(seedv);
+      rnd = mrnd(0);
       // AR / AW accept, random ready
       if (s_arvalid && s_arready) begin
          fr = free_r(0);
@@ -302,13 +306,13 @@ module tb;
       end
       if (q_v && pq_ready) q_v <= 1'b0;
       if ((!q_v || pq_ready) && issued < ntrans && nfly < NFLY && rnd[2:0] != 0) begin
-         ln = {$random(seedv)} % NLN;
+         ln = {prnd(0)} % NLN;
          idf = -1;
          for (k = 31; k >= 0; k = k - 1) if (!id_live[k]) idf = k;
          if (!busy_ln[ln] && idf >= 0) begin
             t_we = rnd[3];
-            for (k = 0; k < 16; k = k + 1) t_data[k*32 +: 32] = $random(seedv);
-            t_mask = rnd[4] ? {64{1'b1}} : {$random(seedv), $random(seedv)};
+            for (k = 0; k < 16; k = k + 1) t_data[k*32 +: 32] = prnd(0);
+            t_mask = rnd[4] ? {64{1'b1}} : {prnd(0), prnd(0)};
             q_v <= 1'b1;  q_id <= idf[4:0];  q_addr <= 58'h200_0000 + ln;   // AXI offset ln*64
             q_we <= t_we;  q_data <= t_data;  q_mask <= t_mask;
             id_live[idf] = 1;  id_we[idf] = t_we;  id_ln[idf] = ln[5:0];  busy_ln[ln] = 1;

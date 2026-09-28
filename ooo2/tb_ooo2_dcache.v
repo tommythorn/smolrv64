@@ -21,6 +21,7 @@
 // never wrote -- persistent, surviving re-reads, which fits 37 identical badaddr values on
 // the board where a transient read error does not. Eviction is included because a dirty bit
 // lost to a same-cycle write would drop the line silently and read back the pre-store value.
+`include "tb_rand.vh"
 module tb;
    localparam PAW=64, RDW=64, LINEB=512, OFFB=6;
 `ifndef LAT
@@ -88,7 +89,8 @@ module tb;
    initial for (mi=0;mi<NL;mi=mi+1)
       for (w=0;w<8;w=w+1) mem[mi][w*64 +: 64] = {mi[31:0], w[2:0], 1'b0, 28'h5A5A5A5};
 
-   integer seed = 1;
+   `TB_RAND(jrnd, jrs)
+   `TB_RAND(srnd, srs)
    integer l2_reads = 0;   // accepted L2 reads (demand + prefetch)
    // ONE request at a time on the L2 port: a second one while one is outstanding would be
    // dropped by this model and hang the cache; with the stream buffer on a writable cache the
@@ -105,7 +107,7 @@ module tb;
          // bank conflicts and arbitration against the I$. A FIXED latency explores exactly
          // ONE interleaving of fill against lookup, so a race needing any other is invisible
          // however long the sweep. LAT is the floor, JIT the jitter on top.
-         lbusy<=1'b1; lcnt<=LAT + ({$random(seed)} % (JIT+1)); laddr<=l2_addr;
+         lbusy<=1'b1; lcnt<=LAT + (jrnd(0) % (JIT+1)); laddr<=l2_addr;
          if (!l2_we) l2_reads <= l2_reads + 1;
          lwe<=l2_we; lwd<=l2_wdata;
       end else if (lbusy) begin
@@ -506,9 +508,9 @@ module tb;
       // Directed cases name one interleaving each; this is for the ones nobody named. ----
       begin : random_stress
          reg [7:0]  gold [0:8191];          // 8 KiB golden image of the region
-         reg [PAW-1:0] R0, ra; integer op, n, len, seed2, b, m, ln, w, s;
+         reg [PAW-1:0] R0, ra; integer op, n, len, b, m, ln, w, s;
          reg [63:0] rv, wv; reg [7:0] wm;
-         R0 = 64'h8009_0000; seed2 = `RSEED;
+         R0 = 64'h8009_0000; srs = `TB_SEED(`RSEED);
          for (n = 0; n < 8192; n = n + 1) begin
             ra = R0 + (n & ~7);                                          // the word this byte is in
             rv = expect_word(ra);                                        // what L2 holds for it
@@ -516,45 +518,44 @@ module tb;
          end
          for (op = 0; op < `NOPS; op = op + 1) begin
             // address: 4 sets (index bits from the line address), ways via +64K, lines +/-64
-            s = $urandom(seed2) % 4; seed2 = seed2 + 1;
-            w = $urandom(seed2) % 2; seed2 = seed2 + 1;
-            ln = $urandom(seed2) % 4; seed2 = seed2 + 1;
+            s = srnd(0) % 4;
+            w = srnd(0) % 2;
+            ln = srnd(0) % 4;
             ra = R0 + s*64'd256 + ln*64'd64 + (w ? 64'h10000 : 64'd0);
             if (ra - R0 >= 8192) ra = ra - 64'h10000 + 64'd1024;      // keep the golden image small: way 1 lines alias to +1 KiB
             n = ra - R0;
-            m = $urandom(seed2) % 10; seed2 = seed2 + 1;
+            m = srnd(0) % 10;
             if (m < 4) begin                                              // load a word
-               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
+               b = (srnd(0) % 8) * 8;
                do_load(ra + b, 4'd1);
                for (k = 0; k < 8; k = k + 1) wv[k*8 +: 8] = gold[n + b + k];
                if (got !== wv) begin errors = errors + 1; if (errors < 8) $display("FAIL RANDOM op %0d load @%h: %h want %h", op, ra + b, got, wv); end
             end else if (m < 7) begin                                     // store, random mask
-               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
-               wv = {$urandom(seed2), $urandom(seed2 + 1)}; seed2 = seed2 + 2;
-               wm = $urandom(seed2) % 256; seed2 = seed2 + 1; if (wm == 0) wm = 8'hFF;
+               b = (srnd(0) % 8) * 8;
+               wv = {srnd(0), srnd(0)};
+               wm = srnd(0) % 256; if (wm == 0) wm = 8'hFF;
                do_store(ra + b, wv, wm);
                for (k = 0; k < 8; k = k + 1) if (wm[k]) gold[n + b + k] = wv[k*8 +: 8];
             end else if (m == 7) begin                                    // cbo.zero
                do_cbo_zero(ra);
                for (k = 0; k < 64; k = k + 1) gold[n + k] = 8'h00;
             end else if (m == 8) begin                                    // cbo.clean or inval+DMA
-               if ($urandom(seed2) % 2) begin do_cbo(ra, 1'b1); end       // clean: memory now equals gold (checked by a later refetch)
+               if (srnd(0) % 2) begin do_cbo(ra, 1'b1); end       // clean: memory now equals gold (checked by a later refetch)
                else begin
                   do_cbo(ra, 1'b1);                                       // clean first so the DMA does not race a dirty line
-                  wv = {$urandom(seed2 + 5), $urandom(seed2 + 6)};
+                  wv = {srnd(0), srnd(0)};
                   dma_write(ra + 64'd8, wv);                              // the device writes word 1 of the line in memory
                   for (k = 0; k < 8; k = k + 1) gold[n + 8 + k] = wv[k*8 +: 8];
                   do_cbo(ra, 1'b0);                                       // inval: the CPU must see the DMA data next
                end
-               seed2 = seed2 + 8;
             end else if (m == 9 && (op % 2)) begin                        // CONCURRENT: a store without waiting, then
-               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;          // two loads issued back to back (other lines
-               wv = {$urandom(seed2), $urandom(seed2 + 1)}; seed2 = seed2 + 2;   // in the set, or the next line: the
+               b = (srnd(0) % 8) * 8;          // two loads issued back to back (other lines
+               wv = {srnd(0), srnd(0)};   // in the set, or the next line: the
                store_go(ra + b, wv, 8'hFF);                                // buffer, the S_FIN door, a fill in flight)
                for (k = 0; k < 8; k = k + 1) gold[n + b + k] = wv[k*8 +: 8];
                begin : two_loads
                   reg [PAW-1:0] la1, la2; integer n1, n2; reg [63:0] w1, w2;
-                  la1 = ra + 64'd64; la2 = ra + (($urandom(seed2) % 4) * 64'd8); seed2 = seed2 + 1;
+                  la1 = ra + 64'd64; la2 = ra + ((srnd(0) % 4) * 64'd8);
                   if (la1 - R0 >= 8192) la1 = ra - 64'd64;
                   n1 = la1 - R0; n2 = la2 - R0;
                   gotq[4'd10] = 1'b0; gotq[4'd11] = 1'b0;
@@ -566,7 +567,7 @@ module tb;
                end
                i = 0; while (!wr_ack && i < (8*LAT+400)) begin @(negedge clk); i = i + 1; end   // let the store's fill land
             end else begin                                                // a non-blocking load, checked later
-               b = ($urandom(seed2) % 8) * 8; seed2 = seed2 + 1;
+               b = (srnd(0) % 8) * 8;
                gotq[4'd9] = 1'b0; issue_nb(ra + b, 4'd9);
                i = 0; while (!gotq[4'd9] && i < (8*LAT+400)) begin @(negedge clk); i = i + 1; end
                for (k = 0; k < 8; k = k + 1) wv[k*8 +: 8] = gold[n + b + k];

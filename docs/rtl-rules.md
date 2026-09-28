@@ -855,6 +855,16 @@ The D12 class itself no longer needs the storm: ooo2_lq recomputes the region bi
 stores and dies at the fill (the cross-check at the consumer is the cheaper layer; the storm is
 for everything else the interrupt path does).
 
+**G13. A random bench draws from `src/tb_rand.vh`, and proves its randomness by coverage.**
+Under Verilator `$random(seed)` walks shifted all-ones words, successive seeds collapsing
+together, and `$urandom(s)`'s first draw after a reseed is one too. So `$urandom(s) % 8` with `s`
+stepping is a constant, and `tb_ddr_port`, `tb_virtio_net`, the rv_cache random stress and
+`tb_rv_dcache` each ran one stimulus whatever the seed. `TB_RAND(fn, state)` is xorshift64* on a
+module-level state, one per drawing process: Verilator does not copy a function's inout argument
+back. `src/lint.sh` rejects a seeded `$random`/`$urandom` in any bench. A pass is believed only
+alongside counts showing each case the bench exists for occurred. `tb_rv_dcache` fails when a miss
+outcome never occurs, and each of its fixes was re-broken once to watch the bench fail.
+
 ## H. Process
 
 **H1. Cheapest confirmation first.**
