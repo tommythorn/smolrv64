@@ -87,8 +87,10 @@ tlb_ppn : iTLB/dTLB
 tlb_perm: iTLB/dTLB
 
 # ---- the D$'s physical state: one LUTRAM per (way, colour), 64 rows, read at two rows -------
-# (16 at DC_KB=64: 2 ways x 8 colours)
-ptw[*].pt_k x16 : D$ physical tags; the probe reads all of them at one row, one array each
-ptw[*].pv_k x16 : D$ pvalid
-ptw[*].pd_k x16 : D$ dirty
+# (32 at DC_KB=128: 2 ways x 16 colours)
+ptw[*].pt_k x32 : D$ physical tags; the probe reads all of them at one row, one array each
+ptw[*].pv_k x32 : D$ pvalid
+ptw[*].pd_k x32 : D$ dirty
+mbd_e   : D$ merge buffers, even chunks (as flops they were 4.6k registers and their muxes)
+mbd_o   : D$ merge buffers, odd chunks
 wrr     : D$ round-robin victim per set

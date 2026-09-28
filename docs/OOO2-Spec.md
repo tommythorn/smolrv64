@@ -1009,8 +1009,7 @@ cycle is legal and was lost once).
   0.60 M (+10.5% retired).
 - **Phase 1: every request by PA** (`VIRT=0` in `rv_soc_top`). The core translates before it
   asks, so a virtual hit would shorten nothing yet: the D$ runs as a 128 KiB, 2-way PIPT
-  cache and its virtual stamps stay empty. 64 KiB (`DC_KB`): 128 KiB retired +0.36% on the 60 M
-  lockstep for twice the block RAMs, on a route-bound design. Phase 2 of the plan, with the queue-side
+  cache and its virtual stamps stay empty. Phase 2 of the plan, with the queue-side
   translate (C4b), presents VAs and turns on the virtual hit.
 - **No access spans an 8-byte chunk**: the LSU splits them (the no-span alignment), and the
   D$ answers the chunk shifted to the access's byte.
@@ -1052,9 +1051,9 @@ read-only module of its own (Stage 4 increment 0, `docs/PLAN-2026-09-24-frontend
 
 | | I$ (`rv_icache`) | D$ (`rv_dcache`) |
 |---|---|---|
-| Size | 64 KB | 64 KB (`DC_KB`; the module is built for up to 128) |
+| Size | 64 KB | **128 KB** (`DC_KB`) |
 | Associativity | 2-way, not skewed | 2-way, not skewed |
-| Sets | 512 | 512, 8 colours (VA[14:12]) |
+| Sets | 512 | 1024, 16 colours (VA[15:12]) |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | VHPR built; **PIPT** in phase 1 (`VIRT=0`) |
 | Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one lookup a cycle, answered at T+2 by tag |
@@ -1072,8 +1071,8 @@ read-modify-write of one chunk, no cross-bank RMW.
 Neither cache skews: a VHPR cache's physical probe finds the same-offset synonym candidates by a
 straight index, and a tag-XORed index would scatter them across sets.
 
-**The D$ (`rv_dcache`).** Physical state per (way, colour): 16 LUTRAM arrays of 64 rows (32 at 128
-KiB), all read at PA[11:6], hold the physical tag, pvalid and dirty, so every place a line can live
+**The D$ (`rv_dcache`).** Physical state per (way, colour): 32 LUTRAM arrays of 64 rows, all read
+at PA[11:6], hold the physical tag, pvalid and dirty, so every place a line can live
 comes out of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
 (tag, 2-bit epoch, vvalid per way and set) sit beside them for phase 2. A miss's fill is a
 four-beat burst into the reserved way, a cycle after each beat; the line installs the cycle
@@ -1254,15 +1253,17 @@ Neither BTB nor corrector bank has a valid bit — validity is the tag match (§
 
 ### 10.3 Memory system
 
-The D$ (`rv_dcache`, 64 KiB):
+The D$ (`rv_dcache`, 128 KiB; out of context 5.6 k logic LUTs, 201 RAM64M8, 1.8 k flops, 28
+RAMB36 + 4 RAMB18, WNS +0.457 ns at 6 ns):
 
 | array | shape | width | bits | storage |
 |---|---|---|---|---|
-| data banks | 4 × 2048 | 64 | 524 288 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
-| `pt` / `pv` / `pd` | 16 × 64 | 24 / 1 / 1 | 26 624 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
-| `wrr` | 512 | 1 | 512 | LUTRAM — round-robin victim per set |
-| `vt`/`ep`/`vv` ×2 | 512 | 24 / 2 / 1 | 27 648 | LUTRAM, unused at `VIRT=0` (pruned) |
-| MSHRs, merge buffers | 8, 8 × 8 chunks | -- / 72 | ~5 400 | flops |
+| data banks | 4 × 4096 | 64 | 1 048 576 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
+| `pt` / `pv` / `pd` | 32 × 64 | 24 / 1 / 1 | 53 248 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
+| `wrr` | 1024 | 1 | 1 024 | LUTRAM — round-robin victim per set |
+| `vt`/`ep`/`vv` ×2 | 1024 | 23 / 2 / 1 | 53 248 | LUTRAM, unused at `VIRT=0` (pruned) |
+| merge buffers | 2 × 32 | 64 + 8 | 4 608 | LUTRAM, even and odd chunks, one write a cycle; a chunk-valid bit and a zero bit per MSHR in flops |
+| MSHRs | 8 | -- | ~800 | flops |
 | waiters | 33 | ~135 | ~4 500 | flops (one per requester tag, one for the store) |
 | write-back lines | 2 | 512 | 1 024 | flops |
 

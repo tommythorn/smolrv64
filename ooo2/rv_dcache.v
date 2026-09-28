@@ -28,7 +28,8 @@
 //     with a reserved way whose line is dropped (a dirty one read out to the write-back buffer)
 //     and a read queued on the memory port under the MSHR's id. A load waits on the MSHR; a
 //     store's bytes go into the MSHR's merge buffer and the store is done, unless a beat has
-//     already landed, when it waits too;
+//     already landed, when it waits too (as does a cbo.zero: its line is written when the fill
+//     is in, from the own copy's drop);
 //   - a load to the line of the store in flight (taken, not yet written or merged) waits for it:
 //     the store was accepted first, so the load must see it;
 //   - no copy and no MSHR can take it (MSHRs full, the set's ways both reserved, the line filling
@@ -197,8 +198,14 @@ module rv_dcache #(
    reg              ms_bl   [0:NMSHR-1];         // a beat has landed: the merge buffer is being read
    reg              ms_dty  [0:NMSHR-1];         // a store merged: the line installs dirty
    // the merge buffers: chunk c of MSHR m at {m, c}
-   reg [63:0]       mb_d    [0:NMSHR*8-1];
-   reg [7:0]        mb_m    [0:NMSHR*8-1];
+   // (distributed RAM, even and odd chunks apart so a beat reads one of each at {m, pair}; a chunk's
+   // bytes count only while its bit in mb_cv[m] is set, and mb_z[m] makes the memory's line zeros)
+   (* ram_style = "distributed" *) reg [63:0] mbd_e [0:NMSHR*4-1];
+   (* ram_style = "distributed" *) reg [63:0] mbd_o [0:NMSHR*4-1];
+   (* ram_style = "distributed" *) reg [7:0]  mbm_e [0:NMSHR*4-1];
+   (* ram_style = "distributed" *) reg [7:0]  mbm_o [0:NMSHR*4-1];
+   reg [7:0]        mb_cv   [0:NMSHR-1];
+   reg              mb_z    [0:NMSHR-1];
    // the waiters, one per requester tag and one for the store: what to replay, and on what
    reg              wt_v    [0:NW-1];
    reg              wt_rdy  [0:NW-1];            // replay it
@@ -399,7 +406,7 @@ module rv_dcache #(
    // (no copy is pvalid while an MSHR fills its line, so the join needs no probe)
    wire m_join    = mis & ~wb_hit & (|ms_hitv) & (ms_set[ms_hk] == s1_set) & (k_ld | k_st | k_z);
    wire mg_ok     = ~ms_bl[ms_hk] & ~(cr_f & (cr_m == ms_hk));        // no beat has landed
-   wire m_smerge  = m_join & s1_st & mg_ok;                           // a store's or a zero's bytes into the MSHR: done
+   wire m_smerge  = m_join & k_st & mg_ok;                            // a store's bytes into the MSHR: done (a zero waits)
    wire m_merge   = m_join & ~m_smerge;                               // wait on the MSHR
    wire m_nc      = free_ln & k_nc & ~nc_v;                           // to memory through the NC slot
    wire m_cdone   = free_ln & (k_cln | k_fl);                         // a CBO with nothing cached: done
@@ -425,10 +432,28 @@ module rv_dcache #(
    // the merge buffer's bytes over the memory's.
    wire          cr_f   = cr_valid & (cr_slot < NMS);           // a fill beat (else the NC slot's)
    wire [MB-1:0] cr_m   = cr_slot[MB-1:0];
-   wire [MB+2:0] cr_c0  = {cr_m, cr_beat, 1'b0};
-   wire [MB+2:0] cr_c1  = {cr_m, cr_beat, 1'b1};
-   wire [63:0]   cr_lo  = (cr_data[63:0]   & ~bytes(mb_m[cr_c0])) | (mb_d[cr_c0] & bytes(mb_m[cr_c0]));
-   wire [63:0]   cr_hi  = (cr_data[127:64] & ~bytes(mb_m[cr_c1])) | (mb_d[cr_c1] & bytes(mb_m[cr_c1]));
+   wire [MB+1:0] cr_a   = {cr_m, cr_beat};
+   wire [7:0]    cr_me  = mb_cv[cr_m][{cr_beat, 1'b0}] ? mbm_e[cr_a] : 8'd0;
+   wire [7:0]    cr_mo  = mb_cv[cr_m][{cr_beat, 1'b1}] ? mbm_o[cr_a] : 8'd0;
+   wire [127:0]  cr_bs  = mb_z[cr_m] ? 128'd0 : cr_data;
+   wire [63:0]   cr_lo  = (cr_bs[63:0]   & ~bytes(cr_me)) | (mbd_e[cr_a] & bytes(cr_me));
+   wire [63:0]   cr_hi  = (cr_bs[127:64] & ~bytes(cr_mo)) | (mbd_o[cr_a] & bytes(cr_mo));
+
+   // THE ONE MERGE-BUFFER WRITE: a store's bytes over what the MSHR it joins already holds, or
+   // fresh into the free MSHR (dead unless this store allocates it)
+   wire           mw_join = |ms_hitv;
+   wire [MB-1:0]  mw_m    = mw_join ? ms_hk : ms_free;
+   wire [MB+1:0]  mw_a    = {mw_m, s1_va[5:4]};
+   wire           mw_old  = mw_join & mb_cv[mw_m][s1_va[5:3]];
+   wire [63:0]    mw_od   = s1_va[3] ? mbd_o[mw_a] : mbd_e[mw_a];
+   wire [7:0]     mw_om   = s1_va[3] ? mbm_o[mw_a] : mbm_e[mw_a];
+   wire [7:0]     mw_mk   = (mw_old ? mw_om : 8'd0) | st_wm;
+   wire [63:0]    mw_d    = mw_old ? ((mw_od & ~bytes(st_wm)) | (st_wd & bytes(st_wm))) : st_wd;
+   wire           mw_we   = s1_v & k_st & (mw_join ? m_smerge : ms_free_v);
+   always @(posedge clk) begin
+      if (mw_we & ~s1_va[3]) begin mbd_e[mw_a] <= mw_d;  mbm_e[mw_a] <= mw_mk; end
+      if (mw_we &  s1_va[3]) begin mbd_o[mw_a] <= mw_d;  mbm_o[mw_a] <= mw_mk; end
+   end
 
    // ---------------------------------------------------------------- the memory port
    // Reads first: an allocated MSHR's read waits in the issue queue, in allocation order; then the
@@ -574,11 +599,9 @@ module rv_dcache #(
             ms_pl[ms_free] <= s1_pl;  ms_set[ms_free] <= s1_set;  ms_vt[ms_free] <= s1_vtg;  ms_ep[ms_free] <= s1_ep;
             ms_way[ms_free] <= pick1;  ms_bt[ms_free] <= 2'd0;  ms_bl[ms_free] <= 1'b0;  ms_ph[ms_free] <= s1_ph;
             ms_dty[ms_free] <= k_st | k_z;
-            // its merge buffer: a store's bytes, a zero's whole line, else empty
-            for (i = 0; i < 8; i = i + 1) begin
-               mb_m[{ms_free, i[2:0]}] <= k_z ? 8'hFF : (k_st & (i[2:0] == s1_va[5:3])) ? st_wm : 8'd0;
-               mb_d[{ms_free, i[2:0]}] <= k_z ? 64'd0 : st_wd;
-            end
+            // its merge buffer: a store's chunk (written above), a zero's whole line, else empty
+            mb_cv[ms_free] <= k_st ? (8'd1 << s1_va[5:3]) : 8'd0;
+            mb_z[ms_free]  <= k_z;
          end
          iq[iq_wr] <= ms_free;
          // a request enters the waiter table
@@ -590,28 +613,28 @@ module rv_dcache #(
          end
          // an allocation: the MSHR goes live and its read is queued
          if (m_alloc) begin ms_v[ms_free] <= 1'b1;  iq_wr <= iq_wr + 1'b1; end
-         // a store's bytes, or a zero's whole line, joining a live MSHR's merge buffer
-         if (m_smerge & k_st) begin
-            mb_m[{ms_hk, s1_va[5:3]}] <= mb_m[{ms_hk, s1_va[5:3]}] | st_wm;
-            mb_d[{ms_hk, s1_va[5:3]}] <= (mb_d[{ms_hk, s1_va[5:3]}] & ~bytes(st_wm)) | (st_wd & bytes(st_wm));
-            ms_dty[ms_hk] <= 1'b1;
-         end
-         if (m_smerge & k_z) begin
-            for (i = 0; i < 8; i = i + 1) begin mb_m[{ms_hk, i[2:0]}] <= 8'hFF;  mb_d[{ms_hk, i[2:0]}] <= 64'd0; end
+         // a store's bytes joining a live MSHR's merge buffer (the bytes: the one write above)
+         if (m_smerge) begin
+            mb_cv[ms_hk][s1_va[5:3]] <= 1'b1;
             ms_dty[ms_hk] <= 1'b1;
          end
          if (iq_go) iq_rd <= iq_rd + 1'b1;
          iq_n <= iq_n + {{MB{1'b0}}, m_alloc} - {{MB{1'b0}}, iq_go};
          // a dirty line leaving or cleaning: a write-back entry, and the read-out of its four rows --
          // a victim, a dropped or cleaned copy, or the clean walk's slot
+         // (the free entry and the idle read-out are dead: their fields are written every idle cycle
+         // and only wb_v and ro_on wait for the decision -- a victim when there is no copy to move)
+         if (~ro_on & wb_free_v) begin
+            wb_rdy[wb_free] <= 1'b0;  wb_sent[wb_free] <= 1'b0;
+            wb_cpl[wb_free] <= ~cl_on & (k_fl | k_cln);
+            wb_pl[wb_free] <= cl_on  ? {{(52-PTB){1'b0}}, pt_c[cl_k*PTB +: PTB], cl_r}
+                            : absent ? {{(52-PTB){1'b0}}, pt_r[k_vic*PTB +: PTB], s1_row} : s1_pl;
+            ro_cnt <= 2'd0;  ro_wb <= wb_free;
+            ro_way <= cl_on ? cl_k[COLB] : absent ? pick1 : cp_w1;
+            ro_set <= cl_on ? {cl_k[COLB-1:0], cl_r} : absent ? s1_set : cp_set;
+         end
          if ((ro_need & ~ro_block & ~wb_block) | cl_ro) begin
-            wb_v[wb_free] <= 1'b1;  wb_rdy[wb_free] <= 1'b0;  wb_sent[wb_free] <= 1'b0;
-            wb_cpl[wb_free] <= ~cl_ro & (k_fl | k_cln);
-            wb_pl[wb_free] <= cl_ro ? {{(52-PTB){1'b0}}, pt_c[cl_k*PTB +: PTB], cl_r}
-                           : m_alloc ? {{(52-PTB){1'b0}}, pt_r[k_vic*PTB +: PTB], s1_row} : s1_pl;
-            ro_on <= 1'b1;  ro_cnt <= 2'd0;  ro_wb <= wb_free;
-            ro_way <= cl_ro ? cl_k[COLB] : m_alloc ? pick1 : cp_w1;
-            ro_set <= cl_ro ? {cl_k[COLB-1:0], cl_r} : m_alloc ? s1_set : cp_set;
+            wb_v[wb_free] <= 1'b1;  ro_on <= 1'b1;
          end else if (ro_on) begin
             ro_cnt <= ro_cnt + 1'b1;
             if (ro_cnt == 2'd3) ro_on <= 1'b0;
@@ -682,7 +705,7 @@ module rv_dcache #(
    //   5 span        VA and PA disagree in the page offset
    //   6 tag_reuse   a requester tag reused while outstanding
    //   7 dead_wait   a waiter parked on an MSHR that is not live
-   //   8 ro_race     a fill beat into a line being read out
+   //   8 ro_race     a fill beat for a row of the line being read out, not yet read
    //   9 vv_no_pv    vvalid without pvalid
    //  10 vhit_other  a current-epoch virtual hit on another physical line
    wire e_orphan  = cr_f & ~ms_v[cr_m];                              // a fill beat for no MSHR
@@ -697,7 +720,11 @@ module rv_dcache #(
       e_wdead = 1'b0;
       for (i = 0; i < NW; i = i + 1) if (wt_v[i] & ~wt_rdy[i] & ~wt_any[i] & ~ms_v[wt_m[i]]) e_wdead = 1'b1;
    end
-   wire e_rorace  = cr_f & ro_on & (ms_way[cr_m] == ro_way) & (ms_set[cr_m] == ro_set);   // a beat into a line being read out
+   // A fill beat may land in the slot being read out -- the next lookup can reserve a slot a drop
+   // just freed, and the on-chip SRAM answers within the read-out's four cycles -- but beat c is
+   // written a cycle after it lands, so it is safe while row c is read no later than that: the
+   // hazard is a beat for a row the read-out has not reached yet.
+   wire e_rorace  = cr_f & ro_on & (ms_way[cr_m] == ro_way) & (ms_set[cr_m] == ro_set) & (cr_beat > ro_cnt);
    wire e_vnp     = l1_v & ((h0 & ~pv_r[k_own0]) | (h1 & ~pv_r[k_own1]));      // vvalid without pvalid
    wire e_vpa     = l1_v & cur & ~s1_ph & ((h0 & ~own0) | (h1 & ~own1));      // a current-epoch virtual hit on another physical line
    wire [15:0] e_now = {5'd0, e_vpa, e_vnp, e_rorace, e_wdead, e_wtbusy, e_span, e_two, e_beat, e_wdone, e_slot, e_orphan};

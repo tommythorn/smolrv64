@@ -50,8 +50,8 @@ module rv_soc_top #(
    parameter        LRAM_LG2 = 18,              // 256 KiB local SRAM
    parameter [63:0] RESET_PC = BASE,            // tests link @DDR; the platform boots @LBASE
    parameter        SIZE_KB  = 64,              // the I$. Its boot stalls are not capacity misses.
-   parameter        DC_KB    = 64               // the D$. 128 KiB retires +0.36% on the 60 M lockstep
-                                                 // (rv_dcache, 2026-09-27) for twice the block RAMs
+   parameter        DC_KB    = 128              // the D$ (docs/PLAN-2026-09-25-dcache-vhpr.md); only
+                                                 // 166.67 MHz may shrink it
 ) (
    input  wire             clk,
    input  wire             reset,

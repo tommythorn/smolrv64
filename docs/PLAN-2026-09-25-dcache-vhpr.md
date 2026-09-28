@@ -352,10 +352,18 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - **fence.i's clean walks rows, not slots.** The boot runs 3,867 fence.i in 60 M cycles; the
      slot walk spent 8.09 M cycles there, the row walk (all of a row's slots read at once)
      0.60 M: 29,278,185 -> 32,343,542 retires (+10.5%).
-   - **The D$ ships at 64 KiB for now.** With the clean cheap, 128 KiB retires +0.36% over 64 KiB
-     on the 60 M boot (32,343,542 vs 32,227,679), and the first 128 KiB build missed timing by
-     0.244 ns across the whole core (a route-bound plateau, not the D$'s logic). The GB5
-     checkpoints judge the size next; `DC_KB` is the one knob.
+   - **128 KiB, and only timing may shrink it** (Tommy). The first 128 KiB build missed by 0.244
+     ns across the whole core -- a route-bound plateau the D$'s area pushed on: 17.4 k LUTs and
+     6.3 k flops, 4.6 k of them the merge buffers as flops with multi-way write muxes. As two
+     LUTRAMs (even/odd chunks) with one write a cycle, a chunk-valid bit and a zero bit per
+     MSHR, the module is 5.6 k logic LUTs and 1.8 k flops (out of context, WNS +0.457 ns). A
+     cbo.zero meeting a line being filled waits for it rather than merging. Lockstep at 128 KiB
+     against 64 KiB: +0.36% at 60 M, +4.62% at 300 M (125,118,782 -> 130,900,475).
+   - **The read-out race is by arithmetic, and the invariant says exactly that.** The board's
+     integrity log caught a fill beat landing in a slot still being read out (the boot SRAM
+     answers in a few cycles; a drop's freed slot can be reserved by the next lookup). Beat c is
+     written after row c is read, so the check is for a beat on a row not yet read; the bench
+     gains a 1-4 cycle memory.
 3. **The store port.** The SQ drains one store per cycle: the LSU's S_ST/`take_next` chain
    becomes a stream.
 4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.

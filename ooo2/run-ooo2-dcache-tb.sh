@@ -16,8 +16,9 @@ for v in 1 0; do
 done
 # Each seed runs over both memory orders and four shapes: the default, a slow memory (every
 # MSHR busy: the waiters' fairness), a fast one with twice the stores (fills racing the read-out
-# and the merge buffer), and a remap every 500 cycles (epoch wraps and their scans).
-CFGS=("" "+latmin=100 +latmax=300" "+latmin=8 +latmax=12 +stores=70" "+remap=500")
+# and the merge buffer), a remap every 500 cycles (epoch wraps and their scans), and the on-chip
+# SRAM's 1-4 cycles (a fill landing while its slot is still being read out).
+CFGS=("" "+latmin=100 +latmax=300" "+latmin=8 +latmax=12 +stores=70" "+remap=500" "+latmin=1 +latmax=4")
 rc=0; n=0; bad=0
 for v in 1 0; do
  for s in ${@:-1 2 3 4 5 6}; do
