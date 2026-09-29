@@ -30,7 +30,10 @@ module tb;
    wire [127:0] rd_data;  wire [63:0] rd_resp_addr;  wire [3:0] rd_resp_tag;
    wire [57:0]  l2_addr;  wire [511:0] l2_wdata;  wire [15:0] err;
    reg          inv_req = 0, ep_bump = 0, l2_ack = 0;  reg [511:0] l2_rdata;
-   rv_icache #(.RTW(4)) dut
+`ifndef IC_KB
+ `define IC_KB 64                // the cache size: -DIC_KB=128
+`endif
+   rv_icache #(.RTW(4), .SIZE_KB(`IC_KB)) dut
      (.clk(clk), .reset(reset),
       .rd_req(rq_v), .rd_addr(rq_va), .rd_pa(rq_pa), .rd_tag(rq_tag), .rd_ack(rd_ack),
       .rd_data(rd_data), .rd_valid(rd_valid), .rd_resp_addr(rd_resp_addr), .rd_resp_tag(rd_resp_tag),

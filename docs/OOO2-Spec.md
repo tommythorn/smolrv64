@@ -1051,9 +1051,9 @@ read-only module of its own (Stage 4 increment 0, `docs/PLAN-2026-09-24-frontend
 
 | | I$ (`rv_icache`) | D$ (`rv_dcache`) |
 |---|---|---|
-| Size | 64 KB | **128 KB** (`DC_KB`) |
+| Size | **128 KB** (`SIZE_KB`) | **128 KB** (`DC_KB`) |
 | Associativity | 2-way, not skewed | 2-way, not skewed |
-| Sets | 512 | 1024, 16 colours (VA[15:12]) |
+| Sets | 1024 | 1024, 16 colours (VA[15:12]) |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | VHPR built; **PIPT** in phase 1 (`VIRT=0`) |
 | Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one lookup a cycle, answered at T+2 by tag |
@@ -1093,7 +1093,9 @@ cycle), so physically resident code survives a mapping change; otherwise the lin
 (prefetch buffer or L2) and installs stamped with the request's epoch, so a request taken before
 a mapping change never makes its line current. A miss parks at most one younger request and both
 replay in order. Epoch roll-over and `fence.i` (after the D$ writeback drains) clear the valid
-bits one set per cycle. Today every request still carries the iMMU's PA (`rd_pa`) and the iMMU
+bits, which are banked by the set's low bits into 64-row distributed RAMs so the scan clears a row
+of every bank a cycle: 64 cycles at any size. (Scanning one set a cycle, a 128 KiB I$ lost 2.65% on
+the boot's 3,867 fence.i; banked, it gains +0.83% at 60 M and +1.94% at 300 M over 64 KiB.) Today every request still carries the iMMU's PA (`rd_pa`) and the iMMU
 still checks every fetch; Stage 4 increment 1 caches each line's execute and user bits and
 translates only on a miss. Unit bench: `ooo2/run-ooo2-icache-tb.sh`. Design: `docs/VHPR.md`.
 
@@ -1267,7 +1269,7 @@ RAMB36 + 4 RAMB18, WNS +0.457 ns at 6 ns):
 | waiters | 33 | ~135 | ~4 500 | flops (one per requester tag, one for the store) |
 | write-back lines | 2 | 512 | 1 024 | flops |
 
-The I$ (`rv_icache`, 64 KiB): data 4 banks of `2048 × 64` (524 288 bits, BRAM), even/odd chunk
+The I$ (`rv_icache`, 128 KiB): data 4 banks of `4096 × 64` (1 048 576 bits, BRAM), even/odd chunk
 banking per way, so any read at any byte offset is served by one access (§9.1).
 
 **The bank is never wider than 64 bits, whatever the port width.** The I$ at `HW=8` reads

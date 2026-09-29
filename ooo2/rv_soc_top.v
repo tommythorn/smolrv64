@@ -49,7 +49,7 @@ module rv_soc_top #(
    parameter [63:0] LBASE    = 64'h7000_0000,   // on-chip local SRAM (boot/monitor) -- MEM_BASEADDR on the FPGA
    parameter        LRAM_LG2 = 18,              // 256 KiB local SRAM
    parameter [63:0] RESET_PC = BASE,            // tests link @DDR; the platform boots @LBASE
-   parameter        SIZE_KB  = 64,              // the I$. Its boot stalls are not capacity misses.
+   parameter        SIZE_KB  = 128,             // the I$; like the D$, only 166.67 MHz may shrink it
    parameter        DC_KB    = 128              // the D$ (docs/PLAN-2026-09-25-dcache-vhpr.md); only
                                                  // 166.67 MHz may shrink it
 ) (

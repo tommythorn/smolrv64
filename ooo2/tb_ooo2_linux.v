@@ -62,11 +62,13 @@ module tb;
    // broke -- and that is exactly what must never reach a bitstream.
    always @(posedge clk) if (|dut.u_errlog.sticky)
       $fatal(1, "tb: integrity log sticky=%h first=%0d @%0d rose without a $fatal", dut.u_errlog.sticky, dut.u_errlog.first_idx, dut.u_errlog.first_cyc);
-`ifdef TB_DC_KB                  // the D$ size, for an A/B: -DTB_DC_KB=128
-   rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB)) dut
-`else
-   rv_soc_top #(.RESET_PC(`TB_RESET_PC)) dut
+`ifndef TB_DC_KB                 // the cache sizes, for an A/B: -DTB_DC_KB=<n>, -DTB_IC_KB=<n>
+ `define TB_DC_KB 128
 `endif
+`ifndef TB_IC_KB
+ `define TB_IC_KB 128
+`endif
+   rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB), .SIZE_KB(`TB_IC_KB)) dut
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
