@@ -841,8 +841,8 @@ cycle is legal and was lost once).
   victim read out in the 4 cycles after its miss and written only when no read waits for the
   port; one **NC slot**. Every response is matched by the tag its request carried, on the D$'s
   side (`rd_tag`) and on the memory port's (slot ids, §9.2) -- rule B1 by construction.
-- **Ordering inside the D$.** A store is accepted (`wr_acc`) before it resolves, so a load to
-  the line of the store in flight waits for it (`blk_st`); the store's completion is a
+- **Ordering inside the D$.** A store is taken into the D$'s store queue before it resolves,
+  so a load to the line of any queued store waits for it (`blk_st`); a store's completion is a
   freeing that releases it. The lookup that read a bank row at the edge a store wrote it takes
   the store's chunk from the write register (`w1`), the one bypass. The lookup yields in the
   cycle a line's last beat is written, so no lookup ever meets an install, and an array has
@@ -909,13 +909,14 @@ cycle is legal and was lost once).
   needs no term (asserted).
   For a younger load nothing changes: an entry in the queue, committed or not, is a store
   whose bytes are not in the cache yet, and the alias matrix holds the load behind it.
-  **The drain ends at the D$'s ACCEPT** (`wr_acc`, 2026-09-05, plan item 4a): the cache has
-  captured address, data and mask and completes the write on its own. The accept is a
-  REGISTER: the first version fed it combinationally into the LSU's completion and from
-  there into M's `done` and the scheduler, 0.65 ns over at 166 MHz (build N). It lands the
-  cycle after the door took the write, while the LSU still presents it (the door is shut
-  that cycle); in that cycle the LSU loads the next queued store straight into `S_ST`
-  (`take_next`), so stores stream at one per two cycles without the trip through `S_IDLE`.
+  **The drain ends when the D$ takes the store**: the cache has captured address, data and
+  mask and completes the write on its own. It takes a store in any cycle its store queue has
+  room, which `wr_room` (a register) announces, so the LSU's completion never waits on an
+  accept travelling back (a combinational accept into M's `done` and the scheduler was
+  0.65 ns over at 166 MHz). The LSU knows a store to memory from one to a device by its
+  registered `mem_q`: a plain store to a device (bare M-mode has no PBMT, so no NC bit) ends at
+  the device's own accept instead. In the cycle a store is taken the LSU loads the next queued
+  store straight into `S_ST` (`take_next`), so stores stream at one a cycle.
   The queue pops at the HANDOFF (`c_take` = `pt_ack` for a store) and the LSU registers the
   data (`st_data_q`); nothing can pass a store parked in the LSU, since every access goes
   through its FSM. Two classes wait for COMPLETION instead, `wr_cpl`, which
@@ -985,10 +986,14 @@ cycle is legal and was lost once).
   writeback valids `we_ld`/`we_fe` (the wakeup broadcast) use `lsu_done_acc`, the completion
   of an access this stage started: a translate pass or a fault never writes a register.
   Both are asserted equal to the full expressions every cycle.
-- **Stores stream at one per two cycles.** A store takes the lookup like a load; a hit merges
-  its bytes into the chunk its own lookup read and writes the chunk back (no byte enables), a
-  miss completes into its MSHR's merge buffer, whose bytes override the fill's beats. The next
-  store is taken once this one resolves. One store per cycle is increment 3 of the plan.
+- **Stores stream at one a cycle, through a 3-entry store queue.** A store takes the lookup
+  like a load; a hit merges its bytes into the chunk its own lookup read and writes the chunk
+  back (no byte enables), a miss completes into its MSHR's merge buffer, whose bytes override
+  the fill's beats. The queue issues its head, and the entry behind it in the cycle the head is
+  in the compare; only the head resolves, so an entry that reaches the compare while the head
+  is parked in the waiter table leaves no trace and goes back to the queue (the store's waiter
+  entry is only ever the head's). A CBO or an NC store is taken once and held by the LSU until
+  its `wr_cpl`, with nothing presented behind it.
 - **NC, CBOs and page-table walks are looked up by PA**, in the PA's own colour, and never
   stamp. An NC access drops any cached copy (a dirty one written back first) and then goes to
   memory alone through the NC slot, a store with only its bytes -- coherent with a cacheable
@@ -996,7 +1001,8 @@ cycle is legal and was lost once).
   copy back and keeps it clean; cbo.flush/inval drop it, written back if dirty; cbo.zero drops
   it unwritten and fills an MSHR whose merge buffer is a line of zeros. A CBO or NC store
   completes at `wr_cpl`, once memory has its write. `fence.i`'s clean (`inv_req`) waits for
-  the store in flight and any dirty merge buffer, then walks the 64 rows -- each row's slots
+  the store queue to drain (stores still issue while loads are held) and for any dirty merge
+  buffer, then walks the 64 rows -- each row's slots
   read at once, the dirty ones written back and kept -- so a clean is 64 cycles plus one per
   dirty line; `inv_busy` holds until memory has them all. The boot runs 3,867 fence.i in its
   first 60 M cycles: a slot-by-slot walk spent 8.09 M cycles there at 128 KiB, the row walk

@@ -88,6 +88,7 @@ module smolrv64_core
     output wire                    dmem_cbo_keep,
     input  wire                    dmem_wready,
     input  wire                    dmem_waccept,
+    input  wire                    dmem_wroom,         // the D$ takes a store presented this cycle
     output wire                    dmem_idle,          // no memory op in flight (fence.i drain)
     output wire                    ifence,             // FENCE.I this cycle -> flush D$/I$
     // ---- page-table-walker ports (instruction side, data side) ----
@@ -2140,7 +2141,7 @@ module smolrv64_core
       .mem_wen(dmem_wen), .mem_waddr(dmem_waddr), .mem_wabase(dmem_wabase), .mem_wdata(dmem_wdata),
       .mem_wmask(dmem_wmask), .mem_wuncached(dmem_wuncached),
       .mem_cbo(dmem_cbo), .mem_cbo_zero(dmem_cbo_zero), .mem_cbo_keep(dmem_cbo_keep),
-      .mem_wready(dmem_wready), .mem_waccept(dmem_waccept),
+      .mem_wready(dmem_wready), .mem_waccept(dmem_waccept), .mem_wroom(dmem_wroom),
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind), .cos_data(lsu_cos_data), .cos_size(lsu_cos_size),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_busy(lsu_ld_busy),
@@ -2647,7 +2648,7 @@ module smolrv64_core
    // queues already compute, registered here like the rest; none is in any completion cone.
    wire mem_hitser    = lq_x_v & ~lq_x_take;                 // a ready load candidate the door did not take
    wire mem_ldinfl    = lsu_ld_busy;                          // a load access in flight (hit ~3 cycles; the rest is miss wait)
-   wire mem_stdoor    = dmem_wen & ~dmem_waccept;             // a store at the D$ door, unaccepted
+   wire mem_stdoor    = dmem_wen & ~dmem_wroom & ~dmem_waccept;   // a store at the door, not taken
    wire mem_alias_unk = sq_ld_block &  sq_l_block_unk_q[lq_x_idx];   // blocked: an older store's address is unknown
    wire mem_alias_ovl = sq_ld_block & ~sq_l_block_unk_q[lq_x_idx];   // blocked: a known older store overlaps
    wire mem_reord     = sq_ld_reorder;                        // a load issued past an uncommitted older store (the payoff)

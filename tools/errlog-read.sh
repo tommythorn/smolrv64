@@ -24,7 +24,7 @@ W=$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyCheckin
 set -- $W
 MAGIC=$1; STICKY=$2; FIRST=$3
 [ "${MAGIC: -8}" = "4552524c" ] || { echo "errlog: absent (window reads $MAGIC: a bitstream without rv_errlog)"; exit 2; }
-CACHE=(orphan slot wdone beat two span tag_reuse dead_wait ro_race vv_no_pv vhit_other)
+CACHE=(orphan slot wdone beat two span tag_reuse dead_wait ro_race vv_no_pv vhit_other sq_order)
 CDESC=("a fill beat for no MSHR" "a read response nothing awaits" "a write completion for no write sent" "beats out of order within a burst" "two pvalid copies of one physical line" "VA and PA disagree in the page offset" "a requester tag reused while outstanding" "a waiter parked on an MSHR that is not live" "a fill beat for a row of the line being read out, not yet read" "vvalid without pvalid" "a current-epoch virtual hit on another physical line")
 ICACHE=(dual unused1 l2_orphan align skid_full pa_offset l2_both stamp_dup rc_both)
 IDESC=("one line hits in both ways" "(unused)" "an L2 answer with no read outstanding" "a pair not 16-byte aligned" "a request into a full skid" "VA and PA disagree in the page offset" "a demand read and a prefetch outstanding together" "stamping a line the other way already holds" "one physical line resident in both ways")

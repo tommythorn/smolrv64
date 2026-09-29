@@ -512,7 +512,7 @@ module tb;
       if (~dut.core.sq_d_ready)    n_sqfull  <= n_sqfull  + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
       if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
-      if (dut.core.u_lsu.st_go & ~dut.dmem_waccept) n_stdoor  <= n_stdoor + 1;
+      if (dut.core.u_lsu.st_go & ~dut.core.u_lsu.st_fin) n_stdoor  <= n_stdoor + 1;
       if (dut.core.u_lsu.idle & dut.core.sq_c_v & ~dut.core.u_lsu.pt_start) n_sqidle <= n_sqidle + 1;
       if ((dut.core.sq_occ != 0) & ~dut.core.sq_c_v)  n_sqwait  <= n_sqwait + 1;
       if (dut.core.iq_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;

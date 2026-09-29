@@ -367,6 +367,28 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      gains a 1-4 cycle memory.
 3. **The store port.** The SQ drains one store per cycle: the LSU's S_ST/`take_next` chain
    becomes a stream.
+
+   **As built (2026-09-29, `wip/dc-inc3`).**
+   - **A 3-entry store queue in the D$ replaces the one store slot.** It takes a store in any
+     cycle it has room; `wr_room`, a register, says so. The LSU finishes a store to memory on it,
+     so no accept travels back, and chains the next store the same cycle (`take_next`).
+   - **Only the head resolves.** The queue issues its head, and the entry behind it in the cycle
+     the head is in the compare. If the head parks in the waiter table, the entry behind it goes
+     back to the queue untouched. The store's waiter entry is only ever the head's, and invariant
+     11 (`sq_order`) asserts that the send-back never meets the head leaving.
+   - **Loads wait on any queued store to their line,** not just the one in flight.
+   - **fence.i's clean lets the queue drain first:** stores keep issuing while loads are held.
+   - **A plain store to a device** (bare M-mode, no NC bit) ends at the device's accept. The LSU
+     tells the two classes apart by a registered `mem_q`, never by an address decode.
+   - **The bench streams stores at `wr_room`** and presents loads to the lines of queued stores.
+     Three mutations are caught: loads blocked only on the head's line, the send-back clobbering
+     the head's waiter entry, and a store behind a parked head resolving.
+   - **Measured, IW=3 Linux lockstep (tiny128 boot):**
+     - 33,867,866 -> 35,672,123 retires at 60 M cycles (+5.33%);
+     - 135,292,357 -> 143,322,223 at 300 M (+5.94%);
+     - the store queue full now 2.36% of the 300 M cycles.
+   - `run-vl.sh` fails its build when the riscv-tests bench leaves a core input unconnected: the
+     new `dmem_wroom` read as 0 there and hung every test that stores.
 4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.
 5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
@@ -374,11 +396,10 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    folds into C4b step 3.
 6. **The skewed way.**
    - **6a, at `VIRT=0`:** way 1 is indexed by the xor-fold of the request's PA line. This is
-     PIPT-skew as phase 1 already pays for it, with no D and no synonyms. Placement is older-of-two
-     with one NRU bit per line.
+     PIPT-skew as phase 1 already pays for it, with no D and no synonyms. Placement is one NRU
+     bit per line, both set -> way 1.
    - **6b, with phase 2:** the same hash of the VA line, plus D and its invariants. D is built as
      the tag array a later L2 will carry data for.
-   - Simmerv first: the NRU approximation, and the 6a/6b miss rates on the whole-GB5 grid.
 
 ## Phase 3: the skewed way and the reverse directory (design, 2026-09-29)
 
@@ -434,10 +455,20 @@ degree 2) on B: 1.45, 70% coverage.
 - **The index takes the address the request carries.** At `VIRT=0` that is the PA, and way 1 is a
   PA-hashed physical way with no synonyms. So the skew does not wait for phase 2 (increment 6
   below); phase 2 changes only what the address is.
-- **Placement: the older of the two candidates.** way0[VA[15:6]] and way1[hash] are in different
-  sets, so recency is per line.
-  - Simmerv modelled true LRU. The RTL wants one NRU bit per line; measure that approximation in
-    Simmerv before the RTL.
+- **Placement: one NRU bit per line.** way0[VA[15:6]] and way1[hash] are in different sets, so
+  recency is per line. The bit is set on a fill and on every hit. A new line takes an empty
+  candidate, else one whose bit is clear (way 0 if both are), else it clears both bits and fills
+  way 1.
+  - Whole GB5 in Simmerv, DRAM misses per 1000 instructions (all / without ML / ML):
+
+    | design | NRU, both set -> way 1 | true LRU |
+    |---|---|---|
+    | B | 5.41 / 5.26 / 8.7 | 5.20 / 5.21 / 5.0 |
+    | PIPT-skew | 5.39 / 5.23 / 8.9 | 5.14 / 5.15 / 5.0 |
+
+  - Filling way 0 when both bits are set is worse (ML 9.5-9.7). A fill-order bit per pair gains
+    about 0.1 on ML and loses 0.16-0.19 without ML, so it does not exist.
+  - B's forced evictions do not move (about 0.19).
 - **Tags.** B keeps the virtual stamp in both ways (vtag, epoch, vvalid, perms), so a hit needs no
   TLB. Way 1's physical tag is the full PA line (~30 bits), because its index says nothing about the
   PA.

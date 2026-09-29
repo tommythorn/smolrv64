@@ -133,7 +133,8 @@ module smolrv64_lsu
     output wire            mem_cbo_zero,
     output wire            mem_cbo_keep,
     input  wire            mem_wready,
-    input  wire            mem_waccept,    // the write was TAKEN (the cache captured it); a plain store is done here, not at wready
+    input  wire            mem_waccept,    // a device took the write (a plain store to a device is done here)
+    input  wire            mem_wroom,      // the D$ takes a store presented this cycle (a register)
 
     // ---- completion ----
     // `started` is the DISPATCH point, and the reason non-blocking loads stay precise with no
@@ -218,6 +219,7 @@ module smolrv64_lsu
    wire [5:0]  sh_up  = 6'd0 - {boff_q, 3'b000};     // == 64 - 8*boff (mod 64)
    reg [63:0]  amo_old_q;                  // AMO's rd value, captured at the RMW read
    reg         nc_q;                       // Svpbmt: this access is NC/IO
+   reg         mem_q;                      // this access is to memory (DRAM or the local SRAM): the D$'s
    initial begin st = S_IDLE; end
 
    // ---------------------------------------------------------- classification
@@ -470,21 +472,22 @@ module smolrv64_lsu
    // `started` is M's early-release signal for a non-blocking load. A commit store starting
    // is not M's access and must not pulse it.
    assign started = start_ok & ~pt_start;
-   // WHAT ENDS A WRITE. A plain cached store (and an AMO's write) is done when the D$ TAKES
-   // it (mem_waccept: address, data and mask captured, the write completes on its own). A
-   // CBO or an uncached write waits for its completion (mem_wready): a cbo.flush must have
-   // reached L2 before the doorbell store behind it, and an NC store must be in DDR before
-   // a later device write can start the DMA that reads it. Decided by the request's class,
-   // registered at start (nc_q) or held by M (eff_cbo) -- never by which ack shows up.
-   wire st_fin   = (eff_cbo | nc_q) ? mem_wready : mem_waccept;
-   // BACK-TO-BACK STORES WITHOUT THE TRIP THROUGH S_IDLE (2026-09-05). The D$'s accept is a
-   // REGISTER now -- the combinational accept -> LSU -> store queue path of the first
-   // version cost 0.65 ns and failed timing (build N) -- so it lands the cycle after the
-   // door took the write, while this FSM still presents it (the door is shut that cycle:
-   // S_CHECK). In that cycle the next queued store, if any, is loaded straight into S_ST,
-   // which keeps the store stream at one write per two cycles: the D$'s S_FIN door takes
-   // it. The queue pops at the handoff (pt_ack), never at the accept; nothing can pass a
-   // store that sits here, because every access goes through this FSM.
+   // WHAT ENDS A WRITE. A plain store to memory (and an AMO's write) is done when the D$ takes
+   // it, which it does in any cycle mem_wroom is set: its store queue has room, and the write
+   // completes on its own. A plain store to a device (bare M-mode has no PBMT, so it carries no
+   // NC bit) is done at the device's accept. A CBO or an uncached write waits for its
+   // completion (mem_wready): a cbo.flush must have reached memory before the doorbell store
+   // behind it, and an NC store must be in DDR before a later device write can start the DMA
+   // that reads it. Decided by the request's class, registered at start (nc_q, mem_q) or held
+   // by M (eff_cbo) -- never by which ack shows up, and never by an address decode.
+   wire st_fin   = (eff_cbo | nc_q) ? mem_wready : mem_q ? mem_wroom : mem_waccept;
+   // BACK-TO-BACK STORES WITHOUT THE TRIP THROUGH S_IDLE. A store to memory is taken in the
+   // cycle it is presented with mem_wroom set, and in that cycle the next queued store, if any,
+   // is loaded straight into S_ST: one store a cycle. mem_wroom is a register of the D$'s (its
+   // store queue has room), so no accept travels back combinationally -- that path cost 0.65 ns
+   // and failed timing. The queue pops at the handoff (pt_ack); nothing can pass a store that
+   // sits here, because every access goes through this FSM, and the D$ holds a load to the line
+   // of any store it has queued.
    wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~mmu_walking;   // src_pt: M's op (a CBO) is not a store to chain from
    assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr;
    assign eff_unc = (pt_start | take_next) ? pt_unc : t_uncached;
@@ -669,6 +672,7 @@ module smolrv64_lsu
                 own_pt_st     <= pt_start & pt_store;
                 src_pt        <= pt_start;              // ...but the fields are M's
                 nc_q          <= eff_unc;
+                mem_q         <= pa_mem;
                 mem_runcached <= eff_unc;
                 cos_pa        <= eff_pa;                      // exact, pre-alignment
                 cos_kind      <= ((pt_start & pt_store) | req_store) ? 2'd2
@@ -719,7 +723,7 @@ module smolrv64_lsu
            S_ST:  if (st_fin) begin
                      if (take_next) begin                 // the next queued store, from here
                         own_pt <= 1'b1; own_pt_st <= 1'b1; src_pt <= 1'b1;
-                        nc_q <= pt_unc; mem_runcached <= pt_unc;
+                        nc_q <= pt_unc; mem_runcached <= pt_unc; mem_q <= pa_mem;
                         cos_pa <= pt_pa; cos_kind <= 2'd2; cos_data <= pt_data; cos_size <= {2'b0, pt_size};
                         xword_q <= xword; nb_q <= nb; boff_q <= xl_can ? boff : 3'd0;
                         pa2_q <= (pt_pa & ~56'd7) + 56'd8;

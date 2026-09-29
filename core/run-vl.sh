@@ -34,6 +34,13 @@ verilator --binary --timing -j 0 -sv -Wall \
    $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
    tb_smolrv64_riscv.v > /tmp/corevlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/corevlbuild.log | head -20; exit 1; fi
+# An input of the core this bench leaves unconnected reads as 0 and hangs the core quietly;
+# a missing output is only a signal nobody watches.
+for p in $(grep -o "missing pin: '[^']*'" /tmp/corevlbuild.log | cut -d"'" -f2); do
+   if grep -qE "^\s*input\s.*\b$p\s*," smolrv64_core.v; then
+      echo "BUILD FAILED: tb_smolrv64_riscv.v leaves smolrv64_core's input $p unconnected"; exit 1
+   fi
+done
 BIN=$(pwd)/obj_dir_core/tb_core
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

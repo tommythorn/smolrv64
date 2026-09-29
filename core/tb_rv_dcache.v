@@ -9,24 +9,28 @@
 // completes. The request channel is back-pressured at random.
 //
 // TWO IMAGES. `dram` is the memory behind the port. `gold` is the architectural memory: every
-// store the cache took is in it from the cycle wr_acc says so. Every load answer is checked
-// against gold. Both start as a pattern of the address.
+// store the cache took is in it from the cycle it was taken. Every load answer is checked against
+// gold. Both start as a pattern of the address.
 //
 // TRANSLATION. NVP virtual pages map onto NPP physical pages at random, so several virtual pages
 // -- of different colours, VA[15:12] -- share one physical page (synonyms). Every REMAP cycles
 // one mapping changes -- half the time a page among the last 8 accessed -- and the cache is told
 // (ep_bump), as an sfence.vma would; wraps included.
 // As in the core, where sfence.vma waits for the store queue to drain, a remap waits until no
-// store is presented: a request's translation holds in the epoch it is taken in.
+// store is presented and the cache's store queue is empty: a request's translation holds in the
+// epoch it is taken in.
 //
 // REQUESTERS. 16 load tags, each with at most one load outstanding -- a cached load, a page-table
-// walk (by PA) or an NC load -- and one store-port op at a time: a committed store, an NC store, or
-// a cbo.clean, cbo.flush or cbo.zero. An access is 1, 2, 4 or 8 bytes, naturally aligned, at a
-// random offset of a random virtual page -- half the time in the line of one of the last 8
-// accesses -- with the PA of the mapping at issue. As the core's store queue guarantees, no store
-// is presented to a chunk a load in flight reads (a CBO: its line), and no load to the chunk (the
-// line) of a store-port op not yet done. A load's answer must be gold's bytes, under its tag,
-// within TIMEOUT cycles. A plain store is in gold from wr_acc; an NC store and a CBO act at wr_cpl.
+// walk (by PA) or an NC load -- and the store port: committed stores, one a cycle whenever wr_room
+// is set (each presented for that cycle only, and taken then), or one NC store or cbo.clean,
+// cbo.flush or cbo.zero, held until its wr_cpl with nothing else presented meanwhile. An access
+// is 1, 2, 4 or 8 bytes, naturally aligned, at a random offset of a random virtual page -- half
+// the time in the line of one of the last 8 accesses -- with the PA of the mapping at issue. As
+// the core's store queue guarantees, no store is presented to a chunk a load in flight reads (a
+// CBO: its line), and no load to the chunk (the line) of an NC store or CBO not yet done; a load
+// to the line of a committed store the cache has queued is presented, and the cache must order
+// it. A load's answer must be gold's bytes, under its tag, within TIMEOUT cycles. A plain store
+// is in gold from the cycle it is taken; an NC store and a CBO act at wr_cpl.
 // As in the core, which performs NC accesses at the head of the ROB, one NC access is in flight at
 // a time.
 //
@@ -53,7 +57,7 @@ module tb;
    // ---- the DUT
    reg         rd_req;  reg [63:0] rd_va, rd_pa;  reg [3:0] rd_tag;  reg rd_phys, rd_nc;
    wire        rd_ack, rd_valid;  wire [63:0] rd_data, rd_resp_addr;  wire [3:0] rd_resp_tag;
-   reg         wr_req;  reg [63:0] wr_va, wr_pa, wr_data;  reg [7:0] wr_mask;  wire wr_acc, wr_cpl;
+   reg         wr_req;  reg [63:0] wr_va, wr_pa, wr_data;  reg [7:0] wr_mask;  wire wr_room, wr_acc, wr_cpl;
    reg         wr_nc, cbo_req, cbo_zero, cbo_keep;
    reg         ep_bump, inv_req;  wire inv_busy;
    wire        cq_valid, cq_we;  reg cq_ready;  wire [3:0] cq_slot;  wire [57:0] cq_addr;
@@ -65,7 +69,8 @@ module tb;
       .rd_req(rd_req), .rd_va(rd_va), .rd_pa(rd_pa), .rd_tag(rd_tag), .rd_phys(rd_phys), .rd_nc(rd_nc), .rd_ack(rd_ack),
       .rd_valid(rd_valid), .rd_data(rd_data), .rd_resp_tag(rd_resp_tag), .rd_resp_addr(rd_resp_addr),
       .wr_req(wr_req), .wr_va(wr_va), .wr_pa(wr_pa), .wr_data(wr_data), .wr_mask(wr_mask),
-      .wr_nc(wr_nc), .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep), .wr_acc(wr_acc), .wr_cpl(wr_cpl),
+      .wr_nc(wr_nc), .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep),
+      .wr_room(wr_room), .wr_acc(wr_acc), .wr_cpl(wr_cpl),
       .ep_bump(ep_bump), .inv_req(inv_req), .inv_busy(inv_busy),
       .cq_valid(cq_valid), .cq_ready(cq_ready), .cq_slot(cq_slot), .cq_we(cq_we), .cq_addr(cq_addr),
       .cq_wmask(cq_wmask), .cq_wdata(cq_wdata),
@@ -94,7 +99,7 @@ module tb;
    // ---- the requesters
    reg        out_v [0:NTAG-1];  reg [63:0] out_pa [0:NTAG-1];  reg [1:0] out_sz [0:NTAG-1];
    reg [31:0] out_t [0:NTAG-1];
-   reg        st_pend;  reg [31:0] st_t;         // a store-port op presented, not yet done
+   reg        st_pend;  reg [31:0] st_t;         // an NC store or a CBO presented, not yet done
    reg        st_acc;  integer st_kind;          // ...taken, awaiting wr_cpl; its kind
    reg        rm_due;                            // a remap waits for the store to be taken
    reg        fn_due, fn_wait, fn_final, fn_done;  reg [31:0] fn_t;   // the clean (inv_req)
@@ -103,12 +108,14 @@ module tb;
    integer    hp [0:7], ho [0:7], hw;           // the last 8 accesses' page and offset: locality
    // coverage: every outcome the cache has occurs
    integer    c_own, c_drop, c_merge, c_alloc, c_wait, c_wrap, c_swr, c_smg, c_sal, c_ro, c_blk, c_def, n_out;
-   integer    c_nc, c_cln, c_cdone, c_zero;
+   integer    c_nc, c_cln, c_cdone, c_zero, c_sq1, c_sqbk;
    reg [1:0]  out_kind [0:NTAG-1];              // 0 a cached load, 1 a walk, 2 NC
    reg [63:0] expv, mask, pa;  integer t, p, off, sz, pick, best, w;
    // acceptance is decided at the edge, by the pre-edge handshake
    reg        took;  reg [3:0] took_tag;
    always @(posedge clk) begin took <= rd_req & rd_ack & ~reset; took_tag <= rd_tag; end
+   reg        pq_plain;                          // a committed store was presented with wr_room: it must be taken
+   always @(posedge clk) pq_plain <= wr_req & ~cbo_req & ~wr_nc & wr_room & ~reset;
    reg        mq_took, mq_we;  reg [57:0] mq_addr;  reg [3:0] mq_slot;  reg [511:0] mq_wdata;  reg [63:0] mq_wmask;
    always @(posedge clk) begin
       mq_took <= cq_valid & cq_ready & ~reset;  mq_we <= cq_we;  mq_addr <= cq_addr;  mq_slot <= cq_slot;
@@ -177,7 +184,7 @@ module tb;
       wr_nc = 0; cbo_req = 0; cbo_zero = 0; cbo_keep = 0; st_acc = 0; st_kind = K_ST;
       fn_due = 0; fn_wait = 0; fn_final = 0; fn_done = 0; fn_t = 0;
       n_ncst = 0; n_cln = 0; n_fl = 0; n_z = 0; n_dma = 0; n_fence = 0; n_walk = 0; n_ncld = 0;
-      c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0;
+      c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0; c_sq1 = 0; c_sqbk = 0;
       cr_valid = 0; cr_last = 0; cr_slot = 0; cr_beat = 0; cr_data = 0; cw_valid = 0; cw_slot = 0;
       n_req = 0; n_resp = 0; n_st = 0; n_remap = 0; n_miss = 0; n_access = 0; errors = 0; n_rd = 0; n_wr = 0;
       for (k = 0; k < 8; k = k + 1) begin hp[k] = 0; ho[k] = 0; end
@@ -216,15 +223,15 @@ module tb;
          c_ro = c_ro + (dut.ro_need & ~dut.ro_block & ~dut.wb_block);  c_blk = c_blk + dut.blk_st;  c_def = c_def + dut.m_defer;
          c_nc = c_nc + dut.m_nc;  c_cln = c_cln + dut.m_clean;  c_cdone = c_cdone + dut.m_cdone;
          c_zero = c_zero + (dut.k_z & (dut.m_alloc | dut.m_smerge));
+         c_sq1 = c_sq1 + (dut.st_go & dut.si);  c_sqbk = c_sqbk + dut.sq_bk;
          // ---- the load taken at the last edge
          if (took) begin out_v[took_tag] = 1'b1; out_t[took_tag] = now; n_req = n_req + 1; end
-         // ---- the store-port op: a plain store is done at wr_acc (into gold), the rest at wr_cpl
-         if (wr_acc) begin
+         // ---- the store port: a committed store is presented for one cycle when wr_room says the
+         // cache takes it, and is in gold from then; an NC store or a CBO is held until its wr_cpl
+         if (pq_plain && !wr_acc) begin $display("FAIL c=%0d: a store presented with wr_room was not taken", now); errors = errors + 1; end
+         if (wr_acc && !pq_plain) begin
             if (!st_pend || st_acc) begin $display("FAIL c=%0d: wr_acc with no store-port op presented", now); errors = errors + 1; end
-            else if (st_kind == K_ST) begin
-               w = wi(wr_pa);  gold[w] = (gold[w] & ~bytes(wr_mask)) | (wr_data & bytes(wr_mask));
-               st_pend = 0;  wr_req = 0;  n_st = n_st + 1;
-            end else st_acc = 1;
+            else st_acc = 1;
          end
          if (wr_cpl) begin
             if (!st_acc) begin $display("FAIL c=%0d: wr_cpl with no NC store or CBO taken", now); errors = errors + 1; end
@@ -248,18 +255,22 @@ module tb;
             $display("FAIL c=%0d: a store-port op (kind %0d) at %h not done for %0d cycles", now, st_kind, wr_pa, timeout);
             errors = errors + 1;  st_pend = 0;  st_acc = 0;  wr_req = 0;
          end
-         if (!st_pend && !fn_due && !fn_wait && now < cycles && (rnd(0) % 100) < stpct) begin
+         if (!st_pend) wr_req = 0;
+         if (!st_pend && !fn_due && !fn_wait && !rm_due && now < cycles && (rnd(0) % 100) < stpct) begin
             pick_access;
             pa = pp_pa(vp_pp[p]) + off;
             kind = rnd(0) % 100;
             kind = (kind < 72) ? K_ST : (kind < 80) ? K_NC : (kind < 86) ? K_CLN : (kind < 93) ? K_FL : K_Z;
             if (kind == K_NC && nc_busy(0)) kind = K_ST;
-            if (!ld_busy(pa, kind >= K_CLN)) begin
-               st_pend = 1;  st_t = now;  wr_req = 1;  st_kind = kind;
+            if (!ld_busy(pa, kind >= K_CLN) && (kind != K_ST || wr_room)) begin
+               wr_req = 1;
                wr_va = vp_va[p] + off;  wr_pa = pa;
                wr_mask = (sz == 3) ? 8'hFF : (((8'd1 << (1 << sz)) - 8'd1) << off[2:0]);
                wr_data = {rnd(0), rnd(0)};           // the lanes outside the mask are noise
                wr_nc = (kind == K_NC);  cbo_req = (kind >= K_CLN);  cbo_zero = (kind == K_Z);  cbo_keep = (kind == K_CLN);
+               if (kind == K_ST) begin
+                  w = wi(pa);  gold[w] = (gold[w] & ~bytes(wr_mask)) | (wr_data & bytes(wr_mask));  n_st = n_st + 1;
+               end else begin st_pend = 1;  st_t = now;  st_kind = kind; end
             end
          end
          // ---- a new load: a free tag, not covered by the store-port op not yet done
@@ -293,7 +304,7 @@ module tb;
          // ---- a remap: one mapping changes, and the cache hears of it
          ep_bump = 1'b0;
          if ((now % remap) == remap - 1) rm_due = 1;
-         if (rm_due && !st_pend) begin
+         if (rm_due && !st_pend && !wr_req && dut.sc == 2'd0) begin
             rm_due = 0;
             p = (rnd(0) % 2) ? hp[rnd(0) % 8] : rnd(0) % NVP;   // half the time a page in use
             vp_pp[p] = rnd(0) % NPP;
@@ -370,12 +381,13 @@ module tb;
       if (!fn_done) begin $display("FAIL: the final clean never finished"); errors = errors + 1; end
       if (c_own == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 || c_wrap == 0 ||
           c_swr == 0 || c_smg == 0 || c_sal == 0 || c_ro == 0 || c_blk == 0 || c_def == 0 || n_wr == 0 ||
-          c_nc == 0 || c_cln == 0 || c_cdone == 0 || c_zero == 0 || n_dma == 0 || n_walk == 0 || n_ncld == 0 || n_ncst == 0) begin
+          c_nc == 0 || c_cln == 0 || c_cdone == 0 || c_zero == 0 || n_dma == 0 || n_walk == 0 || n_ncld == 0 || n_ncst == 0 ||
+          c_sq1 == 0 || c_sqbk == 0) begin
          $display("FAIL: an outcome never occurred"); errors = errors + 1;
       end
-      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps",
+      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps; store queue %0d issued behind the head, %0d sent back",
                errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_walk, n_ncld, n_st, n_ncst, n_cln, n_fl, n_dma, n_z, n_fence, n_access,
-               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap);
+               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap, c_sq1, c_sqbk);
       $finish;
    end
 endmodule
