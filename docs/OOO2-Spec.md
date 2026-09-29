@@ -1326,9 +1326,30 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 
 ## 11. Counters and observability
 
-`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a 26-bit `hpm_ev`
-bus. This is exactly the width of the event list, so a 13-event `perf stat` is full — adding
-an event to a run means dropping one.
+`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a registered 44-bit
+`hpm_ev` bus plus three per-cycle counts (the queue occupancies and `DPATCH`). A 13-event `perf
+stat` fills the counters; more is multiplexed, and its counts are estimates.
+
+**TOP-DOWN (§11.2, on the board).** `ooo2_core`'s one classifier (`td_k`) charges every cycle to
+exactly one of bad speculation, front-end, back-end or dispatching; its events count it, so
+`TD_BS + TD_FE + TD_BE` plus the dispatching cycles is the cycle count by construction, and the
+simulator's `TOPDOWN-SIM` prints the same classifier. `tools/perf-smol.sh td CMD 2>&1 |
+tools/perf-cpi-stack.py` is the report: level 1, the depth under each parent, and the slots.
+
+| event | id | meaning |
+|---|---|---|
+| `TD_BS` | r0401 | bad speculation: a redirect, or a resolved restart waiting for the head |
+| `TD_FE` | r0407 | front-end: nothing to dispatch, M not held, not bad speculation |
+| `TD_BE` | r0402 | back-end: M held, or an instruction present and not taken |
+| `TD_BE_MEM` / `TD_BE_ROB` / `TD_BE_IQ` | r0403 / r0404 / r0405 | within `TD_BE`: memory (M on a memory op, or waiting for a load result) / the ROB full / a scheduler or load/store queue full |
+| `TD_FE_LAT` | r0406 | within `TD_FE`: latency, the iMMU walking or no fetch bytes |
+| `DPATCH` | r0408 | instructions dispatched (0..3 a cycle): the slots against 3 × cycles |
+
+The wait-cycle events below overlap (a cycle waits on several things at once) and are depth,
+never a partition:
+
+| event | id | meaning |
+|---|---|---|
 
 | event | id | meaning |
 |---|---|---|
@@ -1339,12 +1360,11 @@ an event to a run means dropping one.
 | `FE_BUB` | r0310 | frontend bubble |
 | `FE_MMU` / `FE_IC` | r0311 / r0312 | iMMU walking / I$ no window |
 | `FE_ALN` / `FE_QUE` | r0313 / r0314 | no whole instruction / queue empty |
-| D$ / I$ access, miss | r0100/r0102, r0110/r0112 | |
+| D$ / I$ access, miss | r0100/r0102, r0110/r0112 | per request, never per replay: the D$ counts loads and stores taken and line fills started, the I$ requests taken and first-lookup misses |
 | redirects | r0005 | |
 | `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
 | `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
 | `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in d_hold's order: the instruction's scheduler full / rename's free list empty / store queue full / load queue full / a serializing op draining (the `hold` set, 2026-09-07) |
-| `FB_HIT` / `FB_RHIT` | r0315 / r0316 | **retired with the fetch buffer (Stage 2): tied to 0.** The token/bit is kept so the board perf map stays stable; the alignment latch has no equivalent served-hit event yet |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
 | `ST_MUL` / `ST_DIV` | r0302 / r0301 | since C1: cycles the MD stage holds a multiply / a divide (occupancy on the F/CTF/MD port), no longer an M stall |
@@ -1396,7 +1416,10 @@ crash exonerates the whole logged set in one read. Simulation keeps the log hone
 ### 11.2 Simulation cycle accounting and the pipe view
 
 `tb_ooo2_linux` puts every cycle into exactly one cause: the Top-Down Variant A partition,
-split down to the core's own stall taps. Bad
+split down to the core's own stall taps. The classifier is `ooo2_core`'s `td_k`, the one the
+`TD_*` counters count (§11), and the run's `perf-stat-sim` block (the event bus counted per
+cycle, printed as `perf stat` would) run through `tools/perf-cpi-stack.py` reproduces the
+`TOPDOWN-SIM` totals exactly. Bad
 speculation (`bs:redirect`, `bs:drain` = `rd_wait`) wins over frontend (`fe:immu`, `fe:icache`,
 `fe:align`, `fe:queue`), which wins over backend (`be:M-mem`, `be:M-other`, `be:rob-full`,
 `be:dep-load`, `be:dep-fp`, `be:iq-full`, `be:rename`, `be:sq-full`, `be:lq-full`,

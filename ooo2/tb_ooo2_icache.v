@@ -143,7 +143,7 @@ module tb;
       n = 0;
       while ((q_n != 0 || rq_v) && n < 10000) begin @(posedge clk); n = n + 1; end
       if (q_n != 0) begin $display("FAIL: %0d requests never answered", q_n); $finish; end
-      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d lookups, %0d misses (%0d reconciled), %0d fence.i, %0d mapping changes",
+      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d taken, %0d missed on first lookup (%0d reconciled), %0d fence.i, %0d mapping changes",
                LAT, nresp, nacc, nmiss, nrc, nfi, nep);
       $finish;
    end

@@ -76,10 +76,12 @@ module csr_file
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
     // [6:0] are the original per-op/cache taps. [30:7] are ooo2_core's STALL-ATTRIBUTION
     // taps (see ooo2_core.v and docs/OOO2-Spec.md section 11): they turn a CPI number into
-    // a CPI stack.
-    input  wire [38:0] hpm_ev,
+    // a CPI stack. [21:20] and [43:39] are its TOP-DOWN taps: an exclusive charge of every cycle
+    // (OOO2-Spec 11.2).
+    input  wire [43:0] hpm_ev,
     input  wire [5:0]  hpm_lqocc,        // load-queue occupancy this cycle (MEM_LQOCC)
     input  wire [5:0]  hpm_sqocc,        // store-queue occupancy this cycle (MEM_SQOCC)
+    input  wire [1:0]  hpm_disp,         // instructions dispatched this cycle (DPATCH)
     // ---- pending interrupt (combinational): backend fires it via xtrap_* when it can ----
     output wire [63:0] dbg_timer,     // timer/interrupt-path debug bus (wrapper ILA_TIMER; pruned when unused)
     output wire        dbg_mtvec_we,  // 1-cycle: an executing CSR op writes mtvec (ILA probe4)
@@ -211,8 +213,6 @@ module csr_file
                       HPMEV_RED_BR = 16'h0006,   // Redirect: conditional branch mispredict
                       HPMEV_RED_JLR= 16'h0007,   // Redirect: indirect jump (jalr) target
                       HPMEV_RED_TRP= 16'h0008,   // Redirect: trap / exception / system op
-                      HPMEV_FB_HIT = 16'h0315,   // Fetch buffer served the PC (hit)
-                      HPMEV_FB_RHIT= 16'h0316,   // ...on the first fetch after a redirect
                       HPMEV_RD_WAIT= 16'h0317,   // Redirect resolved in M, waiting for the ROB head (the mispredict drain)
                      HPMEV_DT_WALK= 16'h0318,   // Data MMU walking (cycles; inside ST_MEM)
                      HPMEV_DTLB_MISS=16'h0104,  // dTLB miss: a data page-table walk began
@@ -226,7 +226,16 @@ module csr_file
                      HPMEV_MEM_WPKILL   = 16'h031f,   // wrong-path loads killed after their access ran (count)
                      HPMEV_MEM_DEVWAIT  = 16'h0320,   // a device load waiting to be the ROB head
                      HPMEV_MEM_LQOCC    = 16'h0321,   // load-queue occupancy, summed per cycle
-                     HPMEV_MEM_SQOCC    = 16'h0322;   // store-queue occupancy, summed per cycle
+                     HPMEV_MEM_SQOCC    = 16'h0322,   // store-queue occupancy, summed per cycle
+                     // TOP-DOWN (OOO2-Spec 11.2): TD_BS + TD_FE + TD_BE + the dispatching cycles = cycles, exactly
+                     HPMEV_TD_BS        = 16'h0401,   // top-down: bad speculation (a redirect, or a resolved restart waiting)
+                     HPMEV_TD_BE        = 16'h0402,   // top-down: back-end (M held, or an instruction present and not taken)
+                     HPMEV_TD_BE_MEM    = 16'h0403,   // top-down: back-end waiting on memory (M on a memory op, or a load result)
+                     HPMEV_TD_BE_ROB    = 16'h0404,   // top-down: back-end with the ROB full
+                     HPMEV_TD_BE_IQ     = 16'h0405,   // top-down: back-end with a scheduler or a load/store queue full
+                     HPMEV_TD_FE_LAT    = 16'h0406,   // top-down: front-end latency (iMMU walking, or no fetch bytes)
+                     HPMEV_TD_FE        = 16'h0407,   // top-down: front-end (nothing to dispatch, not bad speculation)
+                     HPMEV_DPATCH       = 16'h0408;   // instructions dispatched (0..3 per cycle)
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    // EVERY input here is a register as far as this module is concerned: `hpm_ev` and
    // `hpm_retire_cnt` are both the caller's delayed copies. That is what keeps the mux and
@@ -236,8 +245,8 @@ module csr_file
    // counter per cycle: with the bus at 41 sources that case was a 644-endpoint family at +0.006 ns
    // (`m_imm_reg -> mhpmcounter_reg`, the C0 IW=3 census) and took the build to WNS 0.000.
    // hpm_inc (the code form) stays as the oracle the assertion below holds hpm_val to.
-   localparam [5:0] HSEL_NONE = 6'd63, HSEL_CYC = 6'd0, HSEL_RET = 6'd1, HSEL_LQ = 6'd41, HSEL_SQ = 6'd42;
-   function [5:0] hpm_sel_of;   // event code -> index: 0 cycles, 1 instret, 2+b = hpm_ev[b], 41/42 the occupancies
+   localparam [5:0] HSEL_NONE = 6'd63, HSEL_CYC = 6'd0, HSEL_RET = 6'd1, HSEL_LQ = 6'd46, HSEL_SQ = 6'd47, HSEL_DSP = 6'd48;
+   function [5:0] hpm_sel_of;   // event code -> index: 0 cycles, 1 instret, 2+b = hpm_ev[b], 46-48 the counts
       input [15:0] ev;
       case (ev)
         HPMEV_CYCLES: hpm_sel_of = HSEL_CYC;    HPMEV_INSTRET: hpm_sel_of = HSEL_RET;
@@ -247,14 +256,16 @@ module csr_file
         HPMEV_ST_MUL: hpm_sel_of = 6'd2+9; HPMEV_ST_FPU: hpm_sel_of = 6'd2+10; HPMEV_ST_DSP: hpm_sel_of = 6'd2+11;
         HPMEV_FE_BUB: hpm_sel_of = 6'd2+12; HPMEV_FE_MMU: hpm_sel_of = 6'd2+13; HPMEV_FE_IC: hpm_sel_of = 6'd2+14;
         HPMEV_RED_BR: hpm_sel_of = 6'd2+15; HPMEV_RED_JLR: hpm_sel_of = 6'd2+16; HPMEV_RED_TRP: hpm_sel_of = 6'd2+17;
-        HPMEV_FE_ALN: hpm_sel_of = 6'd2+18; HPMEV_FE_QUE: hpm_sel_of = 6'd2+19; HPMEV_FB_HIT: hpm_sel_of = 6'd2+20;
-        HPMEV_FB_RHIT: hpm_sel_of = 6'd2+21; HPMEV_ST_ROB: hpm_sel_of = 6'd2+22; HPMEV_RD_WAIT: hpm_sel_of = 6'd2+23;
+        HPMEV_FE_ALN: hpm_sel_of = 6'd2+18; HPMEV_FE_QUE: hpm_sel_of = 6'd2+19; HPMEV_TD_BS: hpm_sel_of = 6'd2+20;
+        HPMEV_TD_FE: hpm_sel_of = 6'd2+21;  HPMEV_ST_ROB: hpm_sel_of = 6'd2+22; HPMEV_RD_WAIT: hpm_sel_of = 6'd2+23;
         HPMEV_DT_WALK: hpm_sel_of = 6'd2+24; HPMEV_DTLB_MISS: hpm_sel_of = 6'd2+25; HPMEV_ST_IQ: hpm_sel_of = 6'd2+26;
         HPMEV_ST_RN: hpm_sel_of = 6'd2+27; HPMEV_ST_SQ: hpm_sel_of = 6'd2+28; HPMEV_ST_LQ: hpm_sel_of = 6'd2+29;
         HPMEV_ST_SRZ: hpm_sel_of = 6'd2+30; HPMEV_MEM_HITSER: hpm_sel_of = 6'd2+31; HPMEV_MEM_LDINFL: hpm_sel_of = 6'd2+32;
         HPMEV_MEM_STDOOR: hpm_sel_of = 6'd2+33; HPMEV_MEM_ALIAS_UNK: hpm_sel_of = 6'd2+34; HPMEV_MEM_ALIAS_OVL: hpm_sel_of = 6'd2+35;
         HPMEV_MEM_REORD: hpm_sel_of = 6'd2+36; HPMEV_MEM_WPKILL: hpm_sel_of = 6'd2+37; HPMEV_MEM_DEVWAIT: hpm_sel_of = 6'd2+38;
-        HPMEV_MEM_LQOCC: hpm_sel_of = HSEL_LQ; HPMEV_MEM_SQOCC: hpm_sel_of = HSEL_SQ;
+        HPMEV_TD_BE: hpm_sel_of = 6'd2+39;  HPMEV_TD_BE_MEM: hpm_sel_of = 6'd2+40; HPMEV_TD_BE_ROB: hpm_sel_of = 6'd2+41;
+        HPMEV_TD_BE_IQ: hpm_sel_of = 6'd2+42; HPMEV_TD_FE_LAT: hpm_sel_of = 6'd2+43;
+        HPMEV_MEM_LQOCC: hpm_sel_of = HSEL_LQ; HPMEV_MEM_SQOCC: hpm_sel_of = HSEL_SQ; HPMEV_DPATCH: hpm_sel_of = HSEL_DSP;
         default: hpm_sel_of = HSEL_NONE;
       endcase
    endfunction
@@ -264,7 +275,8 @@ module csr_file
       else if (sel == HSEL_RET)  hpm_val = hpm_retire_cnt;
       else if (sel == HSEL_LQ)   hpm_val = hpm_lqocc;
       else if (sel == HSEL_SQ)   hpm_val = hpm_sqocc;
-      else if (sel <= 6'd40)     hpm_val = {5'd0, hpm_ev[sel - 6'd2]};
+      else if (sel == HSEL_DSP)  hpm_val = {4'd0, hpm_disp};
+      else if (sel <= 6'd45)     hpm_val = {5'd0, hpm_ev[sel - 6'd2]};
       else                       hpm_val = 6'd0;
    endfunction
    reg [5:0] hpm_esel [0:HPMN-1];
@@ -293,8 +305,8 @@ module csr_file
         HPMEV_RED_TRP: hpm_inc = {5'd0, hpm_ev[17]};
         HPMEV_FE_ALN:  hpm_inc = {5'd0, hpm_ev[18]};
         HPMEV_FE_QUE:  hpm_inc = {5'd0, hpm_ev[19]};
-        HPMEV_FB_HIT:  hpm_inc = {5'd0, hpm_ev[20]};
-        HPMEV_FB_RHIT: hpm_inc = {5'd0, hpm_ev[21]};
+        HPMEV_TD_BS:   hpm_inc = {5'd0, hpm_ev[20]};
+        HPMEV_TD_FE:   hpm_inc = {5'd0, hpm_ev[21]};
         HPMEV_ST_ROB:  hpm_inc = {5'd0, hpm_ev[22]};
         HPMEV_ST_IQ:   hpm_inc = {5'd0, hpm_ev[26]};
         HPMEV_ST_RN:   hpm_inc = {5'd0, hpm_ev[27]};
@@ -314,6 +326,12 @@ module csr_file
         HPMEV_MEM_DEVWAIT:   hpm_inc = {5'd0, hpm_ev[38]};
         HPMEV_MEM_LQOCC:     hpm_inc = hpm_lqocc;
         HPMEV_MEM_SQOCC:     hpm_inc = hpm_sqocc;
+        HPMEV_TD_BE:         hpm_inc = {5'd0, hpm_ev[39]};
+        HPMEV_TD_BE_MEM:     hpm_inc = {5'd0, hpm_ev[40]};
+        HPMEV_TD_BE_ROB:     hpm_inc = {5'd0, hpm_ev[41]};
+        HPMEV_TD_BE_IQ:      hpm_inc = {5'd0, hpm_ev[42]};
+        HPMEV_TD_FE_LAT:     hpm_inc = {5'd0, hpm_ev[43]};
+        HPMEV_DPATCH:        hpm_inc = {4'd0, hpm_disp};
         default:       hpm_inc = 6'd0;   // unimplemented event -> counter holds
       endcase
    endfunction

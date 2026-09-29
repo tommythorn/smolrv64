@@ -140,16 +140,6 @@
     "BriefDescription": "Redirect: trap / exception / system op"
   },
   {
-    "EventName": "FB_HIT",
-    "EventCode": "0x0315",
-    "BriefDescription": "Fetch buffer served the PC (hit)"
-  },
-  {
-    "EventName": "FB_RHIT",
-    "EventCode": "0x0316",
-    "BriefDescription": "Fetch buffer served the PC (hit) on the first fetch after a redirect"
-  },
-  {
     "EventName": "RD_WAIT",
     "EventCode": "0x0317",
     "BriefDescription": "Redirect resolved in M, waiting for the ROB head (the mispredict drain)"
@@ -213,5 +203,45 @@
     "EventName": "MEM_SQOCC",
     "EventCode": "0x0322",
     "BriefDescription": "store-queue occupancy, summed per cycle"
+  },
+  {
+    "EventName": "TD_BS",
+    "EventCode": "0x0401",
+    "BriefDescription": "top-down: bad speculation (a redirect, or a resolved restart waiting)"
+  },
+  {
+    "EventName": "TD_BE",
+    "EventCode": "0x0402",
+    "BriefDescription": "top-down: back-end (M held, or an instruction present and not taken)"
+  },
+  {
+    "EventName": "TD_BE_MEM",
+    "EventCode": "0x0403",
+    "BriefDescription": "top-down: back-end waiting on memory (M on a memory op, or a load result)"
+  },
+  {
+    "EventName": "TD_BE_ROB",
+    "EventCode": "0x0404",
+    "BriefDescription": "top-down: back-end with the ROB full"
+  },
+  {
+    "EventName": "TD_BE_IQ",
+    "EventCode": "0x0405",
+    "BriefDescription": "top-down: back-end with a scheduler or a load/store queue full"
+  },
+  {
+    "EventName": "TD_FE_LAT",
+    "EventCode": "0x0406",
+    "BriefDescription": "top-down: front-end latency (iMMU walking, or no fetch bytes)"
+  },
+  {
+    "EventName": "TD_FE",
+    "EventCode": "0x0407",
+    "BriefDescription": "top-down: front-end (nothing to dispatch, not bad speculation)"
+  },
+  {
+    "EventName": "DPATCH",
+    "EventCode": "0x0408",
+    "BriefDescription": "instructions dispatched (0..3 per cycle)"
   }
 ]

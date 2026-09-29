@@ -352,8 +352,10 @@ module rv_dcache #(
    wire        ans = srv & k_ld;
    wire        aw1 = (h0 | h1) ? h1 : own1;
    wire [63:0] ans_chunk = aw1 ? (s1_va[3] ? bk_q[3] : bk_q[2]) : (s1_va[3] ? bk_q[1] : bk_q[0]);
-   assign perf_access = l1_v & (k_ld | k_st);
-   assign perf_miss   = l1_v & (k_ld | k_st) & ~srv;
+   // counted once per request, never per replay: an access is a load or store taken, a miss a line
+   // fill started
+   assign perf_access = new_go | st_go;
+   assign perf_miss   = m_alloc;
 
    // MSHR match (the line already being filled) and a free MSHR
    reg  [NMSHR-1:0] ms_hitv;  reg ms_set_busy0, ms_set_busy1, ms_dirty;

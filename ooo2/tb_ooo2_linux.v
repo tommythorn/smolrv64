@@ -436,20 +436,21 @@ module tb;
    // The event bus counted per cycle (B3). pcode(bit) mirrors src/csr_file.v's hpm_inc map;
    // tools/gen-perf-events.py --check keeps the JSON honest, and perf-cpi-stack.py's identity
    // check exposes a bit that drifted from its code.
-   integer pe;  reg [63:0] pev [0:40];
+   integer pe;  reg [63:0] pev [0:46];
    function [15:0] pcode; input integer b; begin
       case (b)
         0: pcode=16'h0003; 1: pcode=16'h0004; 2: pcode=16'h0005; 3: pcode=16'h0100; 4: pcode=16'h0102;
         5: pcode=16'h0110; 6: pcode=16'h0112; 7: pcode=16'h0300; 8: pcode=16'h0301; 9: pcode=16'h0302;
         10: pcode=16'h0303; 11: pcode=16'h0304; 12: pcode=16'h0310; 13: pcode=16'h0311; 14: pcode=16'h0312;
         15: pcode=16'h0006; 16: pcode=16'h0007; 17: pcode=16'h0008; 18: pcode=16'h0313; 19: pcode=16'h0314;
-        20: pcode=16'h0315; 21: pcode=16'h0316; 22: pcode=16'h0305; 23: pcode=16'h0317; 24: pcode=16'h0318;
+        20: pcode=16'h0401; 21: pcode=16'h0407; 22: pcode=16'h0305; 23: pcode=16'h0317; 24: pcode=16'h0318;
         25: pcode=16'h0104; 26: pcode=16'h0306; 27: pcode=16'h0307; 28: pcode=16'h0308; 29: pcode=16'h0309;
         30: pcode=16'h030a; 31: pcode=16'h0319; 32: pcode=16'h031a; 33: pcode=16'h031b; 34: pcode=16'h031c;
-        35: pcode=16'h031d; 36: pcode=16'h031e; 37: pcode=16'h031f; 38: pcode=16'h0320; 39: pcode=16'h0321;
-        40: pcode=16'h0322; default: pcode=16'hffff;
+        35: pcode=16'h031d; 36: pcode=16'h031e; 37: pcode=16'h031f; 38: pcode=16'h0320;
+        39: pcode=16'h0402; 40: pcode=16'h0403; 41: pcode=16'h0404; 42: pcode=16'h0405; 43: pcode=16'h0406;
+        44: pcode=16'h0321; 45: pcode=16'h0322; 46: pcode=16'h0408; default: pcode=16'hffff;
       endcase end endfunction
-   initial for (pe = 0; pe < 41; pe = pe + 1) pev[pe] = 64'd0;
+   initial for (pe = 0; pe < 47; pe = pe + 1) pev[pe] = 64'd0;
    reg [63:0] trace_from, trace_to;             // +trace_from/+trace_to, see the plusargs
    wire sb_dep    = dut.core.iq_blk_v;
    wire sb_recov  = dut.core.st_mem & dut.core.d_valid
@@ -526,7 +527,8 @@ module tb;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
 
    // ---- per-cycle accounting: every cycle is exactly one of BADSPEC / FRONTEND / BACKEND /
-   // PRODUCED (Top-Down Variant A, docs/OOO2-Spec.md §11.2), with a depth cause.
+   // PRODUCED (Top-Down Variant A, docs/OOO2-Spec.md §11.2), with a depth cause -- ooo2_core's
+   // td_k, the classifier its TD_* counters count, so these totals and the board's agree.
    // The same code drives the pipe views' stall rows and the TOPDOWN-SIM totals at the end.
    localparam integer TD_N = 22;
    function [8*14-1:0] td_name;   // the cause's printable name
@@ -543,22 +545,7 @@ module tb;
         default: td_name = "?";
       endcase
    endfunction
-   wire td_bspc = dut.core.redirect | dut.core.rd_wait;
-   wire td_fe   = ~td_bspc & dut.core.fe_bub;
-   wire td_be   = ~td_bspc & (dut.core.st_m | (dut.core.d_valid & ~dut.core.d_take));
-   wire [1:0] td_ndisp = {1'b0, dut.core.rn_valid} + {1'b0, dut.core.rn_valid_b} + {1'b0, dut.core.rn_valid_c};
-   reg  [4:0] td_k;
-   always @* begin
-      if (td_bspc)                   td_k = dut.core.redirect ? 5'd3 : 5'd4;
-      else if (td_fe)                td_k = dut.core.fe_mmu ? 5'd5 : dut.core.fe_ic ? 5'd6
-                                          : dut.core.fe_aln ? 5'd7 : dut.core.fe_que ? 5'd8 : 5'd9;
-      else if (td_be)                td_k = dut.core.st_m ? (dut.core.m_mem_op ? 5'd10 : 5'd11)
-                                          : dut.core.st_rob ? 5'd12 : dut.core.dep_ld ? 5'd13
-                                          : dut.core.dep_fp ? 5'd14 : dut.core.st_iq ? 5'd15
-                                          : dut.core.st_rn ? 5'd16 : dut.core.st_sq ? 5'd17
-                                          : dut.core.st_lq ? 5'd18 : dut.core.st_srz ? 5'd19 : 5'd20;
-      else                           td_k = (td_ndisp == 2'd0) ? 5'd21 : {3'b0, td_ndisp} - 5'd1;
-   end
+   wire [4:0] td_k = dut.core.td_k;   // the core's classifier: the one the hardware counters count
    reg [63:0] td_cnt [0:TD_N-1];
    integer tdi;
    initial for (tdi = 0; tdi < TD_N; tdi = tdi + 1) td_cnt[tdi] = 64'd0;
@@ -953,8 +940,9 @@ module tb;
                   nret = nret + retire + retire2 + retire3;   // all three commit ports (IW=3 undercounted before 2026-09-17)
                   // B3 (2026-09-17): the CPI stack from the RTL's own event bus, so the same tool
                   // (tools/perf-cpi-stack.py) grades a simulation and a board run.
-                  for (pe = 0; pe < 39; pe = pe + 1) if (dut.core.hpm_ev_q[pe]) pev[pe] = pev[pe] + 1;
-                  pev[39] = pev[39] + dut.core.hpm_lqocc_q;  pev[40] = pev[40] + dut.core.hpm_sqocc_q;
+                  for (pe = 0; pe < 44; pe = pe + 1) if (dut.core.hpm_ev_q[pe]) pev[pe] = pev[pe] + 1;
+                  pev[44] = pev[44] + dut.core.hpm_lqocc_q;  pev[45] = pev[45] + dut.core.hpm_sqocc_q;
+                  pev[46] = pev[46] + dut.core.hpm_disp_q;
          if ((c % 1000000) == 0)
             $display("[c=%0d retires=%0d va=%h pa=%h prv=%0d satp=%h inj=%0d uirq=%0d seip=%0d ier=%h]",
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,
@@ -993,7 +981,7 @@ module tb;
       $display("perf-stat-sim: begin");
       $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)
       $display("%0d instructions", nret);
-      for (pe = 0; pe < 41; pe = pe + 1) $display("%0d r%04h", pev[pe], pcode(pe));
+      for (pe = 0; pe < 47; pe = pe + 1) $display("%0d r%04h", pev[pe], pcode(pe));
       $display("perf-stat-sim: end");
 
       $display("SQ  loads=%0d reordered=%0d (%0d.%0d%%)  ld_block cycles=%0d (%0d.%0d%%)  mean occ=%0d.%02d  full=%0d",

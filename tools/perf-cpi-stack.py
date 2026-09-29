@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Turn `perf stat` output from the smolrv64 in-order core into a CPI stack + MPKI.
+"""Turn `perf stat` output from the smolrv64 ooo2 core into a top-down breakdown or a CPI stack + MPKI.
+
+TOP-DOWN (the `td` set, or any run with the TD_* events): the core charges every cycle to exactly
+one of bad speculation (TD_BS), front-end (TD_FE), back-end (TD_BE) or dispatching (the rest), by
+one classifier (ooo2_core td_k, OOO2-Spec 11.2) -- the same one the simulator's TOPDOWN-SIM
+prints -- so the four buckets are cycles by construction, and the depth events are subsets of
+their parent. DPATCH (instructions dispatched) gives the slot view against IW x cycles.
+
+    tools/perf-smol.sh td CMD 2>&1 | tools/perf-cpi-stack.py
+
+The CPI-stack view below is the older wait-cycle view: its events overlap (a cycle waits on
+several things at once) and it is kept for its depth, never summed as a partition.
 
 The counters charge every non-retiring cycle to exactly ONE cause (see
 workloads/ipcstat/hpmstat.c), so
@@ -20,10 +31,9 @@ Usage (13 programmable counters -- one set per run, never the union, see perf-sm
     tools/perf-smol.sh br  CMD 2>&1 | tools/perf-cpi-stack.py     # redirects by cause
     tools/perf-smol.sh mem CMD 2>&1 | tools/perf-cpi-stack.py     # D$/I$ traffic, loads/stores
     tools/perf-cpi-stack.py saved-perf-output.txt
-    tools/perf-cpi-stack.py --width 2 ...        # a two-wide core (plan item 10, 2026-09-05)
+    tools/perf-cpi-stack.py --width 2 ...        # a narrower build than the shipping IW=3
 
-The identity this checks: dispatch is WIDTH instructions per cycle (1 until the two-wide core
-ships to the board, --width 2 after), so
+The identity this checks: dispatch is WIDTH instructions per cycle (3, the shipping IW), so
     cycles = instructions/WIDTH + sum(named stall cycles) + frontend bubbles + UNATTRIBUTED
 and "unattributed" is what no event names.  On a two-wide core a cycle that dispatches ONE
 instruction has no counter yet: half of it lands in unattributed, which is where the
@@ -102,8 +112,58 @@ def parse(text, names):
         vals[key] = n
     return vals, unknown
 
+def topdown(v, width):
+    """The closing top-down report. Returns False if the run has no TD_* events."""
+    if v.get("TD_BE") is None or v.get("TD_FE") is None or v.get("TD_BS") is None:
+        return False
+    g = lambda k: (v.get(k) or 0)
+    cyc, ins = g("CYCLES"), g("INSTRET")
+    bs, fe, be = g("TD_BS"), g("TD_FE"), g("TD_BE")
+    disp = cyc - bs - fe - be
+    pc = lambda n: 100.0 * n / cyc
+    print("  cycles %-16d instructions %-16d IPC %.3f   (%d-wide)" % (cyc, ins, ins / cyc, width))
+    print("\n  TOP-DOWN, level 1 (every cycle charged to exactly one; OOO2-Spec 11.2)")
+    for name, n in (("dispatching", disp), ("bad speculation", bs), ("front-end", fe), ("back-end", be)):
+        print("    %-34s %6.2f%%" % (name, pc(n)))
+    if disp < 0 or min(bs, fe, be) < 0:
+        sys.exit("error: the level-1 buckets exceed the cycles -- the event map is wrong (docs/smolrv64-perf-events.json)")
+    def sub(parent, rows):
+        rest = parent
+        for label, k in rows:
+            if v.get(k) is not None:
+                print("      %-32s %6.2f%%" % ("- " + label, pc(g(k))))
+                rest -= g(k)
+        if any(v.get(k) is not None for _, k in rows):
+            print("      %-32s %6.2f%%" % ("- the rest", pc(rest)))
+    print("\n  level 2")
+    print("    %-34s %6.2f%%" % ("bad speculation", pc(bs)))
+    if v.get("RD_WAIT") is not None:
+        drain = min(g("RD_WAIT"), bs)
+        print("      %-32s %6.2f%%" % ("- a resolved restart waiting (drain)", pc(drain)))
+        print("      %-32s %6.2f%%" % ("- the redirect itself", pc(bs - drain)))
+    print("    %-34s %6.2f%%" % ("front-end", pc(fe)))
+    sub(fe, [("latency: iMMU walk / no fetch bytes", "TD_FE_LAT")])
+    print("    %-34s %6.2f%%" % ("back-end", pc(be)))
+    sub(be, [("memory: M on a memory op / a load result", "TD_BE_MEM"),
+             ("the ROB is full", "TD_BE_ROB"),
+             ("a scheduler or load/store queue is full", "TD_BE_IQ")])
+    if v.get("DPATCH") is not None:
+        slots = width * cyc
+        print("\n  slots (%d x cycles)" % width)
+        print("    %-34s %6.2f%%" % ("dispatched", 100.0 * g("DPATCH") / slots))
+        print("    %-34s %6.2f%%" % ("retired", 100.0 * ins / slots))
+        print("    %-34s %6.2f%%" % ("dispatched, squashed (wrong path)", 100.0 * (g("DPATCH") - ins) / slots))
+    rows = [("conditional branch", "RED_BR"), ("indirect jump", "RED_JLR"), ("trap / system op", "RED_TRP"),
+            ("D$ line fills", "DCMISS"), ("I$ misses", "ICMISS"), ("dTLB walks", "DTLB_MISS")]
+    got = [(l, k) for l, k in rows if v.get(k) is not None]
+    if got:
+        print("\n  per 1000 instructions")
+        for l, k in got:
+            print("    %-34s %10.3f" % (l, 1000.0 * g(k) / ins))
+    return True
+
 def main():
-    args, width = sys.argv[1:], 1
+    args, width = sys.argv[1:], 3
     if "--width" in args:
         i = args.index("--width"); width = int(args[i + 1]); del args[i:i + 2]
     text = open(args[0]).read() if args else sys.stdin.read()
@@ -120,6 +180,10 @@ def main():
     cyc, ins = g("CYCLES"), g("INSTRET")
     if not cyc or not ins:
         sys.exit("error: need both cycles and instructions; got %s" % sorted(v))
+    if topdown(v, width):
+        if unknown:
+            print("\n  ignored unrecognised events: %s" % ", ".join(sorted(set(unknown))))
+        return
 
     cpi, per_k = cyc / ins, lambda n: 1000.0 * n / ins
     fe_bub = g("FE_BUB")
@@ -129,6 +193,7 @@ def main():
     no_backend = not any(v.get(k) is not None for k, _ in BACKEND)
 
     print("  cycles %-16d instructions %-16d IPC %.3f   CPI %.3f" % (cyc, ins, ins/cyc, cpi))
+    print("  (the wait-cycle view: its events overlap, so it is depth, not a partition -- the td set closes)")
     print("\n  CPI stack (each cycle charged to one cause; dispatch is %d per cycle, so %.3f is the floor)"
           % (width, 1.0 / width))
     print("    %-30s %10.3f  %5.1f%%" % ("dispatch floor (%d per cycle)" % width, 1.0 / width, 100.0*floor/cyc))
@@ -195,7 +260,7 @@ def main():
         per_walk = "" if not g("DTLB_MISS") or v.get("DT_WALK") is None else "     (%.1f cycles per walk)" % (g("DT_WALK")/g("DTLB_MISS"))
         mpki.append("    %-30s %10.3f%s" % ("dTLB misses (walks)", per_k(g("DTLB_MISS")), per_walk))
     for code, label, acc in (("REDIR", "pipeline redirects", None),
-                             ("DCMISS", "D$ misses", "DCACC"),
+                             ("DCMISS", "D$ line fills", "DCACC"),
                              ("ICMISS", "I$ misses", "ICACC")):
         if v.get(code) is None:
             continue
@@ -208,32 +273,6 @@ def main():
     else:
         print("\n  MPKI: no redirect / miss / drain events in this run (perf-smol.sh cpi, br, mem)")
 
-    # Fetch-buffer payoff: FB_RHIT is exactly what flush-on-redirect would turn into misses.
-    if v.get("FB_RHIT") is not None:
-        print("\n  fetch buffer -- does the address comparison pay?")
-        print("    %-30s %10.3f" % ("hits in redirect shadow /1k", per_k(g("FB_RHIT"))))
-        if g("FB_HIT"):
-            print("    %-30s %9.2f%% of all buffer hits" % ("", 100.0*g("FB_RHIT")/g("FB_HIT")))
-        if g("REDIR"):
-            print("    %-30s %9.2f%% of redirects land in the buffer"
-                  % ("", 100.0*g("FB_RHIT")/g("REDIR")))
-        print("    -> near zero: the tag earns nothing, a stream buffer is free.")
-        print("       large: it is already a small loop buffer, worth GROWING not deleting.")
-
-    # Split the LSU stall into what misses can possibly explain vs what is left.  This is
-    # the number that decides whether to attack the miss path (MSHRs, non-blocking) or the
-    # HIT path (load-to-use latency) -- and on this core it has consistently been the hit
-    # path, which no amount of miss-handling work would touch.
-    if g("ST_MEM") and g("DCACC"):
-        acc, miss, st = g("DCACC"), g("DCMISS"), g("ST_MEM")
-        print("\n  LSU stall %.3f CPI -- misses or hit latency?" % (st/ins))
-        print("    %-30s %10.2f cycles" % ("stall per D$ ACCESS", st/acc))
-        for pen in (30, 60, 100):
-            frm = miss * pen
-            print("    %-30s %9.1f%% of the LSU stall (%.3f CPI)"
-                  % ("if a miss costs %d cycles" % pen, 100.0*frm/st, frm/ins))
-        print("    -> whatever is left is HIT latency: every access pays it, misses are %.3f%%"
-              % (100.0*miss/acc))
     for code, label in (("LOAD", "loads"), ("STORE", "stores")):
         if g(code):
             print("  %-8s %12d  (%.1f%% of instructions)" % (label, g(code), 100.0*g(code)/ins))

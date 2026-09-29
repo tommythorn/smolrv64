@@ -108,7 +108,7 @@ module rv_icache #(
    reg [2:0]  st;
    reg        door;                            // the door is open this cycle (a register)
    // the lookup stage
-   reg        s1_v;  reg [63:0] s1_va, s1_pa;  reg [RTW-1:0] s1_tag;  reg [EPW-1:0] s1_ep;
+   reg        s1_v, s1_rp;  reg [63:0] s1_va, s1_pa;  reg [RTW-1:0] s1_tag;  reg [EPW-1:0] s1_ep;
    // the skid (a request taken in the cycle a lookup missed) and the missed request
    reg        sk_v;  reg [63:0] sk_va, sk_pa;  reg [RTW-1:0] sk_tag;  reg [EPW-1:0] sk_ep;
    reg [63:0] f_va, f_pa;  reg [RTW-1:0] f_tag;
@@ -169,8 +169,9 @@ module rv_icache #(
    wire [IB-1:0]     m_set  = m_line[IB-1:0];
    wire              rc0    = vl0_s & (pt0[m_set] == ptg);   // (m_set is s1_set)
    wire              rc1    = vl1_s & (pt1[m_set] == ptg);
-   assign perf_access = s1_v;
-   assign perf_miss   = miss;
+   // counted once per request, never per replay: an access is a request taken, a miss its first lookup's
+   assign perf_access = rd_ack;
+   assign perf_miss   = miss & ~s1_rp;
 
    // the victim for the line being filled
    wire [IB-1:0] f_set = f_line[IB-1:0];
@@ -228,7 +229,7 @@ module rv_icache #(
 
          // the lookup stage takes whatever the banks were addressed for this cycle
          s1_v <= 1'b0;
-         if (a_take & ~(miss & rd_ack)) begin s1_v <= 1'b1; s1_va <= a_va; s1_pa <= a_pa; s1_tag <= a_tag; s1_ep <= a_ep; end
+         if (a_take & ~(miss & rd_ack)) begin s1_v <= 1'b1; s1_va <= a_va; s1_pa <= a_pa; s1_tag <= a_tag; s1_ep <= a_ep; s1_rp <= rp_f | rp_s; end
          if (rp_s) sk_v <= 1'b0;
          // a hit answers; a miss parks the request (and a request taken this cycle in the skid)
          if (s1_v & hit) begin

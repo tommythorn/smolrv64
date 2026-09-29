@@ -60,11 +60,7 @@ module ooo2_core
     // already maintains, so exporting them adds a fanout and nothing else.
     output wire [63:0]             imem_satp_q,
     output wire [1:0]              imem_priv_q,
-    // Fetch-buffer events (computed in rv_soc_top, where the buffer lives) and the redirect
-    // it needs to qualify them.  Same route as hpm_dc_access/hpm_ic_access below.
     output wire                    fe_redirect,
-    input  wire                    hpm_fb_hit,
-    input  wire                    hpm_fb_rhit,
     // ---- platform interrupt lines + time ----
     input  wire [11:0]             hw_ip,
     input  wire [63:0]             mtime,
@@ -2657,10 +2653,39 @@ module ooo2_core
    wire mem_reord     = sq_ld_reorder;                        // a load issued past an uncommitted older store (the payoff)
    wire mem_wpkill    = lsu_pt_ld_done & lsu_pt_ld_kill;      // a wrong-path load's landing killed after its access ran
    wire mem_devwait   = lq_x_devwait;                         // a device load waiting to be the head
-   wire [38:0] hpm_ev = {mem_devwait, mem_wpkill, mem_reord, mem_alias_ovl, mem_alias_unk,
+   // ---- TOP-DOWN (docs/PLAN-2026-09-20-topdown-counters.md, Variant A; OOO2-Spec 11.2) -------
+   // Every cycle is exactly ONE of bad speculation, front-end, back-end or dispatching, by
+   // construction: a redirect or a resolved-but-waiting restart is bad speculation; otherwise an
+   // empty decode (fe_bub, which excludes st_m and d_valid) is front-end; otherwise M held or an
+   // instruction present and not taken is back-end; what remains dispatched 0..3. td_k names the
+   // cause, deepest first, in the order the testbench and the pipe views print it:
+   //   0-2 dispatched 1-3, 21 dispatched 0 (a squashed take)   3 redirect   4 drain
+   //   5 iMMU  6 no fetch bytes  7 no whole insn  8 queue empty  9 other front-end
+   //   10 M on memory  11 M other  12 ROB full  13 wait on a load  14 wait on FP  15 scheduler full
+   //   16 rename  17 SQ full  18 LQ full  19 serializing  20 held otherwise
+   wire       td_bs  = redirect | rd_wait;
+   wire       td_fe  = ~td_bs & fe_bub;
+   wire       td_be  = ~td_bs & (st_m | (d_valid & ~d_take));
+   wire [1:0] td_nd  = {1'b0, d_take} + {1'b0, d2_take} + {1'b0, d3_take};
+   reg  [4:0] td_k;
+   always @* begin
+      if (td_bs)      td_k = redirect ? 5'd3 : 5'd4;
+      else if (td_fe) td_k = fe_mmu ? 5'd5 : fe_ic ? 5'd6 : fe_aln ? 5'd7 : fe_que ? 5'd8 : 5'd9;
+      else if (td_be) td_k = st_m ? (m_mem_op ? 5'd10 : 5'd11)
+                           : st_rob ? 5'd12 : dep_ld ? 5'd13 : dep_fp ? 5'd14 : st_iq ? 5'd15
+                           : st_rn ? 5'd16 : st_sq ? 5'd17 : st_lq ? 5'd18 : st_srz ? 5'd19 : 5'd20;
+      else            td_k = (td_nd == 2'd0) ? 5'd21 : {3'b0, td_nd} - 5'd1;
+   end
+   // the depth events, each a set of td_k values, so each is a subset of its parent
+   wire td_be_mem = (td_k == 5'd10) | (td_k == 5'd13);                      // waiting on memory
+   wire td_be_rob = (td_k == 5'd12);                                         // the ROB is full
+   wire td_be_iq  = (td_k == 5'd15) | (td_k == 5'd17) | (td_k == 5'd18);    // a scheduler or queue is full
+   wire td_fe_lat = (td_k == 5'd5)  | (td_k == 5'd6);                        // front-end latency: iMMU walk, no bytes
+   wire [43:0] hpm_ev = {td_fe_lat, td_be_iq, td_be_rob, td_be_mem, td_be,
+                         mem_devwait, mem_wpkill, mem_reord, mem_alias_ovl, mem_alias_unk,
                          mem_stdoor, mem_ldinfl, mem_hitser,
                          st_srz, st_lq, st_sq, st_rn, st_iq,
-                         lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, hpm_fb_rhit, hpm_fb_hit,
+                         lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, td_fe, td_bs,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
                          hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
@@ -2694,12 +2719,14 @@ module ooo2_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [38:0] hpm_ev_q;
+   reg [43:0] hpm_ev_q;
+   reg [1:0]  hpm_disp_q;                 // instructions dispatched this cycle (DPATCH)
    reg [5:0]  hpm_lqocc_q, hpm_sqocc_q;   // queue occupancies, per cycle (MEM_LQOCC / MEM_SQOCC)
    reg [5:0]  hpm_ret_q;
-   initial begin hpm_ev_q = 39'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; end
+   initial begin hpm_ev_q = 44'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; hpm_disp_q = 2'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 39'd0 : hpm_ev;
+      hpm_ev_q  <= reset ? 44'd0 : hpm_ev;
+      hpm_disp_q <= reset ? 2'd0 : td_nd;
       hpm_lqocc_q <= reset ? 6'd0 : {{(6-LQ_IB-1){1'b0}}, lq_occ};
       hpm_sqocc_q <= reset ? 6'd0 : {{(6-SQ_IB-1){1'b0}}, sq_occ};
       hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2} + {5'd0, retire3};
@@ -2739,7 +2766,7 @@ module ooo2_core
       // in its second cycle at the ROB head (m_head_q), by which time every older retirement
       // has been counted; csr_file drops the CSR op's own retirement after a minstret write.
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(hpm_ret_q),
-      .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q), .hpm_lqocc(hpm_lqocc_q), .hpm_sqocc(hpm_sqocc_q),
+      .hpm_retire_cnt(hpm_ret_q), .hpm_ev(hpm_ev_q), .hpm_lqocc(hpm_lqocc_q), .hpm_sqocc(hpm_sqocc_q), .hpm_disp(hpm_disp_q),
       .irq_v(csr_irq_v), .irq_cause(csr_irq_cause),
       // csr_file's ILA debug bus. The SoC puts no ILA on the CSR file, so these
       // outputs go nowhere -- named and left EMPTY on purpose. PINMISSING gates this build
@@ -3892,15 +3919,15 @@ module ooo2_core
    end
    // ---- core_dbg: the state that says what the pipe waits on, for the board's wedge ILA ----
    // [127:112] the FPU's state (fp_unit dbg), [111:90] flags, [89:84] SQ occupancy, [83:78] LQ occupancy, [77:72] ROB head index,
-   // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev (this cycle's event and stall
-   // attribution, the counters' bus).
+   // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev[38:0] (this cycle's event and stall
+   // attribution, the counters' bus; the top-down depth bits above 38 stay off this ILA).
    wire [15:0] fpu_dbg;
    assign core_dbg = {fpu_dbg, rob_empty, rob_c_valid, m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,
                       {(6-SQ_IB-1){1'b0}}, sq_occ, {(6-LQ_IB-1){1'b0}}, lq_occ,
-                      {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev};
+                      {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev[38:0]};
 endmodule
 
 `default_nettype wire

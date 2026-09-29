@@ -74,6 +74,15 @@ if [ -n "${STRESS_ONLY:-}" ]; then RES=${1:?result dir}; mkdir -p "$RES"; stress
 
 if [ -n "${REPLAY:-}" ]; then PRE=$REPLAY; BOOT_WAIT=0; echo "replay from byte $PRE"; else
 PRE=$(wc -c < "$UB/screenlog.0")
+# Never program over a benchmark: a board that answers ssh and runs Geekbench is in use.
+# FORCE_PROGRAM=1 overrides.
+if [ -z "${FORCE_PROGRAM:-}" ]; then
+   for c in $(ss -tan 2>/dev/null | awk '$1=="ESTAB" && $4 ~ /:2049$/ {print $5}' | grep -o '192\.168\.1\.[0-9]*' | sort -u); do
+      if timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no tommy@$c 'pgrep -f "[g]eekbench"' >/dev/null 2>&1; then
+         echo "BOARD: REFUSED (Geekbench is running on $c; FORCE_PROGRAM=1 to program anyway)"; exit 2
+      fi
+   done
+fi
 ( cd "$PLAT" && timeout 900 make program ${BIT:+BIT=$BIT} ) > "$RES/program.log" 2>&1
 grep -qi "programmed successfully" "$RES/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$RES/program.log"; exit 1; }
 echo "programmed ${BIT:-impl_1}"
