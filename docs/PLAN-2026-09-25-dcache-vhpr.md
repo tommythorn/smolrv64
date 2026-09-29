@@ -389,6 +389,15 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      - the store queue full now 2.36% of the 300 M cycles.
    - `run-vl.sh` fails its build when the riscv-tests bench leaves a core input unconnected: the
      new `dmem_wroom` read as 0 there and hung every test that stores.
+   - **Build (548c43ea):**
+     - At IW=3, AltSpreadLogic_medium missed by 0.135 ns on the broad core plateau: 5,567
+       endpoints under +0.35. Its worst families are the ALU operand -> `alu_q_val`, the D$
+       response tag -> `pl_q`, and `cf_link`, none in the store port.
+     - The Explore directive met, WNS +0.004.
+   - **Board gate: PASS** (login, 0 faults, 900 s GB5 stress, errlog clean). Top-Down on the
+     board, 30 MB of random data, against 06a88177:
+     - `sha256sum`: IPC 1.637 -> 1.718; back-end memory 7.30% -> 3.61% of cycles.
+     - `xz -6 -T1`: IPC 0.531 -> 0.542.
 4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.
 5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
