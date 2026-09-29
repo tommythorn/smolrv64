@@ -320,8 +320,8 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      and reordering memory, every answer checked, every invariant live.
    - memrand gains a synonym-alias op, which it already half has: three aliases of one region.
 
-   **As built (2026-09-27, `wip/dcache`).** `ooo2/rv_dcache.v`, bench `tb_rv_dcache.v` (96 runs:
-   VIRT=1 and VIRT=0 × 6 seeds × in-order/reordering memory × 4 shapes). Where it departs from
+   **As built (2026-09-27, `wip/dcache`).** `ooo2/rv_dcache.v`, bench `tb_rv_dcache.v` (120 runs:
+   VIRT=1 and VIRT=0 × 6 seeds × in-order/reordering memory × 5 shapes). Where it departs from
    the text above, and why:
    - **The core presents PAs only (`VIRT=0`), and the VA plumbing moves to increment 5.** The LSU
      has translated before it asks, so a virtual hit shortens nothing in phase 1; at `VIRT=0`

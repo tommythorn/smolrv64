@@ -58,6 +58,6 @@ if __name__ == "__main__":
     rows = read(path)
     date = re.search(r"(\d{4}-\d{2}-\d{2})", path)
     print(svg(rows, "Geekbench 5.4.1 single-core, score per subtest",
-              [f"SmolRV64 OOO2 on the XCKU5P at 166.67 MHz, {date.group(1) if date else path}",
+              [f"SmolRV64 on the XCKU5P at 166.67 MHz, {date.group(1) if date else path}",
                f"single-core {rows['Single-Core'][0]}: Integer {rows['Integer'][0]}, Crypto {rows['Crypto'][0]}, "
                f"Floating Point {rows['Floating Point'][0]} (a geometric mean; one 0 zeroes it)"]))

@@ -14,7 +14,7 @@ for v in 1 0; do
       rv_dcache.v ../src/smolrv64_sdpram.v tb_rv_dcache.v > obj_dir_dcache_v$v.build.log 2>&1 \
       || { echo "BUILD FAILED (VIRT=$v)"; grep -m10 '%Error' obj_dir_dcache_v$v.build.log; exit 1; }
 done
-# Each seed runs over both memory orders and four shapes: the default, a slow memory (every
+# Each seed runs over both memory orders and five shapes: the default, a slow memory (every
 # MSHR busy: the waiters' fairness), a fast one with twice the stores (fills racing the read-out
 # and the merge buffer), a remap every 500 cycles (epoch wraps and their scans), and the on-chip
 # SRAM's 1-4 cycles (a fill landing while its slot is still being read out).

@@ -1077,7 +1077,7 @@ comes out of one read (the probe) and a line has at most one pvalid copy (assert
 (tag, 2-bit epoch, vvalid per way and set) sit beside them for phase 2. A miss's fill is a
 four-beat burst into the reserved way, a cycle after each beat; the line installs the cycle
 after its last beat is written and its waiters replay: a load's answer comes 5 cycles after
-the last beat. Unit bench: `ooo2/run-ooo2-dcache-tb.sh` (48 runs; memory equal to a golden image
+the last beat. Unit bench: `ooo2/run-ooo2-dcache-tb.sh` (120 runs; memory equal to a golden image
 after every `fence.i` clean).
 
 **VHPR I$ (`rv_icache`).** A pair is a 16-byte-aligned quarter of a line (asserted), so it is one
