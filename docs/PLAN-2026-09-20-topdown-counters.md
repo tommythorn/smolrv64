@@ -217,7 +217,13 @@ the generator) and `docs/SmolRV64-Spec.md` §11. Board: `make` the shipping conf
   - `perf-cpi-stack.py` reports the closing top-down when the TD events are present (width 3);
     `perf-smol.sh td` is the 13-event set. Validated end to end: the simulator's `perf-stat-sim`
     output through the tool reproduces `TOPDOWN-SIM` exactly (60 M cycles, IW=3).
-- [ ] The board run: `perf-smol.sh td` on the shipping bitstream.
+- [x] The board run (2026-09-28, 06a88177, board gate PASS): `perf-smol.sh td` closes to 100.00%
+      of cycles on the board. On 30 MB of random data:
+
+      | workload | IPC | dispatching | bad spec | front-end | back-end | largest level-2 |
+      |---|---|---|---|---|---|---|
+      | `sha256sum` | 1.637 | 75.50% | 0.30% | 3.42% | 20.78% | ROB full 10.51% |
+      | `xz -6 -T1` | 0.531 | 29.33% | 1.77% | 6.54% | 62.36% | memory 44.37% |
 
 ---
 
