@@ -11,7 +11,7 @@ foreach arg $argv {
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
-set ooo2_dir [file join $repo_root ooo2]
+set smolrv64_dir [file join $repo_root core]
 set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
 set probe_clk_check_hook [file normalize [file join [file dirname [info script]] probe_clk_check.tcl]]
 
@@ -113,16 +113,16 @@ proc configure_cvfpu_sources {repo_root src_dir} {
 }
 
 
-# The core: rv_soc_top and its modules from ooo2/. It carries its own memory subsystem
+# The core: rv_soc_top and its modules from core/. It carries its own memory subsystem
 # (rv_cache / rv_l2_arbiter); the SoC devices and the DDR line bridge come from src/.
-proc configure_ooo2_sources {repo_root src_dir ooo2_dir} {
+proc configure_smolrv64_sources {repo_root src_dir smolrv64_dir} {
     set fileset [current_fileset]
-    foreach f [lsort [glob -nocomplain [file join $ooo2_dir *.v]]] {
+    foreach f [lsort [glob -nocomplain [file join $smolrv64_dir *.v]]] {
         set b [file tail $f]
         if {[regexp {^tb_} $b]} continue
         add_source_if_missing $fileset $f Verilog
     }
-    add_unique_property_value $fileset include_dirs [file normalize $ooo2_dir]
+    add_unique_property_value $fileset include_dirs [file normalize $smolrv64_dir]
     update_compile_order -fileset $fileset
 }
 
@@ -181,7 +181,7 @@ if {1} {
     }
     puts "Generating boot line-hex: $boot_hex (from $monitor_bin)"
     exec python3 [file join $src_dir binline.py] $monitor_bin > $boot_hex
-    configure_ooo2_sources $repo_root $src_dir $ooo2_dir
+    configure_smolrv64_sources $repo_root $src_dir $smolrv64_dir
     lappend vdefines [format {SOC_BOOT_HEX="%s"} $boot_hex]
     if {[info exists env(NO_VIRTIO_NET)] && $env(NO_VIRTIO_NET) ne "" && $env(NO_VIRTIO_NET) ne "0"} {
         puts "NO_VIRTIO_NET: dropping virtio-net + eth MAC (blk-only) to relieve ui_clk congestion."
@@ -235,35 +235,35 @@ if {1} {
         lappend vdefines "PROBE_CLK_DIV8=48"
     }
     # Fetch window halfwords. 8 is the shipping build AND the RTL default since 2026-09-05
-    # (ooo2_core.v and rv_soc_top.v agree): a 16-byte window, validated on the board as builds
+    # (smolrv64_core.v and rv_soc_top.v agree): a 16-byte window, validated on the board as builds
     # K, M and N; sha256sum's frontend bubble went from 43% of cycles to 10%. The I$ reads it
     # as the 64-bit chunk pair (rv_cache caps the bank width), so the wide-BRAM geometry that
     # once fetched garbage on real BRAM is never built. 4 was the shipping build before.
-    if {[info exists env(OOO2_HW)] && $env(OOO2_HW) ne ""} {
+    if {[info exists env(SMOLRV64_HW)] && $env(SMOLRV64_HW) ne ""} {
         # 8 is allowed since 2026-09-05: rv_cache caps its BANK width at 64 whatever RDW is
         # (a 128-bit read is the even/odd chunk pair, 16-byte aligned), so the sdpram guard is
         # never reached and the BRAM geometry is the one every bitstream has shipped with.
-        if {$env(OOO2_HW) != 2 && $env(OOO2_HW) != 4 && $env(OOO2_HW) != 8} {
-            error "OOO2_HW=$env(OOO2_HW): only 2, 4 or 8 elaborate; 2 is a 32-bit fetch window\
+        if {$env(SMOLRV64_HW) != 2 && $env(SMOLRV64_HW) != 4 && $env(SMOLRV64_HW) != 8} {
+            error "SMOLRV64_HW=$env(SMOLRV64_HW): only 2, 4 or 8 elaborate; 2 is a 32-bit fetch window\
  that no bitstream should ship; odd values cannot hold a 32-bit instruction."
         }
-        puts "OOO2_HW override: fetch window = $env(OOO2_HW) halfwords (the shipping build is 8)."
-        lappend vdefines "OOO2_HW=$env(OOO2_HW)"
+        puts "SMOLRV64_HW override: fetch window = $env(SMOLRV64_HW) halfwords (the shipping build is 8)."
+        lappend vdefines "SMOLRV64_HW=$env(SMOLRV64_HW)"
     } else {
-        puts "fetch window = 8 halfwords (OOO2_HW=8) -- the shipping build."
-        lappend vdefines "OOO2_HW=8"
+        puts "fetch window = 8 halfwords (SMOLRV64_HW=8) -- the shipping build."
+        lappend vdefines "SMOLRV64_HW=8"
     }
-    # Pipeline width. 3 is the shipping build AND the RTL default (the ifndef OOO2_IW in
-    # ooo2_core.v / rv_soc_top.v); 2 and 1 are the narrower configurations. One knob drives the whole width-generic frontend + backend.
-    if {[info exists env(OOO2_IW)] && $env(OOO2_IW) ne ""} {
-        if {$env(OOO2_IW) != 1 && $env(OOO2_IW) != 2 && $env(OOO2_IW) != 3} {
-            error "OOO2_IW=$env(OOO2_IW): only 1, 2 or 3 (pipeline width); 3 is the shipping build."
+    # Pipeline width. 3 is the shipping build AND the RTL default (the ifndef SMOLRV64_IW in
+    # smolrv64_core.v / rv_soc_top.v); 2 and 1 are the narrower configurations. One knob drives the whole width-generic frontend + backend.
+    if {[info exists env(SMOLRV64_IW)] && $env(SMOLRV64_IW) ne ""} {
+        if {$env(SMOLRV64_IW) != 1 && $env(SMOLRV64_IW) != 2 && $env(SMOLRV64_IW) != 3} {
+            error "SMOLRV64_IW=$env(SMOLRV64_IW): only 1, 2 or 3 (pipeline width); 3 is the shipping build."
         }
-        puts "OOO2_IW override: pipeline width = $env(OOO2_IW) (the shipping build is 3)."
-        lappend vdefines "OOO2_IW=$env(OOO2_IW)"
+        puts "SMOLRV64_IW override: pipeline width = $env(SMOLRV64_IW) (the shipping build is 3)."
+        lappend vdefines "SMOLRV64_IW=$env(SMOLRV64_IW)"
     } else {
-        puts "pipeline width = 3 (OOO2_IW=3) -- the shipping build."
-        lappend vdefines "OOO2_IW=3"
+        puts "pipeline width = 3 (SMOLRV64_IW=3) -- the shipping build."
+        lappend vdefines "SMOLRV64_IW=3"
     }
 }
 set build_stamp [clock format [clock seconds] -format "%Y%m%d%H%M%S"]
@@ -274,7 +274,7 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-set source_paths [list src ooo2 platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128]
+set source_paths [list src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128]
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1
@@ -512,7 +512,7 @@ if {$step in {impl bit}} {
     # 204 ps between them on identical source, which is inside the 81-400 ps spread rule I2
     # warns about and larger than the whole margin.  The directive is therefore part of the
     # shipping configuration, not a sweep knob: a build that meets timing only when someone
-    # remembers to pass PLACE_DIRECTIVE is the same trap OOO2_HW and PROBE_CLK_DIV8 were.
+    # remembers to pass PLACE_DIRECTIVE is the same trap SMOLRV64_HW and PROBE_CLK_DIV8 were.
     set place_directive AltSpreadLogic_medium
     set route_directive AggressiveExplore
     if {[info exists env(PLACE_DIRECTIVE)] && $env(PLACE_DIRECTIVE) ne ""} {

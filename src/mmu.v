@@ -51,7 +51,7 @@ module mmu
     output wire [1:0]  t_lvl,          // leaf level (0=4K,1=2M,2=1G) -- for the VHPR I$ page cap
     // THE SAME ANSWERS WITHOUT THE req_valid QUALIFIER. t_ready and t_fault carry the
     // caller's req_valid inside them; a caller whose req_valid is an OR of two request
-    // sources (ooo2_lsu: a translate-only pass and an FSM-starting access) would otherwise
+    // sources (smolrv64_lsu: a translate-only pass and an FSM-starting access) would otherwise
     // see the OTHER source's arbitration inside ITS answer, structurally, however the
     // logic simplifies. t_ok is t_ready's resolve term alone; t_fault_raw is t_fault with
     // the PA-validity term gated on t_ok instead of t_ready. AND them with your own valid.

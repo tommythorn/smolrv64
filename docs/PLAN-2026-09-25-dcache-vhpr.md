@@ -314,13 +314,13 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
 2. **`rv_dcache`, complete, behind today's contract.** The whole module (MSHRs, write-back buffer,
    probe, store port, NC path, CBO, walker path, epochs) swapped in for `rv_cache` at the SoC. The
    core is unchanged: it presents VA and PA.
-   - New bench: `tb_ooo2_dcache2`. A golden byte image plus a reference translation, with random
+   - New bench: `tb_smolrv64_dcache2`. A golden byte image plus a reference translation, with random
      loads, stores, CBOs, NC, DMA writes, remaps with epoch bumps, synonyms (two VAs → one PA, dirty
      in one colour, accessed from another), and walker reads. Run at several latencies, in-order
      and reordering memory, every answer checked, every invariant live.
    - memrand gains a synonym-alias op, which it already half has: three aliases of one region.
 
-   **As built (2026-09-27, `wip/dcache`).** `ooo2/rv_dcache.v`, bench `tb_rv_dcache.v` (120 runs:
+   **As built (2026-09-27, `wip/dcache`).** `core/rv_dcache.v`, bench `tb_rv_dcache.v` (120 runs:
    VIRT=1 and VIRT=0 × 6 seeds × in-order/reordering memory × 5 shapes). Where it departs from
    the text above, and why:
    - **The core presents PAs only (`VIRT=0`), and the VA plumbing moves to increment 5.** The LSU

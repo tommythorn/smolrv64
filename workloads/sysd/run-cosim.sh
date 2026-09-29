@@ -5,4 +5,4 @@ set -u
 cd "$(dirname "$0")"
 make -s || exit 1
 INITRD=$(pwd)/tiny128-sysd.cpio OFF_INITRD=1e000000 DTB=$(pwd)/../tiny128/tiny128-cosim-sysd.dtb \
-CYC=${CYC:-1600000000} ../../ooo2/run-ooo2-cosim-linux.sh
+CYC=${CYC:-1600000000} ../../core/run-cosim-linux.sh

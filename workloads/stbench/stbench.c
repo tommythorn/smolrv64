@@ -1,16 +1,16 @@
 // stbench -- store THROUGHPUT, L1-resident, the twin of workloads/ldbench for the store path.
 //
-// The boot's stall composition (docs/OOO2-Spec.md P0, SB-WHERE2) puts dispatch held on a
+// The boot's stall composition (docs/SmolRV64-Spec.md P0, SB-WHERE2) puts dispatch held on a
 // FULL STORE QUEUE ahead of every other stall, at DDR_LAT=4 and at 80 alike. Before touching
 // the store path, measure what a store costs when it HITS, so the hit cost and the miss cost
 // are separable:
 //
-//   thru   = cycles per store over NWAY independent streams  -> the drain rate of ooo2_sq
+//   thru   = cycles per store over NWAY independent streams  -> the drain rate of smolrv64_sq
 //   mix    = cycles per op, one store then one load, independent addresses -> port sharing
 //   fwd    = cycles per pair, a store then a load of the SAME word -> the alias hold
 //            (no forwarding: the load waits for the store to commit)
 //
-// Everything fits the 64 KiB D$. Bare-metal M-mode. Measure at VDEFS="-DOOO2_HW=4".
+// Everything fits the 64 KiB D$. Bare-metal M-mode. Measure at VDEFS="-DSMOLRV64_HW=4".
 
 typedef unsigned char  uint8_t;
 typedef unsigned int   uint32_t;

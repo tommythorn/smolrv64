@@ -8,14 +8,14 @@
 # Each point is one lockstep cosim (the runner rebuilds when the width changes); a divergence or
 # assertion leaves the cell empty, and the runner's retire-count grading does not apply here.
 set -u
-cd "$(dirname "$0")/../ooo2" || exit 1
+cd "$(dirname "$0")/../core" || exit 1
 CYC=${CYC:-60000000}; LATS=${LATS:-"4 0 80"}; IWS=${IWS:-"2 3"}; OUT=${1:-/dev/stdout}
 { echo "# mem-sweep $(date +%F) CYC=$CYC (lat 0 = the measured DDR shape; reads mean 27.5, writes 13.5)"
   printf '%-3s %-5s %-10s %-8s\n' IW lat retires vs_lat4; } > "$OUT"
 for iw in $IWS; do
    base=""
    for lat in $LATS; do
-      log=$(mktemp); PLUSARGS="+ddr_lat=$lat" VDEFS="-DOOO2_IW=$iw" CYC=$CYC ./run-ooo2-cosim-linux.sh > "$log" 2>&1
+      log=$(mktemp); PLUSARGS="+ddr_lat=$lat" VDEFS="-DSMOLRV64_IW=$iw" CYC=$CYC ./run-cosim-linux.sh > "$log" 2>&1
       r=$(sed -n 's/.*TIMEOUT after [0-9]* cycles (retires=\([0-9]*\).*/\1/p' "$log" | tail -1)
       [ -z "$r" ] && { echo "IW=$iw lat=$lat: NO RESULT (see $log)"; printf '%-3s %-5s %-10s %-8s\n' $iw $lat - - >> "$OUT"; continue; }
       [ "$lat" = 4 ] && base=$r

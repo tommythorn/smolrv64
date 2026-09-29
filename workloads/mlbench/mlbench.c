@@ -28,7 +28,7 @@
 // compiler would emit under -ffast-math; it is not what GB5 runs, but it bounds how much
 // of the gap is the chain rather than the machine.
 //
-// Measure at VDEFS="-DOOO2_HW=4".
+// Measure at VDEFS="-DSMOLRV64_HW=4".
 
 typedef unsigned char  uint8_t;
 typedef unsigned long  uint64_t;

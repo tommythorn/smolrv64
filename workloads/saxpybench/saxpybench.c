@@ -24,7 +24,7 @@
 // the case where that matters -- Camera does store every iteration, which is where a store
 // buffer would tell.
 //
-// Measure at VDEFS="-DOOO2_HW=4".
+// Measure at VDEFS="-DSMOLRV64_HW=4".
 
 typedef unsigned char  uint8_t;
 typedef unsigned long  uint64_t;

@@ -3,7 +3,7 @@
 # in tiny128-blk.cpio (the Makefile appends it to tiny128.cpio), so busybox's rcS runs it after
 # the initrd's own init. It mounts the virtio-blk disk, checks every byte of its payload, writes
 # a copy back, drops the page cache and re-reads both files from the device. One console line
-# decides: BLKCHECK-OK or BLKCHECK-FAIL (ooo2/run-ooo2-cosim-linux.sh greps for it when DISK is set).
+# decides: BLKCHECK-OK or BLKCHECK-FAIL (core/run-cosim-linux.sh greps for it when DISK is set).
 mkdir -p /mnt/blk
 ok=0
 if mount -t ext4 /dev/vda /mnt/blk; then

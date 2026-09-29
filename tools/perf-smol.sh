@@ -24,7 +24,7 @@ set -u
 SET=${1:-td}; shift || true
 
 case "$SET" in
-  # TOP-DOWN (OOO2-Spec 11.2): TD_BS + TD_FE + TD_BE are exclusive and dispatching is the rest,
+  # TOP-DOWN (SmolRV64-Spec 11.2): TD_BS + TD_FE + TD_BE are exclusive and dispatching is the rest,
   # so level 1 closes by construction; TD_BE_MEM/ROB/IQ and TD_FE_LAT are subsets of their
   # parent, RD_WAIT splits bad speculation, DPATCH gives the slots. 13, the whole counter file.
   td)  EV=r0401,r0407,r0402,r0408,r0403,r0404,r0405,r0406,r0317,r0006,r0007,r0102,r0112 ;;

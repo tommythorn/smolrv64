@@ -30,7 +30,7 @@ if [ -z "${NOBOOT:-}" ]; then
 fi
 ip=""; for i in $(seq 1 40); do ip=$(board_ip) && break; sleep 10; done
 [ -n "$ip" ] || { echo "DMA-STRESS: FAIL $TAG -- no ssh to the board"; exit 1; }
-RTL=${RTL:-$(ssh -o BatchMode=yes tommy@$ip 'cat /proc/device-tree/model' 2>/dev/null | tr -d '\0' | grep -o 'ooo2 [0-9a-f+]*' | sed 's/ooo2 /rtl=/')}
+RTL=${RTL:-$(ssh -o BatchMode=yes tommy@$ip 'cat /proc/device-tree/model' 2>/dev/null | tr -d '\0' | grep -o 'SmolRV64 [0-9a-f+]*' | sed 's/SmolRV64 /rtl=/')}
 say "stress on $ip for $SECS s"
 timeout $((SECS + 600)) ssh -o BatchMode=yes -o ServerAliveInterval=30 tommy@$ip "bash /var/tmp/dmastress/dma-cbo-stress.sh $SECS" > "$RES/stress.log" 2>&1
 rc=$?

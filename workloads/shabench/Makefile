@@ -2,7 +2,7 @@
 # counters, bare metal for the testbench and a Linux build for perf on the board.
 #   make                  both
 #   make check            the Linux build's digest against python's hashlib
-#   FW=$(pwd)/shabench.bin INITRD= CYC=30000000 ../../ooo2/run-ooo2-linux.sh
+#   FW=$(pwd)/shabench.bin INITRD= CYC=30000000 ../../core/run-linux.sh
 RV = riscv64-linux-gnu-
 
 all: shabench.bin shabench shalib

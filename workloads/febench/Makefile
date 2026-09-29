@@ -1,5 +1,5 @@
 # febench: straight-line fetch bandwidth (see gen.py). Boots at 0x8000_0000.
-#   make && FW=$(pwd)/febench.bin ../../ooo2/run-ooo2-linux.sh
+#   make && FW=$(pwd)/febench.bin ../../core/run-linux.sh
 platform=$(shell uname -o)
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-

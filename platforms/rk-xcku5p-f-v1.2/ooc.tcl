@@ -1,7 +1,7 @@
 # ooc.tcl -- synthesise ONE module out of context and report what limits it.
 #
-#   make ooc MODULE=ooo2_iq            # default period 6.000 ns == 166.67 MHz
-#   make ooc MODULE=ooo2_iq PERIOD=4
+#   make ooc MODULE=smolrv64_iq            # default period 6.000 ns == 166.67 MHz
+#   make ooc MODULE=smolrv64_iq PERIOD=4
 #
 # WHY. In the full design every critical path is 65-83% ROUTE (rule I7) and the placer's
 # choices swamp differences smaller than ~200 ps (rule I2), so the flat design cannot tell you
@@ -34,13 +34,13 @@ if {[info exists ::env(OOC_GENERICS)] && $::env(OOC_GENERICS) ne ""} {
 set report [expr {[info exists ::env(OOC_REPORT)] ? $::env(OOC_REPORT) : ""}]
 
 set files {}
-foreach d [list [file join $root ooo2] [file join $root src]] {
+foreach d [list [file join $root core] [file join $root src]] {
     foreach f [glob -nocomplain [file join $d *.v]] {
         if {[string match *tb_* [file tail $f]]} continue
         lappend files $f
     }
 }
-set incdirs [list [file join $root ooo2] [file join $root src] [file join $root src generated]]
+set incdirs [list [file join $root core] [file join $root src] [file join $root src generated]]
 read_verilog -quiet $files
 synth_design -top $mod -part $part -mode out_of_context -flatten_hierarchy rebuilt \
     -include_dirs $incdirs {*}$generics

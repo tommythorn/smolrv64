@@ -1,0 +1,299 @@
+`default_nettype none
+
+// Sharded physical register file for smolrv64_core.
+//
+// WHY SHARDS.  rv_regfile is a unified 64-entry array with ONE write port
+// (`always @(posedge clk) if (we) r[wa] <= wd;`).  The moment completion goes out of order
+// -- which is the whole point of the scoreboard/OoO work -- the LSU, the ALU and the FPU
+// contend for it.  Duplicating the array does NOT help: every copy must receive every
+// write, so replication buys READ ports and never WRITE ports.  The only cheap way to more
+// write ports is to bank by WRITER, so each bank has exactly one, and that requires knowing
+// the destination bank at rename.  That is what renaming buys here.
+//
+// THREE SHARDS, one writer each:
+//
+//   SH_IE  int-exec   ALU                     integer regs last written by the ALU
+//   SH_LD  load       LSU (+ M's CSR result)  int AND fp regs last written by mem
+//   (mul/div wrote SH_LD until C1, 2026-09-17; they land on SH_FE from the MD stage now)
+//   SH_FE  fp-exec    FPU                     fp AND int regs last written by the FPU
+//                                             (fcvt.w.d/fmv.x.w/fclass write x regs)
+//
+// mul/div ride with the LOAD shard, not the ALU shard.  Measured on the integer half of
+// Geekbench 5: multiplies are ~0.1% of instructions and divides a few hundredths of a
+// percent (r0302/r0301 stall cycles against a 3-cycle multiplier and an iterative divider).
+// A conflict with a load is therefore ~0.05% of cycles, and the loser already waited 3-60
+// cycles, so a holding register absorbs it.  Pairing them with the ALU instead would
+// collide constantly -- the ALU completes on nearly every cycle it is used.
+//
+// SIZING IS A CORRECTNESS FLOOR, not just performance.  A shard must hold every
+// architectural register that can map into it, PLUS at least one free, or rename deadlocks:
+// with every register mapped and none free, nothing can be renamed, so nothing can commit,
+// so nothing is ever freed.  Hence N_LD > 64 (the load shard can hold both integer and FP
+// mappings), N_FE > 64 (the FPU writes integer regs), and N_IE > 32 (the ALU writes
+// only integer regs).  Above that floor it is a stall/area choice -- see
+// docs/Area-Efficient-Scalar-OoO.md 9.3 -- and smolrv64_rename exports per-shard stall counters
+// so the choice can be replaced by a measurement.
+//
+// Physical register number: {shard[1:0], idx[IDXB-1:0]}.  Shard in the HIGH bits so a
+// shard's pool is a contiguous range and its free list is a plain counter range.
+// Physical register 0 is the architectural zero: never written, always reads 0.
+
+module smolrv64_prf
+  #(parameter IDXB  = 7,                   // index bits within a shard
+    parameter PBITS = IDXB + 3,            // physical register number width (3 shard bits: room for 5 shards)
+    parameter N_IE  = 64,                  // > 32 (integer arch regs)
+    parameter N_LD  = 128,                  // > 64 (integer AND fp arch regs can land here)
+    parameter N_FE  = 128,                  // > 64: the FPU writes INTEGER regs too
+    parameter N_IE2 = 64,                   // the SECOND ALU's shard (item 10d-ii): > 32 like SH_IE
+    parameter N_IE3 = 64,                   // the THIRD ALU's shard (Stage 3): > 32 like SH_IE
+    parameter WRTHRU = 0)                   // see the write-through note below
+   (input  wire             clk,
+
+    // ---- write ports: ONE address, THREE data buses -- one per shard's own writer ----
+    // THE POINT OF SHARDING BY WRITER IS THAT EACH SHARD TAKES ITS OWN WRITER'S DATA.
+    //
+    // Each shard is 3 LUTRAM copies (one per read port: rs1/rs2/rs3), so 3 shards is 9
+    // arrays.  A single shared write bus reaches all 9 -- gated by enable, but physically
+    // connected.  Routing the LSU's load data through the global writeback mux and then to
+    // every array is the shape sharding exists to avoid: the D$ read data should reach the
+    // 3 load-shard copies and nothing else, and the ALU result should never leave the
+    // int-exec shard.
+    //
+    // The ADDRESS stays shared: there is one writeback per cycle, so one destination
+    // register number.  Only the data is per-writer.  When out-of-order writeback lands,
+    // each shard's bus is driven by its own unit and they still never contend for a bank.
+    input  wire             we_ie,
+    input  wire             we_ld,
+    input  wire             we_fe,
+    input  wire             we_ie2,
+    input  wire             we_ie3,   // the third ALU (Stage 3)
+
+    // ONE ADDRESS PER SHARD. They shared a single `wa` while exactly one writeback could
+    // happen per cycle; dynamic issue makes simultaneous completions the normal case, and
+    // docs/Area-Efficient-Scalar-OoO.md 7 names splitting the file as the way to delete
+    // writeback arbitration entirely -- but only if each file has its own port. This is
+    // that port. It changes nothing on its own: the M stage still yields the cycle to a
+    // landing load or FP result, because the ROB's single completion port has not been
+    // widened yet.
+    input  wire [PBITS-1:0] wa_ie,
+    input  wire [PBITS-1:0] wa_ld,
+    input  wire [PBITS-1:0] wa_fe,
+    input  wire [PBITS-1:0] wa_ie2,
+    input  wire [PBITS-1:0] wa_ie3,
+
+    input  wire [63:0]      wd_ie,    // ALU / CSR result
+    input  wire [63:0]      wd_ld,    // LSU load data, M's CSR result
+    input  wire [63:0]      wd_fe,    // FPU result
+    input  wire [63:0]      wd_ie2,   // the second ALU's result
+    input  wire [63:0]      wd_ie3,   // the third ALU's result
+
+
+    // ---- three combinational read ports (rs1, rs2, rs3 for the FMA third operand) ----
+    input  wire [PBITS-1:0] ra1,
+    input  wire [PBITS-1:0] ra2,
+    input  wire [PBITS-1:0] ra3,
+    output wire [63:0]      rd1,
+    output wire [63:0]      rd2,
+        output wire [63:0]      rd3,
+    input  wire [PBITS-1:0] ra4,      // the ALU's own issue port (item 10d-i)
+    input  wire [PBITS-1:0] ra5,
+    output wire [63:0]      rd4,
+        output wire [63:0]      rd5,
+    input  wire [PBITS-1:0] ra6,      // the second ALU port (item 10d-ii)
+    input  wire [PBITS-1:0] ra7,
+    output wire [63:0]      rd6,
+    output wire [63:0]      rd7,
+    input  wire [PBITS-1:0] ra8,      // the third ALU port (Stage 3)
+    input  wire [PBITS-1:0] ra9,
+    output wire [63:0]      rd8,
+    output wire [63:0]      rd9,
+    input  wire [PBITS-1:0] ra10,     // the independent F/CTF port -- its own three reads
+    input  wire [PBITS-1:0] ra11,     // (rs1/rs2 for a branch or FMA, rs3 for FMA) so the F
+    input  wire [PBITS-1:0] ra12,     // stage no longer borrows M's read ports (CTF-on-FP)
+    output wire [63:0]      rd10,
+    output wire [63:0]      rd11,
+    output wire [63:0]      rd12);
+
+      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
+
+   // Sized to the largest shard; the smaller shards simply never index above their
+   // capacity, which smolrv64_rename's free list enforces and the assertion below checks.
+   // EACH ARRAY IS SIZED TO ITS OWN SHARD.  The first cut sized all three to the largest
+   // (NMAX), so mem_ie was 128 deep with N_IE=64 -- half of it unreachable, and synthesis
+   // duly built it: "mem_ie_reg 128 x 64, RAM64M8 x 60", identical to the 128-entry shards.
+   // Pure waste, and area is not free here: the 166 MHz build fails on ROUTING inside the
+   // caches (83-85% route on sub-1 ns logic), so congestion costs slack somewhere else.
+   localparam integer NMAX  = (N_LD > N_IE) ? ((N_LD > N_FE) ? N_LD : N_FE)
+                                            : ((N_IE > N_FE) ? N_IE : N_FE);
+   localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE), AB_IE2 = $clog2(N_IE2), AB_IE3 = $clog2(N_IE3);
+
+   reg [63:0] mem_ie [0:N_IE-1];
+   reg [63:0] mem_ld [0:N_LD-1];
+   reg [63:0] mem_fe [0:N_FE-1];
+   reg [63:0] mem_ie2 [0:N_IE2-1];
+   reg [63:0] mem_ie3 [0:N_IE3-1];
+
+   wire [2:0]      sh1 = ra1[PBITS-1:IDXB], sh2 = ra2[PBITS-1:IDXB], sh3 = ra3[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix1 = ra1[IDXB-1:0],     ix2 = ra2[IDXB-1:0],     ix3 = ra3[IDXB-1:0];
+   wire [2:0]      sh4 = ra4[PBITS-1:IDXB], sh5 = ra5[PBITS-1:IDXB], sh6 = ra6[PBITS-1:IDXB], sh7 = ra7[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix4 = ra4[IDXB-1:0],     ix5 = ra5[IDXB-1:0],     ix6 = ra6[IDXB-1:0],     ix7 = ra7[IDXB-1:0];
+   wire [2:0]      sh8 = ra8[PBITS-1:IDXB], sh9 = ra9[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix8 = ra8[IDXB-1:0],     ix9 = ra9[IDXB-1:0];
+   wire [2:0]      sh10 = ra10[PBITS-1:IDXB], sh11 = ra11[PBITS-1:IDXB], sh12 = ra12[PBITS-1:IDXB];
+   wire [IDXB-1:0] ix10 = ra10[IDXB-1:0],     ix11 = ra11[IDXB-1:0],     ix12 = ra12[IDXB-1:0];
+
+   // WRITE-THROUGH, and why it is OFF by default.
+   //
+   // docs/Area-Efficient-Scalar-OoO.md 14.1 makes it load-bearing for the OoO machine: a
+   // consumer issuing in the cycle its producer writes back must see the new value, and
+   // "an implementation that registers any of these is a different machine".
+   //
+   // With IN-ORDER issue it is dead code.  The write targets m_prd, the physical register
+   // allocated for m_rd; renaming makes physical registers unique, so a source resolves to
+   // m_prd only when that source IS m_rd -- which is exactly smolrv64_core's byp1/2/3, and there
+   // x_rs takes m_byp_val, never prf_rs.  So the collision can happen but its result is
+   // never used.
+   //
+   // It is not free: 3 read ports x 3 shards of PBITS comparator plus a 64-bit mux, sitting
+   // in the operand read path -- the back-to-back ALU loop that must stay fast.  And on this
+   // die area is congestion and congestion is slack (docs/rtl-rules.md I1).
+   //
+   // Turning it on is NOT something to remember: smolrv64_core asserts on a read that collides
+   // with the writeback and is not bypassed, so the machine says when this becomes needed.
+   function automatic [63:0] rd_shard;
+      input [2:0]      sh;
+      input [IDXB-1:0] ix;
+      input [63:0]     m_ie, m_ld, m_fe, m_ie2, m_ie3;
+      begin
+         case (sh)
+           SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
+                              && wa_ie[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
+           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa_ld[IDXB-1:0] == ix
+                              && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
+           SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
+                              && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
+           SH_IE2: rd_shard = (WRTHRU != 0 && we_ie2 && wa_ie2[IDXB-1:0] == ix
+                              && wa_ie2[PBITS-1:IDXB] == SH_IE2) ? wd_ie2 : m_ie2;
+           SH_IE3: rd_shard = (WRTHRU != 0 && we_ie3 && wa_ie3[IDXB-1:0] == ix
+                              && wa_ie3[PBITS-1:IDXB] == SH_IE3) ? wd_ie3 : m_ie3;
+           default: rd_shard = 64'd0;
+         endcase
+      end
+   endfunction
+
+   // Physical register 0 reads 0 unconditionally -- it is the architectural zero and is
+   // never allocated by smolrv64_rename, so no write can target it.
+   // Index each array with only the bits it has.  A read of a shard the operand does not
+   // belong to is discarded by rd_shard's case, so a truncated index there is harmless --
+   // but it must not be OUT OF RANGE, which for a smaller shard it otherwise would be.
+   assign rd1 = (ra1 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh1, ix1, mem_ie[ix1[AB_IE-1:0]], mem_ld[ix1[AB_LD-1:0]],
+                         mem_fe[ix1[AB_FE-1:0]], mem_ie2[ix1[AB_IE2-1:0]], mem_ie3[ix1[AB_IE3-1:0]]);
+   assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]], mem_ld[ix2[AB_LD-1:0]],
+                         mem_fe[ix2[AB_FE-1:0]], mem_ie2[ix2[AB_IE2-1:0]], mem_ie3[ix2[AB_IE3-1:0]]);
+   assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]], mem_ld[ix3[AB_LD-1:0]],
+                         mem_fe[ix3[AB_FE-1:0]], mem_ie2[ix3[AB_IE2-1:0]], mem_ie3[ix3[AB_IE3-1:0]]);
+   assign rd4 = (ra4 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh4, ix4, mem_ie[ix4[AB_IE-1:0]], mem_ld[ix4[AB_LD-1:0]],
+                         mem_fe[ix4[AB_FE-1:0]], mem_ie2[ix4[AB_IE2-1:0]], mem_ie3[ix4[AB_IE3-1:0]]);
+   assign rd5 = (ra5 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh5, ix5, mem_ie[ix5[AB_IE-1:0]], mem_ld[ix5[AB_LD-1:0]],
+                         mem_fe[ix5[AB_FE-1:0]], mem_ie2[ix5[AB_IE2-1:0]], mem_ie3[ix5[AB_IE3-1:0]]);
+   assign rd6 = (ra6 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh6, ix6, mem_ie[ix6[AB_IE-1:0]], mem_ld[ix6[AB_LD-1:0]],
+                         mem_fe[ix6[AB_FE-1:0]], mem_ie2[ix6[AB_IE2-1:0]], mem_ie3[ix6[AB_IE3-1:0]]);
+   assign rd7 = (ra7 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh7, ix7, mem_ie[ix7[AB_IE-1:0]], mem_ld[ix7[AB_LD-1:0]],
+                         mem_fe[ix7[AB_FE-1:0]], mem_ie2[ix7[AB_IE2-1:0]], mem_ie3[ix7[AB_IE3-1:0]]);
+   assign rd8 = (ra8 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh8, ix8, mem_ie[ix8[AB_IE-1:0]], mem_ld[ix8[AB_LD-1:0]],
+                         mem_fe[ix8[AB_FE-1:0]], mem_ie2[ix8[AB_IE2-1:0]], mem_ie3[ix8[AB_IE3-1:0]]);
+   assign rd9 = (ra9 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh9, ix9, mem_ie[ix9[AB_IE-1:0]], mem_ld[ix9[AB_LD-1:0]],
+                         mem_fe[ix9[AB_FE-1:0]], mem_ie2[ix9[AB_IE2-1:0]], mem_ie3[ix9[AB_IE3-1:0]]);
+   assign rd10 = (ra10 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh10, ix10, mem_ie[ix10[AB_IE-1:0]], mem_ld[ix10[AB_LD-1:0]],
+                         mem_fe[ix10[AB_FE-1:0]], mem_ie2[ix10[AB_IE2-1:0]], mem_ie3[ix10[AB_IE3-1:0]]);
+   assign rd11 = (ra11 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh11, ix11, mem_ie[ix11[AB_IE-1:0]], mem_ld[ix11[AB_LD-1:0]],
+                         mem_fe[ix11[AB_FE-1:0]], mem_ie2[ix11[AB_IE2-1:0]], mem_ie3[ix11[AB_IE3-1:0]]);
+   assign rd12 = (ra12 == {PBITS{1'b0}}) ? 64'd0
+              : rd_shard(sh12, ix12, mem_ie[ix12[AB_IE-1:0]], mem_ld[ix12[AB_LD-1:0]],
+                         mem_fe[ix12[AB_FE-1:0]], mem_ie2[ix12[AB_IE2-1:0]], mem_ie3[ix12[AB_IE3-1:0]]);
+
+   integer j;
+   initial begin
+      for (j = 0; j < N_IE; j = j + 1) mem_ie[j] = 64'd0;
+      for (j = 0; j < N_LD; j = j + 1) mem_ld[j] = 64'd0;
+      for (j = 0; j < N_FE; j = j + 1) mem_fe[j] = 64'd0;
+      // Boot seed, mirroring rv_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
+      // {SH_IE, 11} at reset (see smolrv64_rename's reset arm), so the seed lands in mem_ie[11].
+      // Sim-only and inert unless a TB passes +a1=, but NOT optional: a harness that resets
+      // straight to OpenSBI expects the pointer there, and without this the shadow check
+      // fires 255 cycles into Linux boot -- which is exactly how this omission was found.
+      begin : seed reg [63:0] a1v;
+         if ($value$plusargs("a1=%h", a1v)) mem_ie[11] = a1v;
+      end
+   end
+
+   always @(posedge clk) begin
+      if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
+      if (we_ld) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
+      if (we_fe) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
+      if (we_ie2) mem_ie2[wa_ie2[AB_IE2-1:0]] <= wd_ie2;
+      if (we_ie3) mem_ie3[wa_ie3[AB_IE3-1:0]] <= wd_ie3;
+   end
+
+   // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
+   // The bound is compared at IDXB+1 bits: N_LD=128 truncates to 0 in IDXB=7 bits, which
+   // silently turns the check into `idx >= 0` and fires on every write.
+   // A write must name its own shard and stay inside that shard's capacity.  Either would
+   // otherwise be a silent wrong-register write -- exactly the class of defect that costs
+   // days here, because the value surfaces far from the mistake.
+   always @(posedge clk) begin
+      if (we_ie && (wa_ie[PBITS-1:IDXB] != SH_IE))
+         $fatal(1, "smolrv64_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
+                wa_ie, wa_ie[PBITS-1:IDXB]);
+      if (we_ld && (wa_ld[PBITS-1:IDXB] != SH_LD))
+         $fatal(1, "smolrv64_prf: load write to pr=%h, shard %0d is not SH_LD",
+                wa_ld, wa_ld[PBITS-1:IDXB]);
+      if (we_fe && (wa_fe[PBITS-1:IDXB] != SH_FE))
+         $fatal(1, "smolrv64_prf: fp-exec write to pr=%h, shard %0d is not SH_FE",
+                wa_fe, wa_fe[PBITS-1:IDXB]);
+      if (we_ie2 && (wa_ie2[PBITS-1:IDXB] != SH_IE2))
+         $fatal(1, "smolrv64_prf: second int-exec write to pr=%h, shard %0d is not SH_IE2",
+                wa_ie2, wa_ie2[PBITS-1:IDXB]);
+      if (we_ie3 && (wa_ie3[PBITS-1:IDXB] != SH_IE3))
+         $fatal(1, "smolrv64_prf: third int-exec write to pr=%h, shard %0d is not SH_IE3",
+                wa_ie3, wa_ie3[PBITS-1:IDXB]);
+      if (we_ie && ({1'b0, wa_ie[IDXB-1:0]} >= N_IE[IDXB:0]))
+         $fatal(1, "smolrv64_prf: int-exec write idx %0d >= N_IE %0d", wa_ie[IDXB-1:0], N_IE);
+      if (we_ld && ({1'b0, wa_ld[IDXB-1:0]} >= N_LD[IDXB:0]))
+         $fatal(1, "smolrv64_prf: load write idx %0d >= N_LD %0d", wa_ld[IDXB-1:0], N_LD);
+      if (we_ie2 && ({1'b0, wa_ie2[IDXB-1:0]} >= N_IE2[IDXB:0]))
+         $fatal(1, "smolrv64_prf: second int-exec write idx %0d >= N_IE2 %0d", wa_ie2[IDXB-1:0], N_IE2);
+      if (we_ie3 && ({1'b0, wa_ie3[IDXB-1:0]} >= N_IE3[IDXB:0]))
+         $fatal(1, "smolrv64_prf: third int-exec write idx %0d >= N_IE3 %0d", wa_ie3[IDXB-1:0], N_IE3);
+      if (we_fe && ({1'b0, wa_fe[IDXB-1:0]} >= N_FE[IDXB:0]))
+         $fatal(1, "smolrv64_prf: fp-exec write idx %0d >= N_FE %0d", wa_fe[IDXB-1:0], N_FE);
+      if (we_ie && wa_ie == {PBITS{1'b0}})
+         $fatal(1, "smolrv64_prf: write to physical register 0 (architectural zero)");
+   end
+
+   // The deadlock floor, checked once at elaboration rather than argued in a comment.
+   initial begin
+      if (N_IE <= 32) $fatal(1, "smolrv64_prf: N_IE=%0d must exceed 32 integer arch regs", N_IE);
+      if (N_IE3 <= 32) $fatal(1, "smolrv64_prf: N_IE3=%0d must exceed 32 integer arch regs", N_IE3);
+      // SH_FE holds ONLY fp mappings: smolrv64_core routes FP instructions with an integer
+      // destination (fcvt.w.d, fmv.x.w, fclass, fcmp) to SH_LD instead.  So its floor is 32
+      // architectural fp registers plus one free, not 64.
+      if (N_FE <= 32) $fatal(1, "smolrv64_prf: N_FE=%0d must exceed 32 fp arch regs", N_FE);
+      if (N_LD <= 64) $fatal(1, "smolrv64_prf: N_LD=%0d must exceed 64 (int AND fp map here)", N_LD);
+      if (NMAX > (1 << IDXB))
+         $fatal(1, "smolrv64_prf: NMAX=%0d exceeds IDXB=%0d addressable", NMAX, IDXB);
+   end
+endmodule
+
+`default_nettype wire

@@ -70,15 +70,15 @@ even there, the IW=3 timing push is moot and the real boot-IPC lever is the **D$
 
 ## How to work here
 
-- Gates: `ooo2/run-ooo2-vl.sh` (pass=240 fail=0); `CYC=60000000 VDEFS='-DOOO2_IW=3
-  -DOOO2_HW=8' ooo2/run-ooo2-cosim-linux.sh` (retire-lockstep). `src/lint.sh` is red on a
+- Gates: `core/run-vl.sh` (pass=240 fail=0); `CYC=60000000 VDEFS='-DSMOLRV64_IW=3
+  -DSMOLRV64_HW=8' core/run-cosim-linux.sh` (retire-lockstep). `src/lint.sh` is red on a
   **pre-existing** UNOPTFLAT (`m_done_red`) fatal under Verilator 5.041 — verify via
   sim/Vivado, not lint.
-- Vivado: from `platforms/rk-xcku5p-f-v1.2`, `OOO2_IW=3 OOO2_HW=8 make reset && make bit`;
+- Vivado: from `platforms/rk-xcku5p-f-v1.2`, `SMOLRV64_IW=3 SMOLRV64_HW=8 make reset && make bit`;
   then `make timing` / `make census` / `make place-report` read the existing checkpoint (no
   rebuild). **No Verilator while Vivado builds.** Long jobs in tmux (the harness culls
   background waiters under memory pressure; tmux jobs survive).
-- Always pass `VDEFS='-DOOO2_IW=3 -DOOO2_HW=8'` for IW=3 cosims (default is IW=2).
+- Always pass `VDEFS='-DSMOLRV64_IW=3 -DSMOLRV64_HW=8'` for IW=3 cosims (default is IW=2).
 - Git in the worktree: `third_party/cvfpu` is a **symlink** — `mv` it aside for any git op,
   `mv` it back for sims. Stage EXPLICIT paths only, never `git add -A/-u`. Commit only
   outside Mon–Fri 09:00–17:00 PDT and only when Tommy asks; exclude `rk_xcku5p.xpr`.
@@ -87,8 +87,8 @@ even there, the IW=3 timing push is moot and the real boot-IPC lever is the **D$
 
 ## Key files
 
-- `ooo2/ooo2_prf.v` — the PRF and its read ports.
-- `ooo2/ooo2_core.v` — `ps_out_a/ps_out_a2/ps_out_f` (PRF read outputs) → ALU/F execute; the
+- `core/smolrv64_prf.v` — the PRF and its read ports.
+- `core/smolrv64_core.v` — `ps_out_a/ps_out_a2/ps_out_f` (PRF read outputs) → ALU/F execute; the
   schedulers `u_iq_i/i2/l/f`; the `wkv`/`wkp` writeback broadcast; the new dispatch stage
   (`stg_*`, `mv_*`) and the swizzle (`c_to_*`, `l_slot0`, `f_slot0`).
 - `platforms/rk-xcku5p-f-v1.2/report_place.tcl` (`make place-report`) — clock-region spread.

@@ -19,7 +19,7 @@ drills down per bucket. Nothing about the report is fabricated or caveated; a "�
 
 ## Why the current report cannot close
 
-The `0x03xx` taps are *wait-cycle multipliers*, not a cycle partition (`ooo2/ooo2_core.v`,
+The `0x03xx` taps are *wait-cycle multipliers*, not a cycle partition (`core/smolrv64_core.v`,
 stall-attribution block ~2592-2722):
 
 - `ST_DIV`/`ST_MUL`/`ST_FPU` are **port occupancy** (`md_v`, `f_valid & ~fp_disp`) — since C1
@@ -103,14 +103,14 @@ easy at 13 counters.
 
 ## Increments
 
-Each increment: **lint → `ooo2/run-ooo2-vl.sh` (240/0) → benches (`run-ooo2-*-tb.sh`,
-`src/run-tb.sh`) → 300 M-cycle cosim (`CYC=300000000 ooo2/run-ooo2-cosim-linux.sh`) →
-board gate (`tools/gate.sh`, `login:`, zero faults)**, and the `docs/OOO2-Spec.md` §11
+Each increment: **lint → `core/run-vl.sh` (240/0) → benches (`run-*-tb.sh`,
+`src/run-tb.sh`) → 300 M-cycle cosim (`CYC=300000000 core/run-cosim-linux.sh`) →
+board gate (`tools/gate.sh`, `login:`, zero faults)**, and the `docs/SmolRV64-Spec.md` §11
 counter table is updated in the **same commit** as the RTL change that moves a number.
 
 ### Increment 0 — `TD_BE`: Level-1 closes (the one-tap fix)
 
-**Impl.** In `ooo2/ooo2_core.v` stall-attribution block (~2694): add
+**Impl.** In `core/smolrv64_core.v` stall-attribution block (~2694): add
 `wire td_be = ~redirect & ~rd_wait & (st_m | (d_valid & ~d_take));`, splice it into `hpm_ev`
 (~2710) as a new bit, and add `HPMEV_TD_BE = 16'h0402, // exclusive back-end: charge a cycle \
 to M-held or dispatch-held, not a mispredict-resolve` to the `csr_file.v` event block. Regen
@@ -123,7 +123,7 @@ it wanders past a tolerance, so a silently-wrong map shows up as a broken identi
 the existing cpi-stack philosophy). Until `TD_BE` exists in a run, `--topdown` keeps the
 overlapping wait-share mode — the tool is valid before and after the RTL lands. `perf-smol.sh`
 `td` set: drop the now-redundant rack if needed, include `r0402`, keep `r0310,r0005,r0317`.
-`docs/OOO2-Spec.md` §11: document `TD_BE` 0x0402 and the closure identity.
+`docs/SmolRV64-Spec.md` §11: document `TD_BE` 0x0402 and the closure identity.
 
 **Effort.** One `wire`, two mux entries, one CSR line, ~40 lines of tool. Lowest-risk
 increment; no timing path (registered instrumentation bus).
@@ -173,7 +173,7 @@ the parent).
 `RD_WAIT`; depth: `TD_BE_MEM` + `TD_BE_ROB` + `TD_BE_IQ` + `TD_FE_LAT` + `TD_FE_BW` + `DPATCH`
 + `RED_BR` + `RED_JLR`), and update the header docs to describe a closing Level-1. Keep `cpi`,
 `memcpi`, `hold`, `br` as depth-only deep dives. Update `docs/smolrv64-perf-events.json` (via
-the generator) and `docs/OOO2-Spec.md` §11. Board: `make` the shipping config, boot to
+the generator) and `docs/SmolRV64-Spec.md` §11. Board: `make` the shipping config, boot to
 `login:` with **zero faults**, one `td` run that closes to 100%, and the board verdict line.
 
 **Effort.** Script + docs only.
@@ -185,9 +185,9 @@ the generator) and `docs/OOO2-Spec.md` §11. Board: `make` the shipping config, 
 | gate | command | pass |
 |---|---|---|
 | lint | `src/lint.sh` | `lint: clean` (waivers never global `-Wno-`; they still name a file) |
-| riscv-tests | `ooo2/run-ooo2-vl.sh` (`tests/run-riscv-tests.sh`) | `pass=240 fail=0` |
-| unit benches | `ooo2/run-ooo2-*-tb.sh`, `src/run-tb.sh` | all (port change on the shared `csr_file.v`/event bus → rule G4) |
-| cosim | `CYC=300000000 ooo2/run-ooo2-cosim-linux.sh` | lockstep clean, per §12 |
+| riscv-tests | `core/run-vl.sh` (`tests/run-riscv-tests.sh`) | `pass=240 fail=0` |
+| unit benches | `core/run-*-tb.sh`, `src/run-tb.sh` | all (port change on the shared `csr_file.v`/event bus → rule G4) |
+| cosim | `CYC=300000000 core/run-cosim-linux.sh` | lockstep clean, per §12 |
 | board | `platforms/rk-xcku5p-f-v1.2/` `make bit`/`make program`; `tools/gate.sh` | boots Ubuntu to `login:` with zero faults |
 
 ## Not in scope (deferred)
@@ -203,7 +203,7 @@ the generator) and `docs/OOO2-Spec.md` §11. Board: `make` the shipping config, 
 - [x] **Variant choice: A** (Tommy, 2026-09-28). The simulator already classified every cycle this
       way and closed, so the counters inherit a working classifier and a validator.
 - [x] Increments 0-3, built as one change (2026-09-28, `wip/dcache`):
-  - The classifier moved into `ooo2_core` as `td_k`; `tb_ooo2_linux`'s `TOPDOWN-SIM` reads it, so
+  - The classifier moved into `smolrv64_core` as `td_k`; `tb_smolrv64_linux`'s `TOPDOWN-SIM` reads it, so
     the counters and the simulator cannot disagree.
   - Level 1 needs **three** exclusive events, not one: `TD_BS` (r0401) and `TD_FE` (r0407) are
     not reconstructable from existing counters -- `FE_BUB` also fires in drain cycles, and a
@@ -295,7 +295,7 @@ a *predicted-taken-but-wrong* branch charges it, and then via `UOPS_ISSUED − I
 ## Variant B increments
 
 Each runs the **same standing gates** as A (lint → 240/0 → benches → 300 M-cosim → board),
-and `docs/OOO2-Spec.md` §11 moves numbers in the same commit.
+and `docs/SmolRV64-Spec.md` §11 moves numbers in the same commit.
 
 ### B0 — primitive set + closure classifier
 **Impl.** Add the six `hpm_ev` bits above (`UOPS_ISSUED` and `FETCH_BUBBLE` as 0..IW count

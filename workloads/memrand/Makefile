@@ -29,7 +29,7 @@ $(P).elf: crt0.S memrand.c ops-$(SEED)$(TAG).S memrand.ld
 	$(RV)objcopy -O binary $< $@
 cosim: $(P).bin
 	@out=$$(mktemp); FW=$(CURDIR)/$(P).bin INITRD= CYC=$(CYC) PLUSARGS="+dma_rand=$(SEED) $(PLUSARGS)" \
-	  ../../ooo2/run-ooo2-cosim-linux.sh 2>&1 | tee $$out | grep -a -E 'building|MEMRAND|STORE DATA|Diverging|TIMEOUT after|cosim-perf|dma rd'; \
+	  ../../core/run-cosim-linux.sh 2>&1 | tee $$out | grep -a -E 'building|MEMRAND|STORE DATA|Diverging|TIMEOUT after|cosim-perf|dma rd'; \
 	if { [ -n "$(EXPECT_TRAP)" ] && sed 's/\[c=[^]]*\]//g' $$out | tr -d '\n' | grep -q -E '$(EXPECT_TRAP)' || \
 	     { sed 's/\[c=[^]]*\]//g' $$out | tr -d '\n' | grep -q 'MEMRAND-DONE' && \
 	       ! sed 's/\[c=[^]]*\]//g' $$out | tr -d '\n' | grep -q 'MEMRAND-TRAP'; }; } && \
@@ -38,7 +38,7 @@ cosim: $(P).bin
 sweep:
 	@for s in $(SEEDS); do $(MAKE) --no-print-directory cosim SEED=$$s || exit 1; done
 sweep-iw3:
-	@for s in $(SEEDS); do VDEFS=-DOOO2_IW=3 $(MAKE) --no-print-directory cosim SEED=$$s || exit 1; done
+	@for s in $(SEEDS); do VDEFS=-DSMOLRV64_IW=3 $(MAKE) --no-print-directory cosim SEED=$$s || exit 1; done
 clean:
 	rm -f ops-*.S memrand-*.elf memrand-*.bin
 .PHONY: all cosim sweep sweep-iw3 clean

@@ -35,7 +35,7 @@ whether one fits without giving up the clock is an open question below.
 
 **A real out-of-order core sized for an FPGA.** SmolRV64 is what an R10000-style machine
 looks like when every structure is chosen by what a Kintex LUT, LUTRAM or block RAM does well
-([the specification](docs/OOO2-Spec.md) is the normative description, and every number below
+([the specification](docs/SmolRV64-Spec.md) is the normative description, and every number below
 is read off the RTL or measured with the workload named):
 
 - **Three-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
@@ -180,7 +180,7 @@ Geekbench 5 and multiplies far more.
 
 In lockstep simulation the tiny128 Linux boot retires 33,867,866 instructions in its first
 60 million cycles and 135,292,357 in 300 million. Those counts are the reference in
-`ooo2/cosim-expected.txt`, and a change that moves them names the delta in its commit.
+`core/cosim-expected.txt`, and a change that moves them names the delta in its commit.
 
 The plans behind the design, with every item justified by a measurement on this core,
 are [docs/PLAN-2026-09-05-ipc.md](docs/PLAN-2026-09-05-ipc.md) and
@@ -193,11 +193,11 @@ results will be added as they are run.
 git clone --recursive https://github.com/tommythorn/smolrv64
 cd smolrv64
 src/lint.sh                                   # lint: clean
-ooo2/run-ooo2-vl.sh                           # riscv-tests under Verilator: pass=240 fail=0
-for t in ooo2/run-ooo2-*-tb.sh; do $t; done   # the core's unit benches
+core/run-vl.sh                           # riscv-tests under Verilator: pass=240 fail=0
+for t in core/run-*-tb.sh; do $t; done   # the core's unit benches
 src/run-tb.sh                                 # the shared blocks' and devices' benches
-ooo2/run-ooo2-linux.sh                        # boot Linux (tiny128 initramfs) under Verilator
-CYC=300000000 ooo2/run-ooo2-cosim-linux.sh    # the same boot in lockstep with simmerv
+core/run-linux.sh                        # boot Linux (tiny128 initramfs) under Verilator
+CYC=300000000 core/run-cosim-linux.sh    # the same boot in lockstep with simmerv
 ```
 
 The lockstep runs need a [Simmerv](https://github.com/tommythorn/simmerv) checkout at
@@ -224,13 +224,13 @@ Top-Down event set and prints the report.
 
 | Path | Contents |
 |---|---|
-| `ooo2/` | The core and its SoC top (`rv_soc_top.v`), the caches and the memory-port arbiter, the core's testbenches and run scripts |
+| `core/` | The core and its SoC top (`rv_soc_top.v`), the caches and the memory-port arbiter, the core's testbenches and run scripts |
 | `src/` | The blocks the core shares (fetch, aligner, decode, ALU, MMU, CSRs, the FPU wrapper), the SoC devices (CLINT, PLIC, UART, virtio, Ethernet, SD, the DDR line bridge), their benches, the lint gate, the cosim DPI |
 | `platforms/rk-xcku5p-f-v1.2/` | The FPGA build: top level, constraints, the scripted Vivado flow, the timing and utilization reports, the ILA debug cores |
 | `tools/` | The gate, the netlist boot, the RAM and function-read checks, the perf event sets and CPI stack, the Geekbench trace and chart tools, the frontend and predictor models |
 | `workloads/` | The Linux images and device trees (tiny128, Ubuntu over NFS, Geekbench), the glibc and systemd cosim harnesses, the ROM monitor, the bare-metal microbenchmarks |
 | `tests/` | riscv-tests binaries |
-| `docs/` | The specification (`OOO2-Spec.md`, normative), `rtl-rules.md`, the current plans, and `history/`, the dated design records |
+| `docs/` | The specification (`SmolRV64-Spec.md`, normative), `rtl-rules.md`, the current plans, and `history/`, the dated design records |
 | `third_party/cvfpu` | CVFPU (fpnew), as a submodule |
 
 ## What comes next

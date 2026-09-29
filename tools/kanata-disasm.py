@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Put disassembly into a Kanata pipe view (tb_ooo2_linux +kanata=).
+"""Put disassembly into a Kanata pipe view (tb_smolrv64_linux +kanata=).
 
   tools/kanata-disasm.py run.kanata program.elf > run-dis.kanata
 

@@ -34,7 +34,7 @@ module aligner
     input  wire [SEQW-1:0]         base_seq, // seq of slot 0
     input  wire                    solo_all, // force one instruction per bundle (fault replay)
     input  wire                    bytes_late, // the window is short of the page end: more is coming
-    input  wire [HW-1:0]           mk,       // halfwords that end a CTI the predictor knows (ooo2_fring):
+    input  wire [HW-1:0]           mk,       // halfwords that end a CTI the predictor knows (smolrv64_fring):
                                              // an instruction ending on one ends the bundle, and one
                                              // whose FIRST halfword is marked does not fit
     output wire [IW-1:0]           valid,

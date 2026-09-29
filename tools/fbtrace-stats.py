@@ -7,7 +7,7 @@ frontend change is judged the same way before and after it is built. 2026-09-05:
 sha256 kernel the as-built buffer emitted a bundle in 74.6% of cycles (model 75.1%), the
 run-ahead buffer (item 10e) in 99.0%.
 
-    VDEFS=-DFB_TRACE BUILD=1 FW=.../shabench.bin CYC=8100000 ooo2/run-ooo2-linux.sh \
+    VDEFS=-DFB_TRACE BUILD=1 FW=.../shabench.bin CYC=8100000 core/run-linux.sh \
         +trace_from=8000000 +trace_to=8100000 > trace.out
     tools/fbtrace-stats.py trace.out 8000000 8100000"""
 import re, sys

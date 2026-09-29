@@ -26,7 +26,7 @@
 // If tree >> serial, the machine is latency-bound on the chain and the fix is window or
 // code shape, not FPU throughput.
 //
-// Measure at VDEFS="-DOOO2_HW=4".
+// Measure at VDEFS="-DSMOLRV64_HW=4".
 
 typedef unsigned char  uint8_t;
 typedef unsigned long  uint64_t;

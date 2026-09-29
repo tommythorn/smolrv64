@@ -2,7 +2,7 @@
 name = "pipeview"
 version = "0.1.0"
 edition = "2021"
-description = "Terminal pipe viewer for the ooo2 testbench's Kanata stream"
+description = "Terminal pipe viewer for the SmolRV64 testbench's Kanata stream"
 
 [[bin]]
 name = "pipeview"

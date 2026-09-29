@@ -1,5 +1,5 @@
 # stbench: store throughput, L1-resident (see stbench.c). Boots at 0x8000_0000.
-#   make && FW=$(pwd)/stbench.bin ../../ooo2/run-ooo2-linux.sh
+#   make && FW=$(pwd)/stbench.bin ../../core/run-linux.sh
 platform=$(shell uname -o)
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-

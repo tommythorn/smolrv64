@@ -23,7 +23,7 @@ module fp_unit #(parameter TAGW = 24,
                  // cycles/op against 8.00 for a serial chain: an overlap of 1.99x where the
                  // unit's own latency (PIPE_REGS) should have allowed far more.
                  //
-                 // The default stays 1 (the retired sharded core's value; ooo2_core passes 4):
+                 // The default stays 1 (the retired sharded core's value; smolrv64_core passes 4):
                  // at NFLIGHT=1 every expression below reduces to the single-slot wrapper it
                  // replaced. Only a caller that can route results by tag
                  // may raise it -- with more than one in flight, results come back TAGGED and
@@ -85,9 +85,9 @@ module fp_unit #(parameter TAGW = 24,
    fpnew_pkg::status_t   fpn_status;
    logic [TAGW-1:0]      fpn_tag;
 
-   // ONE OP IN FLIGHT, which is the contract both callers already rely on (ooo2_core asserts
+   // ONE OP IN FLIGHT, which is the contract both callers already rely on (smolrv64_core asserts
    // it, exec_shard gates on busy). The result is REGISTERED rather than passed straight
-   // out: res_valid feeds m_done in ooo2_core, and fpnew's combinational output there would
+   // out: res_valid feeds m_done in smolrv64_core, and fpnew's combinational output there would
    // drag the whole FP datapath into the completion cone.
    //
    // EVERY OUTPUT OF THIS MODULE IS A REGISTER, and iss_ready especially. fpnew's

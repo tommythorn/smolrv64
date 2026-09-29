@@ -38,7 +38,7 @@ lint_top() {                      # <label> <top-module> <sources...>
    local label=$1 top=$2; shift 2
    local log=/tmp/smolrv64-lint-$label.log
    verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \
-      -I. -I../ooo2 --top-module "$top" \
+      -I. -I../core --top-module "$top" \
       "$@" -f ./cvfpu_sources.f fp_unit.sv \
       ./verilator.vlt > "$log" 2>&1 || {
          echo "---- LINT FAILED ($label: top=$top) ----"
@@ -53,7 +53,7 @@ lint_top() {                      # <label> <top-module> <sources...>
 }
 
 [ "${1:-}" = "-v" ] && VERBOSE=1
-lint_top ooo2 rv_soc_top $(ooo2_sources)
+lint_top core rv_soc_top $(smolrv64_sources)
 
 # docs/smolrv64-perf-events.json is generated from csr_file.v's event map. It is checked
 # HERE because a generated file nothing verifies is a file that drifts: this one had drifted
@@ -74,17 +74,17 @@ lint_top ooo2 rv_soc_top $(ooo2_sources)
 ../tools/check-dts-timebase.py 48 ../workloads/ubuntu/ubuntu-nfs.dts \
                                  ../workloads/gb5/gb5-fpga.dts || fail=1
 
-# The core faults every PA at or above its DRAM top (ooo2_core, THE PHYSICAL-ADDRESS CAP), so a
+# The core faults every PA at or above its DRAM top (smolrv64_core, THE PHYSICAL-ADDRESS CAP), so a
 # board DTS must not describe memory beyond it.
 ../tools/check-dts-memory.py ../workloads/ubuntu/ubuntu-nfs.dts ../workloads/gb5/gb5-fpga.dts || fail=1
 
 # Rule F4: no function reads an array -- Vivado keeps one read port per such function and
 # folds the other call sites to 0 (rename port A wrote p0 on four bitstreams, 2026-09-06).
-../tools/check-func-ram-reads.py ../ooo2/*.v ../src/*.v || fail=1
+../tools/check-func-ram-reads.py ../core/*.v ../src/*.v || fail=1
 
 # Benches draw from src/tb_rand.vh. Under Verilator a seeded $random or $urandom walks a
 # degenerate sequence, so a bench drawing from one runs the same stimulus whatever its seed.
-if grep -nE '^[^/]*\$u?random *\(' ../ooo2/tb_*.v ../src/tb_*.v; then
+if grep -nE '^[^/]*\$u?random *\(' ../core/tb_*.v ../src/tb_*.v; then
    echo "lint: a seeded \$random/\$urandom in a bench -- draw from src/tb_rand.vh"; fail=1
 fi
 

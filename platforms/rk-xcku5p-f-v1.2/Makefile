@@ -7,7 +7,7 @@ BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit
 TTY      := /dev/ttyUSB1
 WORKLOAD ?= ../../workloads/monitor
 
-# THE SHIPPING BUILD NEEDS NO ARGUMENTS: `make` builds ooo2/rv_soc_top at OOO2_HW=8 and
+# THE SHIPPING BUILD NEEDS NO ARGUMENTS: `make` builds core/rv_soc_top at SMOLRV64_HW=8 and
 # PROBE_CLK_DIV8=48 (166.67 MHz). Every knob below is a debug or experiment override.
 export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
 
@@ -19,8 +19,8 @@ endif
 # Fetch window halfwords.  8 is the default in the RTL, in build.tcl and here (since 2026-09-05;
 # 4 before): a 16-byte window.  2, 4 and 8 elaborate.  Setting 2 builds a 32-bit fetch window
 # that no bitstream should ship.
-ifneq ($(strip $(OOO2_HW)),)
-export OOO2_HW
+ifneq ($(strip $(SMOLRV64_HW)),)
+export SMOLRV64_HW
 endif
 
 # Fmax sweep: probe_clk = 1000MHz*8/PROBE_CLK_DIV8, from an MMCM, so the frequency is
@@ -119,7 +119,7 @@ place-report:
 	$(VIVADO) $(VFLAGS) -source report_place.tcl
 
 # Synthesise ONE module alone and report its intrinsic Fmax and logic depth.
-#   make ooc MODULE=ooo2_iq [PERIOD=6.0] [GENERICS="P=V ..."] [REPORT=/path/to/write]
+#   make ooc MODULE=smolrv64_iq [PERIOD=6.0] [GENERICS="P=V ..."] [REPORT=/path/to/write]
 #   GENERICS is the INSTANCE's parameters -- without it the module DEFAULTS are measured,
 #   which for rv_cache is a 128 KB / PAW=34 cache nothing instantiates (see ooc.tcl).
 # The flat design is 65-83% route and placement-dominated (rules I2/I7), so it cannot judge a

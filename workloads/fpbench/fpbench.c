@@ -16,8 +16,8 @@
 // If thru ~= lat, nothing overlaps and issue is the constraint (what P3 would fix).
 // If thru << lat, the FPU is already pipelined and P3 buys little on this shape.
 //
-// Bare-metal M-mode, boots at 0x8000_0000:  FW=fpbench.bin ooo2/run-ooo2-linux.sh
-// Measure at VDEFS="-DOOO2_HW=4" -- the sim default is a fetch width no hardware uses.
+// Bare-metal M-mode, boots at 0x8000_0000:  FW=fpbench.bin core/run-linux.sh
+// Measure at VDEFS="-DSMOLRV64_HW=4" -- the sim default is a fetch width no hardware uses.
 
 typedef unsigned char  uint8_t;
 typedef unsigned int   uint32_t;

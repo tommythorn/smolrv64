@@ -5,16 +5,16 @@ against the pre-release tree. Nothing here is implemented.
 
 ## Why
 
-The `ooo2/` front end is a pile of Fmax special cases that are individually justified and
+The `core/` front end is a pile of Fmax special cases that are individually justified and
 collectively unreadable:
 
 | special case | where | for |
 |---|---|---|
-| `apc` / `apred_v` ahead-PC split | `src/fetch.v`, `ooo2/ooo2_predictor.v` | keep the predictor BRAM address register-only |
+| `apc` / `apred_v` ahead-PC split | `src/fetch.v`, `core/smolrv64_predictor.v` | keep the predictor BRAM address register-only |
 | `pnpc_kind` (2-bit selector) | `src/fetch.v` | disambiguate which next-PC a registered prediction meant |
 | `lenp` (1024×1 RVC-length table) | `src/fetch.v` | let `apc` advance without decoding |
 | straddle FSM + `pc2_q` | `src/fetch.v` | a 32-bit op crossing the window end |
-| VA-tagged run-ahead fetch buffer | `ooo2/rv_soc_top.v` (~350 lines) | hide iMMU latency ahead of a PIPT I$ |
+| VA-tagged run-ahead fetch buffer | `core/rv_soc_top.v` (~350 lines) | hide iMMU latency ahead of a PIPT I$ |
 
 **Priorities, in order.** (1) `probe_clk` **≥ 166.667 MHz is a hard requirement**, never traded
 for anything. (2) **IPC is the primary objective** among the designs that meet it. (3) A
@@ -27,7 +27,7 @@ risk they carry is frequency.
 
 ## Ground truth (this tree, post-release)
 
-- **One core.** The sharded core was deleted in the 2026-09 release; nothing outside `ooo2/`
+- **One core.** The sharded core was deleted in the 2026-09 release; nothing outside `core/`
   uses `src/fetch.v`, `aligner.v`, `predictor.v`, `decode_*.v`. **Edit them in place — no
   forks.**
 - **References live in git history, not the tree.** The conventional width-parameterized front
@@ -98,7 +98,7 @@ unless the spike shows one holds 166.667 at IW=3. RVC-expand (a ROM lookup) sits
 decode; that the two share one combinational step within FD is the expectation, and is a
 separate question from the FA/FD merge.
 
-**Spike result (2026-09-13, `wip/fe-spike` `ooo2_fadd_spike.v` — the real aligner at IW feeding
+**Spike result (2026-09-13, `wip/fe-spike` `smolrv64_fadd_spike.v` — the real aligner at IW feeding
 IW `decode_slot`s plus the intra-bundle dependency compare, OOC at 6 ns, both directives):**
 
 | IW | place Explore | place AltSpreadLogic_medium | logic levels |
@@ -176,7 +176,7 @@ ways. **Fallback, only if even a small BTB will not close single-cycle:** a µBT
 next-PC table) ahead of a BRAM BTB — one more structure, the same override machinery one level
 out. Expected unnecessary if the hypothesis holds.
 
-**Spike result (2026-09-13, `wip/fe-spike` `ooo2_btb_spike.v`, OOC at 6 ns, two place
+**Spike result (2026-09-13, `wip/fe-spike` `smolrv64_btb_spike.v`, OOC at 6 ns, two place
 directives).** The BTB single-cycle cone closes with **2.6-3.5 ns to spare at every depth**,
 YAGS excluded — your hypothesis holds decisively:
 
@@ -255,14 +255,14 @@ buys that back conventionally. That bet decides everything, so prove it before S
 
 ## Stages
 
-Each lands and is verified on its own. `OOO2_IW` defaults to **1**, so Stages 1–2 are
+Each lands and is verified on its own. `SMOLRV64_IW` defaults to **1**, so Stages 1–2 are
 bit-identical to today at the shipping width and carry no IPC risk.
 
 **Stage 0 — correct the record (docs only, immediate).** The release already quarantined the
 111 MHz claims under `docs/history/`, closed the `run-ooo2-tests.sh` hole (deleted), and
 `RD_WAIT` is captured (GB6, r0317). Residual: the `rv_soc_top.v:7` header ("No width knobs /
 HW=2 halfwords" → HW=8), the spec's `q_dat` width (283 → 255) and arbiter count (`NREQ=2`), and
-**parameterize `tb_ooo2_riscv.v` (line 13 hardcodes `HW=2`)** so riscv-tests exercise the
+**parameterize `tb_smolrv64_riscv.v` (line 13 hardcodes `HW=2`)** so riscv-tests exercise the
 shipping window — the one real verification hole left.
 
 **Stage 1 — conventional FP/FA/FD, `IW`-parameterized, `IW=1` bit-identical.** Build the named
@@ -272,8 +272,8 @@ BRAM address, so rule I6 holds with no ahead/real split); `pnpc_kind` → gone; 
 `eff_avail = min(imem_avail, hw_cap)`. **The push→pop bypass on the decoupling queue is
 deliberately NOT done** — it would put a mux on the queue-read path, and per your call we trade
 that IPC (`FE_QUE`: 7.8% of sha256sum cycles, 24% on the AES kernel) for timing; revisit only if
-a census shows slack. *Acceptance:* `ooo2/run-ooo2-cosim-linux.sh` at `HW=8 CYC=60000000`
-returns the recorded count (`ooo2/cosim-expected.txt`: 14,301,801 ± 0.5%).
+a census shows slack. *Acceptance:* `core/run-cosim-linux.sh` at `HW=8 CYC=60000000`
+returns the recorded count (`core/cosim-expected.txt`: 14,301,801 ± 0.5%).
 
 **Stage 2 — VHPR I$: translation off the fetch hit path (the prize).** Make the I$ virtually hit
 (`docs/VHPR.md`; hit = `valid & epoch & ASID & vtag & perms`, physical tag off the hit path,
@@ -308,12 +308,12 @@ needs, in order of what breaks first:
   the map handles only cross-cycle deps.
 - **RMAP, free lists** `fl_ie/ld/fe`: `IW` commit writes / `IW` head-moves per cycle,
   **head-move only, never widen the walk** (`Area-Efficient-Scalar-OoO.md` Appendix A).
-- **`ooo2_iq` dispatch, `ooo2_rob` commit**: `N` ports; **the `irr` pointer must advance `N`/cycle**
+- **`smolrv64_iq` dispatch, `smolrv64_rob` commit**: `N` ports; **the `irr` pointer must advance `N`/cycle**
   or it gates the store queue (`irr` is what commits stores).
-- **`ooo2_pending`** `N`-wide; the redirect squashes younger slots in the same bundle.
+- **`smolrv64_pending`** `N`-wide; the redirect squashes younger slots in the same bundle.
 - **First thing to break: the `mem_ld` PRF port** — two writers already (a landing load and M's
   mul/div), asserted safe only because `m_done` is forced low on `ld_land`. Budget `IW=2` as the
-  deliverable, `IW=3` as follow-on. Needs `ooo2/sweep.sh` over `OOO2_IW ∈ {1,2,3}`.
+  deliverable, `IW=3` as follow-on. Needs `core/sweep.sh` over `SMOLRV64_IW ∈ {1,2,3}`.
 
 **Stage 4 — re-derive only what timing demands.** After each stage, `make census` + `make timing`
 (two directives). Re-add a survivor only with a one-line reason at the site and a spec entry.
@@ -326,12 +326,12 @@ easier to widen). The spike gates the whole plan.
 
 ## Gates (per stage, cheapest first)
 
-`ooo2/run-ooo2-*-tb.sh` → `src/lint.sh` (`lint: clean`, PINMISSING is a hard error) →
-`ooo2/run-ooo2-vl.sh` (`pass=240 fail=0`) → `ooo2/run-ooo2-directed.sh` (add a front-end
+`core/run-*-tb.sh` → `src/lint.sh` (`lint: clean`, PINMISSING is a hard error) →
+`core/run-vl.sh` (`pass=240 fail=0`) → `core/run-directed.sh` (add a front-end
 regression: straddle at a page boundary, a not-taken branch mid-parcel, `fence.i` vs the I$) →
-`CYC=60000000 ooo2/run-ooo2-cosim-linux.sh` (300000000 before shipping) →
-`ooo2/run-ooo2-cosim-gb5.sh` per batch → `make census`/`timing` → `tools/board-gate.sh`. Match
-`OOO2_HW`/`OOO2_IW`/`CACHE`/`CYC` across every compared pair; never build the `HW=2` point.
+`CYC=60000000 core/run-cosim-linux.sh` (300000000 before shipping) →
+`core/run-cosim-gb5.sh` per batch → `make census`/`timing` → `tools/board-gate.sh`. Match
+`SMOLRV64_HW`/`SMOLRV64_IW`/`CACHE`/`CYC` across every compared pair; never build the `HW=2` point.
 
 ## Spec (`docs/rtl-rules.md` H4, part of each commit)
 

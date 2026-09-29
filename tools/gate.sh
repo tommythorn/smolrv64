@@ -4,7 +4,7 @@
 #   tools/gate.sh              # gate the working tree
 #   tools/gate.sh <commit>     # check out <commit> first (detached), then gate it
 #
-# Two hard gates, in this order (docs/OOO2-Spec.md, and Tommy 2026-09-01):
+# Two hard gates, in this order (docs/SmolRV64-Spec.md, and Tommy 2026-09-01):
 #   1. probe_clk closes at 166.67 MHz -- `make` alone, no last-mile pass to remember
 #   2. the board boots to a login: prompt WITH ZERO PROCESSES SEGFAULTING
 # Neither is tradeable. An IPC regression on the way to more IPC is fine; a WNS miss is not,
@@ -39,17 +39,17 @@ git log -1 --format='%H%n%s%n%ci' > "$RES/commit.txt"
 # ---- 1. fast gates first: they cost seconds and can veto an hour ----------------------
 (cd "$REPO/src" && ./lint.sh 2>&1 | tail -1) || { echo "GATE: FAIL (lint)"; exit 1; }
 # EVERY unit tb, found by GLOB rather than named one at a time. Only the cache tb was ever
-# run here; on 2026-09-03 three of the other four turned out not even to COMPILE -- tb_ooo2_iq
-# lost `iss_ps` when the tags moved to a LUTRAM, and tb_ooo2_lq/tb_ooo2_sq still drive the
+# run here; on 2026-09-03 three of the other four turned out not even to COMPILE -- tb_smolrv64_iq
+# lost `iss_ps` when the tags moved to a LUTRAM, and tb_smolrv64_lq/tb_smolrv64_sq still drive the
 # per-candidate address ports that the conflict-matrix rewrite deleted. Nothing noticed,
 # because no gate ran them and the runners sent their build errors to /dev/null. A test that
 # does not compile is a test that cannot fail, which is the same defect as a test that passes
-# vacuously. A build failure here is a GATE failure, and a new run-ooo2-*-tb.sh is picked up
+# vacuously. A build failure here is a GATE failure, and a new run-*-tb.sh is picked up
 # without editing this file.
-for tb in "$REPO"/ooo2/run-ooo2-*-tb.sh; do
+for tb in "$REPO"/core/run-*-tb.sh; do
    [ -x "$tb" ] || continue
    n=$(basename "$tb" .sh)
-   (cd "$REPO/ooo2" && "$tb") > "$RES/$n.log" 2>&1
+   (cd "$REPO/core" && "$tb") > "$RES/$n.log" 2>&1
    rc=$?
    grep -E 'PASS|FAIL|BUILD FAILED' "$RES/$n.log" | sed "s/^/  [$n] /"
    if [ $rc -ne 0 ] || grep -q 'FAIL' "$RES/$n.log"; then

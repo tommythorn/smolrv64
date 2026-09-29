@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Replay an FPGA instruction trace through ooo2_predictor's ACTUAL structures.
+"""Replay an FPGA instruction trace through smolrv64_predictor's ACTUAL structures.
 
   tools/trace-bp.py ~/gb5-traces/*.trace
   tools/trace-bp.py --btbb 10 ~/gb5-traces/html5.trace     # what a 4x BTB would buy
 
 Companion to tools/trace-limit.py. That one answers "how much ILP is there"; this one
 answers "does the frontend find it", which the CPI counters can only observe as one
-lumped FE_BUB. Modelled exactly as ooo2_predictor.v builds them:
+lumped FE_BUB. Modelled exactly as smolrv64_predictor.v builds them:
 
   BTB  1<<BTBB entries, bidx = pc[BTBB:1]
        btag = pc[BTBB+TAGW:BTBB+1] ^ pc[BTBB+2*TAGW:BTBB+TAGW+1] ^ pc[63]

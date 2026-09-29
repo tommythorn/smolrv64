@@ -947,7 +947,7 @@ of slots rather than a scan.
 
 **What this replaces.** An earlier version of this section gated *issue*:
 `load_may_issue(i) = sq_count == 0 || age(sq_rob_idx[sq_head]) > age(i)`. That is a
-stronger condition than correctness needs, and in `ooo2` it is the reason the memory
+stronger condition than correctness needs, and in SmolRV64 it is the reason the memory
 scheduler is in-order at all — every mul/div, CSR, branch and jump routed through the same
 stage inherited an ordering that only loads and stores ever required.
 

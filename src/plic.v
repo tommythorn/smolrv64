@@ -52,8 +52,8 @@ module plic #(parameter NSRC = 64)
 
    wire [5:0] best_irq;
    wire       has_irq;
-`ifdef OOO2_IRQ_STIM
-   // SIM-ONLY (see rv_soc_top's OOO2_IRQ_STIM): source 10 counts as enabled at priority >= 1
+`ifdef SMOLRV64_IRQ_STIM
+   // SIM-ONLY (see rv_soc_top's SMOLRV64_IRQ_STIM): source 10 counts as enabled at priority >= 1
    // whatever the kernel wrote (it masks a source by writing priority 0 and never requests the
    // UART line before the tty opens), so the spurious level becomes a stream of interrupts.
    wire [63:0]       en_eff   = enabled   | 64'h400;

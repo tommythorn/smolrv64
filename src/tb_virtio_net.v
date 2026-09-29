@@ -7,7 +7,7 @@
 // the way Linux does, checks every byte and the used rings, and prints the cycles per
 // frame each way at a DDR-like AXI latency, so the number is a gate, not a guess.
 //
-//   ./ooo2/run-ooo2-vnet-tb.sh          VNET-TB PASS tx=<cycles/frame> rx=<cycles/frame>
+//   ./core/run-vnet-tb.sh          VNET-TB PASS tx=<cycles/frame> rx=<cycles/frame>
 `timescale 1ns/1ps
 `default_nettype none
 `include "tb_rand.vh"

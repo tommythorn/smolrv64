@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A cycle model of the two-wide frontend over one straight-line function: the fetch
-buffer's request and fill rules (ooo2/rv_soc_top.v), the aligner's bundle rules
+buffer's request and fill rules (core/rv_soc_top.v), the aligner's bundle rules
 (src/aligner.v), an I$ that always hits with the measured request->response latency, and a
 backend that never stalls -- the frontend-only ceiling, per design variant, in seconds.
 

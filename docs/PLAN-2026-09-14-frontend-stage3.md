@@ -5,9 +5,9 @@ Branch `wip/fe-stage3` off `main` (`0a1e2de2`, Stage 2 tip). Parent: `PLAN-2026-
 
 ## Goal and the honest framing
 
-Make pipeline width a **real parameter** (`OOO2_IW`, default 2) and restructure rename so the
-machine can be built 1/2/3-wide from one source. **`OOO2_IW` never existed** — width today is a
-hardcoded `localparam FW = 2` in `ooo2_frontend.v`; only the fetch window `HW` flows top-down.
+Make pipeline width a **real parameter** (`SMOLRV64_IW`, default 2) and restructure rename so the
+machine can be built 1/2/3-wide from one source. **`SMOLRV64_IW` never existed** — width today is a
+hardcoded `localparam FW = 2` in `smolrv64_frontend.v`; only the fetch window `HW` flows top-down.
 
 Be honest about payoff:
 
@@ -28,7 +28,7 @@ W-way select and the new cross-pipe sibling-forward are new paths even at `IW=2`
 
 ## Gate-0 — two OOC spikes BEFORE any RTL (rule: confirm before building)
 
-1. **3rd-ALU scheduler entry.** OOC `ooo2_iq` at the incumbent `NWB=4` vs the 3-wide `NWB=5`
+1. **3rd-ALU scheduler entry.** OOC `smolrv64_iq` at the incumbent `NWB=4` vs the 3-wide `NWB=5`
    (5th wakeup broadcast), for the ALU sched (`NENT=10,NSRC=2,FIXEDL=1`) and the heaviest
    M-class (`NENT=12,NSRC=3,INORDER=1`), 6.000 ns both directives. If `NWB=5` falls off the
    cliff, the 3rd ALU is the gate regardless of how clean the rename is. Answers the "major
@@ -40,7 +40,7 @@ W-way select and the new cross-pipe sibling-forward are new paths even at `IW=2`
 
 Go/no-go: (1) close-ish and (2) not a regression → build. Either fails badly → stop, one hour spent.
 
-**Spike 1 RESULT (2026-09-14, `ooo2_iq` OOC @ 6 ns):** ALU sched `NWB=4` WNS +1.571 / `NWB=5`
+**Spike 1 RESULT (2026-09-14, `smolrv64_iq` OOC @ 6 ns):** ALU sched `NWB=4` WNS +1.571 / `NWB=5`
 +2.133; M-class `NWB=4` +3.209 / `NWB=5` +3.158. The 5th broadcast is intrinsically free (the
 delta is OOC noise), so there is **no logic-depth wall** in the scheduler for the 3rd ALU. Caveat
 (rule I2): OOC is route-blind and optimistic — the routed scheduler families sit at ~+0.05–0.14
@@ -59,7 +59,7 @@ steering **before** rename so rename becomes scalar per pipe:
    **pre-rename intra-group dependency resolution** (per source → *from map* or *from sibling
    uop k*; per arch-reg → its *youngest* writer in the group, for WAW), and **steers** the group
    into pipe lanes with **≤1 per issue queue** (this is today's `d2_hold` "different scheduler
-   than A", generalized to W — it is exactly what keeps every `ooo2_iq` at one write port).
+   than A", generalized to W — it is exactly what keeps every `smolrv64_iq` at one write port).
 3. **Per-pipe scalar rename** — each pipe renames its own ≤1 uop: read the map for its sources,
    pop one preg from *its* shard's free list, write its dest to its map copy; the decoder's dep
    result picks map-vs-sibling per source (a small mux, not a live comparator).
@@ -72,14 +72,14 @@ gate-0 spike 1 measures.
 
 ## Per-structure treatment
 
-**Width knob.** Introduce `OOO2_IW` (default 2), thread it top-down like `OOO2_HW`. Derive
+**Width knob.** Introduce `SMOLRV64_IW` (default 2), thread it top-down like `SMOLRV64_HW`. Derive
 `localparam NBANKS = 1 << $clog2(IW)` — the **next power of two** (IW 1/2/3/4 → 1/2/4/4). This is
 the banking answer: keep `bank = i[log2(NBANKS)-1:0]`, `index = i >> log2(NBANKS)` as free
 bit-slices even at IW=3 (mod-3 never appears), because ≤W ≤ NBANKS consecutive positions are
 always distinct mod NBANKS. `IW=3` and a future `IW=4` share the 4-bank layout.
 
 **Fetch + aligner** — already fully `IW`-parametric (`src/fetch.v`, `src/aligner.v`; run at IW=4
-in tbs). Set `IW=OOO2_IW`. Trivial.
+in tbs). Set `IW=SMOLRV64_IW`. Trivial.
 
 **Decoupling queue + ROB** — identical banking problem (both are queues: W consecutive writes at
 the tail, W consecutive reads at the head). `NBANKS=next_pow2(IW)`, one muxed `{we,addr,data}`
@@ -105,10 +105,10 @@ read mux per head. The only difference between them is payload width.
 
 **Issue / exec (the `IW=3` step).** +1 ALU scheduler (`u_iq_i3`), +1 ALU exec (`u_xc`), +1 PRF
 write shard (`SH_IE3`), +1 wakeup broadcast (`NWB`=5). The ≤1-per-queue chop keeps every
-`ooo2_iq` single-write, so each is just another instance.
+`smolrv64_iq` single-write, so each is just another instance.
 
 **PRF / bypass / pending.** 5th write shard + its free list; +2 read ports for the 3rd ALU; a
-3rd producer arm on every operand mux; a 5th broadcast + a 3rd alloc port on `ooo2_pending`.
+3rd producer arm on every operand mux; a 5th broadcast + a 3rd alloc port on `smolrv64_pending`.
 
 **Retire.** ROB commit width = W (`head`, `head+1`, `head+2`), the writer-shard commit map and
 free-return following.
@@ -116,8 +116,8 @@ free-return following.
 ## Increments (each: lint → 240/0 → cosim ±0.5% → census; board on every `IW=2` increment)
 
 0. **Gate-0 spikes** (above). Go/no-go.
-1. **Introduce `OOO2_IW`** (default 2) + convert the already-generic structures (fetch/aligner
-   `IW`; `generate` the `ooo2_iq`/`ooo2_exec`/PRF-shard counts). **Retire-identical at IW=2.**
+1. **Introduce `SMOLRV64_IW`** (default 2) + convert the already-generic structures (fetch/aligner
+   `IW`; `generate` the `smolrv64_iq`/`smolrv64_exec`/PRF-shard counts). **Retire-identical at IW=2.**
 2. **`NBANKS=next_pow2(IW)` banking** on the decoupling queue + ROB. Retire-identical at IW=2
    (2 banks == today's parity). Board-clean.
 3. **Bitvector free lists** (per shard) + committed-shadow recovery, replacing the parity-banked
@@ -148,13 +148,13 @@ free-return following.
 ## RESULTS (2026-09-15) — machine complete, IW=3 measured, experiment concluded here
 
 > **Correction (2026-09-17):** the −11.7% below was measured with a testbench that summed
-> two of the three commit ports (`tb_ooo2_linux.v` `nret = retire + retire2`); with `retire3`
+> two of the three commit ports (`tb_smolrv64_linux.v` `nret = retire + retire2`); with `retire3`
 > summed the tiny128 60 M count at IW=3 is 13,367,267 against 13,494,359 at IW=2, i.e. −0.9%.
 > The wrong-path-fraction measurement stands; the throughput conclusion does not.
 
 The parametric machine is DONE and correct: it builds/runs 1/2/3-wide from one source
-(`VDEFS="-DOOO2_IW=3"`; `OOO2_IW` is an `ifndef`/`define` in ooo2_core.v + rv_soc_top.v). At
-IW=2 every increment is BIT-IDENTICAL (60M Linux lockstep 13423520; run-ooo2-vl 240/0). At IW=3
+(`VDEFS="-DSMOLRV64_IW=3"`; `SMOLRV64_IW` is an `ifndef`/`define` in smolrv64_core.v + rv_soc_top.v). At
+IW=2 every increment is BIT-IDENTICAL (60M Linux lockstep 13423520; run-vl 240/0). At IW=3
 it passes 240/0 AND boots Ubuntu 60M cycles in lockstep with Simmerv, zero divergence.
 
 Increment-5 commits (the 2->3 port widening): ROB `7ce9ecd3`, frontend compacting IR buffer

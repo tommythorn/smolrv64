@@ -7,7 +7,7 @@
 #     errlog: FAULT  sticky=0000000000000040 first=dcache.replay (bit 6) at cycle 0x2f1a3b0c00
 #             bit 6  dcache.replay      a replay owed with no fill in flight
 #
-# The bit names are the INTEGRITY LOG tables in rv_dcache.v (D$), rv_icache.v (I$) and ooo2_lsu.v,
+# The bit names are the INTEGRITY LOG tables in rv_dcache.v (D$), rv_icache.v (I$) and smolrv64_lsu.v,
 # in the SoC's fixed assignment (D$ [15:0], I$ [31:16], LSU [47:32]); keep them in step. On a
 # bitstream without the log the window reads zero and this says so instead of "clean".
 set -u

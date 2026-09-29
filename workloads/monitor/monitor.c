@@ -61,7 +61,7 @@ typedef unsigned long      uint64_t;
 // 0x1000E000): the design's own invariants, latched in hardware by rv_errlog. 64-bit words:
 // [0]={version,"ERRL"} magic, [1]=sticky, one bit per invariant that has fired since reset
 // (D$ [15:0], I$ [31:16], LSU [47:32]; the bit numbers are the ones in rv_cache.v's and
-// ooo2_lsu.v's INTEGRITY LOG blocks), [2]={idx[55:48], cycle[47:0]} of the FIRST to fire.
+// smolrv64_lsu.v's INTEGRITY LOG blocks), [2]={idx[55:48], cycle[47:0]} of the FIRST to fire.
 // Linux userland reads the same words through /dev/mem (tools/errlog-read.sh).
 #define ERRLOG_BASE     ((volatile uint64_t *)0x1000E000)
 #define ERRLOG_MAGIC    0x4552524cu

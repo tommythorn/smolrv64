@@ -11,7 +11,7 @@ endif
 
 .PHONY: sim
 
-# No cosim runner for this image yet: ooo2/run-ooo2-cosim-gb5.sh is the shape to copy.
+# No cosim runner for this image yet: core/run-cosim-gb5.sh is the shape to copy.
 
 %: %.xz
 	xz -d < $^ > $@

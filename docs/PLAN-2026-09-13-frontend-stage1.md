@@ -2,7 +2,7 @@
 
 Branch `wip/fe-stage1` off main. Parent plan: `PLAN-2026-09-13-frontend.md`. Goal of Stage 1:
 the conventional **FP/FA/FD** front end, `IW=1` bit-identical, no `apc`/`pnpc_kind`/`lenp`.
-`OOO2_IW` and the VHPR I$ are later stages; Stage 1 keeps today's PIPT I$ + fetch buffer and
+`SMOLRV64_IW` and the VHPR I$ are later stages; Stage 1 keeps today's PIPT I$ + fetch buffer and
 today's IW=1 backend untouched.
 
 ## The key realisation (from reading `src/fetch.v`)
@@ -31,13 +31,13 @@ needs it (the census will say). Stage 1 does not add the override.
 **Refinement after reading the code (2026-09-13):** `apc` is *only* the predictor's read
 address — `pc_q` already advances on `norm_npc` (which folds in `pred_npc` when `pred_v`), and
 `lenp` feeds `apc`'s advance alone. So increments 1 and 2 **collapse into one change** that
-touches only `ooo2_predictor.v` (read at `base_pc`), `src/fetch.v` (delete the `apc` output,
-`lenp`, `len_adv`, `lidx`, `al_cons_m1` training) and `ooo2_frontend.v` (drop the `.apc`/
+touches only `smolrv64_predictor.v` (read at `base_pc`), `src/fetch.v` (delete the `apc` output,
+`lenp`, `len_adv`, `lidx`, `al_cons_m1` training) and `smolrv64_frontend.v` (drop the `.apc`/
 `.apred_v` wires). **`pnpc_kind`, the queue, and the decode rebuild stay untouched in Stage 1**
 — they are the queue-width optimisation, not the `apc` hack; revisit later if wanted. Not
 literally bit-identical: the exact `base_pc` read drops the `apc`-mismatch lost predictions
 (~0.13% of retires), so the retire count rises slightly — strictly better, within the 0.5%
-band. Exact anchors in `ooo2_predictor.v`: the registered read block (`apc_en`, `btb_raw`/
+band. Exact anchors in `smolrv64_predictor.v`: the registered read block (`apc_en`, `btb_raw`/
 `btb_qpc`/`ycorr_raw`) and the write-forward (`t_fwd_q`/`y_fwd_q`/`t_dat_q`/`y_dat_q`) delete
 together — a combinational distributed-RAM read at `base_pc` sees a same-cycle train write as
 the OLD value, and the redirect refetch a cycle later reads the updated array, so no forward is
@@ -45,11 +45,11 @@ needed; `tag_hit` drops the `btb_qpc == base_pc` term; the BTB/YAGS `ram_style` 
 block→distributed; the BP_TRACE block loses its `apc`/`btb_qpc` fields.
 
 **LANDED — increments 1+2 (2026-09-13, wip/fe-stage1).** Done exactly as the refinement
-describes: `ooo2_predictor.v` reads `btb`/`ycorr` combinationally at `base_pc` (distributed
+describes: `smolrv64_predictor.v` reads `btb`/`ycorr` combinationally at `base_pc` (distributed
 LUTRAM, `ram_style` block→distributed), the `apc` input / `apred_v` output / `btb_qpc` /
 `btb_raw` / `ycorr_raw` / write-forward / `apc_en` all gone, `tag_hit` drops `btb_qpc ==
 base_pc`; `src/fetch.v` loses `apc`, `npc`, `lenp`, `len_adv`, `lidx`, `al_cons_m1`;
-`ooo2_frontend.v` drops the `.apc`/`.apred_v` wires. `pnpc_kind`, the queue and the decode
+`smolrv64_frontend.v` drops the `.apc`/`.apred_v` wires. `pnpc_kind`, the queue and the decode
 rebuild are untouched. Gates: `lint: clean`, riscv-tests `pass=240 fail=0`, `src/run-tb.sh`
 `tb pass=19/19` (fetch benches lost their `.apred_v(1'b0)`), 60 M Linux cosim **lockstep
 clean, retires 14,461,521 vs 14,301,801 = +1.12%** (`cosim-expected.txt` raised). The gain is
@@ -65,7 +65,7 @@ retired. **Board boot is reserved for the last increment** (per this section's h
 was deleted too — it was already unconnected dead code whose stated purpose (the read address)
 this change obsoletes.
 
-1. **Predictor read at `base_pc`, combinational** (`ooo2_predictor.v`). Convert `btb`/`ycorr`
+1. **Predictor read at `base_pc`, combinational** (`smolrv64_predictor.v`). Convert `btb`/`ycorr`
    from BRAM synchronous-read addressed by `apc` to distributed-RAM combinational-read addressed
    by `base_pc`; the tag/target/direction resolve stays where it is. Delete the `apc` input, the
    `btb_qpc`/`apred_v` machinery and the write-forward (a combinational read sees the write
@@ -78,16 +78,16 @@ this change obsoletes.
    register's next value is `redirect ? redirect_pc : irq_go ? ipc_q : strad ? pc_q+2 :
    pred_v ? pred_npc : norm_npc` — every arm already exists; this only removes the `apc` arm and
    its table. `pnpc_kind` output deleted; the F/X queue carries `pred_npc` directly if a consumer
-   needs it (check `ooo2_frontend.v`/decode — today decode rebuilds it from the decoded length,
+   needs it (check `smolrv64_frontend.v`/decode — today decode rebuilds it from the decoded length,
    which still works, so `pnpc_kind` may just delete with no queue change).
 
-3. **Rename the F/X queue → the decoupling queue** (`ooo2_frontend.v`): `dq_*`, relabel
+3. **Rename the F/X queue → the decoupling queue** (`smolrv64_frontend.v`): `dq_*`, relabel
    `FE_QUE` keeping its counter id/bit. Cosmetic; cosim retire count identical.
 
    **LANDED (2026-09-13).** `fx_*` → `dq_*` and the cross-module port `fe_fx_valid` →
-   `fe_dq_valid` (ooo2_frontend.v + ooo2_core.v). Every "F/X" comment and diagnostic string
+   `fe_dq_valid` (smolrv64_frontend.v + smolrv64_core.v). Every "F/X" comment and diagnostic string
    across the tree → "decoupling queue" (frontend, core, rv_soc_top incl. the FB_TRACE probe's
-   `core.fe.fx_valid` hierarchical ref, tb_ooo2_linux, src/fetch, src/csr_file, ooo2_predictor,
+   `core.fe.fx_valid` hierarchical ref, tb_smolrv64_linux, src/fetch, src/csr_file, smolrv64_predictor,
    tools/perf-cpi-stack.py, tools/fe-pipe-model.py). `FE_QUE`/`HPMEV_FE_QUE` keep their token
    and counter bit (0x0314 / hpm_ev[19]); only the description text changed, so board perf
    tooling is unaffected. Regenerated the generated docs/smolrv64-perf-events.json. Retire-
@@ -101,7 +101,7 @@ this change obsoletes.
 ## Not in Stage 1
 
 The BTB→base_pc read is the whole prediction restructure at IW=1. The override, the VHPR I$,
-the alignment latch, `OOO2_IW>1`, the livemap-banked rename map — all later stages. Keeping
+the alignment latch, `SMOLRV64_IW>1`, the livemap-banked rename map — all later stages. Keeping
 Stage 1 to "same outcomes, conventional structure" is what makes it the zero-IPC-risk step the
 parent plan promises.
 
@@ -123,4 +123,4 @@ same logic is placement noise (rule I2, 81 ps spread); ≥166.667 MHz is met eit
 
 Stage 1 delivered the conventional frontend at IW=1 with **+1.12% IPC** and no timing
 regression. Remaining rewrite stages: Stage 2 (VHPR I$ + alignment latch, retires the straddle
-FSM), Stage 3 (widen to `OOO2_IW>1`, livemap-banked rename map), Stage 4 (re-derive timing).
+FSM), Stage 3 (widen to `SMOLRV64_IW>1`, livemap-banked rename map), Stage 4 (re-derive timing).

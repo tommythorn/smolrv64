@@ -8,7 +8,7 @@
 `endif
 
 // Architectural CSR state, M/S/U privilege model (written for the sharded-OoO core, now
-// used by ooo2_core; comments naming backend_top/exec_shard describe that retired core).
+// used by smolrv64_core; comments naming backend_top/exec_shard describe that retired core).
 // Read is combinational; a single update per cycle (one system op executes at a
 // time -- the scheduler gates a serializing op until its checkpoint is oldest, so
 // the update is precise/non-speculative).
@@ -71,13 +71,13 @@ module csr_file
                                     // unobservable -- exactly the argument `hpm_ev` already
                                     // rests on. Splitting them keeps the retire cone out of
                                     // THIRTEEN event muxes and 64-bit carry chains. See
-                                    // ooo2_core's hpm_ret_q.
+                                    // smolrv64_core's hpm_ret_q.
     // Zihpm event pulses (each +1/cycle when high) selected per counter by mhpmeventN:
     // [0]load [1]store [2]redirect(branch mispredict) [3]dc-access [4]dc-miss [5]ic-access [6]ic-miss
-    // [6:0] are the original per-op/cache taps. [30:7] are ooo2_core's STALL-ATTRIBUTION
-    // taps (see ooo2_core.v and docs/OOO2-Spec.md section 11): they turn a CPI number into
+    // [6:0] are the original per-op/cache taps. [30:7] are smolrv64_core's STALL-ATTRIBUTION
+    // taps (see smolrv64_core.v and docs/SmolRV64-Spec.md section 11): they turn a CPI number into
     // a CPI stack. [21:20] and [43:39] are its TOP-DOWN taps: an exclusive charge of every cycle
-    // (OOO2-Spec 11.2).
+    // (SmolRV64-Spec 11.2).
     input  wire [43:0] hpm_ev,
     input  wire [5:0]  hpm_lqocc,        // load-queue occupancy this cycle (MEM_LQOCC)
     input  wire [5:0]  hpm_sqocc,        // store-queue occupancy this cycle (MEM_SQOCC)
@@ -227,7 +227,7 @@ module csr_file
                      HPMEV_MEM_DEVWAIT  = 16'h0320,   // a device load waiting to be the ROB head
                      HPMEV_MEM_LQOCC    = 16'h0321,   // load-queue occupancy, summed per cycle
                      HPMEV_MEM_SQOCC    = 16'h0322,   // store-queue occupancy, summed per cycle
-                     // TOP-DOWN (OOO2-Spec 11.2): TD_BS + TD_FE + TD_BE + the dispatching cycles = cycles, exactly
+                     // TOP-DOWN (SmolRV64-Spec 11.2): TD_BS + TD_FE + TD_BE + the dispatching cycles = cycles, exactly
                      HPMEV_TD_BS        = 16'h0401,   // top-down: bad speculation (a redirect, or a resolved restart waiting)
                      HPMEV_TD_BE        = 16'h0402,   // top-down: back-end (M held, or an instruction present and not taken)
                      HPMEV_TD_BE_MEM    = 16'h0403,   // top-down: back-end waiting on memory (M on a memory op, or a load result)
@@ -830,7 +830,7 @@ module csr_file
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
       // clocks; minstret adds the committing checkpoint's instruction count. An M-mode
       // write to mcycle/minstret loads the value (this cycle's increment is dropped).
-      // retire_cnt may be the caller's DELAYED count (ooo2_core passes the same registered copy
+      // retire_cnt may be the caller's DELAYED count (smolrv64_core passes the same registered copy
       // it gives the Zihpm counters, and holds a CSR op at the ROB head for a second cycle so
       // the lag is invisible to a read). A minstret WRITE then sees the writing instruction's
       // own retirement arrive one cycle after the write: minstret_wr_q drops it, so the value

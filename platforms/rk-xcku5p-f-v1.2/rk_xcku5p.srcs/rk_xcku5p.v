@@ -2,7 +2,7 @@
 
 // ---- probe-core clock (BUFGCE_DIV: ui_clk / N) --------------------------------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
-// ooo2/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
+// core/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
 // skew the console baud or the timebase (both bit us before -- see the comments at each
 // site).
 //
@@ -148,7 +148,7 @@ module rk_xcku5p(
    // find out where.
    //
    // The ddr_* memory port crosses into ui_clk (MIG/arbiter/bridge) via ddr_port_cdc.
-   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (ooo2/rv_soc_top.v)
+   // The UART CLK_FREQ below AND the CLINT SCALE_DIV (core/rv_soc_top.v)
    // are derived from the same knob, so they cannot drift out of sync with a sweep.
    wire probe_clk;
 

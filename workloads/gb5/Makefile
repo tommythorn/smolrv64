@@ -12,7 +12,7 @@ endif
 
 # The Geekbench image under lockstep with simmerv (the long-guest gate); CYC=N bounds it.
 cosim: gb5.dtb $(FW) img.Geekbench5.cpio
-	CYC=$(CYC) ../../ooo2/run-ooo2-cosim-gb5.sh
+	CYC=$(CYC) ../../core/run-cosim-gb5.sh
 
 %: %.xz
 	xz -d < $^ > $@

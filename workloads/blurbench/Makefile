@@ -1,5 +1,5 @@
 # blurbench: deterministic T-table AES-128 (see blurbench.c). Boots at 0x8000_0000.
-#   make && FW=$(pwd)/blurbench.bin ../../ooo2/run-ooo2-linux.sh
+#   make && FW=$(pwd)/blurbench.bin ../../core/run-linux.sh
 platform=$(shell uname -o)
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-

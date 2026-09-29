@@ -3,7 +3,7 @@
 ONE read port -- the last call site's -- and folds every earlier call to constant 0 (rename
 port A wrote physical register 0 on four bitstreams, 2026-09-06). Flags every function body
 that indexes an identifier declared as an unpacked array in the same file. Exit 1 on a hit.
-   tools/check-func-ram-reads.py ooo2/*.v src/*.v
+   tools/check-func-ram-reads.py core/*.v src/*.v
 """
 import re, sys
 ARRAY_DECL = re.compile(r'^\s*(?:\(\*[^)]*\*\)\s*)?(?:reg|wire|logic)\s*(?:\[[^\]]*\]\s*)*([A-Za-z_]\w*)\s*\[[^\]]*\]\s*(?:,|;)', re.M)

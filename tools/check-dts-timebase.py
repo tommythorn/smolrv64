@@ -47,7 +47,7 @@ def rtl_id():
         # plain `git status` is dirty after every single build and the marker would fire
         # always -- which is the same as never. Scope it to what actually changes the RTL.
         d = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no", "--",
-                            "ooo2", "src", "platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs"],
+                            "core", "src", "platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs"],
                            capture_output=True, text=True, check=True).stdout.strip()
         return h + ("-dirty" if d else "")
     except Exception:
@@ -57,7 +57,7 @@ def generate(div8, tmpl, out, polled=False, rtl=None):
     hz, tb = real_rate(div8)
     txt = pathlib.Path(tmpl).read_text()
     txt = txt.replace("@TIMEBASE@", str(tb))
-    txt = txt.replace("@MODEL@", "SmolRV64 ooo2 %s @ %.2f MHz%s"
+    txt = txt.replace("@MODEL@", "SmolRV64 %s @ %.2f MHz%s"
                       % (rtl or rtl_id(), hz / 1e6, " (polled UART)" if polled else ""))
     txt = txt.replace("@UART_IRQ@", "" if polled else UART_IRQ)
     txt = txt.replace("@GENERATED@",

@@ -348,84 +348,84 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_core.v">
+      <File Path="$PPRDIR/../../core/smolrv64_core.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_exec.v">
+      <File Path="$PPRDIR/../../core/smolrv64_exec.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_frontend.v">
+      <File Path="$PPRDIR/../../core/smolrv64_frontend.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_lq.v">
+      <File Path="$PPRDIR/../../core/smolrv64_lq.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_lsu.v">
+      <File Path="$PPRDIR/../../core/smolrv64_lsu.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_pending.v">
+      <File Path="$PPRDIR/../../core/smolrv64_pending.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_predictor.v">
+      <File Path="$PPRDIR/../../core/smolrv64_predictor.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_prf.v">
+      <File Path="$PPRDIR/../../core/smolrv64_prf.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_rename.v">
+      <File Path="$PPRDIR/../../core/smolrv64_rename.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_rob.v">
+      <File Path="$PPRDIR/../../core/smolrv64_rob.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_iq.v">
+      <File Path="$PPRDIR/../../core/smolrv64_iq.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/ooo2_sq.v">
+      <File Path="$PPRDIR/../../core/smolrv64_sq.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
@@ -544,28 +544,28 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/rv_errlog.v">
+      <File Path="$PPRDIR/../../core/rv_errlog.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/rv_cache.v">
+      <File Path="$PPRDIR/../../core/rv_cache.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/rv_mem_arbiter.v">
+      <File Path="$PPRDIR/../../core/rv_mem_arbiter.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/rv_soc_top.v">
+      <File Path="$PPRDIR/../../core/rv_soc_top.v">
         <FileInfo>
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="implementation"/>
@@ -761,7 +761,7 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PPRDIR/../../ooo2/rv_regfile.v">
+      <File Path="$PPRDIR/../../core/rv_regfile.v">
         <FileInfo>
           <Attr Name="AutoDisabled" Val="1"/>
           <Attr Name="UsedIn" Val="synthesis"/>
@@ -774,11 +774,11 @@
         <Option Name="TopModule" Val="rk_xcku5p"/>
         <Option Name="TopAutoSet" Val="TRUE"/>
         <Option Name="VerilogDir" Val="$PPRDIR/../../third_party/cvfpu/src/common_cells/include"/>
-        <Option Name="VerilogDir" Val="$PPRDIR/../../ooo2"/>
+        <Option Name="VerilogDir" Val="$PPRDIR/../../core"/>
         <Option Name="VerilogDir" Val="$PPRDIR/../../src"/>
         <Verilog_Define Name="MEM_BASEADDR" Val="64&apos;h70000000"/>
         <Verilog_Define Name="PROBE_CORE"/>
-        <Verilog_Define Name="OOO2_CORE"/>
+        <Verilog_Define Name="SMOLRV64_CORE"/>
         <Verilog_Define Name="SOC_BOOT_HEX" Val="&quot;/home/tommy/smolrv64/src/mem.linehex&quot;"/>
         <Verilog_Define Name="SMOLRV64_BUILD_STAMP" Val="64&apos;h20260831000408"/>
         <Verilog_Define Name="SMOLRV64_GIT_COMMIT" Val="32&apos;h2e3791c9"/>

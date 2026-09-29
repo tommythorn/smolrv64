@@ -12,7 +12,7 @@ endif
 
 # The tiny128 Linux boot in lockstep with simmerv (300 M cycles is the required length).
 cosim: tiny128.dtb $(FW) tiny128.cpio
-	CYC=300000000 ../../ooo2/run-ooo2-cosim-linux.sh
+	CYC=300000000 ../../core/run-cosim-linux.sh
 
 
 %: %.xz
@@ -29,7 +29,7 @@ tiny128.dtb: tiny128.dts
 # The kernel is at 0.24 s of guest time after 300 M cycles; userspace (and the check) needs ~1.5 G.
 cosim-blk: tiny128-cosim-blk.dtb $(FW) tiny128-blk.cpio tiny128-blk.img
 	DTB=$(CURDIR)/tiny128-cosim-blk.dtb INITRD=$(CURDIR)/tiny128-blk.cpio DISK=$(CURDIR)/tiny128-blk.img \
-	  CYC=$${CYC:-1500000000} ../../ooo2/run-ooo2-cosim-linux.sh
+	  CYC=$${CYC:-1500000000} ../../core/run-cosim-linux.sh
 tiny128-blk.cpio: tiny128.cpio blkcheck.sh mk-blk-cpio.py
 	./mk-blk-cpio.py tiny128.cpio blkcheck.sh $@
 tiny128-blk.img: gen-blk-img.py

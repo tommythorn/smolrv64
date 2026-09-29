@@ -1,5 +1,5 @@
-// pipeview: a terminal pipe viewer for the testbench's Kanata stream (tb_ooo2_linux
-// +kanata=<file>, docs/OOO2-Spec.md §11.2). One row per dispatched instruction and one per run
+// pipeview: a terminal pipe viewer for the testbench's Kanata stream (tb_smolrv64_linux
+// +kanata=<file>, docs/SmolRV64-Spec.md §11.2). One row per dispatched instruction and one per run
 // of non-producing cycles (a stall row, labelled with its cause); one column per cycle, each cell
 // the stage the row is in. Zero dependencies beyond rvdisasm: raw mode via `stty`, ANSI drawing.
 
@@ -39,14 +39,14 @@ The header counts the visible rows: the cycle span, retired instructions, IPC, f
 and the cycles each stall cause took.
 ";
 
-const HELP: &str = "pipeview -- terminal pipe viewer for the ooo2 testbench's Kanata stream
+const HELP: &str = "pipeview -- terminal pipe viewer for the SmolRV64 testbench's Kanata stream
 
 USAGE
     pipeview <run.kanata> [prog.elf]              interactive
     pipeview <run.kanata> [prog.elf] --text [N]   the first N rows as text (default 60)
 
     Record one with: make run B=<prog> PLUSARGS=\"+kanata=$PWD/run.kanata +trace_from=A +trace_to=B\"
-    in workloads/rvbench (or any tb_ooo2_linux run). With the ELF, labels are objdump's
+    in workloads/rvbench (or any tb_smolrv64_linux run). With the ELF, labels are objdump's
     disassembly and symbols; without it, the instruction word is decoded (rvdisasm).
 
 LEGEND

@@ -1,5 +1,5 @@
 # membench: store throughput, L1-resident (see membench.c). Boots at 0x8000_0000.
-#   make && FW=$(pwd)/membench.bin ../../ooo2/run-ooo2-linux.sh
+#   make && FW=$(pwd)/membench.bin ../../core/run-linux.sh
 platform=$(shell uname -o)
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-

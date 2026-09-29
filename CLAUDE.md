@@ -10,10 +10,10 @@
   over full rebuilds.
 
 - Always verify before committing that riscv-tests pass: run
-  `ooo2/run-ooo2-vl.sh` (or the `tests/run-riscv-tests.sh` wrapper) —
-  success is `pass=240 fail=0`. The unit benches are `ooo2/run-ooo2-*-tb.sh`
+  `core/run-vl.sh` (or the `tests/run-riscv-tests.sh` wrapper) —
+  success is `pass=240 fail=0`. The unit benches are `core/run-*-tb.sh`
   and `src/run-tb.sh`; a port change on a shared module means all of them
-  (rule G4). The core is `ooo2/`; the sequential and sharded-OoO cores that
+  (rule G4). The core is `core/`; the sequential and sharded-OoO cores that
   preceded it were deleted in the 2026-09 release.
 
 - Also run `src/lint.sh` before committing RTL — success is `lint: clean`.
@@ -22,7 +22,7 @@
   `src/verilator.vlt` and must name a file; never add a global `-Wno-`.
 
 - Every non-trivial RTL change is validated by the Linux lockstep cosim
-  (`CYC=300000000 ooo2/run-ooo2-cosim-linux.sh`, docs/OOO2-Spec.md §12) and
+  (`CYC=300000000 core/run-cosim-linux.sh`, docs/SmolRV64-Spec.md §12) and
   then on the board (`tools/gate.sh`: build at the shipping configuration,
   program, boot Ubuntu to `login:` with zero faults).
 
@@ -51,7 +51,7 @@
 defect record with the commits that paid for each rule. Read it before
 touching the core, cache, LSU or MMU.
 
-- `docs/OOO2-Spec.md` is the normative description of the core in `ooo2/`
+- `docs/SmolRV64-Spec.md` is the normative description of the core in `core/`
   (geometry, sizes, latencies, pipeline stages, what stalls, what restarts,
   known limits). It is ALWAYS kept current: if a change moves a number in that
   file, updating it is part of that same commit, not a follow-up. Measured

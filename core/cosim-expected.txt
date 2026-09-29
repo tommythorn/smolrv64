@@ -1,0 +1,127 @@
+# Expected cosim throughput, checked in so a SILENT performance regression fails a gate
+# instead of surviving until someone happens to compare against a number they remembered.
+#
+# Three regressions in one day (2026-08-19) were architecturally invisible -- cosim clean,
+# riscv-tests green, Linux booting -- and visible ONLY as a retire count at a fixed cycle
+# budget:
+#   * predict details latched a cycle early, so every bundle trained on the previous one
+#   * perf_access/perf_miss inside `ifdef PERF_TRACE, so cache HPM counters read zero
+#   * a request tag captured pre-flip and compared post-flip, discarding good responses
+# The first and third cost 3-4% of throughput each.
+#
+# Format:  <CYC> <SMOLRV64_HW> <expected-retires> <tolerance-%> [<SMOLRV64_IW>]  # provenance
+#   The 5th column is the pipeline width (2 when absent). IW=3 rows exist since 2026-09-17,
+#   when the testbench started summing the third commit port (every earlier IW=3 count is low).
+# Checked by run-cosim-linux.sh when the run reaches its cycle limit.
+# RAISE these numbers when a change legitimately improves them, in the same commit.
+60000000  8  33867866  0.5  3   # The I$ at 128 KiB, its valid bits banked so fence.i's invalidate is 64 cycles (2026-09-28), +4.71%. Previously 32343542: The D$ back at 128 KiB, its merge buffers LUTRAM (2026-09-28), +0.36%. Previously 32227679: fence.i's clean walks rows and the D$ is 64 KiB (2026-09-27): the boot's 3,867 cleans cost 0.54 M cycles instead of 8.09 M, +10.07%. Previously 29278185: rv_dcache (D$ plan increment 2, 2026-09-27): the non-blocking 128 KiB D$, 8 MSHRs with merge buffers, 2 write-back lines, a hit under a miss answered first, +53.11%. Previously 19122783: The memory path (D$ plan increment 1, 2026-09-27): tagged, pipelined, several reads in flight below the caches, +4.93%. Previously 18223675: C4b (2026-09-25): the D$ door takes a read every cycle, traps, fences and the simple FP ops leave M, the load queue at 8 entries (+2.42% of it), +2.47%. Previously 17784535: Prediction at the fetch stream (Stage 4 1b): a predicted-taken branch no longer empties the ring, +3.04%. Previously 17259093: The ring's I$ door and writes do not wait for a jump (061a6027, timing): a request or answer in a jump's cycle is wasted, -0.10%. Previously 17277202: The fetch ring (Stage 4 1a): the chunk-tail stall gone, +1.25%. Previously 17063408: rv_icache, the dedicated I$ (a pair per cycle, virtual-only hit), behind the old adapter: +8.45%. Previously 15734513: The physical-address cap: wild wrong-path loads fault at translation, +0.00%. Previously 15733782: ROB 32 entries: +0.81%. Previously 15607214: D16: each CTI trains the predictor as it leaves the CTF stage, +11.66%. Previously 13977876: Predictor (2026-09-22): slot-offset field sized for IW=3, RAS restored from the redirecting instruction's snapshot, +1.03%. Previously 13835891: C4a step 1 (2026-09-18): the tagged fast load path, +3.5%. Previously 13371386:
+                                  # C1 (2026-09-17): mul/div on the F/CTF port (+0.03%). Previously 13367267:
+                                  # IW=3 (2026-09-17): the TRUE 3-wide count, all three commit ports summed;
+                                  # -0.9% vs IW=2 on this boot (the -11.7% on record was the missing third port).
+60000000  8  14131980  0.5   # Predictor (2026-09-22): RAS restored from the redirecting instruction's snapshot, +1.12%. Previously 13975979: C4a step 1 (2026-09-18): the tagged fast load path (da28895b re-done), +3.6% on
+                              # the boot at the measured DDR shape. Previously 13490465:
+                              # C1 (2026-09-17): mul/div leave the ordered pipe for the F/CTF port; -0.03% on
+                              # this boot (few multiplies; the port now shares with every branch). Previously 13494359:
+                              # W1' (2026-09-17): the CTF link never waits on M, M yields instead (+0.02%);
+                              # the D12 fix (device loads classified by their own translate PA) moves nothing here.
+                              # Previously 13491763: IW=3 timing closure (2026-09-17): the second cycle at head, the served-slot hint,
+                              # the matrix wake -- +0.5% on the boot at IW=2. Previously 13424357:
+                              # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): the L1 I$ is virtually hit
+                              # (epoch-qualified vtag) with a physical-tag reconcile on miss (docs/VHPR.md); the ~500-line run-ahead fetch
+                              # buffer is gone, replaced by a 2-chunk alignment adapter. Lockstep clean to 60 M. -7.2% on the boot: the
+                              # adapter keeps ONE I$ request in flight + a 2-chunk window vs the buffer's two-in-flight/three-slot run-ahead
+                              # -- a KNOWN, recoverable MLP gap (clean structure first; IPC recovery is a tracked follow-up). Not the
+                              # prefetch (re-keyed VIRT-safe, on) nor the reconcile/epoch (negligible).
+                              # Was 14461521: Stage 1 increment 1 (2026-09-13, wip/fe-stage1): the predictor reads its BTB and YAGS arrays combinationally at
+                              # base_pc instead of a cycle ahead at the register-predicted `apc`; `apc`, `npc` and the `lenp` length table are gone.
+                              # +1.12% on the boot -- every presented bundle now reads its OWN entry (no apc/lenp mismatch loses a prediction) with the current
+                              # GHR (yidx consistent with pd_fetch), recovering far more than the +0.13% the design estimated from apc-mismatch alone. Lockstep clean.
+                              # Was 14301801: The full two-wide stack under the T1 cuts (2026-09-07, wip/w5: items 10a-10e plus T1 steps 1-3, the payload read at pick
+                              # registered) with the run-ahead buffer's page-crossing fix (rule D10): -1.44% on the boot against the 10d row (14511093),
+                              # the cuts' extra register stages on a miss-bound boot; 14301029 before the fix, +772 with it. Below, that row's history.
+                              # Was: The ALU's own issue port and a second ALU on a fourth PRF shard (2026-09-06, items 10d-i/10d-ii on the fixed two-wide dispatch,
+                              # with the V6/V7 late-enable fixes): +1.42% over two-wide dispatch and retire (14308077).
+                              # Was: Two-wide dispatch and retire (2026-09-06, items 10b/10c with the bank and enable fixes): +1.21% on the boot over two-wide fetch
+                              # (14136876), measured on the tree whose netlist boots (rule F4's fix). The comment below is that row's history.
+                              # Was: Two-wide fetch, IW=2 into the banked F/X queue (2026-09-05, item 10a): +0.75% on the boot. Was 14031295 with chunk2 requested on the slide cycle: -0.19% on the boot, which is memory-bound (st_mem 14%); sha256 +6%. Was 14057886 with the D$ stream buffer OFF; with it on, the board faults
+                              # (P1: a corrupted preempt count and a wild pointer in the network
+                              # setup; O: a python segfault, a dentry-LRU Oops), and without it (P3)
+                              # the same core boots clean. The cosim, DMA-blind, cannot see why;
+                              # tb_smolrv64_dcache T18-T20 and the random stress pass. -25%: the boot's
+                              # memory-init walk was where the buffer paid. The RTL stays, PREFETCH(0).
+                              # Previously 18818417: The D$ accept is REGISTERED (2026-09-05): the combinational accept
+                              # fed the LSU, M's done and the scheduler in one cycle and build N
+                              # failed timing at -0.58 ns. -0.85% on this boot: an isolated store
+                              # frees the LSU a cycle later; a store stream is unchanged (the LSU
+                              # takes the next queued store from S_ST, stbench 2.31 per store).
+                              # LOWERED on purpose, the alternative being a bitstream that does not close.
+                              # Previously 18979633: Plan item 6 (2026-09-05): the D$ gets the next-line stream buffer.
+                              # +34.3%: the boot's memory init walks memory linearly; the gain
+                              # is in cycles 45-60 M (membench: fill 92.8 -> 60.7 cyc/line, sum
+                              # 75.7 -> 43.4, copy unchanged).
+                              # Previously 14132961: Plan item 4c at SMOLRV64_HW=8 (2026-09-05): the write miss merged by the
+                              # fill machine, a plain write not solo.
+                              # Previously 13805286: Plan item 4a+4b at SMOLRV64_HW=8 (2026-09-05); the senior store queue
+                              # (2026-09-04) is in it too. The row below is the same RTL at HW=4.
+                              # Previously 11624624: SMOLRV64_HW=8, the 16-byte fetch window (2026-09-05): +0.4% on this
+                              # boot (kernel code is RVC-dense); febench's 32-bit code goes
+                              # 0.66 -> 0.98 (aligned) and 0.40 -> 0.79 (2-byte offset).
+60000000  4  13732722  0.5   # The D$ stream buffer OFF at SMOLRV64_HW=4 (2026-09-05): see the row above.
+                              # Previously 18410937: The registered D$ accept at SMOLRV64_HW=4 (2026-09-05): -0.73%, see the row above.
+                              # Previously 18546835: Plan item 6 at SMOLRV64_HW=4 (2026-09-05): the D$ stream buffer.
+                              # Previously 13783921: Plan item 4c (2026-09-05): a write miss is merged by the fill
+                              # machine and installs dirty, so a plain write is not solo. +2.35%.
+                              # Previously 13466847: Plan item 4a+4b (2026-09-05): a plain store is done when the D$
+                              # TAKES it (wr_acc), not when it acks, and the D$'s door is open in
+                              # a write's last cycle. +16.0%: +14.5% from 4a alone (13291779).
+                              # Previously 11604336: The senior store queue (2026-09-04): a store commits at the ROB's
+                              # irrevocable pointer and retires before the cache takes its
+                              # write. +0.22% on this boot, whose store stall is the cache's
+                              # SOLO write path, not the head; stbench 5.88 -> 5.00 per store.
+                              # Previously 11578974: The DDR model is the one MEASURED on the board at 166.67 MHz
+                              # (2026-09-04, src/ddr_hpm.v via workloads/ddrhpm: reads mean
+                              # 28.75 cycles, 96.5% in 16-31; writes mean 15.6, 95% in 8-15;
+                              # tails to 64+), not a flat 4 cycles. Same RTL as the rows
+                              # below; the machine waits for memory the way the board does.
+                              # `+ddr_lat=4` reproduces the old number.
+                              # Previously 11135530 for a few hours: the 66.67 MHz measurement
+                              # scaled by 2.5, before the board could be re-measured.
+                              # Previously 16025548 at the flat 4-cycle model: +9.33% over the row before it, and NOT from one commit: the
+                              # 2026-09-03/04 core commits (translate-only pass off the port
+                              # grant, unit_busy after select, the sq snoop, latched faults,
+                              # ...) were each declared "bit-identical" against a binary that
+                              # did not contain them -- run-cosim-linux.sh reused the
+                              # built model whenever BUILD was unset. Rebuilt from scratch at
+                              # c7e9051a (fresh model, lockstep clean at DDR_LAT=4, 80 and
+                              # 40+JIT 63) the number is this one. The stamp now hashes the
+                              # sources, so this cannot recur silently.
+                              # Previously 14657366: +0.32% from the D$ fill-machine split (aa0af4f): the lookup
+                              # pipeline resolves a request while a line is fetched, so two
+                              # can be in flight -- one in the pipeline, one in the MSHR.
+                              # Small because the D$'s clients are the LSU and two page-table
+                              # walkers and a missing LSU is blocked on its own miss anyway;
+                              # the next gain needs a multiple-outstanding CLIENT.
+                              # Previously 14610812 for main-candidate: b56f3a5e + b9dbdd0 + 42508cf + 69f1ac6 (LQ/SQ
+                              # timing) + the cosim repair.  Measured with the lockstep ACTUALLY
+                              # RUNNING -- the previous row, 11631167 from acfbaa98, predates the
+                              # -DINO_COSIM/-DSMOLRV64_COSIM break, and by the time the break was
+                              # found the real number was 26% above it, so the gate could not
+                              # fail no matter what landed.  A throughput floor nothing can trip
+                              # is not a gate.
+400000000  8  102214267  0.5   # The Geekbench image (run-cosim-gb5.sh) to 400 M cycles, two-wide fetch (item 10a, 2026-09-05); main before it: 102054588 (+0.16%). Per-batch, in the background. NOTE: predates the Stage 2 VHPR I-cache landing (2026-09-13) -- re-baseline when this per-batch gate next runs.
+300000000  8  135292357  0.5  3   # The I$ at 128 KiB, its valid bits banked so fence.i's invalidate is 64 cycles (2026-09-28), +3.36% at 300 M. Previously 130900475: The D$ back at 128 KiB, its merge buffers LUTRAM (2026-09-28), +4.62% at 300 M. Previously 125118782: fence.i's clean walks rows and the D$ is 64 KiB (2026-09-27), +1.03% at 300 M. Previously 123843694: rv_dcache (D$ plan increment 2, 2026-09-27): the non-blocking 128 KiB D$, +35.60% at 300 M. Previously 91331479: The memory path (D$ plan increment 1, 2026-09-27): +6.33% at 300 M. Previously 85894028: C4b (2026-09-25): the D$ door takes a read every cycle, traps, fences and the simple FP ops leave M, the load queue at 8 entries, +0.86% at 300 M. Previously 85165052: Prediction at the fetch stream (Stage 4 1b): a predicted-taken branch no longer empties the ring, +3.99% at 300 M. Previously 81898329: The ring's I$ door and writes do not wait for a jump (061a6027, timing): a request or answer in a jump's cycle is wasted, -0.61% at 300 M. Previously 82401355: The fetch ring (Stage 4 1a), -0.63% at 300 M: fe:align -16.0 M cycles but fe:icache +5.7 M -- every jump empties the ring, where the old adapter kept its two chunks; 1b (prediction at the fetch stream) removes the flush on a predicted-taken branch. Previously 82927623: rv_icache, the dedicated I$, behind the old adapter: +1.60% at 300 M. Previously 81619303: The physical-address cap: wild wrong-path loads fault at translation, +0.15% at 300 M. Previously 81494225: ROB 32 entries: +0.39% at 300 M. Previously 81175485: D16: each CTI trains the predictor as it leaves the CTF stage, +9.13% at 300 M. Previously 74382417: D13 (2026-09-21): the squash waits for the link it owes, -0.31% at 300 M (a cycle or two per mispredicted call queued behind the FPU). Previously 74614701: C4a step 1 (2026-09-18): the tagged fast load path, +5.06% at 300 M. Previously 71024349:
+                                  # C3 step 3 (2026-09-18): system ops through the SYSQ, -0.14% at 300 M (60 M identical;
+                                  # the irqop/CSR timing past the boot's first interrupts). Previously 71121056:
+                                  # C1 (2026-09-17): mul/div on the F/CTF port, +0.08% at 300 M. Previously 71067434:
+                                  # IW=3 (2026-09-17): the true 3-wide count at 300 M (all three commit ports).
+300000000  8   76007711  0.5   # C4a step 1 (2026-09-18): the tagged fast load path, +4.46% at 300 M. Previously 72764424:
+                              # C3 step 3 (2026-09-18): system ops through the SYSQ, +0.05% at 300 M (60 M identical).
+                                  # Previously 72730100:
+                               # C1 (2026-09-17): mul/div on the F/CTF port, +0.76% at 300 M. Previously 72184767:
+                                  # Stage 2 (VHPR I-cache, 2026-09-13, wip/fe-stage2): re-baselined from 78964298 -- SAME VHPR landing as the
+                               # 60M/HW=8 row above. The run-ahead fetch buffer is gone, replaced by the 2-chunk alignment adapter. Lockstep
+                               # CLEAN to 300 M with the interrupt path exercised (inj first nonzero at c=99M, 2799 by c=299M) -- the correctness
+                               # acceptance this length exists for. -8.59% over the full boot vs -7.2% at 60 M: the longer run weights the
+                               # memory-active phase (past the tiny128 idle region) more heavily, and the adapter's single-outstanding + 2-chunk
+                               # window exposes less MLP than the buffer's two-in-flight/three-slot run-ahead. KNOWN, recoverable; IPC recovery
+                               # is a tracked follow-up. Prior release-tree floor: 78964298 (384fd599, W7 + counter split, 2026-09-07).

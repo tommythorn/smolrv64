@@ -7,7 +7,7 @@ be executed without the context of that session.
 
 ## 1. Why
 
-The Geekbench boot under the cosim (`ooo2/run-ooo2-cosim-gb5.sh`) found a six-day-old
+The Geekbench boot under the cosim (`core/run-cosim-gb5.sh`) found a six-day-old
 store-queue defect at retire 123,081,278, cycle ~447 M -- 25 minutes into the run at the
 cosim's ~4.6 ms of guest time per second. The first attempt was capped at 400 M cycles and
 had to be restarted from zero. Every future run of that gate, and every debug rerun of a
@@ -35,7 +35,7 @@ either. The cosim links a separate crate, `~/simmerv/cosim` (`libsimmerv_cosim.a
 `simmerv_write_memory`, `simmerv_read_register`, `simmerv_set_pc`, `simmerv_set_mtime`,
 ...) has no snapshot entry points.
 
-**The DUT (Verilator).** `ooo2/run-ooo2-cosim-linux.sh` builds `tb_ooo2_linux.v` with
+**The DUT (Verilator).** `core/run-cosim-linux.sh` builds `tb_smolrv64_linux.v` with
 `--binary --timing`. Verilator can serialise the whole model with `--savable`
 (`VerilatedSave`/`VerilatedRestore`, `verilated_save.h`), including every Verilog variable,
 the big memory arrays (`lram`, the caches' BRAM models), `$random` per-variable seeds, the
@@ -47,7 +47,7 @@ context `g_ctx`, the retire sequence counters, the interrupt-injection state (th
 pending interrupt that the DUT is told to take, the `inj` counter in the progress line), the
 device-write forwarding queue (every device AXI write beat is forwarded to simmerv "in DPI
 order", `probe_cosim.cpp:299`), the MMIO compare state, and the mismatch history ring. The
-DUT calls `probe_retire()` (`ooo2/ooo2_core.v:2137`) once per committed instruction; the
+DUT calls `probe_retire()` (`core/smolrv64_core.v:2137`) once per committed instruction; the
 bridge steps simmerv and compares.
 
 ## 3. Design
@@ -115,18 +115,18 @@ In `src/probe_cosim.cpp`:
    `<base>.brg` (a version word, then the struct; no pointers -- `g_ctx` is recreated) and
    call `simmerv_snapshot`/`simmerv_restore` for `<base>.ref`.
 3. Export both to Verilog as DPI functions (`import "DPI-C" function int cosim_save(input
-   string base)` next to `probe_retire` in `ooo2/tb_ooo2_linux.v`, not in `ooo2_core.v`).
+   string base)` next to `probe_retire` in `core/tb_smolrv64_linux.v`, not in `smolrv64_core.v`).
 
 ### Step 4 -- the DUT side (Verilog + build flags, ~half a day)
 
-1. Add `--savable` to the verilator command in `ooo2/run-ooo2-cosim-linux.sh` (and
+1. Add `--savable` to the verilator command in `core/run-cosim-linux.sh` (and
    `src/probe_cosim.cpp` gets `#include "verilated_save.h"`). Rebuild; fix what
    `--savable` rejects (it refuses a few constructs; the common ones are `$fopen` handles
    held in variables and `--timing` interactions -- if `--timing` and `--savable` conflict
-   in this Verilator (5.041 here), the main loop in `tb_ooo2_linux.v` is a plain
+   in this Verilator (5.041 here), the main loop in `tb_smolrv64_linux.v` is a plain
    `@(negedge clk)` loop and can be driven from C++ instead; check the Verilator manual
    for the version first).
-2. In `tb_ooo2_linux.v`: plusargs `+save_at=<retires> +save=<base>` and `+restore=<base>`.
+2. In `tb_smolrv64_linux.v`: plusargs `+save_at=<retires> +save=<base>` and `+restore=<base>`.
    At `+save_at`, after the retire that reaches it, call a C++ `dut_save(base)` (a DPI
    function that does `VerilatedSave os; os.open(base+".dut"); os << *contextp; os <<
    *topp;`) and `cosim_save(base)`. Verilator's save must be invoked from C++ with access
@@ -142,7 +142,7 @@ In `src/probe_cosim.cpp`:
 
 ### Step 5 -- the round trip is bit-exact (test, ~2 hours)
 
-1. Add a running retire hash to `tb_ooo2_linux.v` (FNV-1a over pc, insn, rd, value at each
+1. Add a running retire hash to `tb_smolrv64_linux.v` (FNV-1a over pc, insn, rd, value at each
    retire; printed at the end and at each 1 M-cycle progress line).
 2. tiny128: straight run to 60 M cycles; run with `+save_at=3000000 +save=/tmp/ck`; run with
    `+restore=/tmp/ck +cycles=60000000`. The restored run's final retire count and hash must
@@ -153,7 +153,7 @@ In `src/probe_cosim.cpp`:
 
 ### Step 6 -- use it (~1 hour)
 
-- `ooo2/run-ooo2-cosim-gb5.sh`: take `ck/gb5-postboot` at the first retire in user mode
+- `core/run-cosim-gb5.sh`: take `ck/gb5-postboot` at the first retire in user mode
   (`prv=0` on the progress line, or a fixed retire count ~130 M), store it under
   `/var/tmp/cosim-ck/` (not the repo: hundreds of MB), and default to restoring it when
   present and when the model source hash on the verdict line matches the one recorded next
@@ -188,7 +188,7 @@ In `src/probe_cosim.cpp`:
 ## 6. Acceptance for the whole item
 
 - Step 5's bit-exact round trip on tiny128 at three save points and on Geekbench at one.
-- `ooo2/run-ooo2-cosim-gb5.sh` from the post-boot checkpoint reaches the old divergence
+- `core/run-cosim-gb5.sh` from the post-boot checkpoint reaches the old divergence
   retire (123,081,278, now clean) in under two minutes.
-- `docs/OOO2-Spec.md` section 12 lists the checkpointed long-guest run as the per-batch gate
+- `docs/SmolRV64-Spec.md` section 12 lists the checkpointed long-guest run as the per-batch gate
   and names the checkpoint's model hash rule.

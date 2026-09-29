@@ -5,7 +5,7 @@
 // trip of its own. Block-RAM FIFOs: distributed-RAM async FIFOs do not meet timing across this
 // platform's write/read clock-root skew.
 //
-// The port's channels are described in ooo2/rv_mem_arbiter.v and
+// The port's channels are described in core/rv_mem_arbiter.v and
 // docs/PLAN-2026-09-25-dcache-vhpr.md ("The memory port").
 module ddr_port_cdc #(
    parameter integer IDW = 5

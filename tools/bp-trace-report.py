@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Report on an ooo2 predictor trace (a run built with -DBP_TRACE; the [BP] PRED/RES lines).
+"""Report on a SmolRV64 predictor trace (a run built with -DBP_TRACE; the [BP] PRED/RES lines).
 
   tools/bp-trace-report.py workloads/rvbench/dhrystone.bptrace.log
 

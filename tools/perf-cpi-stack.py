@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Turn `perf stat` output from the smolrv64 ooo2 core into a top-down breakdown or a CPI stack + MPKI.
+"""Turn `perf stat` output from the SmolRV64 core into a top-down breakdown or a CPI stack + MPKI.
 
 TOP-DOWN (the `td` set, or any run with the TD_* events): the core charges every cycle to exactly
 one of bad speculation (TD_BS), front-end (TD_FE), back-end (TD_BE) or dispatching (the rest), by
-one classifier (ooo2_core td_k, OOO2-Spec 11.2) -- the same one the simulator's TOPDOWN-SIM
+one classifier (smolrv64_core td_k, SmolRV64-Spec 11.2) -- the same one the simulator's TOPDOWN-SIM
 prints -- so the four buckets are cycles by construction, and the depth events are subsets of
 their parent. DPATCH (instructions dispatched) gives the slot view against IW x cycles.
 
@@ -122,7 +122,7 @@ def topdown(v, width):
     disp = cyc - bs - fe - be
     pc = lambda n: 100.0 * n / cyc
     print("  cycles %-16d instructions %-16d IPC %.3f   (%d-wide)" % (cyc, ins, ins / cyc, width))
-    print("\n  TOP-DOWN, level 1 (every cycle charged to exactly one; OOO2-Spec 11.2)")
+    print("\n  TOP-DOWN, level 1 (every cycle charged to exactly one; SmolRV64-Spec 11.2)")
     for name, n in (("dispatching", disp), ("bad speculation", bs), ("front-end", fe), ("back-end", be)):
         print("    %-34s %6.2f%%" % (name, pc(n)))
     if disp < 0 or min(bs, fe, be) < 0:

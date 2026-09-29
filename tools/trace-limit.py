@@ -5,7 +5,7 @@ is issue width?
   tools/trace-limit.py ~/text-compression.trace ~/clang.trace ...
 
 Answers questions the CPI counters cannot, because it separates constraints that the
-counters can only observe together. Traces come from the board; see docs/OOO2-Spec.md
+counters can only observe together. Traces come from the board; see docs/SmolRV64-Spec.md
 "Workload shapes".
 
 CEILINGS, NOT PREDICTIONS. Perfect branch prediction, perfect caches, no structural

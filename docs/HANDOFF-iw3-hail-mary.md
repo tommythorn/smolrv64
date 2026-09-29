@@ -55,17 +55,17 @@ front of otherwise reasonable logic:
    "is this the next chunk" is `c_vm == pc_ca`, a compare of two registers. The adder
    stays only on the demand-read address, in parallel. Always-on invariant: `c_vm ==
    c_va − CHB`.
-2. `ooo2_lsu.v` L1: `pt_ld_kill = inflight & ld_sq` — the live flush reaches the kill only
+2. `smolrv64_lsu.v` L1: `pt_ld_kill = inflight & ld_sq` — the live flush reaches the kill only
    through the registered latch. A load landing in the redirect cycle lands harmlessly
    (every consumer orders its flush arm last). Zero timing loops in the synth log after.
-3. `ooo2_core.v` W1: SH_FE is the F stage's shard alone (`d_cls_f`), in-core FP results
+3. `smolrv64_core.v` W1: SH_FE is the F stage's shard alone (`d_cls_f`), in-core FP results
    take SH_LD like every other M result; `cf_link_wb = pend & ~fp_wb`; `wb_fe = fp ? :
    cf_link`; `wb_ld` takes `csr_rdata` BEFORE the latched result (this also fixed a latent
    stale-CSR-read hazard whenever a landing load held a CSR op at head). `m_wb_fe` is
    asserted zero, like `m_wb_ie`.
-4. `ooo2_rename.v` R1: the free-list read addresses use the stall-free allocation view
+4. `smolrv64_rename.v` R1: the free-list read addresses use the stall-free allocation view
    (`ar_*`, `br_*`); the stall gates only the head advance and the alloc outputs.
-5. `ooo2_core.v` + `src/csr_file.v` M1: minstret takes the delayed retire count
+5. `smolrv64_core.v` + `src/csr_file.v` M1: minstret takes the delayed retire count
    (`hpm_ret_q`); a head-gated op completes in its SECOND cycle at head (`m_head_q`) so the
    lag is invisible to a CSR read; `csr_file` drops the writer's own retirement after a
    `csrw minstret` (`minstret_wr_q`). One cycle per CSR op, trap, fence.i, system op.
@@ -75,7 +75,7 @@ front of otherwise reasonable logic:
 - `fp_unit` PIPE_REGS 4 → 5 (fpnew's own 25-level path was −0.51; FP gives way).
 - The UART write decode subtracted the 64-bit base per byte lane; `dmem_waddr[2:0]` is the
   offset (16-aligned base, window bounded by `is_uart_w`), as the read side already did.
-- `ooo2_iq` REGRDY (u_iq_i, u_iq_i2 only): `d_ready` is a register, "≥2 free last cycle"
+- `smolrv64_iq` REGRDY (u_iq_i, u_iq_i2 only): `d_ready` is a register, "≥2 free last cycle"
   ⇒ ≥1 free now (one dispatch per cycle; the held entry only ever moves). Asserted.
 - M's third PRF read port (`ra3`) tied off: only an FMA routed to M under FS=Off could
   reach it, and it traps. The live read-port set is 9: M 2, ALUa 2, ALUb 2, F/CTF 3.
@@ -114,7 +114,7 @@ the column clear is ordered after the row write instead. hm3's census (1823 endp
 +0.35): fpnew's own pipeline +0.007 (66), ROB head → scheduler ready +0.020, ROB head →
 `pl_q` CE +0.038 (257), `m_addr` → rename commit +0.08, PRF read → ALU +0.085. The fetch
 family is gone from the list. Round 5a (the stall taxonomy / hpm_ev from a 41-root
-snapshot, `scratchpad/edit5.py`, `scratchpad/hm5/ooo2_core.v`) is verified (lint, 240/0,
+snapshot, `scratchpad/edit5.py`, `scratchpad/hm5/smolrv64_core.v`) is verified (lint, 240/0,
 both cosims) but NOT built: hpm_ev_q sits at +0.072 in hm3 and another build+board was not
 worth the margin.
 
@@ -180,7 +180,7 @@ parent.
 Earlier "W1 kills the NIC" readings in this document's history were wrong: W1a's boot (no
 NETDEV, NFS stalls from 328 s) was indistinguishable from base+L1's, and noW1 died too.
 
-**Why no simulation sees it.** `ooo2/tb_ooo2_linux.v` ties virtio off (`virtio_irq`,
+**Why no simulation sees it.** `core/tb_smolrv64_linux.v` ties virtio off (`virtio_irq`,
 `virtio_net_irq` = 0, rdata 0), the tiny128 DTB has no virtio node, and the UART never gets
 an RX interrupt (ier=0, seip=0 through 700 M cycles of the GB5 boot). No cosim has ever taken
 a PLIC interrupt, read a read-to-clear device register, or run a DMA ring. The board's
@@ -190,14 +190,14 @@ irqop-injection interplay it had to add (`dcr_arm`, the "fe_red would flush the 
 the frontend" comment). The one panic seen (epc=4, ra=5, "Fatal exception in interrupt")
 is a `ret` through a corrupted link register inside an interrupt handler.
 
-**Simulation stimulus (in progress, sim-only, `-DOOO2_IRQ_STIM`):** `rv_soc_top.v` pulses the
+**Simulation stimulus (in progress, sim-only, `-DSMOLRV64_IRQ_STIM`):** `rv_soc_top.v` pulses the
 UART's PLIC source for 256 of every 32768 cycles and `src/plic.v` treats source 10 as enabled
 at priority >= 1 whatever the kernel wrote, so the 8250's fasteoi flow (no action: mask + eoi)
 runs thousands of times -- claim, complete, irqop injection, sret -- under the lockstep, which
 follows the DUT's interrupts (`simmerv_set_forced_interrupt`). The storm can only start once
 the kernel has mapped hwirq 10 (the 8250 probe, guest ~1.0 s = ~575 M cosim cycles; the tiny128
-guest clock runs ~575 M cycles per guest second). Run: `VDEFS=-DOOO2_IRQ_STIM CYC=800000000
-ooo2/run-ooo2-cosim-linux.sh`. The plain `run-ooo2-linux.sh` tb is stale (asserts on a
+guest clock runs ~575 M cycles per guest second). Run: `VDEFS=-DSMOLRV64_IRQ_STIM CYC=800000000
+core/run-cosim-linux.sh`. The plain `run-linux.sh` tb is stale (asserts on a
 non-DRAM straddle at PA 0x22 before the kernel) and was not used.
 
 ## Timing: closed, with W1' instead of W1
@@ -209,13 +209,13 @@ cf_link_pend & ~fp_wb` as before, and M YIELDS the cycle (`m_fe_yield = cf_link_
 intent, no op changes shard. Lint clean, 240/0, IW=2 60 M cosim 13,494,359 (+0.02% on the hm6
 row), IW=3 60 M cosim 11,684,956 (= the base count). **IW=3/HW=8 at 166.67 MHz: post-route WNS
 +0.034** (`scratchpad/build-w1p3.log`), against +0.007 for the hm3 stack. The shipping RTL
-candidate is `scratchpad/hm6/*` with `scratchpad/w1p/ooo2_core.v`; the IW=2 build at 166 is
+candidate is `scratchpad/hm6/*` with `scratchpad/w1p/smolrv64_core.v`; the IW=2 build at 166 is
 `build-w1p2.sh`: **IW=2 at 166.67 MHz, post-route WNS +0.035** (`scratchpad/build-w1p2.log`; the
 board is pointless until CTF-on-FP is fixed).
 
 ## Root cause and fix (2026-09-17, 11:30): the LSU classified a translate by the PORT's address
 
-The storm stimulus caught it in 447 M cycles as `ooo2_lsu: non-DRAM access straddles a word:
+The storm stimulus caught it in 447 M cycles as `smolrv64_lsu: non-DRAM access straddles a word:
 pa=0fff0f0d nb=8 boff=5` -- an 8-byte misaligned load into the PLIC's region, started by the
 load queue (`pt_start=1`) two cycles after a deferred CTF squash. The 40-cycle waterfall with
 the backend signals (`scratchpad/stim-cosim5.out`) shows ROB entry 5, a wrong-path load
@@ -224,7 +224,7 @@ fetched after the mispredicted branch 4 (its squash deferred to head, `fr_set` a
 starting an older load, and offered by the queue with `x_v=1` from 308 although it was not
 the head -- so its "DRAM, speculatable" bit was set for a device address.
 
-`ooo2_lsu.v`: `eff_pa = (pt_start | take_next) ? pt_pa : t_paddr` and `xo_mem = pa_mem`
+`smolrv64_lsu.v`: `eff_pa = (pt_start | take_next) ? pt_pa : t_paddr` and `xo_mem = pa_mem`
 (from `eff_pa`). In the one cycle where the port starts or chains an access while M's
 translate completes, the translating load is classified by the PORT's (DRAM) address. The
 queue records `mem=1`, the head gate `mem | rob==rob_head` passes, and a device load issues
@@ -234,10 +234,10 @@ only the misaligned garbage address tripped an assertion. Latent since CTF-on-FP
 M resolved branches in order, so a load in M was never on the wrong path.
 
 Fix (F1, `scratchpad/f1/`): `xo_mem` (and `xl_early`'s gate) from the translate's own PA
-(`t_mem`); `ooo2_lq` exports `x_head`; the LSU asserts at every start that a non-DRAM access is
+(`t_mem`); `smolrv64_lq` exports `x_head`; the LSU asserts at every start that a non-DRAM access is
 non-speculative (`pt_nonspec = pt_store | lq_x_head`, checked against the LSU's own region
 decode, so a wrong `mem` bit fires it). Rules D12 and G7 in `docs/rtl-rules.md`; spec §8.
-Verified: lint clean; riscv-tests 240/0; every `run-ooo2-*-tb.sh` PASS; the storm cosim to
+Verified: lint clean; riscv-tests 240/0; every `run-*-tb.sh` PASS; the storm cosim to
 800 M cycles lockstep-clean (236,499,567 retires, ~20 k spurious interrupts); **IW=3/HW=8 at
 166.67 MHz: post-route WNS +0.017, and the board boots Ubuntu over NFS root to `ubuntu login:`
 with zero faults, zero NFS stalls, no watchdog (`board-f1iw3`, 12:20)** -- the first clean
@@ -248,14 +248,14 @@ identically at 5ef15e3d (pre-existing on the branch, not touched here).
 
 Three layers, in the order they pay off:
 
-1. **Cross-check at the consumer (done).** `ooo2_lq` recomputes the "DRAM, idempotent" bit
+1. **Cross-check at the consumer (done).** `smolrv64_lq` recomputes the "DRAM, idempotent" bit
    from the PA it stores and `$fatal`s at the fill if the LSU's classification disagrees
    (rule D12; `DRAM_BASE`/`LRAM_*` parameters, a unit bench declares its synthetic world all
    memory with `DRAM_BASE = 0`). This fires on the first device load of any boot, in every
    cosim, with no stimulus -- the D12 defect would have died at cycle ~2 M of the plain
    tiny128 boot. The pattern generalises: any predicate a queue captures about its own
    subject gets recomputed from the subject at capture.
-2. **The interrupt storm as a standing gate (done).** `ooo2/run-ooo2-cosim-storm.sh` (G7):
+2. **The interrupt storm as a standing gate (done).** `core/run-cosim-storm.sh` (G7):
    `IW=`, `CYC=`, `DDR_LAT=` knobs; the DDR latency shape is what changes the interleavings.
    Run after any change to redirect, squash, the LQ/LSU start gates, the irq FSM or the PLIC.
 3. **A device with DMA in the Linux testbench (assessed, not done).** The pieces: the
@@ -265,7 +265,7 @@ Three layers, in the order they pay off:
    `cosim_inert_devstore`; `src/probe_cosim.cpp` still defines `cosim_dma_write` but the
    Rust side of simmerv-cosim no longer references it, so device DMA into memory would have to
    be mirrored into Simmerv again (or the run done without lockstep, and the plain
-   `run-ooo2-linux.sh` tb is stale: it asserts on a non-DRAM straddle at PA 0x22 before the
+   `run-linux.sh` tb is stale: it asserts on a non-DRAM straddle at PA 0x22 before the
    kernel). The retired `src/tb_cosim_linux.v` (453d9989^) shows the wiring: `virtio_mmio` +
    `virtio_blk` behind the passthrough, an AXI-to-memory bridge for the DMA, an SD backing
    store over DPI (that C model is gone too). Plus a tiny128 DTS variant with a virtio-mmio
@@ -441,7 +441,7 @@ the NC mapping and acks -- race-free by protocol, where a polled flag would not 
 landing between a poll's execution and its retire is applied to the reference before that poll
 is compared). Each seed is ~1.5 M cycles: `make -C workloads/memrand sweep SEEDS="1 2 3 4"`.
 Invariants stay where they belong (always-on assertions in the RTL); the bench supplies the
-orderings. The unit-level random benches (`tb_ooo2_lqsq_rand`, `tb_ooo2_cache`) remain for the
+orderings. The unit-level random benches (`tb_smolrv64_lqsq_rand`, `tb_smolrv64_cache`) remain for the
 structures they cover.
 
 ## Retrospective: C1 and C2 (Tommy's rule: what would have made this faster)
@@ -458,7 +458,7 @@ structures they cover.
   obj_dir a run is using".
 - **One obj_dir serialises every cosim.** Tonight's queue (300 M x2, blk, storm, sweep, memrand)
   is two hours of wall time on a 32-core box because the runner owns one build directory. A
-  per-config obj_dir (`obj_dir_ooo2_clinux.<hash>`) would let the IW=2 and IW=3 binaries and the
+  per-config obj_dir (`obj_dir_smolrv64_clinux.<hash>`) would let the IW=2 and IW=3 binaries and the
   storm coexist and cut the verification wall time by 3x. Worth doing before C3.
 - **A unit bench that replays the core's protocols is a second core.** B4 as planned (LQ+SQ+LSU+
   D$+MMU with a golden model) would have re-implemented M's translate pass, the ROB pointer and
@@ -471,7 +471,7 @@ structures they cover.
 
 ## C3 (SYSQ) design notes, from the RTL as it is (2026-09-17)
 
-What M still does besides memory, with the signals to move (`ooo2_core.v`):
+What M still does besides memory, with the signals to move (`smolrv64_core.v`):
 - **Traps**: `xtrap_v = m_valid & (m_fault | m_ill_eff | (m_mem_op & m_lsu_flt))`; cause/tval from
   the fetch fault, the illegal latch or the LSU (`m_lsu_fc`, `lsu_fault_tval`); `cot_fire =
   u_csr.trap_v`. System ops: `m_is_sys` (opcode 11100), `m_is_irqop` (the irqop encoding),
@@ -510,7 +510,7 @@ protocol). On the way:
   upstream (Tommy: update at a convenient point, not now); the fix and the `mem_size` field must
   survive that update.
 - **Page-straddling misaligned accesses**: the LSU raises address-misaligned for a misaligned
-  access whose span leaves the page (documented in `ooo2_lsu.v`, Linux emulates it). The pointer
+  access whose span leaves the page (documented in `smolrv64_lsu.v`, Linux emulates it). The pointer
   chases now stay inside the pointer's page; simmerv agreed with the DUT's trap.
 - A zero-initialised region let zero loads wipe the value pool within a few hundred ops; the
   region is seeded with random data now (`region_init`, 128 KiB in .rodata).
@@ -555,7 +555,7 @@ SYSQ entry is exactly that payload keyed by ROB index: `{v, kind: SYS | XTRAP (|
 is_csr, func, addr[11:0], src, pc, cause[3:0], tval}`; `raddr` (the CSR read) is `addr` of the
 firing entry.
 
-1. **Shadow** (`ooo2_sysq.v`, no behaviour change): written (a) at dispatch for `d_illegal`,
+1. **Shadow** (`smolrv64_sysq.v`, no behaviour change): written (a) at dispatch for `d_illegal`,
    `d_fault` (cause/tval from decode), `d_is_irqop` (the three slots' ROB indices), (b) at M's entry
    capture (`m_*  <= q_*/x_*`, ~line 3640) for `q_is_sys`: `{x_rs1, q_imm, q_csr_func, q_pc}`, (c) at
    the LSU's latched fault (`m_flt_pulse`: `m_lsu_fc`, `lsu_fault_tval`). Cleared on `redirect`
@@ -577,7 +577,7 @@ firing entry.
 
 ## C3 step 1 done, step 2 tried and rejected for timing (2026-09-18 02:30 / 08:00)
 
-Step 1 (the shadow, `sysq_*` arrays in `ooo2_core.v` keyed by ROB index, written at dispatch for
+Step 1 (the shadow, `sysq_*` arrays in `smolrv64_core.v` keyed by ROB index, written at dispatch for
 decode faults/illegal, at M's take for a SYSTEM-opcode op's operands and the FP-off illegal, at
 the LSU's fault pulse) held under every gate without a single assertion: 240/0, 60 M and 300 M
 at both widths bit-identical, the 500 M storm, memrand. Step 2 makes `csr_file`'s `upd_*` and
@@ -674,7 +674,7 @@ two of them were missed; a table of "who fires this" would have made the omissio
 
 ## C4a design notes (2026-09-18 11:00): the pipelined tagged load path, from the interfaces as they are
 
-Facts (ooo2_lsu.v / ooo2_lq.v / rv_cache.v / rv_soc_top.v at 390d5028, and `git show da28895b`):
+Facts (smolrv64_lsu.v / smolrv64_lq.v / rv_cache.v / rv_soc_top.v at 390d5028, and `git show da28895b`):
 - **The D$ read door is already tagged.** `rd_tag[RTW-1:0]` (RTW=4, "room for a load-queue index")
   is opaque and echoed as `rd_resp_tag`; `rd_ack = accept & rd_req` is COMBINATIONAL (`accept =
   acc_slot & ~inv_go & ~inv_busy & ~fin_hazard & ~f_replay & ~f_solo & ...`, `acc_slot = (st==S_IDLE
@@ -720,7 +720,7 @@ Assertions to carry: rv_cache.v:1335 (a bank row read and written in the same cy
 the LSU goes multiple-outstanding"), the LQ's ten (out-of-order landing hazards), the SoC's two
 (two responses at once; a waiting read whose tag/address moved), plus new: a fast response whose
 tag has no `o_v`, a slow response with a fast one in the same cycle (one port), and the alias
-matrix's registered answer never less conservative than the live one (ooo2_core.v:1824).
+matrix's registered answer never less conservative than the live one (smolrv64_core.v:1824).
 
 ## C4a step 1 built (2026-09-18 12:30, worktree smolrv64-wt-c4a, branch wip/c4a)
 
@@ -827,7 +827,7 @@ clean, 240/0, all 8 benches, both 500 M storms clean, all 7 memrand seeds (both 
 (+1.19%, a genuine net win, not just recovered). 300 M IW=3: retires=74,597,923 vs 74,614,701
 expected (-0.02%, neutral, within the 0.5% floor).** OOC: `rv_cache` (D$ shape: SIZE_KB=64,
 WRITABLE=1, WRTHRU=0, PREFETCH=0) WNS +1.252 (worst family `cur_line_reg -> r_addr_reg/CE`,
-13 levels, route-dominated); `ooo2_lsu` (LDTW=2) WNS +1.859 (worst path inside `u_mmu`,
+13 levels, route-dominated); `smolrv64_lsu` (LDTW=2) WNS +1.859 (worst path inside `u_mmu`,
 unrelated to the self-loop). Both healthy margins at the 6.000 ns OOC period.
 
 ## C4a step 2's timing DOES NOT CLOSE at IW=3 -- NOT COMMITTED, open item
@@ -870,7 +870,7 @@ replaced by a cheap `chk_cap` built from state + already-registered fields alone
 last cycle, F_ANS is busy, the one MSHR is occupied, a write-hit-victim collision) all mean
 the FSM is RETRYING THE SAME REQUEST next cycle and r_addr/r_tag/cur_line/etc. must survive
 unchanged -- a hit-independent capture clobbers them regardless of which case it is, and
-`ooo2_lsu.v:555`'s own B-rule assertion ("fast response with tag N that nothing is waiting
+`smolrv64_lsu.v:555`'s own B-rule assertion ("fast response with tag N that nothing is waiting
 on") caught it on the very first cosim run. Reverted in full; `chk_rd` is the sole admission
 wire again, exactly as the working version above. OOC for `chk_cap` alone (+1.206, barely
 different from the un-split version) suggests the capture's own width was NOT actually the
@@ -957,7 +957,7 @@ checkpoint was 10:32 (the skid buffer) and the `.bit` beside it was 02:32, from 
 build that had MISSED timing at -0.270. The timing report and the bitstream disagreed, and a
 board gate cannot tell you that. Guard fixed to compare mtimes against the routed checkpoint.
 
-**T21 in `tb_ooo2_dcache.v` is the regression test this increment was missing.** It warms 32
+**T21 in `tb_smolrv64_dcache.v` is the regression test this increment was missing.** It warms 32
 lines, then streams 32 read hits with a requester that presents the next address in the same
 edge the door took the last one, and measures cycles per accepted read: an S_IDLE-only door
 is pinned at 2.00 whatever the requester does, a self-looping one approaches 1.00. It fails
@@ -968,7 +968,7 @@ what justifies the increment.
 
 **Aside, ruled out and not chased:** `workloads/ldbench` hangs identically (pc~0x20,
 retires=61,904,704 at the 200 M cutoff, no console text at all) on BOTH this tree and the
-untouched 493dc343 baseline via `FW=ldbench.bin ../../ooo2/run-ooo2-linux.sh` -- a
+untouched 493dc343 baseline via `FW=ldbench.bin ../../core/run-linux.sh` -- a
 pre-existing harness/invocation issue (mtvec is never programmed in `ldbench`'s crt0.s; a
 guess is some other trap reaches an unmapped address 0x0-ish and free-loops), not a self-loop
 defect. ldbench's own numbers in the C4a design notes above must have come from a different
@@ -1004,7 +1004,7 @@ ALU port instead of the single shared CTF pipe.
 **THE LINK VALUE IS ALREADY THERE, AND IT IS NOT PC+4.** `src/exec_alu.v:42` computes
 `next_pc = pc + (is_rvc ? 2 : 4)` and `result = res_link ? next_pc : alu_r`, and the ALU
 ports ALREADY wire it: `u_xa` takes `.res_link(qa_res_link) .is_rvc(qa_rvc) .pc(qa_pc)` (the
-payload carries the PC for AUIPC regardless). `ooo2_exec` is the same module the CTF pipe
+payload carries the PC for AUIPC regardless). `smolrv64_exec` is the same module the CTF pipe
 instantiates as `u_xf`. So there is no payload widening, no new adder, and no `cf_link_wb`
 arm on SH_FE -- the link just uses the ALU's own write port. What has to move is only the
 comparator/target side (`xf_redirect`/`xf_taken`/`xf_taken_tgt`) and the resolution
@@ -1064,15 +1064,15 @@ order.
 
 **The known-good end is newer than the run Tommy started.** 384fd599 (the release, IW=2)
 completed GB6 in full on 2026-09-10 (55.5 h, result 19145035). 9d027fee is older than that and
-its ooo2 RTL is the same, so the four-hour run on it (`gate-results/6c1eeff1/rk_xcku5p.bit`, a
+its core RTL is the same, so the four-hour run on it (`gate-results/6c1eeff1/rk_xcku5p.bit`, a
 directory named for one commit holding a bitstream that identifies as another -- the G11/G12
 class again) could not narrow anything; stopped, board shut down cleanly, taken over.
 
 **The range and the candidates.** 384fd599..390d5028+ is 30 RTL commits in four blocks: the
 Sep-10 predictor/aligner fixes; the VHPR I$ (stage 2, board-gated at `login:` only); the IW=3
 widening (stage 3 through 5bffd3d9); the memory backend C0/C1/C3/C4a. Every increment's
-bitstream is banked in `/var/tmp` (`ooo2_c0iw3`, `c1iw3`, `c3s1iw3`, `c3s3iw3`, `c4a3iw3`, and
-`ooo2_REL_release_166MHz_384fd599`), so no step needs a build. A step is `tools/gb6-bisect.sh
+bitstream is banked in `/var/tmp` (`smolrv64_c0iw3`, `c1iw3`, `c3s1iw3`, `c3s3iw3`, `c4a3iw3`, and
+`smolrv64_REL_release_166MHz_384fd599`), so no step needs a build. A step is `tools/gb6-bisect.sh
 <bit> <tag>`: program, boot, launch `/var/tmp/gb6-bisect.sh <tag>` on the board (GB6 single-core
 under perf, per-tag logs), watch dmesg / the raw log / the console once a minute, one verdict
 line. FAIL arrives in ~1.5 h; PASS is 4.5 h (three times the failure time). Order: `c3s3iw3`
@@ -1080,7 +1080,7 @@ first (everything but C4a1: a pass convicts C4a1 outright), then `c0iw3` on a fa
 frontend+IW=3 from the memory backend), then whichever half is left.
 
 **The integrity log (C5 step 0, built today, this worktree).** The sim-only assertions are now
-also hardware: `rv_errlog.v`, `e_*` wires in `rv_cache.v`/`ooo2_lsu.v` read by both the
+also hardware: `rv_errlog.v`, `e_*` wires in `rv_cache.v`/`smolrv64_lsu.v` read by both the
 `$fatal` and a registered `err[15:0]` port, one log in `rv_soc_top` at the dead FBDIAG window
 (`0x1000_E000`: magic, sticky vector, first index + 48-bit cycle stamp), the D$ address-provenance
 check always on (bit 13). Monitor banner `err=`, `E` command; `tools/errlog-read.sh <ip>` names
@@ -1220,7 +1220,7 @@ drivers hide it with 32-bit accesses. Not this bug, but a defect to assert on.
 **What bit 3 means in this geometry.** The D$ is `PAW=64, PAW_SIG=34`: its tag is 34 bits and
 rv_cache.v line 35 says a PA at or above 2^34 "cannot be tagged and is asserted never to
 arrive". The LSU's DRAM test is `pa_dram = (eff_pa >= 0x8000_0000)` with NO upper bound
-(ooo2_lsu.v line 204), so any 56-bit PA from 2 GiB up to 2^56 is "memory": cacheable, and
+(smolrv64_lsu.v line 204), so any 56-bit PA from 2 GiB up to 2^56 is "memory": cacheable, and
 allowed to start SPECULATIVELY (`e_dev_spec` blocks only `~pa_mem`). A wrong-path load whose
 address register holds garbage above 2^34 -- routine in out-of-order execution of user code --
 therefore reaches the D$, which tags it with the low 34 bits: it hits or fills the ALIAS line
@@ -1264,11 +1264,11 @@ them (5bffd3d9 + retire3 port only).
 
 **c0sel verdict: FAIL (12:45).** 4a3b0d05+ (code-form counter select) died at 5938 s in PDF
 Renderer at `0xffffffff00000000`. The registered select is exonerated; what remains of C0 is
-the 39-bit event bus, the eight event wires (ooo2_lq `x_devwait`, ooo2_sq `l_block_unk_q`,
-ooo2_lsu `ld_busy`, plus five wires computed in the core from existing signals), the two
+the 39-bit event bus, the eight event wires (smolrv64_lq `x_devwait`, smolrv64_sq `l_block_unk_q`,
+smolrv64_lsu `ld_busy`, plus five wires computed in the core from existing signals), the two
 occupancy taps, and the retire3 port. Two more instruments were built meanwhile, both banked
 fresh: `c0port` = 5bffd3d9 + the retire3 port alone (WNS +0.029,
-`/var/tmp/ooo2_c0port_iw3_5bffd3d9p.bit`), and `c0nosrc` = 4a3b0d05 with ooo2_lq/sq/lsu at
+`/var/tmp/ooo2_c0port_iw3_5bffd3d9p.bit`), and `c0nosrc` = 4a3b0d05 with smolrv64_lq/sq/lsu at
 5bffd3d9 and the three module-side sources tied to 0 (default directive missed timing at
 -0.158 and wrote no bitstream; Explore closed, `/var/tmp/ooo2_c0nosrc_iw3_4a3b0d05p.bit`).
 c0nosrc launched 12:47: PASS -> the three module edits are the difference (the SQ's per-entry
@@ -1315,9 +1315,9 @@ group, analysed as protocol-safe. A second bitstream of 5bffd3d9 itself (Explore
 `/var/tmp/ooo2_st3end_explore_iw3_5bffd3d9.bit`) is building for the decisive board run.
 
 **CORRECTION (16:50): THE PASSING 5bffd3d9 BITSTREAM WAS IW=2.** Its build log
-(`tmp/build-5bffd3d9-iw3-bit.log` in the job dir) says `pipeline width = 2 (OOO2_IW=2) -- the
+(`tmp/build-5bffd3d9-iw3-bit.log` in the job dir) says `pipeline width = 2 (SMOLRV64_IW=2) -- the
 shipping build.`: the re-run after the stale-bitstream (G11) fix was `make bit` without
-`OOO2_IW=3` in the environment, and the monitor banner carries only the git hash, not the
+`SMOLRV64_IW=3` in the environment, and the monitor banner carries only the git hash, not the
 width. So `st3end` and `st3end2` -- the two passes that made 5bffd3d9 "the defect-free commit
 at IW=3" and put C0 on trial -- were IW=2 runs. Everything built on them is void: C0 was never
 implicated, the c0sel/c0nosrc/c0port split was a split of nothing, and the "bitstream
@@ -1330,8 +1330,8 @@ bitstreams are IW=3 and IW=3 fails). The consistent scoreboard is the simple one
 
 The defect is IW=3-only (or IW=3-exposed) and is already present at 5bffd3d9, the stage-3
 end. The IW=3 range below it is un-bisected: the stage-3 increments from 36ae53a2 (the first
-tree that boots IW=3) to 5bffd3d9. The build now running (`ooo2_st3end_explore_iw3_5bffd3d9`,
-launched WITH `OOO2_IW=3`, Explore directives) is therefore the FIRST genuine IW=3 test of
+tree that boots IW=3) to 5bffd3d9. The build now running (`smolrv64_st3end_explore_iw3_5bffd3d9`,
+launched WITH `SMOLRV64_IW=3`, Explore directives) is therefore the FIRST genuine IW=3 test of
 5bffd3d9 and the bisection's next step; a FAIL sends the search into the stage-3 increments.
 What stands from the last 24 hours: the integrity log (47 D$/LSU checks clean at an IW=3
 crash; pa_range benign), the CDC and check_timing audits, the reader fixes, the virtio-net RX
@@ -1350,7 +1350,7 @@ below 5bffd3d9 boots with a NIC that can die mid-run, and GB6 over NFS on such a
 for THAT reason. An IW=3 bisection below 5bffd3d9 therefore carries the D12 hunk (the LSU's
 device-load classification) onto each older increment, or it is not a bisection of this
 defect. The mislabeled bank is now `/var/tmp/ooo2_st3end_iw2_5bffd3d9_MISLABELED.bit`; older
-banks of unknown provenance (`ooo2_iw3_hm3.bit`, `ooo2_f1iw3.bit`) are named by intent only --
+banks of unknown provenance (`smolrv64_iw3_hm3.bit`, `smolrv64_f1iw3.bit`) are named by intent only --
 their build logs, not their names, say what they are.
 
 **Instruments for below 5bffd3d9, and a second caveat (17:30).** Built: 5bffd3d9 at IW=3 and
@@ -1370,13 +1370,13 @@ it is the one that changes what a load landing around a redirect does, and the f
 load of `ra` returning stale or zero data.
 
 **Two better candidates inside 5bffd3d9 (17:45), from reading its diff.** Both produce exactly
-"a register read stale" and both are new in the first tree that fails: (1) `ooo2_rename.v`'s
+"a register read stale" and both are new in the first tree that fails: (1) `smolrv64_rename.v`'s
 freelist read was restructured -- each shard's per-port bank read went from a three-way
 select on `h`/`hb`/`hcc` to `mem[h_row + behind[g]]` with `behind[g] = (g < h's bank)`, and the
 row advance for port B now uses `ar_*` (stall-independent) instead of `a_*`. A wrong hand-out
 here gives two live instructions one physical register, and the loser's consumer -- a `ret`
 reading `ra` -- gets the other's data. It is the IW-dependent one: three allocations per
-cycle wrap the banks differently from two, and IW=2 passes. (2) `ooo2_iq.v` grew a
+cycle wrap the banks differently from two, and IW=2 passes. (2) `smolrv64_iq.v` grew a
 dependency matrix (`dep[k*NSRC+q]`, rows captured at dispatch from `d_ps` against `e_prd`)
 that replaces the tag compare for the self-wakeup, plus a registered `d_ready_q`
 (`nfree >= 2`). A stale row wakes a consumer on the wrong producer and it reads its source
@@ -1394,7 +1394,7 @@ arithmetic (three-operand, fused, FP->INT moves and compares through the FP-shar
 rare divide), real calls into four generated subroutines that save and reload `ra` through the
 stack and `ret` -- the failing shape -- unpredictable branches over FP/ALU ops, and the usual
 loads, stores and pointer chases at lower weight. `make cosim SEED=<n> OPS=50000
-GENFLAGS=--fpmix TAG=-fp VDEFS=-DOOO2_IW=3` runs one seed in minutes against Simmerv; the
+GENFLAGS=--fpmix TAG=-fp VDEFS=-DSMOLRV64_IW=3` runs one seed in minutes against Simmerv; the
 lockstep's retire compare catches a stale register on the first wrong `ret` or FP result.
 memrand-1-fp.bin is assembled (4813 FP/call/ret instructions in 50 k ops); the run waits for
 Vivado to finish (no Verilator while it builds).
@@ -1411,7 +1411,7 @@ top of 5bffd3d9 at 111 MHz.
 seed at IW=3 (2, 3, 4, 5) AND at IW=2, always at a `jal`/`jalr` whose reported link was
 another value. The first four were a cosim REPORTING race (the head read `cs_val` before the
 same-cycle link capture; fixed with a `cs_hit_cf` bypass like the other producers). With that
-fixed the divergences moved later but stayed -- and a `+watch_pc` hook (new, tb_ooo2_linux.v)
+fixed the divergences moved later but stayed -- and a `+watch_pc` hook (new, tb_smolrv64_linux.v)
 on seed 5's jalr at 0x80178eba showed the machine's fault: in cycle 7898274 the branch
 RETIRED and fired its redirect at the ROB head (`cf_red_fire`, `redirect=1`) with its link
 still pending (`wrote=0`, the correct link 0x80178ebe waiting in the stage for the FE port,
@@ -1436,7 +1436,7 @@ diverged before). The fixed tree (C4a + integrity log + D13) is building at IW=3
 the integrity log reading along.
 
 **Sim gates on the fixed tree (18:58):** `memrand --fpmix` seeds 2 and 3 at IW=2 PASS (both
-diverged before the fix); riscv-tests 240/0; all eight ooo2 benches PASS (cache, cbozero,
+diverged before the fix); riscv-tests 240/0; all eight core benches PASS (cache, cbozero,
 ethrx, iq, lqsq-rand, lqsq, vnet, dcache). `src/run-tb.sh` is 18/19: `tb_fetch_pagecross.v`
 dies at once with `fetch.v:138: fetch: hw_cap 8 != x at off=000000` -- the bench does not
 drive the halfword cap that 5bffd3d9's `src/fetch.v` change asserts on; `src/` is untouched
@@ -1446,13 +1446,13 @@ one-line repair).
 74,382,417 against the recorded 74,614,701 (-0.31%): the squash now waits a cycle or two for
 each mispredicted call whose link was queued behind the FPU, which is the price of the
 correct link. The expectation row moves to the measured value in the fix's commit. Every
-simulation gate is green; the board's Geekbench on `ooo2_d13fix_iw3.bit` (running since
+simulation gate is green; the board's Geekbench on `smolrv64_d13fix_iw3.bit` (running since
 19:07, integrity log along, bit 3 only at boot as before) is the last gate before the two
 commits: (A) the integrity log + reader + bisection tooling, (B) rule D13's fix + the fpmix
 reproducer + the cosim link bypass + `+watch_pc`.
 
 **Board, the fixed tree (2026-09-22 12:22): the complete single-core suite PASSED.** All
-sixteen Geekbench 6 workloads on `ooo2_d13fix_iw3.bit` (IW=3, 166.67 MHz), zero faults, the
+sixteen Geekbench 6 workloads on `smolrv64_d13fix_iw3.bit` (IW=3, 166.67 MHz), zero faults, the
 integrity log unchanged from its boot-time bit 3, about seventeen hours from 19:07 to 12:22
 (Object Detection ~2 h and Background Blur ~5 h on this core). PDF Renderer, where nine of
 nine unfixed IW=3 bitstreams died in their first minutes, passed at minute 94. Per Tommy the

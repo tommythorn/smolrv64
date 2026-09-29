@@ -26,7 +26,7 @@ CFLAGS  = -U_FORTIFY_SOURCE -DPREALLOCATE=1 -mcmodel=medany -static -std=gnu99 $
           -Wno-implicit-int -Wno-implicit-function-declaration -march=$(MARCH) -mabi=lp64d \
           -I$(ENVINC) -I$(RVT)/common
 LDFLAGS = -static -nostdlib -nostartfiles -lm -lgcc -T $(RVT)/common/test.ld
-VDEFS  ?= -DOOO2_IW=3
+VDEFS  ?= -DSMOLRV64_IW=3
 CYC    ?= 400000000
 B      ?= dhrystone
 PLUSARGS ?=
@@ -61,7 +61,7 @@ dhrystone.elf: syscalls-uart.c $(RVT)/common/crt.S dhry-src/dhrystone.h
 run: $(B).bin
 	@th=$$($(RV)nm $(B).elf | awk '$$3=="tohost"{print $$1}'); out=$(CURDIR)/$(LOG); \
 	 FW=$(CURDIR)/$(B).bin INITRD= CYC=$(CYC) VDEFS="$(VDEFS)" PLUSARGS="+tohost=$$th $(PLUSARGS)" \
-	   ../../ooo2/run-ooo2-cosim-linux.sh > $$out 2>&1; \
+	   ../../core/run-cosim-linux.sh > $$out 2>&1; \
 	 grep -a -E 'building|Diverging|STORE DATA|fatal|TOHOST exit|TIMEOUT after|mcycle|minstret|Dhrystones|Microseconds' $$out; \
 	 if grep -aq 'TOHOST exit=0 ' $$out && ! grep -aqE 'Diverging retire|STORE DATA MISMATCH' $$out; then echo "RVBENCH $(B): PASS"; \
 	 else echo "RVBENCH $(B): FAIL (log: $$out)"; exit 1; fi

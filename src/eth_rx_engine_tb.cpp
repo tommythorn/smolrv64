@@ -1,6 +1,6 @@
 // eth_rx_engine bench: frames through eth_mac_tx -> eth_mac_rx -> eth_rx_engine across
 // independent clocks, read back out the engine's ui side (registered read) and checked
-// byte for byte.  Run by ooo2/run-ooo2-ethrx-tb.sh (the gate picks that up).
+// byte for byte.  Run by core/run-ethrx-tb.sh (the gate picks that up).
 //
 //   A  one frame, padded to 60, read back                         (the original case)
 //   B  SLOTS frames back to back, none acked until all are held   (a burst is absorbed)

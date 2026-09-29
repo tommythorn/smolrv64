@@ -14,7 +14,7 @@ foreach {m p} [regexp -all -inline {File Path="\$PPRDIR/\.\./\.\./([^"]+)"} $txt
 }
 puts "sources: [llength $vfiles] .v, [llength $svfiles] .sv from $xpr"
 set incdirs {}
-foreach d [list [file join $root ooo2] [file join $root src] [file join $root src generated]] { if {[file isdirectory $d]} { lappend incdirs $d } }
+foreach d [list [file join $root core] [file join $root src] [file join $root src generated]] { if {[file isdirectory $d]} { lappend incdirs $d } }
 set mf [open [file join $root src cvfpu_sources.f] r]
 while {[gets $mf line] >= 0} { set line [string trim $line]
    if {[string match "+incdir+*" $line]} { lappend incdirs [file normalize [file join $root src [string range $line 8 end]]] } }
@@ -22,7 +22,7 @@ close $mf
 read_verilog -quiet $vfiles
 read_verilog -quiet -sv $svfiles
 set defs [list "MEM_BASEADDR=64'h70000000" "SOC_BOOT_HEX=\"$root/src/mem.linehex\"" \
-   PROBE_CLK_DIV8=48 OOO2_HW=8 "SMOLRV64_BUILD_STAMP=64'h20260906000000" "SMOLRV64_GIT_COMMIT=32'h$tag" "SMOLRV64_GIT_DIRTY=1'b0"]
+   PROBE_CLK_DIV8=48 SMOLRV64_HW=8 "SMOLRV64_BUILD_STAMP=64'h20260906000000" "SMOLRV64_GIT_COMMIT=32'h$tag" "SMOLRV64_GIT_DIRTY=1'b0"]
 puts "defines: $defs"
 set opts [expr {[info exists ::env(OOC_OPTS)] ? $::env(OOC_OPTS) : "-flatten_hierarchy rebuilt -retiming -control_set_opt_threshold 16"}]
 puts "synth options: $opts"

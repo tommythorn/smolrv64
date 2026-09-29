@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify that a board DTS describes no memory the core would fault on.
 
-ooo2_core faults every physical address at or above its DRAM top, 0x8000_0000 + 2^DRAM_LG2
+smolrv64_core faults every physical address at or above its DRAM top, 0x8000_0000 + 2^DRAM_LG2
 (THE PHYSICAL-ADDRESS CAP). A memory node reaching past that top hands Linux pages the core
 refuses, so each node must lie inside [0x8000_0000, top). DRAM_LG2 is read from the RTL's
 board branch, so the cap has one home.
@@ -10,7 +10,7 @@ board branch, so the cap has one home.
 """
 import pathlib, re, sys
 
-CORE = pathlib.Path(__file__).resolve().parent.parent / 'ooo2' / 'ooo2_core.v'
+CORE = pathlib.Path(__file__).resolve().parent.parent / 'core' / 'smolrv64_core.v'
 BASE = 0x8000_0000
 
 

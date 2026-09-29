@@ -4,7 +4,7 @@
 // programs mhpmevent3..15 itself; under Linux it is a plain program for perf to wrap.
 //
 //   make                              shabench.bin (bare metal) + shabench (Linux, dynamic)
-//   FW=$(pwd)/shabench.bin INITRD= CYC=30000000 ../../ooo2/run-ooo2-linux.sh
+//   FW=$(pwd)/shabench.bin INITRD= CYC=30000000 ../../core/run-linux.sh
 //     | grep -E '^ +[0-9]+ +(cycles|instructions|r0)' | ../../tools/perf-cpi-stack.py
 //   on the board: ./perf-smol.sh cpi ./shabench 64 2>&1 | ./perf-cpi-stack.py
 //

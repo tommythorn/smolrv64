@@ -1,4 +1,4 @@
-// Cosim glue: ooo2_core (under -DOOO2_COSIM, ooo2/tb_ooo2_riscv.v and tb_ooo2_linux.v)
+// Cosim glue: smolrv64_core (under -DSMOLRV64_COSIM, core/tb_smolrv64_riscv.v and tb_smolrv64_linux.v)
 // emits one probe_retire() DPI call per committed
 // instruction (and per trap) in program order; here we lockstep those against
 // the simmerv golden model (C ABI in ~/simmerv) and abort on the first

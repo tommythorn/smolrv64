@@ -6,7 +6,7 @@
 // corrected by `redirect` (branch mispredict / exception / CPR rollback). PC is
 // the only architectural state here.
 //
-// PREDICTION. The fetch ring (ooo2_fring) marks each halfword that ends a pair at a CTI the
+// PREDICTION. The fetch ring (smolrv64_fring) marks each halfword that ends a pair at a CTI the
 // predictor knows, and the head of the predictor's queue is the first mark's prediction. A
 // bundle ends at the first mark: the aligner ends it at an instruction ending on one. When the bundle's
 // last instruction ends exactly there, fetch consumes the mark (pop) and, if it is a real branch
@@ -87,7 +87,7 @@ module fetch
     // pred_npc WITHOUT THE SUM: which of {pc + length, pq_tgt, pc} pred_npc is. A consumer
     // that already knows the instruction's length (decode does) rebuilds pred_npc from this
     // and pq_tgt and leaves the +2*consumed adder -- eight CARRY8 at the END of the fetch
-    // cloud -- out of whatever it stores. ooo2_frontend's decoupling queue is that consumer: its
+    // cloud -- out of whatever it stores. smolrv64_frontend's decoupling queue is that consumer: its
     // write data was the design's second-worst family on 2026-09-03 (342 endpoints, 25
     // levels, 13 CARRY8, iMMU -> fetch buffer -> aligner -> this adder -> LUTRAM data pin).
     //   0 = fall-through: pc + the presented instruction's length (also the straddle's +4)

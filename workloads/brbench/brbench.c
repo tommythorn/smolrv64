@@ -8,7 +8,7 @@
 //   drain     the same near branch, but an OLDER load that misses the D$ is still in flight,
 //             so the resolved mispredict must wait for the ROB head (RD_WAIT, plan item 5)
 // The penalty per mispredict is the extra cycles per iteration over `pred`, divided by the
-// redirects the counter saw. Run: make && FW=$(pwd)/brbench.bin CYC=40000000 ../../ooo2/run-ooo2-linux.sh
+// redirects the counter saw. Run: make && FW=$(pwd)/brbench.bin CYC=40000000 ../../core/run-linux.sh
 
 typedef unsigned char uint8_t; typedef unsigned long uint64_t;
 #define UART ((volatile uint8_t *)0x10000000)

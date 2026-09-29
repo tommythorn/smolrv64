@@ -1,6 +1,6 @@
-# Verilator/verilated build directories (obj_dir_vl, obj_dir_ooo2, obj_dir_cosim, ...)
+# Verilator/verilated build directories (obj_dir_vl, obj_dir_core, obj_dir_cosim, ...)
 obj_*/
-ooo2/obj_dir_rs/
+core/obj_dir_rs/
 
 # GENERATED device trees (tools/check-dts-timebase.py --gen, `make dtbs`).
 # Tracking these stopped working once the model string carried the RTL commit: the file
@@ -95,8 +95,8 @@ workloads/tiny128/tiny128-blk.img
 workloads/memrand/ops-*.S
 workloads/memrand/memrand-*.elf
 workloads/memrand/memrand-*.bin
-# per-config cosim build directories and their locks (ooo2/run-ooo2-cosim-linux.sh)
-ooo2/obj_dir_ooo2_clinux*
+# per-config cosim build directories and their locks (core/run-cosim-linux.sh)
+core/obj_dir_smolrv64_clinux*
 
 # cargo build output of the in-tree Rust tools (tools/pipeview, tools/rvdisasm)
 tools/*/target/

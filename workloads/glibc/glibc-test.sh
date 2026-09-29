@@ -2,7 +2,7 @@
 # A glibc userspace under the cosim: the shell the board runs (dash), doing the string and
 # path work cloud-init's ds-identify does at boot -- the process that segfaulted on the
 # board on 2026-09-04 on a pointer the core had corrupted (a store-seqno wrap in
-# ooo2_sq), a bug tiny128's static busybox never lined up. Parameter expansion, case,
+# smolrv64_sq), a bug tiny128's static busybox never lined up. Parameter expansion, case,
 # read loops over /proc, pipelines through glibc-linked coreutils, arithmetic. Prints one
 # line per iteration the cosim log can be grepped for, with a checksum that must be the same
 # every run. Each iteration forks ~8 glibc processes; under the cosim that is ~50 M cycles, so

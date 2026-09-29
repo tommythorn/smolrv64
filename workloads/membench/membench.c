@@ -7,7 +7,7 @@
 // Every line misses, so the number is the D$'s fill path against the DDR model measured at
 // 166.67 MHz: a line per ~35 cycles with no prefetch; the next-line stream buffer (plan item
 // 6, 2026-09-05) overlaps the next fill with the current line's use. Bare-metal M-mode.
-//   make && FW=$(pwd)/membench.bin CYC=40000000 ../../ooo2/run-ooo2-linux.sh
+//   make && FW=$(pwd)/membench.bin CYC=40000000 ../../core/run-linux.sh
 
 typedef unsigned char  uint8_t;
 typedef unsigned long  uint64_t;

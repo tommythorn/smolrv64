@@ -15,7 +15,7 @@
 // Self-checking against the FIPS-197 vector, because a benchmark that is not also a test
 // will happily measure the wrong computation.
 //
-// Bare-metal M-mode, boots at 0x8000_0000:  FW=aesbench.bin ooo2/run-ooo2-linux.sh
+// Bare-metal M-mode, boots at 0x8000_0000:  FW=aesbench.bin core/run-linux.sh
 
 typedef unsigned char  uint8_t;
 typedef unsigned int   uint32_t;

@@ -14,7 +14,7 @@
 // AES-XTS lives (0.28% miss rate) and where 54.7% of full-suite ST_MEM comes from at only
 // 2.04% miss. A miss-bound benchmark would measure DRAM, not the machine.
 //
-// Bare-metal M-mode. Measure at VDEFS="-DOOO2_HW=4".
+// Bare-metal M-mode. Measure at VDEFS="-DSMOLRV64_HW=4".
 
 typedef unsigned char  uint8_t;
 typedef unsigned int   uint32_t;

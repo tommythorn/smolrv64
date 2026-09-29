@@ -99,7 +99,7 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
    select are a few hundred ps; spike it only if the integrated build says otherwise.
 2. **The ring's consumption loop** at IW=3: the registered head selects the aligner's window
    (the rotation), the aligner carves the bundle, and what it consumed advances the head, its PC
-   and sequence number. **Spike result (2026-09-24, `src/ooo2_ring_spike.v`, OOC at 6 ns, default
+   and sequence number. **Spike result (2026-09-24, `src/smolrv64_ring_spike.v`, OOC at 6 ns, default
    placement), against today's loop measured the same way:**
 
    | loop | WNS | Fmax | levels | worst path |
@@ -115,7 +115,7 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
 ## Increments, each gated (lint, riscv-tests, benches, memrand/fpmix, rvbench, 60 M and 300 M lockstep, board gate)
 
 0. **A dedicated read-only VHPR I$ (option 2, Tommy's choice, 2026-09-24)** that reads one 16-byte
-   pair every cycle. **Spike result (`src/ooo2_icache_spike.v`, OOC at 6 ns):** 64 KiB, 2 ways,
+   pair every cycle. **Spike result (`src/smolrv64_icache_spike.v`, OOC at 6 ns):** 64 KiB, 2 ways,
    64-byte lines, even and odd 8-byte chunks in separate block-RAM banks with a tag lookup per
    bank (a pair at a line's last chunk takes its even chunk from the next line); the pair address
    registered at t, data + tag compare + way select + fetch-order swap registered at t+1: **WNS
@@ -126,12 +126,12 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
 
    **No translation on a hit (Tommy, 2026-09-24).** `rv_cache`'s I$ role folded the physical
    reconcile into every lookup (`hit = vhit | ptag == rd_pa`), which needs the iTLB's PA on every
-   request. `ooo2/rv_icache.v` hits on valid + virtual tag + the request's epoch only; reconcile is
+   request. `core/rv_icache.v` hits on valid + virtual tag + the request's epoch only; reconcile is
    the MISS path (the same set's physical tags against the PA; a match is re-stamped and replays).
    Increment 1 finishes it: each line caches its execute and user bits (with the page-size bit),
    checked on a hit against the current privilege, and the I$ asks the iMMU only on a miss -- so
    the fetch stream never translates, and an I$ hit whose page is not in the iTLB is still a hit,
-   never a walk. `ooo2/run-ooo2-icache-tb.sh` stresses it: random and sequential pairs (including
+   never a walk. `core/run-icache-tb.sh` stresses it: random and sequential pairs (including
    line-crossing ones), mapping changes that keep most pages (so resident lines reconcile), code
    changes behind fence.i, at L2 latencies 4 and 40.
    **Done 2026-09-24 (252e1b66, fe529096):** 60 M lockstep +8.45%, 300 M +1.60%, both clean; built
@@ -150,7 +150,7 @@ three dispatch-to-execute cycles can go is a separate question for after Stage 4
      build missed by 0.637 ns because the jump gated the I$ request and the ring's writes; with
      that removed it builds at +0.005 (post-route phys_opt).
    - **1b. Prediction moves to the fetch stream -- the whole predictor, not the BTB alone.**
-     1b-i (20d192ef) moved the ring into the frontend as `ooo2_fring`, bit-identical, so the core's
+     1b-i (20d192ef) moved the ring into the frontend as `smolrv64_fring`, bit-identical, so the core's
      instruction port is the I$ request and its answer and the predictor can sit beside the ring.
      1b-ii, as built:
      - The predictor is the stream: it holds the stream's address (a registered 16-byte pair and

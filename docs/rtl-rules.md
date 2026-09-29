@@ -18,7 +18,7 @@ the backlog.
 naming `soc_top.v`, `backend_top.v`, `exec_shard.v`, `cache.v`, `lsu.v`, `tb_vl.v`
 or `run-vl-tests.sh` refer to the sharded-OoO core and its harness, removed in the
 2026-09 release; the commits are still in git history and the rules still apply
-to `ooo2/`.
+to `core/`.
 
 ---
 
@@ -71,8 +71,8 @@ Two tiers, because cost is real and a dogmatic rule gets quietly disabled:
   freelist double-alloc detector, the LSU order-safety check, the two-L2-
   transactions tripwire, illegal-FSM-state defaults.
 - **O(N) sweeps and shadow models → a define the GATE always builds in.**
-  The sharded core's `FL_ASSERT` and `SEQROB` were this tier; in `ooo2/` the
-  equivalents (`ooo2_pending`'s writeback-to-non-pending check, the rename
+  The sharded core's `FL_ASSERT` and `SEQROB` were this tier; in `core/` the
+  equivalents (`smolrv64_pending`'s writeback-to-non-pending check, the rename
   free-list checks, the scheduler payload compare) are unconditional, since they
   measured cheap enough.
 
@@ -150,7 +150,7 @@ A fault at 1e-11 per cycle passes every gate we own and kills the board in an ho
 wild jump with nothing attached (C4a step 2, 2026-09-19: `epc == ra == badaddr`, root cause
 never found; 390d5028+ under GB6, 2026-09-20: the same signature). Since 2026-09-20 the
 memory backend's invariants are also `e_*` wires that feed `rv_errlog` through a registered
-`err` port per unit (`rv_cache`, `ooo2_lsu`), and the SoC publishes the sticky vector and the
+`err` port per unit (`rv_cache`, `smolrv64_lsu`), and the SoC publishes the sticky vector and the
 first fault's index and cycle at `0x1000_E000` (spec §11.1). The rule for a new invariant in
 those units: name the condition once as a wire, read it from both the `$fatal` and the log,
 and never let the two drift. A unit outside the log (the ROB, rename, the schedulers) still
@@ -264,8 +264,8 @@ one build.
 ---
 
 **B7. Every attribute an access needs travels with its queue entry; none is re-derived
-or hardwired downstream.** `ooo2_lq` carried a load's PA, size, sign and fp-ness but not
-its Svpbmt uncached bit, and `ooo2_core` fed the LSU's pre-translated port
+or hardwired downstream.** `smolrv64_lq` carried a load's PA, size, sign and fp-ness but not
+its Svpbmt uncached bit, and `smolrv64_core` fed the LSU's pre-translated port
 `pt_unc(pt_store ? sq_c_unc : 1'b0)`: a queued load was cacheable by construction. A load
 that took the early start read the MMU's bit directly and was right; the same load a few
 cycles later, queued behind a live store, was cached. Linux's virtio rings are NC memory
@@ -280,12 +280,12 @@ entry, or the queue is a defect. There is no assertion for a value the design ne
 the check is the diff, at review time.
 
 **B8. A sequence number that orders entries of a ring is one bit wider than the ring's
-index.** `ooo2_sq` handed a dispatching load its tail INDEX as the store-seqno, and "older"
+index.** `smolrv64_sq` handed a dispatching load its tail INDEX as the store-seqno, and "older"
 was `(slot - head) < (tag - head)` in index width. With the queue full, tail == head, the
 distance read zero, and a load with eight older stores live saw none of them: it took the
 early start and read memory ahead of the store to its own address. Eight back-to-back
 stores followed by a load of the second one's target is ordinary compiled code -- Linux
-itself, at retire 123,081,278 of the Geekbench boot under the ooo2 cosim, and Ubuntu's
+itself, at retire 123,081,278 of the Geekbench boot under the lockstep cosim, and Ubuntu's
 shell on the board, which segfaulted on the corrupted pointers it read back. Six days old
 (`cb028682`); invisible to the 60 M-cycle tiny128 cosim, visible in the first long run of
 a bigger guest. The counters that produce the seqno carry a wrap bit (`headc`/`tailc`),
@@ -433,7 +433,7 @@ because `m_done` is forced low whenever another writer takes the single PRF/ROB
 port. The FPU re-issued an op whose ROB slot had already completed, committed
 and been freed; the ROB's own "completion for a slot with no live entry"
 assertion is what caught it. The guard is the already-completed latch
-(`~m_unit_done_q`), the same one `ooo2_lsu`'s `req_valid` carries. If two units
+(`~m_unit_done_q`), the same one `smolrv64_lsu`'s `req_valid` carries. If two units
 need it, it is one predicate applied at both sites, not two spellings of it.
 
 **D6. An op that writes LATE is excluded from the BYPASS, not merely from the
@@ -520,9 +520,9 @@ proceed" that is a monotone function of registered state: register it, index it 
 consumer's own registered key, keep the live form as the oracle.
 
 **D12. An attribute of a TRANSLATION is derived from the translation's own address, never
-from a shared "effective" mux.** `ooo2_lsu`'s `eff_pa` is the PORT's address whenever the
+from a shared "effective" mux.** `smolrv64_lsu`'s `eff_pa` is the PORT's address whenever the
 port starts or chains an access (`pt_start | take_next`) and M's translate address otherwise,
-and `xo_mem` -- the "DRAM, idempotent, may issue speculatively" bit `ooo2_lq` records at the
+and `xo_mem` -- the "DRAM, idempotent, may issue speculatively" bit `smolrv64_lq` records at the
 fill -- was `pa_mem(eff_pa)`. In the one cycle where an older load starts on the port while a
 younger load's translate completes, the younger load was classified by the OLDER load's
 address: a device load recorded as DRAM, issued off the wrong path past the queue's head gate,
@@ -698,16 +698,16 @@ port A and once for port B, simulated correctly everywhere and synthesized to ON
 port: Vivado gives it to the last call site and folds every earlier call to constant 0.
 Port A's destination tag became `r_prd[6:0] = 0`, every instruction through port A wrote
 physical register 0, and four bitstreams (V4, V7, W2, W2M, 2026-09-05/06) printed nothing
-while riscv-tests, the cosims and the monitor boot in tb_ooo2_linux all passed. Splitting
+while riscv-tests, the cosims and the monitor boot in tb_smolrv64_linux all passed. Splitting
 the argument or passing wires changed nothing; swapping the two call sites moved the zero
 to the other port. A read of a `(* ram_style *)` array is a continuous assign or an
 always-block statement at module scope, one per reader; Vivado then replicates the LUTRAM
-per read port (smap_a has six copies, correctly). `ooo2_rename.v` head reads, cdf30cb0+1.
+per read port (smap_a has six copies, correctly). `smolrv64_rename.v` head reads, cdf30cb0+1.
 
 **F5. The post-synthesis netlist boots the monitor before a bitstream is built.**
 `tools/netlist-boot.sh`: rv_soc_top synthesized out of context with the shipping
 options and defines, `write_verilog -mode funcsim`, and the ROM monitor booted on that
-netlist under xsim with `ooo2/tb_ooo2_netlist.v` (clock, reset, DDR answering zeros, UART
+netlist under xsim with `core/tb_smolrv64_netlist.v` (clock, reset, DDR answering zeros, UART
 always ready). F4's netlist retires 45 instructions and wedges inside 1000 cycles; the RTL
 prints the banner by cycle 6000. Ten minutes, and the verdict is on the desk instead of
 on the board: a silent board with passing simulations is a netlist question first. The
@@ -728,9 +728,9 @@ Passed is not consumed. `20acd8c` (every run was silently `IW=2`), `7cf760e`,
 
 **G4. A port-list change is a WHOLE-DESIGN change, so the gate is the full lint.**
 Adding a port to a module is not verified by that module's own unit TB — the
-instantiation is half the change and lives in another file. `ooo2_iq` grew
+instantiation is half the change and lives in another file. `smolrv64_iq` grew
 `in_order` and `iss_ps1/2/3`, its 16-check TB passed, and the commit went in
-with `ooo2_core`'s instantiation still missing all four pins: the design did
+with `smolrv64_core`'s instantiation still missing all four pins: the design did
 not elaborate at all. `src/lint.sh` is `-Werror` on PINMISSING and catches it
 in seconds, so the rule is simply that a changed port list means the full lint
 before the commit, never the module TB alone. The commit had to be rewritten
@@ -739,8 +739,8 @@ version is a bisect landing on a revision that does not build.
 
 **G3. The config space is swept, not just the default point.**
 (The sharded core's `src/sweep.sh` ran `IW` × `CKMAX` × `CACHE` against a recorded
-expectation; it left with that core. `ooo2/` has one shipping configuration,
-`OOO2_HW=8`, and the rule is the reason `build.tcl` refuses the others.)
+expectation; it left with that core. `core/` has one shipping configuration,
+`SMOLRV64_HW=8`, and the rule is the reason `build.tcl` refuses the others.)
 Known breakage is written down *with a reason* rather than silently tolerated —
 an unexplained non-zero entry is a bug someone owes an explanation for, not a
 passing test. `--record` carries the reasons across a re-record, because the
@@ -762,11 +762,11 @@ arithmetic stops dividing evenly.
 ---
 
 **G5. A verdict comes from a model built from the sources under test, and the runner
-proves it.** `run-ooo2-cosim-linux.sh` reused the built model whenever `BUILD` was unset
+proves it.** `run-cosim-linux.sh` reused the built model whenever `BUILD` was unset
 and its MEM_LG2/VDEFS stamp matched. On 2026-09-04 a day of core commits was declared
 "bit-identical, 14,657,366 retires" one after another -- the lockstep that passed was the
 previous week's core, and the true number at the end of the day was 16,025,548. Every one
-of those logs lacked the line `building obj_dir_ooo2_clinux/tb_ooo2_clinux`, and nobody
+of those logs lacked the line `building obj_dir_smolrv64_clinux/tb_smolrv64_clinux`, and nobody
 looked. The stamp now hashes every RTL source, so an edit forces the rebuild; the rule
 is the general one: a runner that can skip a build must say in its output whether it
 did, and a verdict without that line is not read. The same hole exists in any harness
@@ -790,7 +790,7 @@ the release gate. A gate whose criterion is weaker than the failure it is meant 
 a false verdict with a timestamp.
 
 **G10. One build directory per configuration, one lock per directory.** The cosim runner
-builds `obj_dir_ooo2_clinux` for the default config and `obj_dir_ooo2_clinux.<hash of MEM_LG2|VDEFS>`
+builds `obj_dir_smolrv64_clinux` for the default config and `obj_dir_smolrv64_clinux.<hash of MEM_LG2|VDEFS>`
 for every other. A run holds the directory's lock SHARED; a rebuild (sources, config or the
 reference library changed) upgrades to EXCLUSIVE, which waits for every run of that config in
 flight, and only then wipes and rebuilds -- the linker cannot rewrite a running executable, and
@@ -811,7 +811,7 @@ boot's first store -- a value captured at commit goes through the same bypass th
 
 **G12. A verdict belongs to the BITSTREAM, and a dirty bitstream belongs to no commit.**
 The build already records dirtiness (`build.tcl`: `SMOLRV64_GIT_DIRTY`, from `git status
---porcelain` over src/ooo2/srcs/workloads), the bitstream carries it at build-id word 5, and
+--porcelain` over src/core/srcs/workloads), the bitstream carries it at build-id word 5, and
 `workloads/monitor/monitor.c` prints it as a trailing `+`: `rtl=493dc343+`. Every layer told
 the truth. `tools/board-gate.sh` then matched `rtl=[0-9a-f]{7,12}` -- which matches the hex
 and DROPS the `+` -- and printed `banner: rtl=493dc343`. On 2026-09-19 a Geekbench crash was
@@ -839,19 +839,19 @@ deletes a stale one before regenerating. Same family as the stale-`obj_dir` rule
 a verdict from an artifact that does not contain the change is not a verdict.
 
 **G7. No cosim had ever taken a PLIC interrupt; the interrupt storm is a gate.**
-`tb_ooo2_linux` ties virtio off and the tiny128 UART never enables RX, so through 700 M
+`tb_smolrv64_linux` ties virtio off and the tiny128 UART never enables RX, so through 700 M
 cycles of the GB5 boot `seip` was 0: every external-interrupt path -- the irqop injection
 under a deferred CTF squash, PLIC claim/complete, read-to-clear device registers off the
 wrong path -- was exercised only by the board, which reported it as a dead NIC hours into a
-bisection. `-DOOO2_IRQ_STIM` (rv_soc_top + src/plic.v, sim-only) arms a spurious level on
+bisection. `-DSMOLRV64_IRQ_STIM` (rv_soc_top + src/plic.v, sim-only) arms a spurious level on
 the UART's PLIC source at the kernel's console handover (after the 8250 has mapped hwirq 10;
 an earlier claim hits an unmapped hwirq and the gateway sticks) and forces the source enabled
 at priority 1, so the 8250's fasteoi flow runs ~45 times per M cycles under the lockstep,
 which follows the DUT's interrupts. It found D12 in 447 M cycles. Run it after any change to
-redirect, squash, the LQ/LSU start gates, the irq FSM or the PLIC: `ooo2/run-ooo2-cosim-storm.sh`
+redirect, squash, the LQ/LSU start gates, the irq FSM or the PLIC: `core/run-cosim-storm.sh`
 (`IW=3`, `CYC=`, `DDR_LAT=` for other widths, budgets and DDR latency shapes -- the failing
 interleaving needed a port-busy cycle to meet a translate, so the latency shape is what finds it).
-The D12 class itself no longer needs the storm: ooo2_lq recomputes the region bit from the PA it
+The D12 class itself no longer needs the storm: smolrv64_lq recomputes the region bit from the PA it
 stores and dies at the fill (the cross-check at the consumer is the cheaper layer; the storm is
 for everything else the interrupt path does).
 
@@ -884,7 +884,7 @@ MSHR, write-back buffer, prefetch buffer}*; *no two MSHRs cover the same line*;
 exactly one live entry*; *a dirty line is never overwritten before capture*.
 Bounded model checking finds these in seconds.
 
-**H4. `docs/OOO2-Spec.md` is updated in the SAME commit as the change it
+**H4. `docs/SmolRV64-Spec.md` is updated in the SAME commit as the change it
 describes.**
 The spec is normative, not a summary written afterwards: geometry, sizes,
 associativity, indexing, storage primitive, latencies, the pipeline stages, and
@@ -913,7 +913,7 @@ under 1 ns of logic and 83–85% route on high-fanout nets. Area anywhere
 therefore buys congestion everywhere, and congestion is paid in slack by
 whatever is already marginal — not by the block that grew.
 
-Measured 2026-08-23: `ooo2_prf` declared all three shard arrays `[0:NMAX-1]`
+Measured 2026-08-23: `smolrv64_prf` declared all three shard arrays `[0:NMAX-1]`
 where `NMAX` was the *largest* shard, so `mem_ie` was 128 deep with `N_IE=64`.
 Half of it was unreachable and synthesis built it anyway — the Distributed RAM
 report showed all three as an identical `128 x 64, RAM64M8 x 60`. Sizing each
@@ -939,7 +939,7 @@ tree, the order INVERTED: `AltSpreadLogic_medium` +0.024 MET against `Explore`
 inside the spread this rule warns about, and larger than the entire margin. So
 the directive is part of the SHIPPING CONFIGURATION, not a sweep knob: a build
 that meets timing only when somebody remembers to pass `PLACE_DIRECTIVE` is the
-same trap `OOO2_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
+same trap `SMOLRV64_HW` and `PROBE_CLK_DIV8` were. `AltSpreadLogic_medium` is the
 default in `build.tcl` (`c4134edd`); this rule said `Explore` for a day after
 that stopped being true, which is D9 applied to a document.
 
@@ -949,9 +949,9 @@ part and reports its intrinsic Fmax. In the flat design every path is 65-83% rou
 placement swamps anything under ~200 ps (I2), so the full build tells you whether today's
 placement was lucky, never whether a STRUCTURE is good. Measured 2026-09-03 at 6.000 ns:
 
-    ooo2_pending  1144 MHz      ooo2_rename   403 MHz
-    ooo2_lq        908 MHz      ooo2_iq       373 MHz
-                                ooo2_sq       330 MHz
+    smolrv64_pending  1144 MHz      smolrv64_rename   403 MHz
+    smolrv64_lq        908 MHz      smolrv64_iq       373 MHz
+                                smolrv64_sq       330 MHz
     rv_cache D$ as shipped (PAW=64 SIZE_KB=64)   181 MHz   +0.478 ns
     rv_cache D$ after 1271c96d                   206 MHz   +1.134 ns
 
@@ -974,9 +974,9 @@ checkpoint (`make census`: every endpoint under +0.35 ns, keyed by startpoint):
     m_addr_reg            145           dTLB compare -> M's done -> issue select
     fe/u_fetch            129           the fetch loop's fall-through adder into the F/X queue
 
-The 22-25-level core chains span five modules (ooo2_sq -> ooo2_lq -> ooo2_lsu/mmu ->
-ooo2_core -> ooo2_iq -> psmem); no per-module OOC can measure them, and `make ooc` cannot
-build ooo2_core at all. So: OOC to compare a replacement against the incumbent AT THE SAME
+The 22-25-level core chains span five modules (smolrv64_sq -> smolrv64_lq -> smolrv64_lsu/mmu ->
+smolrv64_core -> smolrv64_iq -> psmem); no per-module OOC can measure them, and `make ooc` cannot
+build smolrv64_core at all. So: OOC to compare a replacement against the incumbent AT THE SAME
 INTERFACE, a census of the routed checkpoint to know WHICH families exist, and the full
 build on two directives to confirm -- never one of the three alone.
 
@@ -1002,7 +1002,7 @@ what `AltSpreadLogic_medium` was chosen to do. Distance was never the mechanism.
 
 So the lever is FANOUT, not placement: either fewer broadcast consumers, or readiness
 held as state per physical register instead of recomputed from control that must reach
-every entry. `ooo2_pending` (ooo2_core.v, brought up as a shadow under I3, nothing
+every entry. `smolrv64_pending` (smolrv64_core.v, brought up as a shadow under I3, nothing
 consuming it yet) is exactly that structure and is the thing to finish.
 
 **THE DESIGN HAS NO MARGIN ANYWHERE, and that is the real finding.** Across the
@@ -1025,7 +1025,7 @@ cannot fail, and let the device tree's timebase be wrong; (c) when a cosim repro
 do not bisect on the board at all.
 
 **I3. Bring a replacement up as a shadow, checked every cycle.**
-`ooo2_rename` + `ooo2_prf` ran against the real instruction stream with
+`smolrv64_rename` + `smolrv64_prf` ran against the real instruction stream with
 `rv_regfile` still the operand source and an always-on comparison between them
 (`7a2605f6`). That caught five defects at the mistake rather than downstream:
 non-power-of-two free lists handing out physical register 0; a capacity
@@ -1038,7 +1038,7 @@ inspection. The switch-over then moved one variable
 
 **I4. A valid bit kept outside its array is a mux the size of the array,
 bolted to the read address.**
-`ooo2_predictor` held the BTB and YAGS valid bits in flop vectors "so the data
+`smolrv64_predictor` held the BTB and YAGS valid bits in flop vectors "so the data
 array stays a clean BRAM/LUTRAM inference" — and thereby produced the opposite
 of that. `ycorr_v[yidx(npc,ghr)]` is a 1024:1 LUT/MUXF tree, and it sat at the
 END of the fetch loop (iMMU -> I$ -> aligner -> npc -> yidx). Measured
@@ -1105,7 +1105,7 @@ today's timing does not demand it.
 
 *Synthesis will tell you which you have, for free.* Any array declared
 `reg [W-1:0] a [0:N-1]` that does NOT appear in the synth log's `The RAM "..."`
-list is a mux of flops. The split showed up INSIDE `ooo2_iq.v`: `e_prd` and
+list is a mux of flops. The split showed up INSIDE `smolrv64_iq.v`: `e_prd` and
 `e_rob`, read only at `[sel]`, became `RAM32M`; `e_ps` and `e_r`, read by every
 wakeup comparator, stayed flops -- distributed RAM has one read port per instance,
 so a broadcast read forces a CAM. `e_r` must be a CAM; it IS the wakeup state.
@@ -1126,7 +1126,7 @@ TWO CONSTRAINTS, both load-bearing:
 
 **A PARALLEL RESET LOOP IS THE OTHER THING THAT FORCES FLOPS**, and it is easy to
 miss because the steady-state access pattern looks perfect. `e_ps` was forced by a
-broadcast READ; `ooo2_rename`'s free lists and rename maps are forced by a broadcast
+broadcast READ; `smolrv64_rename`'s free lists and rename maps are forced by a broadcast
 WRITE -- `for (i=0;i<N;i=i+1) fl_ie[i] <= OFF32 + i;` in the reset branch. No RAM can
 be written at every address in one cycle, so the whole array becomes flops however
 clean the running behaviour is. Audited 2026-09-03: `fl_ie`/`fl_ld`/`fl_fe` (~2,240
@@ -1150,7 +1150,7 @@ the depth, it usually cannot be placed near the logic that computes it, and on a
 BRAM it carries a real setup requirement. A one-bit enable does none of that. So
 when the fetch cloud has to touch a predictor read, it touches the enable.
 
-`ooo2_predictor` already had that split — `apc_en = fire | rollback | reset`
+`smolrv64_predictor` already had that split — `apc_en = fire | rollback | reset`
 deliberately spends the aligner's `fire` on a RAM enable — while its own header
 claimed "nothing from the I$-data -> aligner cloud feeds the PC mux". The claim
 was false. `cti_ok`, the aligner's "this bundle ends on a CTI", was ANDed in at
@@ -1176,7 +1176,7 @@ over the 40 M-cycle Linux cosim.
 
 This is the third instance of the class. `irq_inject` was a live mux select into
 `u_fetch/npc -> u_bp/btb_q` and was fixed by registering it
-(`ooo2_core.v:1722`); D4 is the same pin reached from a guessed index; I4 is the
+(`smolrv64_core.v:1722`); D4 is the same pin reached from a guessed index; I4 is the
 same pin reached through a valid mux. The general form: **for every array in the
 design, write down its address expression and name the flop each term comes
 from.** A term you cannot name that way is the bug, whatever the comment above
@@ -1201,10 +1201,10 @@ The one exception is a register another machine shares (the fill machine's `line
 that needs the sharing predicate (`~f_v`), which is still a register.
 
 **I9. An arbitration that preempts a request must not sit in the requester's COMPLETION.**
-`ooo2_lsu` granted its FSM to the pre-translated port with priority over M's request, and
+`smolrv64_lsu` granted its FSM to the pre-translated port with priority over M's request, and
 implemented that by gating M's request to the MMU on `~pt_start`. Correct for an access
 that starts the FSM; for the translate-only pass -- which needs the MMU and nothing else
--- it put the port's grant, i.e. `ooo2_sq`'s live bits, `ooo2_lq`'s candidate and the
+-- it put the port's grant, i.e. `smolrv64_sq`'s live bits, `smolrv64_lq`'s candidate and the
 alias matrix, in series with M's completion for every plain load and store. M's completion
 is the writeback valid (the wakeup broadcast, fanout 194), the redirect (the fetch adder,
 the F/X queue) and the hpm events, and 1708 of the 3401 endpoints under +0.35 ns in the

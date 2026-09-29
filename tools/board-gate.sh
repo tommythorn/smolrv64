@@ -59,7 +59,7 @@ stress() {
    grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$RES/stress.log" | head -4
    echo "BOARD: FAIL (stress: rc=${rc:-?} faults=$faults)"; return 1
 }
-# ---- the integrity log (rv_errlog; docs/OOO2-Spec.md) --------------------------------------
+# ---- the integrity log (rv_errlog; docs/SmolRV64-Spec.md) --------------------------------------
 # The design's own invariants, latched in hardware and read back from Linux once the stress is
 # over. A nonzero vector is a FAIL whatever the console says: a run can look clean and still
 # have broken a rule the core relies on -- and this is the only gate that sees a violation

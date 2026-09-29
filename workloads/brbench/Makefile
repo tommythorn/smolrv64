@@ -1,5 +1,5 @@
 # brbench: store throughput, L1-resident (see brbench.c). Boots at 0x8000_0000.
-#   make && FW=$(pwd)/brbench.bin ../../ooo2/run-ooo2-linux.sh
+#   make && FW=$(pwd)/brbench.bin ../../core/run-linux.sh
 platform=$(shell uname -o)
 ifeq ($(platform),Darwin)
   RV=riscv64-elf-

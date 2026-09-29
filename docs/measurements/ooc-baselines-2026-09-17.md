@@ -6,13 +6,13 @@ before any backend structure is replaced. Fmax is the module alone; the flat bui
 
 | module | generics | WNS at 6 ns | Fmax |
 |---|---|---|---|
-| ooo2_lq (lq) | `NENT=4 IDXB=2 PAW=56 PBITS=10 ROBB=4 SQIB=4` | +4.344 ns | 603.9 MHz |
-| ooo2_sq (sq) | `NENT=8 IDXB=3 PAW=56 PBITS=10 ROBB=4 NWB=5 LQN=4 LQIB=2` | +1.829 ns | 239.8 MHz |
-| ooo2_lsu (lsu) | `AW=64` | +1.770 ns | 236.4 MHz |
+| smolrv64_lq (lq) | `NENT=4 IDXB=2 PAW=56 PBITS=10 ROBB=4 SQIB=4` | +4.344 ns | 603.9 MHz |
+| smolrv64_sq (sq) | `NENT=8 IDXB=3 PAW=56 PBITS=10 ROBB=4 NWB=5 LQN=4 LQIB=2` | +1.829 ns | 239.8 MHz |
+| smolrv64_lsu (lsu) | `AW=64` | +1.770 ns | 236.4 MHz |
 | rv_cache (dcache) | `PAW=64 PAW_SIG=34 SIZE_KB=64 RDW=64 WDW=64 WRITABLE=1 WRTHRU=0 PREFETCH=0 PERF_ID=1` | +1.068 ns | 202.8 MHz |
 | rv_cache (icache) | `PAW=64 PAW_SIG=39 SIZE_KB=64 RDW=128 WDW=64 WRITABLE=0 PREFETCH=1 VIRT=1 PERF_ID=0` | +1.058 ns | 202.3 MHz |
-| ooo2_sq (sq16) | `NENT=16 IDXB=4 PAW=56 PBITS=10 ROBB=5 NWB=5 LQN=16 LQIB=4` | +1.929 ns | 245.6 MHz |
-| ooo2_lq (lq16) | `NENT=16 IDXB=4 PAW=56 PBITS=10 ROBB=5 SQIB=5` | +3.455 ns | 392.9 MHz |
+| smolrv64_sq (sq16) | `NENT=16 IDXB=4 PAW=56 PBITS=10 ROBB=5 NWB=5 LQN=16 LQIB=4` | +1.929 ns | 245.6 MHz |
+| smolrv64_lq (lq16) | `NENT=16 IDXB=4 PAW=56 PBITS=10 ROBB=5 SQIB=5` | +3.455 ns | 392.9 MHz |
 
 The 16-entry queue shapes the program moves to (ROB 32 / LQ 16 / SQ 16) are the `sq16`/`lq16` rows.
 

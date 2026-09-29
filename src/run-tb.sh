@@ -2,7 +2,7 @@
 # Build and run every unit testbench under src/ (tb_*.v) with Verilator, in parallel, and count
 # PASS. These cover the blocks the core shares (aligner, fetch, decode, ALU, MMU, mul/div, FPU
 # wrapper) and the SoC devices (CLINT, PLIC, DDR line bridge, virtio-net). The core's own benches
-# live in ooo2/run-ooo2-*-tb.sh. Rule G4: run this after any port change to a shared module.
+# live in core/run-*-tb.sh. Rule G4: run this after any port change to a shared module.
 #
 # Each bench gets every src/ module and its own obj_dir_src_<bench>; --top-module elaborates
 # what the bench reaches. Build logs: obj_dir_src_<bench>/build.log, run output: .../run.log.

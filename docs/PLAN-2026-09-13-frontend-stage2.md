@@ -7,7 +7,7 @@ path, and **delete the run-ahead fetch buffer**.
 
 ## The key realisation (from mapping the current tree)
 
-The fetch buffer (`ooo2/rv_soc_top.v:591-1096`, ~500 lines) is **already a VA-tagged (VIVT)
+The fetch buffer (`core/rv_soc_top.v:591-1096`, ~500 lines) is **already a VA-tagged (VIVT)
 structure** sitting in front of the PIPT I$ (`rv_cache` `u_icache`): its hit test `fb_alv` is a
 *virtual* tag, precisely so the iMMU's TLB compare stays off the hit cone. Translation
 (`u_immu`) still runs every fetch to make the PA the PIPT I$ is looked up by. So today there are
@@ -73,7 +73,7 @@ ld.so page-cross bug) + a brbench re-baseline.
    compare, feeding the aligner cone; OOC at 6 ns under both directives. Go/no-go WNS ≥ 0 before
    increment 2. Expected to pass comfortably (subtractive vs today); if not, deepen the pipeline,
    never reinstate translation on the hit path.
-1. **Expose the leaf page size from the iMMU** (`src/mmu.v`, `ooo2/ooo2_core.v`). Add a 1-bit
+1. **Expose the leaf page size from the iMMU** (`src/mmu.v`, `core/smolrv64_core.v`). Add a 1-bit
    size output (`4K` vs `≥2M`; a 1G leaf caps conservatively as 2M) driven from `tlb_lvl[hit]` /
    `lvl` at walk-done, threaded alongside `immu_pa`. Additive, no behaviour change. Gate:
    retire-identical.
@@ -91,7 +91,7 @@ ld.so page-cross bug) + a brbench re-baseline.
    reconcile, fill poison on epoch mismatch, unskewed under VIRT, prefetch re-keyed VIRT-safe
    (`r_pa`/`f_pa`). The ~500-line run-ahead fetch buffer (`rv_soc_top.v`) is gone, replaced by
    the two-slot VA-tagged alignment adapter + the fence.i FSM + `ep_bump = imem_ctx_chg`
-   (narrowed to satp/sfence in `ooo2_core.v`). **The clean scope shifted from the plan on two
+   (narrowed to satp/sfence in `smolrv64_core.v`). **The clean scope shifted from the plan on two
    points, both correctness:** (1) the hit compare is `valid & vtag & epoch` — **ASID and perms
    are NOT on it** (perms stay the iMMU's `immu_fault`, so a bare priv change needs no I$
    action; no ASID tag was added). (2) A mapping change must **retain + reconcile**, never
@@ -133,7 +133,7 @@ ld.so page-cross bug) + a brbench re-baseline.
    Timing/census: WNS +0.033 (build) / +0.052 (census), frontend NOT near-critical (fe families
    +0.105/+0.123, worst path the store queue), banked in `gate-results/43fbcfce/`. `cosim-expected.txt`:
    the tiny128 60 M/300 M rows are current (inc-2 baseline; inc-3 was within ±0.5%), so unchanged;
-   the gb5 400 M row stays flagged for its own per-batch re-baseline. `docs/OOO2-Spec.md` §3
+   the gb5 400 M row stays flagged for its own per-batch re-baseline. `docs/SmolRV64-Spec.md` §3
    mispredict-cost table re-measured on the VHPR I$ (`workloads/brbench`): `near` per-mispredict
    12.0 -> 15.5, `far` 19.7 -> 26.6 cycles (the adapter's smaller run-ahead; the -8.6% MLP story
    on redirects), `drain` unchanged; and the febench line (§"why HW=8") gained the VHPR numbers
@@ -152,7 +152,7 @@ ld.so page-cross bug) + a brbench re-baseline.
 
 ## Gates + spec updates
 
-Per increment: `src/lint.sh`, `ooo2/run-ooo2-vl.sh` (240/0), the Linux cosim, `make census`.
+Per increment: `src/lint.sh`, `core/run-vl.sh` (240/0), the Linux cosim, `make census`.
 **Board on increment 4** (stage complete). Spec, per commit: §8.1/§9.1 (I$ PIPT → VHPR; the
 per-line 4K/2M cap bit; the 16-candidate synonym probe), §4.1 (fetch geometry: the alignment
 latch, the page cap; the straddle FSM retired), and replace the fetch-buffer description with a
@@ -160,6 +160,6 @@ VHPR I$ section drawn from `docs/VHPR.md`.
 
 ## Not in Stage 2
 
-The D$ stays PIPT write-back (the hard half). `OOO2_IW` stays 1 (widening is Stage 3). No
+The D$ stays PIPT write-back (the hard half). `SMOLRV64_IW` stays 1 (widening is Stage 3). No
 synonym *migration* (the clean-invalidate-then-fill policy is the first implementation;
 VHPR.md's migration optimisation is later if a counter shows it pays).
