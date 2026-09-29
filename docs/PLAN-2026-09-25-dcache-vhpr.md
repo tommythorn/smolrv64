@@ -1,6 +1,7 @@
 # The data cache rewrite: VHPR, non-blocking, end-state shape
 
-Status: DESIGN, for review (2026-09-25). Nothing here is built.
+Status: increments 1 and 2 are built and on main (2026-09-28); increments 3-5 and the skewed way
+(phase 3, below) are design.
 
 ## Why now
 
@@ -371,6 +372,120 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
    D$ translates on a miss through its translate port. This is where the dTLB leaves the load's hit path; it
    folds into C4b step 3.
+6. **The skewed way.**
+   - **6a, at `VIRT=0`:** way 1 is indexed by the xor-fold of the request's PA line. This is
+     PIPT-skew as phase 1 already pays for it, with no D and no synonyms. Placement is older-of-two
+     with one NRU bit per line.
+   - **6b, with phase 2:** the same hash of the VA line, plus D and its invariants. D is built as
+     the tag array a later L2 will carry data for.
+   - Simmerv first: the NRU approximation, and the 6a/6b miss rates on the whole-GB5 grid.
+
+## Phase 3: the skewed way and the reverse directory (design, 2026-09-29)
+
+### Why: one power-of-two stride defeats any index built from bits [15:6]
+
+Geekbench 5's Machine Learning is 85% one naive i-j-k SGEMM loop. Its B-column load walks a
+2048- or 4096-byte pitch. That makes 98.9% of all D$ misses (Simmerv, from the 673 G checkpoint
+for 15 G instructions; `wip/wset` in the Simmerv tree).
+
+- **The row bits PA[11:6]** take 2 values at a 2048 B pitch and 1 at 4096 B.
+- **The colour bits [15:12]** take 16.
+
+So the column lives in 32 of the 1024 sets. Any index made only of bits [15:6] caps there: straight,
+permuted or XORed among themselves. More ways at 128 KiB do not help (8- and 16-way measured
+unchanged). The index has to take in bits at 16 or above.
+
+Whole GB5 single-core in Simmerv: 172 windows of 500 M instructions after a 50 M warm-up, one every
+4 G from boot, weighted by subtest length. DRAM misses per 1000 instructions:
+
+| design | all of GB5 | GB5 without ML | ML | cost |
+|---|---|---|---|---|
+| today: 2-way, straight index | 8.31 | 5.45 | 70.9 | -- |
+| **B: way 1 skewed by a VA hash, reverse directory 2048x4** | **5.20** | **5.21** | **5.0** | forced evictions 0.19, moves 0.034 |
+| B with a 1024x4 directory | 5.52 | 5.46 | 6.8 | forced evictions 1.54 |
+| PIPT-skew: both ways physical, way 1 PA-hashed | 5.14 | 5.15 | 4.97 | a physical index: a cycle on every access |
+| A-P1: way 1 physical behind a translation, older-of-two | 5.13 | 5.14 | 4.97 | 140 slow hits (each translated first) |
+| A-P4: as A, promote on the second way-1 hit | 5.58 | 5.60 | 5.15 | 12.6 line moves |
+
+The skew pays beyond ML: SQLite 1.93 -> 0.46, Ray Tracing 4.84 -> 2.30, Clang 3.57 -> 2.89,
+Rigid Body 4.23 -> 3.27 (A-P1; B is within 0.1). With a PC-indexed stride prefetcher (64 entries,
+degree 2) on B: 1.45, 70% coverage.
+
+### Rejected, and why
+
+- **A physically indexed way 1 (design A).** Its index needs the PA, so way 1 is read only after a
+  translation, and a way-1 hit is slow. Every placement policy then pays in one of two ways:
+  - it leaves hits slow: older-of-two leaves 45% of hits in way 1; move-free reuse-bit rules leave 35%;
+  - or it moves lines: 12.6-17 moves per 1000 instructions.
+  Tommy: moving lines is very expensive and must be rare and overwhelmingly advantageous.
+- **PIPT-skew.** Its miss rates equal B's. But a physical index costs a cycle of latency on every
+  access (Tommy), and the plan's point is no translation on the hit path.
+- **A reuse-bit placement** ("fill way 0 unless its line was reused"): ML collapses to 65.8. The
+  strided fills alternate between the ways and evict half the column each pass.
+- **A multiplicative hash:** 13.5-19.5 on ML against 5.3 for the xor-fold.
+
+### The design: B
+
+- **Way 0** is indexed by VA[15:6] (colour and row), as built.
+- **Way 1** is indexed by `(l ^ l>>10 ^ l>>20)[9:0]`, where `l` is the VA line number. Both ways are
+  read at T and both answer at the same latency.
+  - The xor-fold is one LUT level. It is computed from the request's address before the door and
+    registered with the request, so the BRAM address stays early (I6).
+- **The index takes the address the request carries.** At `VIRT=0` that is the PA, and way 1 is a
+  PA-hashed physical way with no synonyms. So the skew does not wait for phase 2 (increment 6
+  below); phase 2 changes only what the address is.
+- **Placement: the older of the two candidates.** way0[VA[15:6]] and way1[hash] are in different
+  sets, so recency is per line.
+  - Simmerv modelled true LRU. The RTL wants one NRU bit per line; measure that approximation in
+    Simmerv before the RTL.
+- **Tags.** B keeps the virtual stamp in both ways (vtag, epoch, vvalid, perms), so a hit needs no
+  TLB. Way 1's physical tag is the full PA line (~30 bits), because its index says nothing about the
+  PA.
+
+**The reverse directory D.** It answers "given a PA, which way-1 set holds it?"
+- **Shape:** 2048 entries, 4-way, indexed by the xor-fold of the PA line. An entry is {PA line tag,
+  way-1 set}, about 38 bits: 4 BRAM36, no data.
+  - It must be hashed for the same reason as way 1. A D indexed by PA[11:6] inherits ML's
+    32-set pathology.
+- **When it is consulted:**
+  - a miss, in parallel with the memory request, which is dropped if D finds the line (about 5 per
+    1000 instructions);
+  - page-walk PTE reads;
+  - CBOs and NC accesses.
+  It is never consulted on a hit.
+- **Updates:**
+  - A way-1 fill writes an entry.
+  - A full D set evicts its oldest entry's way-1 line: a *forced eviction*, written back if dirty
+    (0.19 per 1000 instructions at 2048x4).
+- **Stale entries are harmless.** An entry is a hint, verified against way 1's PA tag at the set it
+  names. So deletion on eviction can be lazy.
+- **The one exact invariant:** no `pvalid` way-1 line without an entry. A missing entry lets a miss
+  re-fetch a PA already cached under another VA: two copies, and silent corruption on the first
+  store.
+- **Way 0** keeps its 16-colour probe at PA[11:6]. An option folds way 0 into D (4096 entries), which
+  removes the 32 probe arrays: one PA-to-location mechanism for both ways.
+- **The L2.** An inclusive physical L2 whose tags carry each line's L1 location *is* this directory
+  (the R10000's arrangement). D is the L2's tag array built before its data. The UltraRAM (about
+  2 MiB) holds an inclusive L2 of a 128 KiB L1 easily.
+
+**Variants measured, same miss behaviour:**
+- **B'.** Way 1 is tagged by PA only. Its data is returned speculatively and confirmed a stage later
+  by the TLB.
+  - 134.5 speculative returns per 1000 instructions, 96% confirmed.
+  - The mis-speculations are the genuine misses (5.0) plus 0.10.
+- **C.** Both ways are tagged by PA, and a direct-mapped TLB is read in parallel on every access.
+  - The virtual stamps, epochs and per-line permissions go; `satp`/`sfence.vma` touch only the TLB.
+  - The price is TLB misses on every access: 0.74 per 1000 instructions at 2048 entries, 0.68 at
+    4096. Gaussian Blur is 2.10 (page conflicts), against 0.089 walks for B's miss-path 2048x4
+    table.
+
+**The TLB** is the miss-path table of the future-TLB design: 4 KiB pages 2048x4, and 2 MiB pages in
+a 32-entry direct-mapped table (0 misses: the kernel touches about 14 regions). On B's way-0-miss
+stream it walks 0.089 times per 1000 instructions, against 22.3 for today's 16-entry dTLB.
+
+**New invariants:**
+- D is inclusive of way 1 (asserted at every way-1 fill and every D eviction).
+- The single copy spans way 0's colours and way 1 (the probe plus D, at every allocation).
 
 ## Verification specific to this design
 
@@ -398,3 +513,8 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    pipeline-only operation. This is its own increment after the D$.
 3. **Sizes:** `NMSHR` 8, `NWB` 2, `NOUT` 8, if they fit and time.
 4. **The open-source memory controller** is out of scope; the tagged path keeps the door open.
+5. **Two ways stay** (Tommy, 2026-09-28): the only sacred structure, for the fast lookup.
+   - Way 1 is skewed by a hash that takes bits at 16 and above. Both ways answer at the same latency.
+   - No line moves on a hit.
+   - Measured and chosen 2026-09-29: design B (phase 3 above) over the physically indexed way
+     (design A) and PIPT-skew.

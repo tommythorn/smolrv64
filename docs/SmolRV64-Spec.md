@@ -761,23 +761,21 @@ store has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
 
-`fp_unit` drives `fpnew_top` **directly**. It used to go through `smolrv64_cvfpu`, a
-two-clock-domain wrapper whose toggle handshake and two ASYNC_REG synchronisers cost ~9
-cycles for a crossing that does not exist (`fpu_clock` is `clk`); that wrapper left with the
-scalar core in the 2026-09 release.
+`fp_unit` drives `fpnew_top` directly (`u_fpu`: `NFLIGHT=4`, `PIPE_REGS=5`).
 
-- `PIPE_REGS`=5 (4 until the IW=3 closure, 2026-09-17: fpnew's own 25-level datapath was
-  the −0.51 ns family; FP gives way), `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
+- `PIPE_REGS`=5, `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
   `DivSqrtSel = THMULTI`.
+- **Up to four operations in flight**, one accepted per cycle. Results return by tag, not
+  necessarily in issue order (fpnew's op groups have different latencies).
 - **NONCOMP (min/max, sign-inject, compare, classify) and parts of CONV return
   combinationally** — `out_valid` in the same cycle as `in_valid`, `PipeRegs` notwithstanding.
-- One op in flight. `iss_ready` is **registers-only**: `fpnew`'s `in_ready_o` is combinational
-  in `in_valid_i`, and `exec_shard.v` feeds `iss_ready` back into its issue decision, so
-  exposing it closes a loop through the scheduler.
-- Occupancy in M: **6 cycles**. Measured on hardware (`chain` kernel, a pure dependent FMA
-  chain with nothing to overlap, so it isolates unit latency): **14.018 → 7.004 → 6.004**
-  stall cycles per FP op, for the CDC removal and then the request-register bypass. The
-  request register is a fallback for the cycle `fpnew` declines, not a stage every op pays.
+- `iss_ready` is **registers-only**: `~req_v_q & (in flight != NFLIGHT) & ~out_blk`. fpnew's
+  `in_ready_o` is combinational in `in_valid_i`, and the issue decision reads `iss_ready`, so
+  exposing it would close a loop through the scheduler. The request register holds an op only in
+  the cycle fpnew declines it.
+- **Dependent latency is the pipe depth plus the hand-over:** each op of a dependent chain waits
+  `PIPE_REGS` stages plus the issue and result hand-over. That bounds a reduction such as GB5
+  Machine Learning's SGEMM inner loop, whose `fadd.s` into one accumulator carries the loop.
 
 ### 7.2 FP scoreboard
 
