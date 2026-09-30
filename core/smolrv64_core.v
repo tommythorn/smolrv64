@@ -89,7 +89,7 @@ module smolrv64_core
     input  wire                    dmem_wready,
     input  wire                    dmem_waccept,
     input  wire                    dmem_wroom,         // the D$ takes a store presented this cycle
-    output wire                    dmem_idle,          // no memory op in flight (fence.i drain)
+    output wire                    dmem_idle,          // no memory op in flight and no store queued (fence.i drain)
     output wire                    ifence,             // FENCE.I this cycle -> flush D$/I$
     // ---- page-table-walker ports (instruction side, data side) ----
     output wire [55:0]             ptw_addr,
@@ -2146,7 +2146,10 @@ module smolrv64_core
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_busy(lsu_ld_busy),
       .err(lsu_err), .idle(lsu_idle));
-   assign dmem_idle = lsu_idle;
+   // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
+   // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
+   // only older stores, so the wait ends.
+   assign dmem_idle = lsu_idle & (sq_occ == 0);
 
    // ---- the MD stage: mul/div off the ordered pipe (C1, 2026-09-17) ----
    // The F/CTF port's third drain. One op at a time (the divider is single-occupancy; mul3
