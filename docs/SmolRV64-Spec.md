@@ -1022,7 +1022,7 @@ Two independent `mmu` instances — **iTLB** in `smolrv64_core`, **dTLB** in `sm
 
 | | |
 |---|---|
-| TLB | 16 entries, **direct-mapped**, per instance |
+| TLB | **direct-mapped** on the VPN's low bits, read in the translate cycle: the dTLB **2048 entries** (LUTRAM, 8 MiB of 4 KiB pages), the iTLB 16 |
 | Scheme | Sv39, 3-level hardware page-table walk |
 | PTW | reads through the D$ read port (§8); a miss fills through the D$ |
 | Superpages | 2 MiB / 1 GiB; misaligned superpage → fault |
@@ -1373,7 +1373,7 @@ never a partition:
 | `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
 | `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in d_hold's order: the instruction's scheduler full / rename's free list empty / store queue full / load queue full / a serializing op draining (the `hold` set, 2026-09-07) |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
-| `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 16 entries direct-mapped on VPN[3:0]; a layout that pairs two hot pages on one index costs a walk per load and no D$ miss (2026-09-05) |
+| `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 2048 entries direct-mapped on VPN[10:0]; two hot pages 8 MiB apart share an index and cost a walk per load and no D$ miss |
 | `ST_MUL` / `ST_DIV` | r0302 / r0301 | since C1: cycles the MD stage holds a multiply / a divide (occupancy on the F/CTF/MD port), no longer an M stall |
 | `MEM_HITSER` | r0319 | a ready load candidate the LSU door did not take (hit serialization) |
 | `MEM_LDINFL` | r031a | a load access in flight; a hit is ~3 cycles, the rest is miss wait |

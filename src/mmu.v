@@ -83,7 +83,7 @@ module mmu
       $fatal(1, "mmu: DRAM_TOP=%h must be page-aligned and within the %0d-bit PA space", DRAM_TOP, AW);
    wire        bare_oob = ({1'b0, req_vaddr} >= {1'b0, DRAM_TOP});
 
-   // -------------------- TLB (direct-mapped on VPN[3:0] of vpn0) --------------------
+   // -------------------- TLB (direct-mapped on the VPN's low TLBI bits) ---------------
    reg              tlb_v   [0:TLBN-1];
    reg [26:0]       tlb_tag [0:TLBN-1];   // VPN[26:0] (vpn2,vpn1,vpn0)
    reg [43:0]       tlb_ppn [0:TLBN-1];   // page PPN (leaf)
@@ -97,8 +97,8 @@ module mmu
    // leaves the page-offset bits defined.
    initial for (t=0;t<TLBN;t=t+1) begin tlb_v[t]=1'b0; tlb_n[t]=1'b0; end
 
-   wire [TLBI-1:0] tlb_idx = vpn0[TLBI-1:0];
    wire [26:0]     vpn_all = {vpn2, vpn1, vpn0};
+   wire [TLBI-1:0] tlb_idx = vpn_all[TLBI-1:0];   // VA[12 +: TLBI], as the fill writes it
    wire            tlb_hit = tlb_v[tlb_idx] && (tlb_tag[tlb_idx] == vpn_all);
 
    // assemble the translated physical address from a leaf entry by level.

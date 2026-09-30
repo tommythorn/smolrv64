@@ -96,8 +96,8 @@ is read off the RTL or measured with the workload named):
   it is built to be virtually indexed and runs physically indexed. Both caches use 64-byte
   lines in even/odd 64-bit block-RAM banks. Page-table walks read through the data cache, so
   a walk always sees dirty page-table entries.
-- **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, two
-  16-entry TLBs, superpages, Ssvnapot leaves, Svpbmt non-cacheable mappings plus Zicbom
+- **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, a
+  2048-entry direct-mapped dTLB (8 MiB of reach) and a 16-entry iTLB, superpages, Ssvnapot leaves, Svpbmt non-cacheable mappings plus Zicbom
   and Zicboz cache-management operations, so the kernel drives non-coherent virtio DMA
   rings with its standard machinery. Misaligned loads and stores are handled in hardware,
   including across cache lines. The physical address space is 36 bits, capped at the

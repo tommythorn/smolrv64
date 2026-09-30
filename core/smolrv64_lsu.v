@@ -316,7 +316,10 @@ module smolrv64_lsu
    // translate-only answers below are ANDed with xl_x alone and never see xl_f's gating.
    wire        xl_req = xl_x | xl_f;
 
-   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP)) u_mmu
+   // The dTLB: 2048 entries, direct-mapped on the VPN's low bits, 8 MiB of 4 KiB pages -- the
+   // reach GB5 Machine Learning's SGEMM needs, whose column walk touches a new page every one or
+   // two loads. Read in the translate cycle, so distributed RAM, not block RAM.
+   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP), .TLBN(2048), .TLBI(11)) u_mmu
      (.clk(clk), .reset(reset),
       .req_valid(xl_req), .req_vaddr(req_vaddr),
       .req_access(is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1),
