@@ -16,20 +16,20 @@ login prompt on the board with zero faults before it lands.
 
 | | |
 |---|---|
-| Geekbench 5.4.1, board, 2026-09-28 | **8** single-core (Integer 9, Crypto 1, Floating Point 0), **8** multi-core ([result 24673646](https://browser.geekbench.com/v5/cpu/24673646), [every subtest](workloads/gb5/result-2026-09-28.md)); the whole suite in 3 h 46 min at IPC 0.58 |
+| Geekbench 5.4.1, board, 2026-09-29 | **10** single-core (Integer 12, Crypto 1, Floating Point 8), **10** multi-core ([result 24677233](https://browser.geekbench.com/v5/cpu/24677233), [every subtest](workloads/gb5/result-2026-09-29.md)); the whole suite in 3 h 00 min at IPC 0.73 |
 | Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
 | `sha256sum` of a 30 MB file, board, 2026-09-25 | IPC 1.56 to 1.63 over three runs, 43 cycles per byte |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
-| Area | 102,039 LUTs (47% of the part), 49,995 flip-flops, 169.5 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
+| Area | 114,092 LUTs (53% of the part), 53,029 flip-flops, 169.5 of 480 block RAM tiles, 28 DSPs, no UltraRAM |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
 
-**Why three bars are so short.** Gaussian Blur, Structure from Motion and Machine
-Learning score 1, 3 and 0. Machine Learning executes about six billion scalar instructions
-per image. Geekbench's reference machine does that work with SIMD; this core
-has no vector extension, so it executes the scalar fallback instruction by instruction, and
-no amount of IPC work reaches those three scores. Geekbench's Floating Point figure is a
-geometric mean, so the one zero zeroes it. A vector unit is the only lever on them, and
-whether one fits without giving up the clock is an open question below.
+**Why three bars are so short.** Gaussian Blur, Structure from Motion and Machine Learning
+score 2, 4 and 1. They are SIMD-shaped kernels: Machine Learning executes about six billion
+scalar instructions per image, where Geekbench's reference machine uses SIMD, and this core has
+no vector extension. Its hot loop, a naive SGEMM, walks a column of a matrix at a 2048- or
+4096-byte stride; the data cache's skewed second way and the 2048-entry dTLB are what keep that
+walk out of DRAM and out of the page walker. A vector unit is the larger lever on all three,
+and whether one fits without giving up the clock is an open question below.
 
 ## Why it is interesting
 
@@ -89,11 +89,14 @@ is read off the RTL or measured with the workload named):
   only on a miss, so a hit needs no translation; it reads a 16-byte pair every cycle, and its
   valid bits are banked into 64-row LUTRAMs so `fence.i` clears them in 64 cycles. A 128 KiB
   two-way write-back data cache that never blocks on a miss: one lookup a cycle, answered by
-  tag two cycles later; eight miss registers whose merge buffers let loads and stores join a
-  line in flight; hits under misses; two write-back lines; and a waiter table that replays
-  each blocked requester, round robin, when what it waits on frees. Its tags, valid and
-  dirty bits live per page colour in LUTRAM, so one read finds every place a line can live;
-  it is built to be virtually indexed and runs physically indexed. Both caches use 64-byte
+  tag two cycles later; a store queue that takes a store every cycle; eight miss registers
+  whose merge buffers let loads and stores join a line in flight; hits under misses; two
+  write-back lines; and a waiter table that replays each blocked requester, round robin, when
+  what it waits on frees. Its second way is indexed by a hash of the line address, so a
+  power-of-two stride that would crowd a few sets of one way spreads over all of the other;
+  a not-recently-used bit per line picks the way to fill. Its tags, valid and dirty bits
+  live per page colour in LUTRAM, so one read finds every place a line can live; it is built
+  to be virtually indexed and runs physically indexed. Both caches use 64-byte
   lines in even/odd 64-bit block-RAM banks. Page-table walks read through the data cache, so
   a walk always sees dirty page-table entries.
 - **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, a
