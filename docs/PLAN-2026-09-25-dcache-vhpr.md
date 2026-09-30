@@ -398,7 +398,51 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      board, 30 MB of random data, against 06a88177:
      - `sha256sum`: IPC 1.637 -> 1.718; back-end memory 7.30% -> 3.61% of cycles.
      - `xz -6 -T1`: IPC 0.531 -> 0.542.
-4. **The coherent I$:** a filtered physical probe of the I$ on every store; fence.i becomes pipeline-only.
+4. **The coherent I$:** a physical probe of the I$ on every store; fence.i becomes pipeline-only.
+   The phase-3 text in "Epochs, fence.i, DMA" leaves two holes, which fix the split below:
+   - **Code stored before its page is ever fetched from** sits dirty in the D$. The page filter
+     never saw the store, and an I$ fill reads memory, so it would install stale bytes.
+   - **Code written by DMA** (a block device filling page frames) never probes the I$. Linux
+     relies on fence.i after mapping such a page executable, and the VHPR I$ keeps physically
+     resident lines across a mapping change, so a stale line would survive both.
+
+   **4a, coherent fills.** Before any I$ line read goes to memory, the D$ cleans that line by PA
+   (a cbo.clean from the I$, `ic_req`/`ic_ack`, queued in the D$'s store queue behind every
+   store taken before it). An I$ fill therefore never reads a line the D$ holds dirty, and
+   fence.i drops the D$ clean walk: drain the core, invalidate the I$ (64 cycles).
+
+   **4a as built (2026-09-30).**
+   - The clean runs beside the fill, not before it. `rv_soc_top` sends the I$'s line read to
+     memory at once and uses the data only if the D$ has answered by then that the line was clean
+     on its first look (`ic_dty` low). Otherwise, including data faster than the answer (the boot
+     SRAM), it drops the data and reads again after the answer.
+   - The clean in front of the read measured -2.61% at 60 M and -4.7% at 300 M: the I$ is a
+     quarter of the boot's cycles, and every miss paid a D$ round trip.
+   - Two assertions guard the gate: no new I$ read while one is owed, and the line client's own
+     (no request while one is owed). The second caught a re-read in the answer's cycle.
+   - Lockstep: 37,362,613 -> 37,767,298 at 60 M (+1.08%), 159,905,670 -> 160,629,194 at 300 M
+     (+0.45%). The storm is clean to 500 M.
+   - The D$ bench asks for I$ cleans about 1,400 times a run (a third find the line dirty) and
+     checks memory at each ack. Two mutations are caught: acking at take, and the clean
+     completing the store port.
+
+   **4b, invalidation by probe.**
+   - **Layout:** the I$'s valid bits and physical tags move to the D$'s layout, one array per
+     (way, colour) of 64 rows. A probe by PA reads all 32 candidates at PA[11:6] in one cycle,
+     and clears the valid bit of every match (several at once: the I$ keeps synonyms).
+   - **What probes:**
+     - every store the D$ takes, including CBO zeros and AMO writes;
+     - every line of every DMA write burst, tapped at the platform's DDR arbiter (the device
+       side, `ui_clk`) and carried to `probe_clk` through an async FIFO.
+     The virtio-net receive traffic is constant on the NFS-root board, so a "DMA happened: wipe
+     the I$" flag would wipe it at nearly every fence.i. The exact probe does not.
+   - **Races:** a probe also kills a fill in flight or a prefetched line for the same PA, so a
+     fill read before the store cannot install stale bytes.
+   - **No filter:** the probe has its own read port and is cheap at one per cycle.
+   - **fence.i:** waits for the probe queue to drain, then flushes only the fetch ring, the
+     decoupling queue and the predictions.
+   - **Why it pays:** the boot runs a fence.i every ~15 k cycles, and each wipe refetches the
+     working set.
 5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
    D$ translates on a miss through its translate port. This is where the dTLB leaves the load's hit path; it

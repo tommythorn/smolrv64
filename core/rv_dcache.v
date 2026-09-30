@@ -26,6 +26,10 @@
 // compare. Only the head resolves: an entry that reaches the compare while the head is parked in
 // the waiter table leaves no trace and goes back to the queue. A CBO or an NC store is taken once
 // (it is held until its wr_cpl, so a second presentation while one is queued is the same one).
+// The I$ is a second, lower-priority requester of the queue: before it reads a line from memory it
+// asks for that line cleaned by PA (ic_req, held until ic_ack), a cbo.clean that answers ic_ack
+// instead of wr_cpl. It queues behind every store taken before it, so memory holds their bytes when
+// ic_ack says so, and the I$ never fills code the D$ still holds dirty.
 //
 // THE LOOKUP takes one request a cycle: a released waiter (replay), else a queued store, else a
 // load. A request taken at T reads the banks; at T+1 its way's vvalid, virtual tag and epoch are
@@ -137,6 +141,11 @@ module rv_dcache #(
    output reg               wr_room,     // a store presented this cycle is taken
    output reg               wr_acc,      // taken last cycle: a plain store completes on its own
    output reg               wr_cpl,      // an NC store's or a CBO's completion
+   // ---- the I$'s clean before it fills a line from memory
+   input  wire              ic_req,      // held until ic_ack
+   input  wire [63:0]       ic_pa,
+   output reg               ic_ack,      // the line is clean in memory
+   output reg               ic_dty,      // ...and was not on the first look: memory changed since the ask
    // ---- epochs
    input  wire              ep_bump,
    input  wire              inv_req,     // clean every dirty line (fence.i)
@@ -239,6 +248,9 @@ module rv_dcache #(
    reg  [63:0]      sf_va   [0:SD-1], sf_pa [0:SD-1], sf_wd [0:SD-1];
    reg  [7:0]       sf_wm   [0:SD-1];
    reg              sf_nc   [0:SD-1], sf_cbo [0:SD-1], sf_zero [0:SD-1], sf_keep [0:SD-1];
+   reg              sf_ic   [0:SD-1];             // the I$'s clean, not the store port's
+   reg              icq;                          // the I$'s clean is queued
+   reg              ic_slow;                      // ...and did not finish clean on its first look
    wire [63:0]      st_wd   = sf_wd[0];          // the head's: only the head resolves
    wire [7:0]       st_wm   = sf_wm[0];
    wire             st_cbo  = sf_cbo[0], st_zero = sf_zero[0], st_keep = sf_keep[0];
@@ -314,9 +326,13 @@ module rv_dcache #(
    reg            sq_cn;                          // a CBO or an NC store is queued
    always @* begin
       sq_cn = 1'b0;
-      for (i = 0; i < SD; i = i + 1) if ((i < sc) & (sf_cbo[i] | sf_nc[i])) sq_cn = 1'b1;
+      for (i = 0; i < SD; i = i + 1) if ((i < sc) & (sf_cbo[i] | sf_nc[i]) & ~sf_ic[i]) sq_cn = 1'b1;
    end
    wire           wr_take = wr_req & (sc != SD) & ~((cbo_req | wr_nc) & sq_cn);
+   // the I$'s clean takes a slot the store port leaves: never in a cycle it presents, so the room
+   // the store port was promised stays its own
+   wire           ic_take = ic_req & ~icq & ~ic_ack & ~wr_req & (sc != SD);
+   wire           sq_take = wr_take | ic_take;
    wire [TB-1:0]  a_tag = rp_v ? rp_t        : st_go ? ST    : {1'b0, rd_tag};
    wire [EPW-1:0] a_ep  = rp_v ? wt_ep[rp_t] : cur_ep;
 
@@ -623,7 +639,7 @@ module rv_dcache #(
    always @(posedge clk) begin
       if (reset) begin
          cur_ep <= {EPW{1'b0}};  door <= 1'b0;  sdoor <= 1'b0;  s1_v <= 1'b0;  rd_valid <= 1'b0;  wr_acc <= 1'b0;  wr_cpl <= 1'b0;
-         sc <= 2'd0;  wr_room <= 1'b0;
+         sc <= 2'd0;  wr_room <= 1'b0;  icq <= 1'b0;  ic_ack <= 1'b0;  ic_dty <= 1'b0;  ic_slow <= 1'b0;
          nc_v <= 1'b0;  nc_rdy <= 1'b0;  cl_pend <= 1'b0;  cl_on <= 1'b0;  cl_wait <= 1'b0;
          scan_on <= 1'b1;  scan <= {(IB+1){1'b0}};  fl_v <= 1'b0;  ra_ptr <= {TB{1'b0}};  w1_v <= 1'b0;
          iq_n <= 0;  iq_rd <= 0;  iq_wr <= 0;  fb_v <= 1'b0;  fb_last <= 1'b0;  ro_on <= 1'b0;  rl_v <= 1'b0;
@@ -641,22 +657,30 @@ module rv_dcache #(
          // the store queue: the head leaves when it is done, a store taken joins the tail, an entry
          // behind a parked head goes back to waiting its turn
          wr_acc <= wr_take;
-         wr_cpl <= st_done & st_cbo | fin_nc;
+         wr_cpl <= st_done & st_cbo & ~sf_ic[0] | fin_nc;
+         ic_ack <= st_done & sf_ic[0];
+         ic_dty <= ic_slow;
+         // the I$'s clean at the head in the lookup: done now and clean, or anything else -- a
+         // write-back, a wait on a write-back or a fill of its line -- which may change memory
+         if (st_done & sf_ic[0]) ic_slow <= 1'b0;
+         else if (s1_v & s1_st & s1_head & sf_ic[0] & ~fin_now) ic_slow <= 1'b1;
+         if (ic_take) icq <= 1'b1;  else if (st_done & sf_ic[0]) icq <= 1'b0;
          if (st_done)
             for (i = 0; i < SD - 1; i = i + 1) begin
                sf_iss[i] <= sf_iss[i+1];  sf_va[i] <= sf_va[i+1];  sf_pa[i] <= sf_pa[i+1];  sf_wd[i] <= sf_wd[i+1];
                sf_wm[i] <= sf_wm[i+1];  sf_nc[i] <= sf_nc[i+1];  sf_cbo[i] <= sf_cbo[i+1];
-               sf_zero[i] <= sf_zero[i+1];  sf_keep[i] <= sf_keep[i+1];
+               sf_zero[i] <= sf_zero[i+1];  sf_keep[i] <= sf_keep[i+1];  sf_ic[i] <= sf_ic[i+1];
             end
          if (st_go) sf_iss[sq_pi] <= 1'b1;
-         if (wr_take) begin
-            sf_iss[sq_pt] <= 1'b0;  sf_va[sq_pt] <= wr_va;  sf_pa[sq_pt] <= wr_pa;  sf_wd[sq_pt] <= wr_data;
-            sf_wm[sq_pt] <= wr_mask;  sf_nc[sq_pt] <= wr_nc;  sf_cbo[sq_pt] <= cbo_req;
-            sf_zero[sq_pt] <= cbo_zero;  sf_keep[sq_pt] <= cbo_keep;
+         if (sq_take) begin                        // a store-port op, else the I$'s clean (a cbo.clean by PA)
+            sf_iss[sq_pt] <= 1'b0;  sf_va[sq_pt] <= wr_take ? wr_va : ic_pa;  sf_pa[sq_pt] <= wr_take ? wr_pa : ic_pa;
+            sf_wd[sq_pt] <= wr_data;  sf_wm[sq_pt] <= wr_mask;  sf_nc[sq_pt] <= wr_take & wr_nc;
+            sf_cbo[sq_pt] <= ~wr_take | cbo_req;  sf_zero[sq_pt] <= wr_take & cbo_zero;
+            sf_keep[sq_pt] <= ~wr_take | cbo_keep;  sf_ic[sq_pt] <= ~wr_take;
          end
          if (sq_bk) sf_iss[1] <= 1'b0;
-         sc      <= sc + {1'b0, wr_take} - {1'b0, st_done};
-         wr_room <= (sc + {1'b0, wr_take} - {1'b0, st_done}) != SD;
+         sc      <= sc + {1'b0, sq_take} - {1'b0, st_done};
+         wr_room <= (sc + {1'b0, sq_take} - {1'b0, st_done}) != SD;
          // a load's answer: from the lookup, else the NC slot's
          rd_valid <= ans | nc_rdy;
          if (ans) begin

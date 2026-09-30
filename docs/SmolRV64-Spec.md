@@ -233,8 +233,8 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   reconcile** on the next miss, so code physically resident survives a mapping change exactly
   as the old PIPT I$ retained it across `satp` — the coherence requirement that a virtual-hit
   I$ must replicate (`docs/VHPR.md`, "Instruction-Cache Coherence, Outstanding Fills, And
-  Mapping Changes"). `fence.i` invalidates after the D$ writeback drains (the FSM ordering is
-  kept); an outstanding fill taken under the old mapping is **poisoned** at the install point
+  Mapping Changes"). `fence.i` invalidates once the core's memory operations drain; an I$ fill
+  never reads a line the D$ holds dirty (§9.1, the coherent fill); an outstanding fill taken under the old mapping is **poisoned** at the install point
   (`v_wd = 0` when `f_epoch != cur_epoch`). Prefetch (next-line stream) is kept and re-keyed
   VIRT-safe (probe by `r_pa`/`f_pa`, arm by `f_pa`). The single-copy invariant (≤1 valid line
   per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
@@ -1000,13 +1000,14 @@ cycle is legal and was lost once).
   alias, as `rv_cache`'s flush-around was, and nothing allocates. cbo.clean writes a dirty
   copy back and keeps it clean; cbo.flush/inval drop it, written back if dirty; cbo.zero drops
   it unwritten and fills an MSHR whose merge buffer is a line of zeros. A CBO or NC store
-  completes at `wr_cpl`, once memory has its write. `fence.i`'s clean (`inv_req`) waits for
-  the store queue to drain (stores still issue while loads are held) and for any dirty merge
-  buffer, then walks the 64 rows -- each row's slots
-  read at once, the dirty ones written back and kept -- so a clean is 64 cycles plus one per
-  dirty line; `inv_busy` holds until memory has them all. The boot runs 3,867 fence.i in its
-  first 60 M cycles: a slot-by-slot walk spent 8.09 M cycles there at 128 KiB, the row walk
-  0.60 M (+10.5% retired).
+  completes at `wr_cpl`, once memory has its write.
+- **The I$'s coherent fill.** Every I$ line read goes to memory at once, and beside it the I$
+  asks the D$ to clean that line (`ic_req`, a cbo.clean by PA queued in the store queue behind
+  every store taken before it, answered by `ic_ack`, which says `ic_dty` unless the clean found
+  the line clean on its first look). `rv_soc_top` uses the memory's data only if the D$ has
+  answered clean by then; otherwise it drops the data and reads the line again after the
+  answer, when memory is current. So `fence.i` never cleans the D$: it drains the core and
+  invalidates the I$. (The whole-D$ clean `inv_req` remains for a requester that wants one.)
 - **Phase 1: every request by PA** (`VIRT=0` in `rv_soc_top`). The core translates before it
   asks, so a virtual hit would shorten nothing yet: the D$ runs as a 128 KiB, 2-way PIPT
   cache and its virtual stamps stay empty. Phase 2 of the plan, with the queue-side
@@ -1099,7 +1100,7 @@ the request's PA, and a match is re-stamped with the new virtual tag and epoch a
 cycle), so physically resident code survives a mapping change; otherwise the line is filled
 (prefetch buffer or L2) and installs stamped with the request's epoch, so a request taken before
 a mapping change never makes its line current. A miss parks at most one younger request and both
-replay in order. Epoch roll-over and `fence.i` (after the D$ writeback drains) clear the valid
+replay in order. Epoch roll-over and `fence.i` clear the valid
 bits, which are banked by the set's low bits into 64-row distributed RAMs so the scan clears a row
 of every bank a cycle: 64 cycles at any size. (Scanning one set a cycle, a 128 KiB I$ lost 2.65% on
 the boot's 3,867 fence.i; banked, it gains +0.83% at 60 M and +1.94% at 300 M over 64 KiB.) Today every request still carries the iMMU's PA (`rd_pa`) and the iMMU

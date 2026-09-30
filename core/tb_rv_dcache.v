@@ -34,6 +34,10 @@
 // As in the core, which performs NC accesses at the head of the ROB, one NC access is in flight at
 // a time.
 //
+// THE I$'S CLEAN. Now and then the I$ asks for a line cleaned by PA (ic_req, held until ic_ack), as
+// it does before every fill; no store to that line is presented meanwhile. At ic_ack memory holds
+// gold's line.
+//
 // WHAT MEMORY MUST HOLD. When a cbo.clean or cbo.flush completes, memory holds gold's line; half
 // the flushes are followed by a DMA write of the line, straight into both images, which later
 // loads must see. Every FENCE cycles, and after the drain, inv_req cleans the cache -- as fence.i
@@ -60,6 +64,7 @@ module tb;
    reg         wr_req;  reg [63:0] wr_va, wr_pa, wr_data;  reg [7:0] wr_mask;  wire wr_room, wr_acc, wr_cpl;
    reg         wr_nc, cbo_req, cbo_zero, cbo_keep;
    reg         ep_bump, inv_req;  wire inv_busy;
+   reg         ic_req;  reg [63:0] ic_pa;  wire ic_ack;
    wire        cq_valid, cq_we;  reg cq_ready;  wire [3:0] cq_slot;  wire [57:0] cq_addr;
    wire [63:0] cq_wmask;  wire [511:0] cq_wdata;
    reg         cr_valid, cr_last;  reg [3:0] cr_slot;  reg [1:0] cr_beat;  reg [127:0] cr_data;
@@ -71,6 +76,7 @@ module tb;
       .wr_req(wr_req), .wr_va(wr_va), .wr_pa(wr_pa), .wr_data(wr_data), .wr_mask(wr_mask),
       .wr_nc(wr_nc), .cbo_req(cbo_req), .cbo_zero(cbo_zero), .cbo_keep(cbo_keep),
       .wr_room(wr_room), .wr_acc(wr_acc), .wr_cpl(wr_cpl),
+      .ic_req(ic_req), .ic_pa(ic_pa), .ic_ack(ic_ack),
       .ep_bump(ep_bump), .inv_req(inv_req), .inv_busy(inv_busy),
       .cq_valid(cq_valid), .cq_ready(cq_ready), .cq_slot(cq_slot), .cq_we(cq_we), .cq_addr(cq_addr),
       .cq_wmask(cq_wmask), .cq_wdata(cq_wdata),
@@ -102,6 +108,7 @@ module tb;
    reg        st_pend;  reg [31:0] st_t;         // an NC store or a CBO presented, not yet done
    reg        st_acc;  integer st_kind;          // ...taken, awaiting wr_cpl; its kind
    reg        rm_due;                            // a remap waits for the store to be taken
+   reg        ic_pend;  reg [31:0] ic_t;  integer n_icl, c_icw;   // the I$'s clean in flight
    reg        fn_due, fn_wait, fn_final, fn_done;  reg [31:0] fn_t;   // the clean (inv_req)
    integer    n_ncst, n_cln, n_fl, n_z, n_dma, n_fence, n_walk, n_ncld, kind;
    integer    n_req, n_resp, n_st, n_remap, n_miss, n_access, errors;
@@ -182,6 +189,7 @@ module tb;
       rd_req = 0; rd_va = 0; rd_pa = 0; rd_tag = 0; rd_phys = 0; rd_nc = 0; ep_bump = 0; inv_req = 0; cq_ready = 0;
       wr_req = 0; wr_va = 0; wr_pa = 0; wr_data = 0; wr_mask = 0; st_pend = 0; st_t = 0; rm_due = 0;
       wr_nc = 0; cbo_req = 0; cbo_zero = 0; cbo_keep = 0; st_acc = 0; st_kind = K_ST;
+      ic_req = 0; ic_pa = 0; ic_pend = 0; ic_t = 0; n_icl = 0; c_icw = 0;
       fn_due = 0; fn_wait = 0; fn_final = 0; fn_done = 0; fn_t = 0;
       n_ncst = 0; n_cln = 0; n_fl = 0; n_z = 0; n_dma = 0; n_fence = 0; n_walk = 0; n_ncld = 0;
       c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0; c_sq1 = 0; c_sqbk = 0; c_skew = 0; c_age = 0;
@@ -226,6 +234,7 @@ module tb;
          c_sq1 = c_sq1 + (dut.st_go & dut.si);  c_sqbk = c_sqbk + dut.sq_bk;
          c_skew = c_skew + (dut.m_alloc & dut.pick1 & (dut.s1_set1 != dut.s1_set));   // way 1 filled away from way 0's set
          c_age = c_age + (dut.m_alloc & dut.nru_age);
+         c_icw = c_icw + (dut.m_clean & dut.cp_dty & dut.sf_ic[0]);   // an I$ clean found the line dirty
          // ---- the load taken at the last edge
          if (took) begin out_v[took_tag] = 1'b1; out_t[took_tag] = now; n_req = n_req + 1; end
          // ---- the store port: a committed store is presented for one cycle when wr_room says the
@@ -257,6 +266,21 @@ module tb;
             $display("FAIL c=%0d: a store-port op (kind %0d) at %h not done for %0d cycles", now, st_kind, wr_pa, timeout);
             errors = errors + 1;  st_pend = 0;  st_acc = 0;  wr_req = 0;
          end
+         // ---- the I$'s clean: done at ic_ack, when memory must hold gold's line
+         if (ic_ack) begin
+            if (!ic_pend) begin $display("FAIL c=%0d: ic_ack with no I$ clean asked", now); errors = errors + 1; end
+            else begin check_line(ic_pa, "the I$ clean");  n_icl = n_icl + 1; end
+            ic_pend = 0;  ic_req = 0;
+         end
+         if (ic_pend && (now - ic_t > timeout)) begin
+            $display("FAIL c=%0d: the I$ clean of %h not done for %0d cycles", now, ic_pa, timeout);
+            errors = errors + 1;  ic_pend = 0;  ic_req = 0;
+         end
+         if (!ic_pend && !fn_due && !fn_wait && now < cycles && (rnd(0) % 100) < 3) begin
+            pick_access;
+            pa = pp_pa(vp_pp[p]) + off;
+            if (!st_covers(pa)) begin ic_pend = 1;  ic_t = now;  ic_req = 1;  ic_pa = {pa[63:6], 6'd0}; end
+         end
          if (!st_pend) wr_req = 0;
          if (!st_pend && !fn_due && !fn_wait && !rm_due && now < cycles && (rnd(0) % 100) < stpct) begin
             pick_access;
@@ -264,7 +288,7 @@ module tb;
             kind = rnd(0) % 100;
             kind = (kind < 72) ? K_ST : (kind < 80) ? K_NC : (kind < 86) ? K_CLN : (kind < 93) ? K_FL : K_Z;
             if (kind == K_NC && nc_busy(0)) kind = K_ST;
-            if (!ld_busy(pa, kind >= K_CLN) && (kind != K_ST || wr_room)) begin
+            if (!ld_busy(pa, kind >= K_CLN) && (kind != K_ST || wr_room) && !(ic_pend && pa[63:6] == ic_pa[63:6])) begin
                wr_req = 1;
                wr_va = vp_va[p] + off;  wr_pa = pa;
                wr_mask = (sz == 3) ? 8'hFF : (((8'd1 << (1 << sz)) - 8'd1) << off[2:0]);
@@ -296,7 +320,7 @@ module tb;
          for (k = 0; k < NTAG; k = k + 1) n_out = n_out + out_v[k];
          if (now > 0 && fence > 0 && (now % fence) == 0 && now < cycles) fn_due = 1;
          if (now >= cycles && n_out == 0 && !fn_final) begin fn_due = 1;  fn_final = 1; end
-         if (fn_due && !st_pend && !fn_wait && n_out == 0 && !took && !rd_req) begin fn_due = 0;  fn_wait = 1;  fn_t = now;  inv_req = 1'b1;  n_fence = n_fence + 1; end
+         if (fn_due && !st_pend && !ic_pend && !fn_wait && n_out == 0 && !took && !rd_req) begin fn_due = 0;  fn_wait = 1;  fn_t = now;  inv_req = 1'b1;  n_fence = n_fence + 1; end
          else if (fn_wait && now > fn_t + 1 && !inv_busy) begin
             fn_wait = 0;
             for (w = 0; w < NWD; w = w + 8) check_line(PBASE + 64'(w) * 8, "the clean");
@@ -377,19 +401,19 @@ module tb;
          if (errors > 10) begin $display("DCACHE-TB FAIL: too many errors"); $finish; end
          n_out = 0;
          for (k = 0; k < NTAG; k = k + 1) n_out = n_out + out_v[k];
-         n_out = n_out + took + rd_req + st_pend + fn_wait + fn_due;
+         n_out = n_out + took + rd_req + st_pend + ic_pend + fn_wait + fn_due;
       end
       if (n_req != n_resp) begin $display("FAIL: %0d loads, %0d answered after the drain", n_req, n_resp); errors = errors + 1; end
       if (!fn_done) begin $display("FAIL: the final clean never finished"); errors = errors + 1; end
       if (c_own == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 || c_wrap == 0 ||
           c_swr == 0 || c_smg == 0 || c_sal == 0 || c_ro == 0 || c_blk == 0 || c_def == 0 || n_wr == 0 ||
           c_nc == 0 || c_cln == 0 || c_cdone == 0 || c_zero == 0 || n_dma == 0 || n_walk == 0 || n_ncld == 0 || n_ncst == 0 ||
-          c_sq1 == 0 || c_sqbk == 0 || c_age == 0 || (`DC_VIRT == 0 && c_skew == 0)) begin
+          c_sq1 == 0 || c_sqbk == 0 || c_age == 0 || (`DC_VIRT == 0 && c_skew == 0) || n_icl == 0 || c_icw == 0) begin
          $display("FAIL: an outcome never occurred"); errors = errors + 1;
       end
-      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps; store queue %0d issued behind the head, %0d sent back; %0d way-1 fills off way 0's set, %0d ageings",
+      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps; store queue %0d issued behind the head, %0d sent back; %0d way-1 fills off way 0's set, %0d ageings; %0d I$ cleans (%0d found dirty)",
                errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_walk, n_ncld, n_st, n_ncst, n_cln, n_fl, n_dma, n_z, n_fence, n_access,
-               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap, c_sq1, c_sqbk, c_skew, c_age);
+               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap, c_sq1, c_sqbk, c_skew, c_age, n_icl, c_icw);
       $finish;
    end
 endmodule

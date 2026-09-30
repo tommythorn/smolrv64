@@ -631,6 +631,7 @@ module rv_soc_top #(
    // the df_* FSM below.
    wire        dcr_req;  wire [63:0] dcr_addr;     // muxed D$ read port (LSU + 3 PTW), assigned below
    wire dc_inv_req, dc_inv_busy;
+   wire dc_ic_req, dc_ic_ack, dc_ic_dty;          // the I$'s line clean beside each fill
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
    // the D$'s memory-port client wires (client 0 of the arbiter below)
@@ -655,6 +656,7 @@ module rv_soc_top #(
       .wr_data(dmem_wdata), .wr_mask(dmem_wmask), .wr_nc(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_room(dc_wr_room), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl),
+      .ic_req(dc_ic_req), .ic_pa({ic_l2_addr, 6'd0}), .ic_ack(dc_ic_ack), .ic_dty(dc_ic_dty),
       .ep_bump(1'b0), .inv_req(dc_inv_req), .inv_busy(dc_inv_busy),
       .cq_valid(mc_q_valid[0]), .cq_ready(mc_q_ready[0]), .cq_slot(mc_q_slot[0*MSW +: MSW]),
       .cq_we(mc_q_we[0]), .cq_addr(mc_q_addr[0*LAW +: LAW]), .cq_wmask(mc_q_wmask[0*64 +: 64]),
@@ -663,31 +665,15 @@ module rv_soc_top #(
       .cr_data(mc_r_data), .cw_valid(mc_w_valid[0]), .cw_slot(mc_w_slot),
       .perf_access(dc_access), .perf_miss(dc_miss), .err(dc_err));
 
-   // D$ clean-flush on fence.i ONLY: drain the store buffer, then clean-flush the D$ (write back
-   // dirty lines, keep them valid). FENCE.I needs this because the I$ reads L2/DDR directly: with
-   // a write-back D$, freshly-stored code sits DIRTY in the D$, so the I$ would refetch STALE
-   // bytes after a bare invalidate -- the D$ must write back first. The I$-invalidate FSM (fi)
-   // below waits for this flush (df==DF_IDLE) before invalidating, so DDR is current before the
-   // refetch. sfence.vma does NOT trigger this: PTW reads go through the D$ (coherent), so the
-   // walk never sees stale memory -- sfence only flushes the TLB (in the MMU).
-   // fence.i CHANGES code: drain + clean-flush the D$ (df) then CLEAR the I$ (fi), so the refetch
-   // reads current L2. A MAPPING change (satp/sfence) does NOT change code -- it only stales
-   // virtual tags -- so it advances the I$ EPOCH (ic_ep_bump): the I$ retains its lines and
-   // reconciles them by physical tag on refetch (docs/VHPR.md), with no D$ writeback, no clear.
+   // fence.i changes code, and the I$ reads memory directly, so an I$ fill must never read a line
+   // the D$ holds dirty: before each line read goes to memory the D$ cleans that line by PA (ic_cl,
+   // below). So fence.i needs no D$ writeback -- it drains the core and invalidates the I$ (fi).
+   // A MAPPING change (satp/sfence) does not change code -- it only stales virtual tags -- so it
+   // advances the I$ EPOCH (ic_ep_bump): the I$ keeps its lines and reconciles them by physical tag
+   // on refetch (docs/VHPR.md). PTW reads go through the D$, so a walk sees dirty PTEs and
+   // sfence.vma flushes only the TLBs.
    wire ic_ep_bump = imem_ctx_chg;
-   localparam DF_IDLE=0, DF_DRAIN=1, DF_INV=2, DF_WAIT=3;
-   reg [1:0] df;  wire df_stall = (df != DF_IDLE);
-   reg dc_inv_req_r;  assign dc_inv_req = dc_inv_req_r;
-   always @(posedge clk) if (reset) begin df<=DF_IDLE; dc_inv_req_r<=1'b0; end
-      else begin
-         dc_inv_req_r <= 1'b0;
-         case (df)
-           DF_IDLE:  if (ifence) df<=DF_DRAIN;
-           DF_DRAIN: if (dmem_idle) begin dc_inv_req_r<=1'b1; df<=DF_INV; end
-           DF_INV:   df<=DF_WAIT;
-           DF_WAIT:  if (!dc_inv_busy) df<=DF_IDLE;
-         endcase
-      end
+   assign dc_inv_req = 1'b0;
 
    // ---------------- the VHPR I$ + the fence.i FSM ----------------
    // The I$ (rv_icache) is virtually indexed and tagged and serves the core's fetch ring
@@ -754,9 +740,8 @@ module rv_soc_top #(
    // the evidence, and the cycle stamp already says when it happened.
    assign fbdiag_reset_req = 1'b0;
 
-   // fence.i: drain the store buffer + D$ clean-flush (df, above), THEN invalidate the I$ so a
-   // refetch cannot read code still dirty in the D$. A MAPPING change invalidates directly --
-   // virtual-alias staleness, not I/D coherence, so no D$ writeback wait. Both drive the flush.
+   // fence.i: drain the core's memory operations, then invalidate the I$. The refetch reads
+   // current memory: every I$ line read is cleaned in the D$ first (ic_cl).
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  assign fi_stall = (fi != FI_IDLE);
    reg fi_inv;
@@ -765,7 +750,7 @@ module rv_soc_top #(
          fi_inv <= 1'b0;
          case (fi)
            FI_IDLE:  if (ifence) fi<=FI_DRAIN;
-           FI_DRAIN: if (dmem_idle & (df == DF_IDLE)) begin fi_inv<=1'b1; fi<=FI_INV; end
+           FI_DRAIN: if (dmem_idle) begin fi_inv<=1'b1; fi<=FI_INV; end
            FI_INV:   fi<=FI_WAIT;
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
          endcase
@@ -845,10 +830,38 @@ module rv_soc_top #(
    // PTW reads go through the D$ (dcr_* above), and a D$ miss on a PTE fills like any other line.
    // The D$ is client 0 with its own slots (above); the I$ keeps its single-outstanding line
    // handshake behind rv_mem_line_client as client 1 (a read of the D$ wins a tie).
+   // THE I$ FILLS COHERENTLY, AT NO COST IN THE COMMON CASE. The I$ pulses l2_req, holds l2_addr
+   // until l2_ack and has one read outstanding. The read goes to memory at once, and the D$ is
+   // asked in parallel to clean the line (dc_ic_req, held until dc_ic_ack; it queues behind every
+   // store taken before it). The data is used only if the D$ has answered by then that the line
+   // was clean (~dc_ic_dty); otherwise -- a write-back, or data faster than the answer -- the data
+   // is dropped and the line read again once the D$ has answered, when memory is current.
+   reg  ic_p, ic_ak, ic_cl, ic_rd;                // a read owed; the D$ answered; answered clean; a read in flight
+   wire ic_mack;                                  // the memory's answer to the read in flight
+   wire ic_ok   = (ic_ak & ic_cl) | (dc_ic_ack & ~dc_ic_dty);
+   wire ic_use  = ic_mack & ic_ok;                // the data is current: the I$'s l2_ack
+   // read again when the data was dropped and the answer is in -- a cycle after the dropped read's
+   // answer at the earliest: the line client's l2_ack ends the last read at that edge
+   wire ic_rr   = ic_p & ~ic_rd & (ic_ak | dc_ic_ack);
+   always @(posedge clk)
+      if (reset) begin ic_p <= 1'b0;  ic_ak <= 1'b0;  ic_cl <= 1'b0;  ic_rd <= 1'b0; end
+      else begin
+         if (ic_l2_req) begin ic_p <= 1'b1;  ic_ak <= 1'b0;  ic_rd <= 1'b1; end
+         else begin
+            if (dc_ic_ack) begin ic_ak <= 1'b1;  ic_cl <= ~dc_ic_dty; end
+            if (ic_use) ic_p <= 1'b0;
+            if (ic_mack) ic_rd <= 1'b0;
+            if (ic_rr) begin ic_rd <= 1'b1;  ic_cl <= 1'b1; end   // after the answer memory is current
+         end
+      end
+   assign dc_ic_req = ic_p & ~ic_ak;
+   assign ic_l2_ack = ic_use;
+   always @(posedge clk) if (!reset & ic_l2_req & ic_p)
+      $fatal(1, "rv_soc_top: an I$ line read asked while the last one is still owed");
    rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_ic_mem
      (.clk(clk), .reset(reset),
-      .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
-      .l2_ack(ic_l2_ack), .l2_rdata(ic_l2_rdata),
+      .l2_req(ic_l2_req | ic_rr), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
+      .l2_ack(ic_mack), .l2_rdata(ic_l2_rdata),
       .cq_valid(mc_q_valid[1]), .cq_ready(mc_q_ready[1]), .cq_slot(mc_q_slot[1*MSW +: MSW]),
       .cq_we(mc_q_we[1]), .cq_addr(mc_q_addr[1*LAW +: LAW]), .cq_wmask(mc_q_wmask[1*64 +: 64]),
       .cq_wdata(mc_q_wdata[1*512 +: 512]),
