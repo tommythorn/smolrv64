@@ -36,11 +36,20 @@
 // is in the same 4 KiB page, and a miss that finds its line there installs it without an L2 read.
 // A flush drops the buffer, and a prefetch in flight across a flush lands dead.
 //
-// INVALIDATION. fence.i (inv_req), an epoch wrap and reset clear every valid bit. The valid bits
-// are banked by the set's low bits into 64-row distributed RAMs, so the scan clears a row of every
-// bank a cycle and takes 64 cycles at any size; inv_busy rises the cycle it is requested and falls
-// when the scan is done. A mapping
-// change (ep_bump) advances the epoch: lines stay resident and reconcile by physical tag.
+// PHYSICAL STATE. A set is {colour, row}: its row is VA[11:6] = PA[11:6], its colour the bits
+// above. Each (way, colour) keeps a line's physical tag and its validity in 64-row distributed
+// RAMs, so every place a physical line can live is at one row, read in one cycle (the probe).
+// Validity is two single-writer bits that agree: ig, written by installs and the scan, and kg,
+// written by probe kills -- so a kill and an install in one array and one cycle both land.
+//
+// THE PROBE. Every write to memory the core makes probes its line (pb_v, pb_pa); every place the
+// line lives is invalidated, and a fill in flight or a prefetched line for it lands dead. So the
+// I$ never serves bytes older than a store, and fence.i need not clear it.
+//
+// INVALIDATION. inv_req (a fence.i that must discard everything), an epoch wrap and reset clear
+// every line: the scan clears a row of every (way, colour) a cycle, 64 cycles at any size;
+// inv_busy rises the cycle it is requested and falls when the scan is done. A mapping change
+// (ep_bump) advances the epoch: lines stay resident and reconcile by physical tag.
 module rv_icache #(
    parameter SIZE_KB = 64,
    parameter HW      = 8,          // the pair in halfwords: 16 bytes
@@ -61,6 +70,8 @@ module rv_icache #(
    output reg  [RTW-1:0]    rd_resp_tag,
    input  wire              inv_req,     // fence.i: clear every line
    input  wire              ep_bump,     // a mapping change: advance the epoch
+   input  wire              pb_v,        // a write to memory: invalidate its line wherever it lives
+   input  wire [63:0]       pb_pa,
    output reg               inv_busy,
    output reg               l2_req,
    output wire              l2_we,
@@ -86,16 +97,18 @@ module rv_icache #(
    // ---------------------------------------------------------------- the arrays
    // tags, per way, in distributed RAM
    reg [VTB-1:0] vt0 [0:SETS-1], vt1 [0:SETS-1];
-   reg [PTB-1:0] pt0 [0:SETS-1], pt1 [0:SETS-1];
    reg [EPW-1:0] ep0 [0:SETS-1], ep1 [0:SETS-1];
    reg           rr  [0:SETS-1];               // round-robin victim
    integer i;
    initial for (i = 0; i < SETS; i = i + 1) rr[i] = 1'b0;
-   // valid bits: VB banks of 64 rows per way, the bank the set's low bits (the vbank block below)
-   localparam VBB = IB - 6;
-   localparam VB  = 1 << VBB;
-   initial if (IB < 7) $fatal(1, "rv_icache: %0d sets are fewer than two banks of 64", SETS);
-   wire [VB-1:0] v0s, v1s, v0f, v1f;             // each bank at the lookup's row and the fill's
+   // physical state per (way, colour), 64 rows (the pst block below): valid at the lookup's row,
+   // the fill's (the scan's while it runs) and the probe's; the physical tag at the lookup's and the
+   // probe's
+   localparam CB   = IB - 6;                     // colour bits
+   localparam NCOL = 1 << CB;
+   initial if (IB < 7) $fatal(1, "rv_icache: %0d sets are fewer than two colours of 64", SETS);
+   wire [2*NCOL-1:0]     v_s, v_f, v_p;
+   wire [2*NCOL*PTB-1:0] pt_s, pt_p;
    reg [EPW-1:0] cur_ep;
    initial cur_ep = {EPW{1'b0}};
 
@@ -120,6 +133,7 @@ module rv_icache #(
    reg [1:0]        f_k;                       // install row
    reg [511:0]      f_data;
    reg              f_l2;                      // a demand L2 read is outstanding
+   reg              f_dead;                    // the line was written since its fill began: install it invalid
    // the prefetch buffer
    reg              pf_val, pf_want, pf_infl, pf_drop;
    reg [57:0]       pf_addr, pf_next, pf_ia;
@@ -158,8 +172,9 @@ module rv_icache #(
    wire [IB-1:0]  s1_set = m_line[IB-1:0];
    wire [VTB-1:0] s1_vtg = m_line[IB +: VTB];
    wire [PTB-1:0] ptg    = s1_pa[12 +: PTB];
-   wire vl0_s = v0s[s1_set[VBB-1:0]];
-   wire vl1_s = v1s[s1_set[VBB-1:0]];
+   wire [CB-1:0]  s1_col = s1_set[IB-1:6];
+   wire vl0_s = v_s[{1'b0, s1_col}];
+   wire vl1_s = v_s[{1'b1, s1_col}];
    wire h0   = vl0_s & (vt0[s1_set] == s1_vtg) & (ep0[s1_set] == s1_ep);
    wire h1   = vl1_s & (vt1[s1_set] == s1_vtg) & (ep1[s1_set] == s1_ep);
    wire hit  = h0 | h1;
@@ -167,16 +182,16 @@ module rv_icache #(
    wire [57:0]       m_pl   = s1_pa[63:OFFB];
    // the reconcile probe: the missing line's set, both ways, by physical tag
    wire [IB-1:0]     m_set  = m_line[IB-1:0];
-   wire              rc0    = vl0_s & (pt0[m_set] == ptg);   // (m_set is s1_set)
-   wire              rc1    = vl1_s & (pt1[m_set] == ptg);
+   wire              rc0    = vl0_s & (pt_s[{1'b0, s1_col}*PTB +: PTB] == ptg);   // (m_set is s1_set)
+   wire              rc1    = vl1_s & (pt_s[{1'b1, s1_col}*PTB +: PTB] == ptg);
    // counted once per request, never per replay: an access is a request taken, a miss its first lookup's
    assign perf_access = rd_ack;
    assign perf_miss   = miss & ~s1_rp;
 
    // the victim for the line being filled
    wire [IB-1:0] f_set = f_line[IB-1:0];
-   wire          vl0_f = v0f[f_set[VBB-1:0]];
-   wire          vl1_f = v1f[f_set[VBB-1:0]];
+   wire          vl0_f = v_f[{1'b0, f_set[IB-1:6]}];
+   wire          vl1_f = v_f[{1'b1, f_set[IB-1:6]}];
    wire          v_way = ~vl0_f ? 1'b0 : ~vl1_f ? 1'b1 : rr[f_set];
 
    // ---------------------------------------------------------------- the tag write port
@@ -188,27 +203,44 @@ module rv_icache #(
    wire          t_scan = (st == S_SCAN);
    wire          t_vt   = t_inst | t_rst;
    wire [IB-1:0] t_set  = f_set;
-   wire          t_vld  = ~t_scan;
-   wire [5:0]    t_row  = t_scan ? scan[5:0] : f_set[IB-1:VBB];
-   genvar gv;
-   generate for (gv = 0; gv < VB; gv = gv + 1) begin : vbank
-      (* ram_style = "distributed" *) reg v0 [0:63];
-      (* ram_style = "distributed" *) reg v1 [0:63];
+   // the probe: every (way, colour) at the written line's row
+   wire [5:0]     pb_row = pb_pa[11:6];
+   wire [PTB-1:0] pb_tg  = pb_pa[12 +: PTB];
+   wire [57:0]    pb_pl  = pb_pa[63:OFFB];
+   // the row the second valid read serves: the scan's while it runs, else the fill's
+   wire [5:0]     f_rrow = t_scan ? scan[5:0] : f_set[5:0];
+   // the fill in flight is written this cycle: it installs dead (and stays dead once f_dead holds it)
+   wire           pb_fill  = pb_v & (pb_pl == f_pline) & ((st == S_FILL) | (st == S_INST));
+   wire           f_dead_now = f_dead | pb_fill;
+   genvar gk;
+   generate for (gk = 0; gk < 2*NCOL; gk = gk + 1) begin : pst
+      (* ram_style = "distributed" *) reg [PTB-1:0] pt_k [0:63];
+      (* ram_style = "distributed" *) reg           ig [0:63];   // installs and the scan
+      (* ram_style = "distributed" *) reg           kg [0:63];   // probe kills
       integer r;
-      initial for (r = 0; r < 64; r = r + 1) begin v0[r] = 1'b0; v1[r] = 1'b0; end
-      wire in_b = (f_set[VBB-1:0] == gv);
+      initial for (r = 0; r < 64; r = r + 1) begin ig[r] = 1'b1; kg[r] = 1'b0; end
+      wire [5:0] s_row = s1_set[5:0];
+      assign v_s[gk] = (ig[s_row] == kg[s_row]);
+      assign v_f[gk] = (ig[f_rrow] == kg[f_rrow]);
+      assign v_p[gk] = (ig[pb_row] == kg[pb_row]);
+      assign pt_s[gk*PTB +: PTB] = pt_k[s_row];
+      assign pt_p[gk*PTB +: PTB] = pt_k[pb_row];
+      wire inst_k = t_inst & ({f_way, f_set[IB-1:6]} == gk);
+      // a kill of the row an install writes this cycle is the install's (it lands dead: f_dead)
+      wire kill_k = pb_v & v_p[gk] & (pt_p[gk*PTB +: PTB] == pb_tg) & ~t_scan
+                  & ~(inst_k & (pb_row == f_set[5:0]));
+      // ig: the scan makes a row disagree with kg, an install agree (or disagree, dead)
+      wire       ig_we = t_scan | inst_k;
+      wire       ig_d  = t_scan ? ~kg[f_rrow] : (kg[f_rrow] ^ f_dead_now);
       always @(posedge clk) begin
-         if (t_scan | (t_inst & ~f_way & in_b)) v0[t_row] <= t_vld;
-         if (t_scan | (t_inst &  f_way & in_b)) v1[t_row] <= t_vld;
+         if (ig_we)  ig[f_rrow] <= ig_d;
+         if (kill_k) kg[pb_row] <= ~ig[pb_row];
+         if (inst_k) pt_k[f_set[5:0]] <= f_pline[12-OFFB +: PTB];
       end
-      assign v0s[gv] = v0[s1_set[IB-1:VBB]];  assign v1s[gv] = v1[s1_set[IB-1:VBB]];
-      assign v0f[gv] = v0[f_set[IB-1:VBB]];   assign v1f[gv] = v1[f_set[IB-1:VBB]];
    end endgenerate
    always @(posedge clk) begin
       if (t_vt & ~f_way) begin vt0[t_set] <= f_line[IB +: VTB]; ep0[t_set] <= f_ep; end
       if (t_vt &  f_way) begin vt1[t_set] <= f_line[IB +: VTB]; ep1[t_set] <= f_ep; end
-      if (t_inst & ~f_way) pt0[t_set] <= f_pline[12-OFFB +: PTB];
-      if (t_inst &  f_way) pt1[t_set] <= f_pline[12-OFFB +: PTB];
       if (t_inst) rr[t_set] <= ~f_way;
    end
 
@@ -216,7 +248,7 @@ module rv_icache #(
    always @(posedge clk) begin
       if (reset) begin
          st <= S_RUN;  door <= 1'b0;  s1_v <= 1'b0;  sk_v <= 1'b0;  rd_valid <= 1'b0;
-         l2_req <= 1'b0;  f_l2 <= 1'b0;  pf_val <= 1'b0;  pf_want <= 1'b0;  pf_infl <= 1'b0;
+         l2_req <= 1'b0;  f_l2 <= 1'b0;  pf_val <= 1'b0;  pf_want <= 1'b0;  pf_infl <= 1'b0;  f_dead <= 1'b0;
          pf_drop <= 1'b0;  inv_pend <= 1'b1;  inv_busy <= 1'b1;  cur_ep <= {EPW{1'b0}};
       end else begin
          rd_valid <= 1'b0;
@@ -296,6 +328,14 @@ module rv_icache #(
          end
          // a flush drops the buffer; a prefetch in flight across it lands dead
          if (st == S_SCAN) begin pf_val <= 1'b0; pf_want <= 1'b0; if (pf_infl) pf_drop <= 1'b1; end
+         // a write to a line: the fill of it lands dead, the buffered line goes, and a prefetch of it
+         // in flight lands dead (in its landing cycle too)
+         if (miss) f_dead <= 1'b0;
+         else if (pb_fill) f_dead <= 1'b1;
+         if (pb_v & pf_val & (pf_addr == pb_pl)) pf_val <= 1'b0;
+         if (pb_v & pf_infl & (pf_ia == pb_pl)) begin
+            if (l2_ack & ~f_l2) pf_val <= 1'b0;  else pf_drop <= 1'b1;
+         end
       end
    end
 

@@ -68,6 +68,7 @@ module tb;
 `ifndef TB_IC_KB
  `define TB_IC_KB 128
 `endif
+   reg tb_dma_wr = 1'b0;           // a device wrote memory this cycle (the virtio-blk slave, the DMA agent)
    rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB), .SIZE_KB(`TB_IC_KB)) dut
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
@@ -81,7 +82,7 @@ module tb;
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .irq_dbg());
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .dma_wr(tb_dma_wr), .irq_dbg());
 
    // THE DDR MODEL IS THE MEASURED ONE BY DEFAULT. Until 2026-09-04 the default was a flat
    // 4-cycle line latency, which is not this machine: the D$ admitted two requests under a
@@ -360,6 +361,9 @@ module tb;
    reg  [31:0] dma_seed = 32'd1, dma_lfsr = 32'hACE1_5EED, dma_ctr = 32'd0, dl;
    reg  [63:0] dma_next = 64'd50000, dma_line;  reg [63:0] dma_beat;  integer dk;
    wire [63:0] dma_ack = lram[(DMA_OFF >> 6) + 64'd63][448 +: 64];
+   always @(posedge clk)
+      tb_dma_wr <= ~reset & ((ax_awvalid && ax_awready && ax_wvalid && ax_wready && !axi_bvalid)
+                             | (dma_on && !dma_irq && c >= dma_next));
    always @(posedge clk) if (dma_on && !reset) begin
       if (!dma_irq && c >= dma_next) begin
          dl = dma_lfsr;

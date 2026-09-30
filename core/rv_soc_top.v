@@ -107,6 +107,7 @@ module rv_soc_top #(
    input  wire             virtio_rvalid,   // virtio read-data valid (req/rsp; tolerates CDC-bridge latency)
    input  wire             virtio_irq,
    input  wire             virtio_net_irq,   // PLIC source 12 (ubuntu-nfs.dts virtio@10003000)
+   input  wire             dma_wr,           // a device wrote memory (a pulse, in this clock): fence.i clears the I$
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
    // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; tied to 0
    // otherwise). cache_par_err is the ILA_PARITY TRIGGER: it pulses in the cycle a cache
@@ -740,19 +741,31 @@ module rv_soc_top #(
    // the evidence, and the cycle stamp already says when it happened.
    assign fbdiag_reset_req = 1'b0;
 
-   // fence.i: drain the core's memory operations, then invalidate the I$. The refetch reads
-   // current memory: every I$ line read is cleaned in the D$ first (ic_cl).
+   // THE I$ IS COHERENT WITH THE CORE'S STORES: every write the core presents probes its line in
+   // the I$ (ic_pb, a cycle later), which invalidates it wherever it lives, and every I$ line read
+   // is cleaned in the D$ beside the fill (the coherent fill, above). So fence.i only drains: every
+   // older store handed to the D$ (dmem_idle) and its probe applied (~ic_pb_v) -- the fetch ring and
+   // predictions follow its redirect. A device write since the last fence.i clears the I$ as well:
+   // device writes do not probe.
+   reg        ic_pb_v;  reg [63:0] ic_pb_pa;
+   always @(posedge clk) begin ic_pb_v <= ~reset & dmem_wen;  ic_pb_pa <= dmem_waddr; end
+   reg        dma_dirty;                           // a device wrote memory since the I$ was last cleared
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  assign fi_stall = (fi != FI_IDLE);
    reg fi_inv;
-   always @(posedge clk) if (reset) begin fi<=FI_IDLE; fi_inv<=1'b0; end
+   always @(posedge clk) if (reset) begin fi<=FI_IDLE; fi_inv<=1'b0; dma_dirty<=1'b0; end
       else begin
          fi_inv <= 1'b0;
+         if (dma_wr) dma_dirty <= 1'b1;
          case (fi)
            FI_IDLE:  if (ifence) fi<=FI_DRAIN;
-           FI_DRAIN: if (dmem_idle) begin fi_inv<=1'b1; fi<=FI_INV; end
+           FI_DRAIN: if (dmem_idle & ~ic_pb_v) begin
+                        if (dma_dirty) begin fi_inv<=1'b1; fi<=FI_INV; if (~dma_wr) dma_dirty<=1'b0; end
+                        else fi<=FI_IDLE;
+                     end
            FI_INV:   fi<=FI_WAIT;
            FI_WAIT:  if (!ic_inv_busy) fi<=FI_IDLE;
+           default:  $fatal(1, "rv_soc_top: fence.i state %0d", fi);
          endcase
       end
    wire ic_inv_req = fi_inv;   // fence.i AND mapping changes go through fi (after the D$ clean-flush)
@@ -764,6 +777,7 @@ module rv_soc_top #(
       .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr), .rd_resp_tag(ic_rsp_tag),
       .inv_req(ic_inv_req), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
+      .pb_v(ic_pb_v), .pb_pa(ic_pb_pa),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss), .err(ic_err));

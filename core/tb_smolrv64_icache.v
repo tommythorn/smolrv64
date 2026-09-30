@@ -5,8 +5,10 @@
 // -- through a per-context page table (VA page -> PA page, with aliases); every answer is checked,
 // in order, against the tag, the VA, and the 16 bytes at the PA that was sent. An L2 model answers
 // line reads after LAT cycles, one at a time. Mapping changes (ep_bump + a new page table) land at
-// random, without draining. Code changes land only as the architecture allows: drain, write
-// memory, fence.i (inv_req), wait out inv_busy -- and the new bytes must be what comes back.
+// random, without draining. Code changes land two ways: drain, write memory, fence.i (inv_req),
+// wait out inv_busy -- and the new bytes must be what comes back -- and, all the time, a store:
+// a line of memory rewritten and probed (pb_v) with requests in flight. A request taken after the
+// probe must see the new bytes; one taken before it may see the bytes of either side.
 //   -DLAT=<cycles> (default 12)
 module tb;
 `ifndef LAT
@@ -30,6 +32,7 @@ module tb;
    wire [127:0] rd_data;  wire [63:0] rd_resp_addr;  wire [3:0] rd_resp_tag;
    wire [57:0]  l2_addr;  wire [511:0] l2_wdata;  wire [15:0] err;
    reg          inv_req = 0, ep_bump = 0, l2_ack = 0;  reg [511:0] l2_rdata;
+   reg          pb_v = 0;  reg [63:0] pb_pa = 0;
 `ifndef IC_KB
  `define IC_KB 64                // the cache size: -DIC_KB=128
 `endif
@@ -37,7 +40,7 @@ module tb;
      (.clk(clk), .reset(reset),
       .rd_req(rq_v), .rd_addr(rq_va), .rd_pa(rq_pa), .rd_tag(rq_tag), .rd_ack(rd_ack),
       .rd_data(rd_data), .rd_valid(rd_valid), .rd_resp_addr(rd_resp_addr), .rd_resp_tag(rd_resp_tag),
-      .inv_req(inv_req), .ep_bump(ep_bump), .inv_busy(inv_busy),
+      .inv_req(inv_req), .ep_bump(ep_bump), .inv_busy(inv_busy), .pb_v(pb_v), .pb_pa(pb_pa),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
       .l2_rdata(l2_rdata), .l2_ack(l2_ack),
       .perf_access(pacc), .perf_miss(pmiss), .err(err));
@@ -59,13 +62,15 @@ module tb;
    end
 
    // ---- the expected answers, in order ----
-   reg [63:0] q_va [0:15], q_pa [0:15];  reg [3:0] q_tag [0:15];
+   reg [63:0] q_va [0:15], q_pa [0:15];  reg [3:0] q_tag [0:15];  reg [127:0] q_old [0:15];
    reg [3:0]  q_wp = 0, q_rp = 0;  reg [4:0] q_n = 0;
    function [127:0] pair_at; input [63:0] pa;
       reg [15:0] wi; begin wi = pa[18:3]; pair_at = {mem[wi + 16'd1], mem[wi]}; end endfunction
 
    // ---- the requester and the checker ----
    integer cyc = 0, nresp = 0, nreq = 0, nfi = 0, nep = 0, nmiss = 0, nacc = 0, nrc = 0;
+   integer npb = 0, nfdead = 0, npfk = 0;
+   reg [63:0] pb_va;  reg [57:0] pb_line;
    reg     quiesce = 0;
    reg [63:0] va_n;  reg [6:0] pp;
    function [63:0] rnd_va; input dummy;
@@ -92,7 +97,7 @@ module tb;
       if (rd_valid) begin
          if (q_n == 0) begin $display("FAIL: an answer with nothing outstanding"); $finish; end
          if (rd_resp_tag !== q_tag[q_rp] || rd_resp_addr !== q_va[q_rp]
-             || rd_data !== pair_at(q_pa[q_rp])) begin
+             || (rd_data !== pair_at(q_pa[q_rp]) && rd_data !== q_old[q_rp])) begin
             $display("FAIL at cycle %0d: tag %h/%h va %h/%h pa %h data %h expected %h", cyc,
                      rd_resp_tag, q_tag[q_rp], rd_resp_addr, q_va[q_rp], q_pa[q_rp], rd_data, pair_at(q_pa[q_rp]));
             $finish;
@@ -101,7 +106,7 @@ module tb;
       end
       // requests: a taken one is recorded; a new one follows (sequential half the time)
       if (rq_v & rd_ack) begin
-         q_va[q_wp] <= rq_va;  q_pa[q_wp] <= rq_pa;  q_tag[q_wp] <= rq_tag;  q_wp <= q_wp + 1;
+         q_va[q_wp] <= rq_va;  q_pa[q_wp] <= rq_pa;  q_tag[q_wp] <= rq_tag;  q_old[q_wp] <= pair_at(rq_pa);  q_wp <= q_wp + 1;
          nreq <= nreq + 1;
       end
       q_n <= q_n + {4'd0, rq_v & rd_ack} - {4'd0, rd_valid};
@@ -115,6 +120,23 @@ module tb;
             rq_v <= 1'b1;  rq_va <= va_n;  rq_pa <= {45'd0, pp, va_n[11:0]};  rq_tag <= rq_tag + 1;
          end
       end
+      // a store: a line (in the hot region half the time) rewritten and probed, nothing drained
+      pb_v <= 1'b0;
+      // a third are aimed at the line the cache is filling or has prefetched (rule G6: aimed)
+      if (!quiesce && ($urandom % 150) == 0) begin
+         pb_va = rnd_va(0);
+         pb_line = {45'd0, ptab[pb_va[19:12]], pb_va[11:6]};
+         if (($urandom % 3) == 0) begin
+            if (dut.st == 3'd1 || dut.st == 3'd2) pb_line = dut.f_pline;
+            else if (dut.pf_infl)                 pb_line = dut.pf_ia;
+            else if (dut.pf_val)                  pb_line = dut.pf_addr;
+         end
+         pb_pa <= {pb_line, 6'd0};
+         for (k = 0; k < 8; k = k + 1) mem[{pb_line[12:0], k[2:0]}] = {$urandom, $urandom};
+         pb_v <= 1'b1;  npb <= npb + 1;
+      end
+      if (dut.pb_fill) nfdead <= nfdead + 1;
+      if (pb_v & dut.pf_val & (dut.pf_addr == pb_pa[63:6])) npfk <= npfk + 1;
       // a mapping change: a new page table, the epoch advanced, nothing drained
       ep_bump <= 1'b0;
       if (!quiesce && ($urandom % 6000) == 0) begin ep_bump <= 1'b1; nep <= nep + 1; end
@@ -143,8 +165,9 @@ module tb;
       n = 0;
       while ((q_n != 0 || rq_v) && n < 10000) begin @(posedge clk); n = n + 1; end
       if (q_n != 0) begin $display("FAIL: %0d requests never answered", q_n); $finish; end
-      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d taken, %0d missed on first lookup (%0d reconciled), %0d fence.i, %0d mapping changes",
-               LAT, nresp, nacc, nmiss, nrc, nfi, nep);
+      if (nfdead == 0 || npfk == 0) begin $display("FAIL: a probe never met a fill in flight (%0d) or a prefetched line (%0d)", nfdead, npfk); $finish; end
+      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d taken, %0d missed on first lookup (%0d reconciled), %0d fence.i, %0d mapping changes, %0d probes (%0d fills killed, %0d prefetches killed)",
+               LAT, nresp, nacc, nmiss, nrc, nfi, nep, npb, nfdead, npfk);
       $finish;
    end
 endmodule

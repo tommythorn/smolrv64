@@ -445,6 +445,31 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      decoupling queue and the predictions.
    - **Why it pays:** the boot runs a fence.i every ~15 k cycles, and each wipe refetches the
      working set.
+   **4b as built (2026-09-30), step 1: stores probe; a device write keeps the old fence.i.**
+   - The I$'s physical tags and validity are one 64-row array per (way, colour); the probe reads
+     all 32 at the written line's row and invalidates every match. A fill in flight or a prefetched
+     line for it lands dead.
+   - **Validity is two single-writer bits that must agree:** `ig` (installs, the scan) and `kg`
+     (probe kills). A kill and an install in one array in one cycle then both land. With one
+     valid bit, one of two same-cycle writes would be lost, and a dead fill could stay valid.
+   - **Every write the core presents probes** (`dmem_wen` registered): stores, AMOs, CBOs,
+     straddle beats. Repeats are harmless, so there is no filter and no queue: one per cycle.
+   - **fence.i drains** every older store to the D$ (the store queue now included, in the
+     commit before) and the last probe, then redirects. It clears the I$ only if a device wrote
+     memory since the last one.
+   - **The device write event:** in the platform, each device write burst's address handshake,
+     held four `ui_clk` cycles and synchronised to `probe_clk`. In simulation, the virtio-blk
+     slave's and the DMA agent's writes.
+   - **Step 2 (open):** exact DMA probes, per line through an async FIFO, so network receive
+     traffic stops clearing the I$ at every fence.i on the NFS-root board.
+   - **Bench:** the I$ bench rewrites and probes a line every ~150 cycles with requests in
+     flight. A third of the probes are aimed at the line being filled or prefetched: about 550-800
+     fills and 20-120 prefetches killed a run. Three mutations are caught: no kill, fills never
+     dead, the prefetched line surviving.
+   - **Lockstep** (tiny128: no device writes, so fence.i never clears the I$):
+     37,767,298 -> 38,695,476 at 60 M (+2.46%), 160,629,194 -> 162,576,179 at 300 M (+1.21%).
+     fe:icache 23.4% -> 21.5% at 60 M. The storm is clean to 500 M.
+
 5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
    D$ translates on a miss through its translate port. This is where the dTLB leaves the load's hit path; it

@@ -163,7 +163,7 @@ latched or they are lost.
 | branch/jump mispredict | `m_redirect`, must be ROB head | full frontend refill |
 | trap / interrupt | `xtrap_v`, must be ROB head | full refill |
 | CSR-induced redirect | `sret`/`mret`/`sfence`, serializing | full refill |
-| `fence.i` | `ifence`, must be ROB head | full refill + I$ invalidate |
+| `fence.i` | `ifence`, must be ROB head | full refill; the I$ is invalidated only after a device write |
 | interrupt injection | `irq_inject`, a solo SYSTEM pseudo-op that traps in M | full refill |
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
@@ -1100,9 +1100,16 @@ the request's PA, and a match is re-stamped with the new virtual tag and epoch a
 cycle), so physically resident code survives a mapping change; otherwise the line is filled
 (prefetch buffer or L2) and installs stamped with the request's epoch, so a request taken before
 a mapping change never makes its line current. A miss parks at most one younger request and both
-replay in order. Epoch roll-over and `fence.i` clear the valid
-bits, which are banked by the set's low bits into 64-row distributed RAMs so the scan clears a row
-of every bank a cycle: 64 cycles at any size. (Scanning one set a cycle, a 128 KiB I$ lost 2.65% on
+replay in order. **The I$ is coherent with the core's stores.** A set is {colour, row}, its row
+VA[11:6] = PA[11:6]; each (way, colour) keeps its lines' physical tags and validity in 64-row
+distributed RAMs, so every place a physical line can live is at one row. Every write the core
+presents probes its line (`pb_v`, a cycle later): all 32 candidates are compared at that row and
+every match is invalidated, and a fill in flight or a prefetched line for it lands dead. Validity is
+two single-writer bits that must agree -- `ig` (installs, the scan) and `kg` (probe kills) -- so a
+kill and an install in one array in one cycle both land. So **fence.i only drains** (every older
+store handed to the D$, its probe applied) and redirects; it clears the I$ only when a device has
+written memory since the last one (`dma_wr`: device writes do not probe). Epoch roll-over clears
+every line with a scan that takes a row of every (way, colour) a cycle: 64 cycles at any size. (Scanning one set a cycle, a 128 KiB I$ lost 2.65% on
 the boot's 3,867 fence.i; banked, it gains +0.83% at 60 M and +1.94% at 300 M over 64 KiB.) Today every request still carries the iMMU's PA (`rd_pa`) and the iMMU
 still checks every fetch; Stage 4 increment 1 caches each line's execute and user bits and
 translates only on a miss. Unit bench: `core/run-icache-tb.sh`. Design: `docs/VHPR.md`.
