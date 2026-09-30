@@ -407,6 +407,19 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - **6a, at `VIRT=0`:** way 1 is indexed by the xor-fold of the request's PA line. This is
      PIPT-skew as phase 1 already pays for it, with no D and no synonyms. Placement is one NRU
      bit per line, both set -> way 1.
+
+     **As built (2026-09-29, `wip/dc-skew6a`).**
+     - `SKEW = (VIRT == 0)`. Every way-1 site takes its set from `s1_set1`: the fold of the PA
+       line at `VIRT=0`, else the VA set. So `VIRT=1` is unchanged.
+     - The physical tag is the whole line (PA[35:6]), because way 1's row no longer names PA[11:6].
+       A victim's or a clean's write-back address is then the tag itself.
+     - Each way's physical arrays are read at the row of that way's set.
+     - The round-robin bit gives way to `nru0`/`nru1`, one write statement each.
+     - The bench covers way-1 fills away from way 0's set (about 1,400 a run at `VIRT=0`) and
+       ageings. Three mutations are caught: way 1's probe at the PA row, a way-1 fill into way 0's
+       set, and a way-1 store hit writing way 0's row.
+     - IW=3 Linux lockstep (tiny128, no strided arrays): 35,672,123 -> 35,987,163 at 60 M (+0.88%),
+       143,322,223 -> 143,935,610 at 300 M (+0.43%). The storm is clean to 500 M.
    - **6b, with phase 2:** the same hash of the VA line, plus D and its invariants. D is built as
      the tag array a later L2 will carry data for.
 

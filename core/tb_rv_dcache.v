@@ -108,7 +108,7 @@ module tb;
    integer    hp [0:7], ho [0:7], hw;           // the last 8 accesses' page and offset: locality
    // coverage: every outcome the cache has occurs
    integer    c_own, c_drop, c_merge, c_alloc, c_wait, c_wrap, c_swr, c_smg, c_sal, c_ro, c_blk, c_def, n_out;
-   integer    c_nc, c_cln, c_cdone, c_zero, c_sq1, c_sqbk;
+   integer    c_nc, c_cln, c_cdone, c_zero, c_sq1, c_sqbk, c_skew, c_age;
    reg [1:0]  out_kind [0:NTAG-1];              // 0 a cached load, 1 a walk, 2 NC
    reg [63:0] expv, mask, pa;  integer t, p, off, sz, pick, best, w;
    // acceptance is decided at the edge, by the pre-edge handshake
@@ -184,7 +184,7 @@ module tb;
       wr_nc = 0; cbo_req = 0; cbo_zero = 0; cbo_keep = 0; st_acc = 0; st_kind = K_ST;
       fn_due = 0; fn_wait = 0; fn_final = 0; fn_done = 0; fn_t = 0;
       n_ncst = 0; n_cln = 0; n_fl = 0; n_z = 0; n_dma = 0; n_fence = 0; n_walk = 0; n_ncld = 0;
-      c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0; c_sq1 = 0; c_sqbk = 0;
+      c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0; c_sq1 = 0; c_sqbk = 0; c_skew = 0; c_age = 0;
       cr_valid = 0; cr_last = 0; cr_slot = 0; cr_beat = 0; cr_data = 0; cw_valid = 0; cw_slot = 0;
       n_req = 0; n_resp = 0; n_st = 0; n_remap = 0; n_miss = 0; n_access = 0; errors = 0; n_rd = 0; n_wr = 0;
       for (k = 0; k < 8; k = k + 1) begin hp[k] = 0; ho[k] = 0; end
@@ -224,6 +224,8 @@ module tb;
          c_nc = c_nc + dut.m_nc;  c_cln = c_cln + dut.m_clean;  c_cdone = c_cdone + dut.m_cdone;
          c_zero = c_zero + (dut.k_z & (dut.m_alloc | dut.m_smerge));
          c_sq1 = c_sq1 + (dut.st_go & dut.si);  c_sqbk = c_sqbk + dut.sq_bk;
+         c_skew = c_skew + (dut.m_alloc & dut.pick1 & (dut.s1_set1 != dut.s1_set));   // way 1 filled away from way 0's set
+         c_age = c_age + (dut.m_alloc & dut.nru_age);
          // ---- the load taken at the last edge
          if (took) begin out_v[took_tag] = 1'b1; out_t[took_tag] = now; n_req = n_req + 1; end
          // ---- the store port: a committed store is presented for one cycle when wr_room says the
@@ -382,12 +384,12 @@ module tb;
       if (c_own == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 || c_wrap == 0 ||
           c_swr == 0 || c_smg == 0 || c_sal == 0 || c_ro == 0 || c_blk == 0 || c_def == 0 || n_wr == 0 ||
           c_nc == 0 || c_cln == 0 || c_cdone == 0 || c_zero == 0 || n_dma == 0 || n_walk == 0 || n_ncld == 0 || n_ncst == 0 ||
-          c_sq1 == 0 || c_sqbk == 0) begin
+          c_sq1 == 0 || c_sqbk == 0 || c_age == 0 || (`DC_VIRT == 0 && c_skew == 0)) begin
          $display("FAIL: an outcome never occurred"); errors = errors + 1;
       end
-      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps; store queue %0d issued behind the head, %0d sent back",
+      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d own-set, %0d drop, %0d merge, %0d alloc, %0d wait (%0d behind the store), %0d defer; stores %0d written, %0d merged, %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps, %0d wraps; store queue %0d issued behind the head, %0d sent back; %0d way-1 fills off way 0's set, %0d ageings",
                errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_walk, n_ncld, n_st, n_ncst, n_cln, n_fl, n_dma, n_z, n_fence, n_access,
-               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap, c_sq1, c_sqbk);
+               c_own, c_drop, c_merge, c_alloc, c_wait, c_blk, c_def, c_swr, c_smg, c_sal, c_ro, n_rd, n_wr, n_remap, c_wrap, c_sq1, c_sqbk, c_skew, c_age);
       $finish;
    end
 endmodule

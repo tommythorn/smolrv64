@@ -2,17 +2,22 @@
 // rv_dcache: the VHPR data cache (docs/PLAN-2026-09-25-dcache-vhpr.md), non-blocking, write-back,
 // on the tagged memory port (rv_mem_arbiter's client side).
 //
-// GEOMETRY. SIZE_KB (128) in 2 ways of 64-byte lines, SETS = 1024 indexed by VA[15:6]: 16
-// colours (VA[15:12]) over the 64 rows a 4 KiB page covers (VA[11:6] = PA[11:6]); a smaller
-// cache has fewer colours. Each way's data
-// is two block-RAM banks, the even and the odd 8-byte chunks of a line, read at {set, chunk pair}.
+// GEOMETRY. SIZE_KB (128) in 2 ways of 64-byte lines, SETS = 1024 per way: 16 colours (the set's
+// top bits) over the 64 rows a 4 KiB page covers; a smaller cache has fewer colours. Way 0 is
+// indexed by VA[15:6] (VA[11:6] = PA[11:6]). Way 1 is SKEWED at VIRT=0: indexed by the xor-fold
+// of the PA line, PA[15:6] ^ PA[25:16] ^ PA[35:26], so a power-of-two stride that sweeps one row
+// and a few colours of way 0 spreads over all of way 1; at VIRT=1 it is indexed like way 0.
+// Each way's data is two block-RAM banks, the even and the odd 8-byte chunks of a line, read at
+// {its set, chunk pair}. A new line goes to an invalid way, else by one not-recently-used bit per
+// line: a way whose bit is clear (way 0 if both are), else way 1 with both bits cleared.
 //
 // TWO KINDS OF TAG STATE. A line is PHYSICALLY present -- pvalid, dirty, its physical tag
 // PA[PABITS-1:12] and the data -- independently of whether a VIRTUAL stamp names it (vvalid, the
 // virtual tag VA[VAW-1:16] and the epoch it was stamped in). The virtual tags are per way, indexed
-// by the VA set; the physical tags are one array per (way, colour), 64 rows deep, all read at
-// PA[11:6], so the 32 places a physical line can live come out of one read (the probe). A stamp is
-// written only in the current epoch, and only on a pvalid line.
+// by the VA set; the physical tags (the whole line address, PA[35:6]) are one array per (way,
+// colour), 64 rows deep, read at the row of the request's own set in each way, so every place a
+// physical line can live comes out of one read (the probe). A stamp is written only in the
+// current epoch, and only on a pvalid line.
 //
 // THE STORE PORT is a queue of SD committed stores (the store FIFO). A store is taken whenever the
 // queue has room -- wr_room, a register, says so for this cycle, and a store presented then is
@@ -161,7 +166,8 @@ module rv_dcache #(
    localparam COLB  = IB - 6;                     // colour bits: VA[15:12] at 128 KiB
    localparam NCOL  = 1 << COLB;
    localparam VTB   = VAW - OFFB - IB;            // virtual tag VA[38:16]
-   localparam PTB   = PABITS - 12;                // physical tag PA[35:12]
+   localparam PTB   = PABITS - OFFB;              // physical tag: the line, PA[35:6]
+   localparam SKEW  = (VIRT == 0);                // way 1 indexed by the xor-fold of the PA line
    localparam LB    = PABITS - OFFB;              // significant line-address bits
    localparam EPW   = 2;
    localparam RB    = IB + 2;                     // bank row {set, chunk pair}
@@ -176,6 +182,9 @@ module rv_dcache #(
       if (SETS < 128 || (SETS & (SETS - 1)) != 0) $fatal(1, "rv_dcache: %0d sets: a power of two, at least two colours", SETS);
       if (NMSHR + NWB > (1 << SW)) $fatal(1, "rv_dcache: %0d MSHRs and %0d write-backs need more than %0d slot bits", NMSHR, NWB, SW);
    end
+   function [IB-1:0] fold(input [63:0] a);        // way 1's set: the xor-fold of the line address
+      fold = a[OFFB +: IB] ^ a[OFFB+IB +: IB] ^ a[OFFB+2*IB +: IB];
+   endfunction
    function [63:0] bytes(input [7:0] m);          // a byte mask as a bit mask
       integer b;
       for (b = 0; b < 8; b = b + 1) bytes[b*8 +: 8] = {8{m[b]}};
@@ -186,7 +195,7 @@ module rv_dcache #(
    reg [VTB-1:0] vt0 [0:SETS-1], vt1 [0:SETS-1];
    reg [EPW-1:0] ep0 [0:SETS-1], ep1 [0:SETS-1];
    reg           vv0 [0:SETS-1], vv1 [0:SETS-1];
-   reg           wrr [0:SETS-1];                  // round-robin victim
+   reg           nru0 [0:SETS-1], nru1 [0:SETS-1];   // each way's line recently used
    // physical state: one distributed RAM per (way, colour) and field, 64 rows by PA[11:6], each
    // written once a cycle and read at two rows (the ptw block below); here, all of them as read
    wire [2*NCOL-1:0]     pv_r, pd_r;               // pvalid, dirty at the lookup's row
@@ -194,7 +203,7 @@ module rv_dcache #(
    wire [2*NCOL-1:0]     pv_c, pd_c;               // ...and at the clean walk's row
    wire [2*NCOL*PTB-1:0] pt_c;
    integer i;
-   initial for (i = 0; i < SETS; i = i + 1) begin vv0[i] = 1'b0; vv1[i] = 1'b0; wrr[i] = 1'b0; end
+   initial for (i = 0; i < SETS; i = i + 1) begin vv0[i] = 1'b0; vv1[i] = 1'b0; nru0[i] = 1'b0; nru1[i] = 1'b0; end
    reg [EPW-1:0] cur_ep;
 
    // ---------------------------------------------------------------- the MSHRs
@@ -265,6 +274,7 @@ module rv_dcache #(
    reg        sdoor;                              // the stores': open while a clean waits for them
    reg        s1_v;  reg [63:0] s1_va, s1_pa;  reg [TB-1:0] s1_tag;  reg [EPW-1:0] s1_ep;  reg s1_ph, s1_nc;
    reg        s1_head;                            // a store in the lookup is the queue's head
+   reg [IB-1:0] s1_set1;                          // its way-1 set
    // the replay pick: the lowest waiter released by its MSHR, a drop or a conflict, else the first
    // released by any resource freeing at or after ra_ptr, round robin -- each freeing hands its
    // resource to whoever replays first, so a fixed order would starve the last entries
@@ -313,8 +323,10 @@ module rv_dcache #(
    // ---------------------------------------------------------------- the data banks
    // bank = way*2 + chunk parity; row = {set, chunk pair}. The read port serves the lookup and the
    // victim read-out; the write port the fill beats and the store writes.
-   wire [RB-1:0]  bk_ra = ro_on ? {ro_set, ro_cnt} : {a_va[OFFB +: IB], a_va[5:4]};
-   reg  [RB-1:0]  s1_ra;                          // the row read at the last edge
+   wire [IB-1:0]  a_set1 = SKEW ? fold(a_pa) : a_va[OFFB +: IB];
+   wire [RB-1:0]  bk_ra0 = ro_on ? {ro_set, ro_cnt} : {a_va[OFFB +: IB], a_va[5:4]};
+   wire [RB-1:0]  bk_ra1 = ro_on ? {ro_set, ro_cnt} : {a_set1, a_va[5:4]};
+   reg  [RB-1:0]  s1_ra0, s1_ra1;                 // each way's row read at the last edge
    wire           sw_v;  wire [1:0] sw_bank;  wire [RB-1:0] sw_row;  wire [63:0] sw_data;   // the store write
    reg            w1_v;  reg  [1:0] w1_bank;  reg  [RB-1:0] w1_row;  reg  [63:0] w1_data;   // ...registered: the bypass
    wire [63:0]    bk_rd [0:3];
@@ -324,16 +336,16 @@ module rv_dcache #(
       wire fw = fb_v & (fb_way == gb[1]);
       wire sw = sw_v & (sw_bank == gb[1:0]);
       smolrv64_sdpram #(.ADDR_WIDTH(RB), .DATA_WIDTH(64), .READ_LATENCY(1)) u_bank
-        (.clock(clk), .rd_addr(bk_ra), .rd_data(bk_rd[gb]),
+        (.clock(clk), .rd_addr(gb[1] ? bk_ra1 : bk_ra0), .rd_data(bk_rd[gb]),
          .wr_en(fw | sw), .wr_addr(fw ? fb_row : sw_row), .wr_data(fw ? fb_data[gb[0]*64 +: 64] : sw_data));
-      assign bk_q[gb] = (w1_v & (w1_bank == gb[1:0]) & (w1_row == s1_ra)) ? w1_data : bk_rd[gb];
+      assign bk_q[gb] = (w1_v & (w1_bank == gb[1:0]) & (w1_row == (gb[1] ? s1_ra1 : s1_ra0))) ? w1_data : bk_rd[gb];
    end endgenerate
 
    // ---------------------------------------------------------------- the lookup (T+1)
    wire           s1_st  = s1_tag[RTW];
    wire [IB-1:0]  s1_set = s1_va[OFFB +: IB];
    wire [VTB-1:0] s1_vtg = s1_va[OFFB+IB +: VTB];
-   wire [PTB-1:0] s1_ptg = s1_pa[12 +: PTB];
+   wire [PTB-1:0] s1_ptg = s1_pa[OFFB +: PTB];
    wire [5:0]     s1_row = s1_pa[11:6];
    wire [COLB-1:0] s1_col = s1_va[12 +: COLB];
    wire [57:0]    s1_pl  = s1_pa[63:OFFB];
@@ -363,8 +375,8 @@ module rv_dcache #(
    // the probe: the 32 candidates at PA[11:6] (array k = way*NCOL + colour)
    reg  [2*NCOL-1:0] pm;                          // candidate k holds the request's physical line
    always @* for (i = 0; i < 2*NCOL; i = i + 1) pm[i] = pv_r[i] & (pt_r[i*PTB +: PTB] == s1_ptg);
-   wire [COLB:0]     k_own0 = {1'b0, s1_col};     // the request's own set's two candidates
-   wire [COLB:0]     k_own1 = {1'b1, s1_col};
+   wire [COLB:0]     k_own0 = {1'b0, s1_col};     // the request's own sets' two candidates
+   wire [COLB:0]     k_own1 = {1'b1, s1_set1[IB-1:6]};
    wire              own0  = pm[k_own0];
    wire              own1  = pm[k_own1];
    // (every request by PA, VIRT=0: a line lives only in its PA's colour, so there is no other)
@@ -381,7 +393,7 @@ module rv_dcache #(
    wire              cp_any = cp_own | oth_v;
    wire [COLB:0]     cp_k   = own0 ? k_own0 : own1 ? k_own1 : oth_k;
    wire              cp_dty = pd_r[cp_k];
-   wire [IB-1:0]     cp_set = {cp_k[COLB-1:0], s1_row};
+   wire [IB-1:0]     cp_set = {cp_k[COLB-1:0], cp_k[COLB] ? s1_set1[5:0] : s1_row};
 
    // the answer: a virtual hit, or the line physically in the request's own set
    wire        srv = l1_v & (h0 | h1 | cp_own) & (k_ld | k_st);   // served in place
@@ -401,7 +413,7 @@ module rv_dcache #(
       for (i = NMSHR - 1; i >= 0; i = i - 1) begin
          if (ms_v[i] & (ms_pl[i][LB-1:0] == s1_pl[LB-1:0])) begin ms_hitv[i] = 1'b1; ms_hk = i[MB-1:0]; end
          if (ms_v[i] & (ms_set[i] == s1_set) & ~ms_way[i]) ms_set_busy0 = 1'b1;
-         if (ms_v[i] & (ms_set[i] == s1_set) &  ms_way[i]) ms_set_busy1 = 1'b1;
+         if (ms_v[i] & (ms_set[i] == s1_set1) &  ms_way[i]) ms_set_busy1 = 1'b1;
          if (~ms_v[i]) begin ms_free = i[MB-1:0]; ms_free_v = 1'b1; end
          if (ms_v[i] & ms_dty[i]) ms_dirty = 1'b1;
       end
@@ -416,13 +428,17 @@ module rv_dcache #(
          if (wb_v[i]) wb_any = 1'b1;
       end
    end
-   // the way a new MSHR reserves: an invalid way (vvalid implies pvalid), else the round-robin
-   // one -- not one another MSHR holds
+   // the way a new MSHR reserves -- not one another MSHR holds: an invalid way (vvalid implies
+   // pvalid), else way 1 if way 0's line was used recently (way 0 otherwise); when both were, both
+   // bits clear
    wire v0_free = ~pv_r[k_own0];
    wire v1_free = ~pv_r[k_own1];
-   wire pick1   = ms_set_busy0 ? 1'b1 : ms_set_busy1 ? 1'b0 : v0_free ? 1'b0 : v1_free ? 1'b1 : wrr[s1_set];
+   wire u0      = nru0[s1_set];
+   wire u1      = nru1[s1_set1];
+   wire pick1   = ms_set_busy0 ? 1'b1 : ms_set_busy1 ? 1'b0 : v0_free ? 1'b0 : v1_free ? 1'b1 : u0;
+   wire nru_age = ~ms_set_busy0 & ~ms_set_busy1 & ~v0_free & ~v1_free & u0 & u1;
    wire way_ok  = ~(ms_set_busy0 & ms_set_busy1);
-   wire [COLB:0] k_vic  = {pick1, s1_col};
+   wire [COLB:0] k_vic  = pick1 ? k_own1 : k_own0;
    wire          vic_dty = pv_r[k_vic] & pd_r[k_vic];
 
    // ---------------------------------------------------------------- what the lookup does (one of these)
@@ -442,7 +458,7 @@ module rv_dcache #(
    wire m_alloc   = alloc_c & ~ro_block & ~wb_block;
    wire m_clean   = cln_c & ~ro_block & ~wb_block;
    // (no copy is pvalid while an MSHR fills its line, so the join needs no probe)
-   wire m_join    = mis & ~wb_hit & (|ms_hitv) & (ms_set[ms_hk] == s1_set) & (k_ld | k_st | k_z);
+   wire m_join    = mis & ~wb_hit & (|ms_hitv) & (ms_set[ms_hk] == (ms_way[ms_hk] ? s1_set1 : s1_set)) & (k_ld | k_st | k_z);
    wire mg_ok     = ~ms_bl[ms_hk] & ~(cr_f & (cr_m == ms_hk));        // no beat has landed
    wire m_smerge  = m_join & k_st & mg_ok;                            // a store's bytes into the MSHR: done (a zero waits)
    wire m_merge   = m_join & ~m_smerge;                               // wait on the MSHR
@@ -466,7 +482,7 @@ module rv_dcache #(
    // the store write: its bytes over the chunk it read
    assign sw_v    = s_write;
    assign sw_bank = {aw1, s1_va[3]};
-   assign sw_row  = {s1_set, s1_va[5:4]};   // (s1_set is the own set: a hit or the own copy)
+   assign sw_row  = {aw1 ? s1_set1 : s1_set, s1_va[5:4]};   // the own set of the way hit: a hit or the own copy
    assign sw_data = (ans_chunk & ~bytes(st_wm)) | (st_wd & bytes(st_wm));
 
    // ---------------------------------------------------------------- the fill
@@ -556,7 +572,17 @@ module rv_dcache #(
       if (vw1_we) vv1[vw_a] <= vw_d;
       if (tw0_we) begin vt0[tw_a] <= tw_vt; ep0[tw_a] <= tw_ep; end
       if (tw1_we) begin vt1[tw_a] <= tw_vt; ep1[tw_a] <= tw_ep; end
-      if (t_inst) wrr[ms_set[im]] <= ~ms_way[im];
+   end
+   // each way's recently-used bit: set by an install and by a hit, both cleared by an allocation
+   // that found both set (one write statement per array; an install never meets a lookup outcome)
+   wire           ru0_we = (t_inst & ~ms_way[im]) | (srv & ~aw1) | (m_alloc & nru_age);
+   wire           ru1_we = (t_inst &  ms_way[im]) | (srv &  aw1) | (m_alloc & nru_age);
+   wire [IB-1:0]  ru0_a  = t_inst ? ms_set[im] : s1_set;
+   wire [IB-1:0]  ru1_a  = t_inst ? ms_set[im] : s1_set1;
+   wire           ru_d   = t_inst | srv;
+   always @(posedge clk) begin
+      if (ru0_we) nru0[ru0_a] <= ru_d;
+      if (ru1_we) nru1[ru1_a] <= ru_d;
    end
    // the clean walk goes by ROW: the row's 2*NCOL slots are read at once, the lowest dirty one is
    // written back (with the lookup empty, no install, the read-out and a write-back entry free),
@@ -577,17 +603,18 @@ module rv_dcache #(
       (* ram_style = "distributed" *) reg           pd_k [0:63];
       integer r;
       initial for (r = 0; r < 64; r = r + 1) begin pv_k[r] = 1'b0; pd_k[r] = 1'b0; end
-      assign pv_r[gk] = pv_k[s1_row];  assign pd_r[gk] = pd_k[s1_row];  assign pt_r[gk*PTB +: PTB] = pt_k[s1_row];
+      wire [5:0] rrow = (gk >= NCOL) ? s1_set1[5:0] : s1_row;   // the row of the request's own set in this way
+      assign pv_r[gk] = pv_k[rrow];  assign pd_r[gk] = pd_k[rrow];  assign pt_r[gk*PTB +: PTB] = pt_k[rrow];
       assign pv_c[gk] = pv_k[cl_r];    assign pd_c[gk] = pd_k[cl_r];    assign pt_c[gk*PTB +: PTB] = pt_k[cl_r];
       wire inst_k  = t_inst  & ({ms_way[im], ms_set[im][IB-1:6]} == gk);
       wire evict_k = t_evict & (k_vic == gk);
       wire drop_k  = m_drop  & (cp_k == gk);
-      wire dirty_k = s_write & ({aw1, s1_col} == gk);
+      wire dirty_k = s_write & ((aw1 ? k_own1 : k_own0) == gk);
       wire clean_k = ((m_clean & cp_dty & (cp_k == gk)) | (cl_ro & (cl_k == gk)));
-      wire [5:0] row_k = inst_k ? ms_set[im][5:0] : cl_ro ? cl_r : s1_row;
+      wire [5:0] row_k = inst_k ? ms_set[im][5:0] : cl_ro ? cl_r : rrow;
       always @(posedge clk) begin
          if (inst_k | evict_k | drop_k)  pv_k[row_k] <= inst_k;
-         if (inst_k)                     pt_k[row_k] <= ms_pl[im][6 +: PTB];
+         if (inst_k)                     pt_k[row_k] <= ms_pl[im][PTB-1:0];
          if (inst_k | dirty_k | clean_k) pd_k[row_k] <= inst_k ? ms_dty[im] : dirty_k;
       end
    end endgenerate
@@ -605,7 +632,7 @@ module rv_dcache #(
          for (i = 0; i < NWB; i = i + 1)   wb_v[i] <= 1'b0;
       end else begin
          // the lookup stage takes whatever the banks were addressed for
-         s1_v <= a_take;  s1_ra <= bk_ra;
+         s1_v <= a_take;  s1_ra0 <= bk_ra0;  s1_ra1 <= bk_ra1;  s1_set1 <= a_set1;
          if (a_take) begin s1_va <= a_va; s1_pa <= a_pa; s1_tag <= a_tag; s1_ep <= a_ep; s1_ph <= a_ph; s1_nc <= a_nc; end
          // the head's own replay, the head, or the entry behind a head that resolves now
          s1_head <= rp_v | ~si | st_done;
@@ -653,7 +680,7 @@ module rv_dcache #(
             wt_ph[s1_tag] <= s1_ph;  wt_nc[s1_tag] <= s1_nc;
          end
          if (s1_v & ms_free_v) begin
-            ms_pl[ms_free] <= s1_pl;  ms_set[ms_free] <= s1_set;  ms_vt[ms_free] <= s1_vtg;  ms_ep[ms_free] <= s1_ep;
+            ms_pl[ms_free] <= s1_pl;  ms_set[ms_free] <= pick1 ? s1_set1 : s1_set;  ms_vt[ms_free] <= s1_vtg;  ms_ep[ms_free] <= s1_ep;
             ms_way[ms_free] <= pick1;  ms_bt[ms_free] <= 2'd0;  ms_bl[ms_free] <= 1'b0;  ms_ph[ms_free] <= s1_ph;
             ms_dty[ms_free] <= k_st | k_z;
             // its merge buffer: a store's chunk (written above), a zero's whole line, else empty
@@ -684,11 +711,11 @@ module rv_dcache #(
          if (~ro_on & wb_free_v) begin
             wb_rdy[wb_free] <= 1'b0;  wb_sent[wb_free] <= 1'b0;
             wb_cpl[wb_free] <= ~cl_on & (k_fl | k_cln);
-            wb_pl[wb_free] <= cl_on  ? {{(52-PTB){1'b0}}, pt_c[cl_k*PTB +: PTB], cl_r}
-                            : absent ? {{(52-PTB){1'b0}}, pt_r[k_vic*PTB +: PTB], s1_row} : s1_pl;
+            wb_pl[wb_free] <= cl_on  ? {{(58-PTB){1'b0}}, pt_c[cl_k*PTB +: PTB]}
+                            : absent ? {{(58-PTB){1'b0}}, pt_r[k_vic*PTB +: PTB]} : s1_pl;
             ro_cnt <= 2'd0;  ro_wb <= wb_free;
             ro_way <= cl_on ? cl_k[COLB] : absent ? pick1 : cp_w1;
-            ro_set <= cl_on ? {cl_k[COLB-1:0], cl_r} : absent ? s1_set : cp_set;
+            ro_set <= cl_on ? {cl_k[COLB-1:0], cl_r} : absent ? (pick1 ? s1_set1 : s1_set) : cp_set;
          end
          if ((ro_need & ~ro_block & ~wb_block) | cl_ro) begin
             wb_v[wb_free] <= 1'b1;  ro_on <= 1'b1;

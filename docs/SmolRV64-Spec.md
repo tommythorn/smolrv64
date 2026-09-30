@@ -1052,8 +1052,8 @@ read-only module of its own (Stage 4 increment 0, `docs/PLAN-2026-09-24-frontend
 | | I$ (`rv_icache`) | D$ (`rv_dcache`) |
 |---|---|---|
 | Size | **128 KB** (`SIZE_KB`) | **128 KB** (`DC_KB`) |
-| Associativity | 2-way, not skewed | 2-way, not skewed |
-| Sets | 1024 | 1024, 16 colours (VA[15:12]) |
+| Associativity | 2-way, not skewed | 2-way, **way 1 skewed** at `VIRT=0` (the xor-fold of the PA line); NRU placement |
+| Sets | 1024 | 1024 per way, 16 colours each |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | VHPR built; **PIPT** in phase 1 (`VIRT=0`) |
 | Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one lookup a cycle, answered at T+2 by tag |
@@ -1068,12 +1068,19 @@ consecutive chunks, which have opposite parity and therefore live in different b
 read serves it, with a byte shift instead of a full-line mux. A byte-masked store is a
 read-modify-write of one chunk, no cross-bank RMW.
 
-Neither cache skews: a VHPR cache's physical probe finds the same-offset synonym candidates by a
-straight index, and a tag-XORed index would scatter them across sets.
+The I$ does not skew: a VHPR cache's physical probe finds the same-offset synonym candidates by
+a straight index, and a hashed index would scatter them across sets. The D$ skews its way 1 while
+every request is by PA (`VIRT=0`): way 0 is indexed by PA[15:6], way 1 by PA[15:6] ^ PA[25:16] ^
+PA[35:26]. A power-of-two stride that walks one row and a few colours of way 0 then spreads over
+all of way 1: GB5 Machine Learning's SGEMM column walk (2048/4096-byte pitch) lives in 32 of way
+0's sets. Phase 2 indexes way 1 by the xor-fold of the VA line instead, with a reverse directory
+that finds its lines by PA (docs/PLAN-2026-09-25-dcache-vhpr.md, phase 3). Placement is one
+not-recently-used bit per line: an invalid way, else a way whose bit is clear (way 0 if both are),
+else way 1 with both bits cleared.
 
-**The D$ (`rv_dcache`).** Physical state per (way, colour): 32 LUTRAM arrays of 64 rows, all read
-at PA[11:6], hold the physical tag, pvalid and dirty, so every place a line can live
-comes out of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
+**The D$ (`rv_dcache`).** Physical state per (way, colour): 32 LUTRAM arrays of 64 rows, each read
+at the row of the request's own set in its way, hold the physical tag (the whole line, PA[35:6]),
+pvalid and dirty, so every place a line can live comes out of one read (the probe) and a line has at most one pvalid copy (asserted). The virtual stamps
 (tag, 2-bit epoch, vvalid per way and set) sit beside them for phase 2. A miss's fill is a
 four-beat burst into the reserved way, a cycle after each beat; the line installs the cycle
 after its last beat is written and its waiters replay: a load's answer comes 5 cycles after
@@ -1261,8 +1268,8 @@ RAMB36 + 4 RAMB18, WNS +0.457 ns at 6 ns):
 | array | shape | width | bits | storage |
 |---|---|---|---|---|
 | data banks | 4 × 4096 | 64 | 1 048 576 | **BRAM** (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) |
-| `pt` / `pv` / `pd` | 32 × 64 | 24 / 1 / 1 | 53 248 | LUTRAM, one array per (way, colour), all read at PA[11:6] |
-| `wrr` | 1024 | 1 | 1 024 | LUTRAM — round-robin victim per set |
+| `pt` / `pv` / `pd` | 32 × 64 | 30 / 1 / 1 | 65 536 | LUTRAM, one array per (way, colour), read at the row of each way's set |
+| `nru0` / `nru1` | 1024 | 1 | 2 048 | LUTRAM — each way's line recently used, per set |
 | `vt`/`ep`/`vv` ×2 | 1024 | 23 / 2 / 1 | 53 248 | LUTRAM, unused at `VIRT=0` (pruned) |
 | merge buffers | 2 × 32 | 64 + 8 | 4 608 | LUTRAM, even and odd chunks, one write a cycle; a chunk-valid bit and a zero bit per MSHR in flops |
 | MSHRs | 8 | -- | ~800 | flops |
