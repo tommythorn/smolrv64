@@ -425,6 +425,8 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - The D$ bench asks for I$ cleans about 1,400 times a run (a third find the line dirty) and
      checks memory at each ack. Two mutations are caught: acking at take, and the clean
      completing the store port.
+   - Build (036440f2): the default directive met, WNS +0.044. Board gate PASS (login, 0 faults,
+     900 s GB5 stress, errlog clean).
 
    **4b, invalidation by probe.**
    - **Layout:** the I$'s valid bits and physical tags move to the D$'s layout, one array per
