@@ -420,6 +420,24 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
        set, and a way-1 store hit writing way 0's row.
      - IW=3 Linux lockstep (tiny128, no strided arrays): 35,672,123 -> 35,987,163 at 60 M (+0.88%),
        143,322,223 -> 143,935,610 at 300 M (+0.43%). The storm is clean to 500 M.
+     - Build: the Explore directive missed by 0.087 on the core plateau (the LSU's `o_v` into the
+       schedulers' wakeups, the ALU results, the predictor). The default directive met, WNS +0.006.
+       The skew's own family (`s1_set1` into the store queue's shift enables) sits at -0.058.
+     - Board gate PASS. A/B on the board, the two bitstreams back to back, IPC and D$ line fills
+       per 1000 instructions:
+
+       | workload | increment 3: IPC | increment 3: fills | 6a: IPC | 6a: fills |
+       |---|---|---|---|---|
+       | naive SGEMM, N=512 (2048 B pitch) | 0.38 | 139.6 | 0.41 | 42.6 |
+       | `xz -6`, 10 MB of /usr/bin | 0.68 | 5.1 | 0.68 | 4.3 |
+       | `xz -6`, 30 MB random (two runs each) | 0.54, 0.54 | 10.0-10.5 | 0.53, 0.56 | 9.4 |
+       | `sha256sum` | 1.68 | 0.45 | 1.69 | 0.31 |
+
+     - SGEMM loses 70% of its misses but gains only 8%. It is dTLB-bound: 84 walks per 1000
+       instructions at 18 cycles each, the same on both, about 1.5 of its 2.4 CPI. The miss-path
+       TLB (increment 5, the future-TLB design) is what turns the skew into ML speed.
+     - A board run taken just after a gate's boot and stress is not an A/B point: one such
+       `xz` run read 0.45.
    - **6b, with phase 2:** the same hash of the VA line, plus D and its invariants. D is built as
      the tag array a later L2 will carry data for.
 
