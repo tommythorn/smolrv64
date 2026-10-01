@@ -57,14 +57,14 @@ module tb;
      (.clk(clk),.reset(reset),
       .d_alloc(lq_d_alloc),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
       .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_idx(lq_d_idx),
-      .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_size(lq_a_size),
+      .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_va(~39'(lq_a_pa)),.a_size(lq_a_size),
       .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(lq_a_unc),
       .e_pa(e_pa),.e_size(e_size),.e_tag(e_tag),.e_av(e_av),.e_block(e_block),.x_block(lq_x_block),
       .q_tag(lq_q_tag),.b_idx(lq_b_idx),.b_ok(lq_b_ok),
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
       .x_fp(lq_x_fp),.x_unc(lq_x_unc), .x_head(lq_x_head),.x_devwait(lq_x_devwait),.x_take(lq_x_take),
       .l_v(lq_l_v),.l_idx(lq_l_idx),.l_prd(lq_l_prd),.l_rd(lq_l_rd),.l_rd_v(lq_l_rd_v),.l_rob(lq_l_rob),
-      .l_pa(lq_l_pa),.occupancy(lq_occ), .av_any(lq_av_any),.flush(flush),
+      .l_pa(lq_l_pa),.v_idx(lq_vc_i),.v_va(lq_v_va),.v_pa(lq_v_pa),.v_unc(lq_v_unc),.occupancy(lq_occ), .av_any(lq_av_any),.flush(flush),
       // every bench address is DRAM (speculates freely), so the device head-gate is never taken
       .a_mem(1'b1),.rob_head({ROBB{1'b0}}));
 
@@ -73,7 +73,7 @@ module tb;
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
       .d_alloc(sq_d_alloc),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),
-      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_size(sq_a_size),.a_unc(sq_a_unc),
+      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(~39'(sq_a_addr)),.a_size(sq_a_size),.a_unc(sq_a_unc),
       .a_data_v(sq_a_data_v),.a_data(sq_a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
@@ -82,7 +82,7 @@ module tb;
       .l_pa(e_pa),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_pa(lq_a_pa),.l_fill_size(lq_a_size),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
-      .occupancy(sq_occ),.flush(flush));
+      .v_idx(sq_vc_i),.v_va(sq_v_va),.v_pa(sq_v_pa),.v_unc(sq_v_unc),.occupancy(sq_occ),.flush(flush));
 
    integer pass=0, fail=0;
    task chk(input [255:0] nm, input got, input exp);
@@ -360,6 +360,26 @@ module tb;
       if (fail != 0) begin $display("LQSQ-TB FAIL"); $fatal(1, "tb_smolrv64_lqsq FAILED"); end
       $display("LQSQ-TB PASS");
       $finish;
+   end
+
+   // THE READ PORT: the entry filled at an edge is read back in the next cycle. The bench
+   // writes each entry's VA as the complement of its PA, so a port that returns the PA, or
+   // another entry, fails here.
+   reg              lq_vc_v=0, sq_vc_v=0, lq_vc_u=0, sq_vc_u=0;
+   reg [IDXB-1:0]   lq_vc_i=0, sq_vc_i=0;
+   reg [PAW-1:0]    lq_vc_pa=0, sq_vc_pa=0;
+   wire [38:0]      lq_v_va, sq_v_va;
+   wire [PAW-1:0]   lq_v_pa, sq_v_pa;
+   wire             lq_v_unc, sq_v_unc;
+   always @(posedge clk) begin
+      if (lq_vc_v && (lq_v_pa != lq_vc_pa || lq_v_va != ~39'(lq_vc_pa) || lq_v_unc != lq_vc_u))
+         $fatal(1, "FAIL: LQ entry %0d reads back pa=%h va=%h unc=%b, filled with pa=%h unc=%b",
+                lq_vc_i, lq_v_pa, lq_v_va, lq_v_unc, lq_vc_pa, lq_vc_u);
+      if (sq_vc_v && (sq_v_pa != sq_vc_pa || sq_v_va != ~39'(sq_vc_pa) || sq_v_unc != sq_vc_u))
+         $fatal(1, "FAIL: SQ entry %0d reads back pa=%h va=%h unc=%b, filled with pa=%h unc=%b",
+                sq_vc_i, sq_v_pa, sq_v_va, sq_v_unc, sq_vc_pa, sq_vc_u);
+      lq_vc_v <= lq_a_v & ~reset;  lq_vc_i <= lq_a_idx;  lq_vc_pa <= lq_a_pa;    lq_vc_u <= lq_a_unc;
+      sq_vc_v <= sq_a_v & ~reset;  sq_vc_i <= sq_a_idx;  sq_vc_pa <= sq_a_addr;  sq_vc_u <= sq_a_unc;
    end
 endmodule
 `default_nettype wire

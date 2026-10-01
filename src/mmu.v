@@ -56,7 +56,14 @@ module mmu
     // logic simplifies. t_ok is t_ready's resolve term alone; t_fault_raw is t_fault with
     // the PA-validity term gated on t_ok instead of t_ready. AND them with your own valid.
     output wire        t_ok,
-    output wire        t_fault_raw);
+    output wire        t_fault_raw,
+    // A SECOND LOOKUP: the TLB alone, never a walk, under the same context. s_ok says it
+    // resolved (Bare, or a hit whose perms pass for s_access); s_paddr/s_nc are then valid.
+    input  wire [63:0] s_vaddr,
+    input  wire [1:0]  s_access,
+    output wire        s_ok,
+    output wire [AW-1:0] s_paddr,
+    output wire        s_nc);
 
    wire        xlate = (satp[63:60] == 4'd8);   // 8 = Sv39, else Bare (identity)
 
@@ -221,6 +228,22 @@ module mmu
    assign t_uncached = wdm ? w_nc : (xlate & tlb_hit & tlb_nc[tlb_idx]);
    // leaf level, valid whenever t_ok: from the finished walk, else the hitting TLB entry.
    assign t_lvl = wdm ? w_lvl : (tlb_hit ? tlb_lvl[tlb_idx] : 2'd0);
+
+   // ---- the second lookup: its own read of every TLB array, the same answers as a hit above ----
+   wire [26:0]     s_vpn  = s_vaddr[38:12];
+   wire [TLBI-1:0] s_idx  = s_vpn[TLBI-1:0];
+   wire            s_v_e  = tlb_v[s_idx];
+   wire [26:0]     s_tag  = tlb_tag[s_idx];
+   wire [43:0]     s_ppn  = tlb_ppn[s_idx];
+   wire [1:0]      s_lvl  = tlb_lvl[s_idx];
+   wire [7:0]      s_perm = tlb_perm[s_idx];
+   wire            s_nc_e = tlb_nc[s_idx];
+   wire            s_n    = tlb_n[s_idx];
+   wire            s_hit  = s_v_e & (s_tag == s_vpn)
+                          & ~perm_fault({56'd0, s_perm}, s_access, priv, sum, mxr);
+   assign s_ok    = ~xlate | s_hit;
+   assign s_paddr = xlate ? leaf_pa(s_ppn, s_lvl, s_vaddr, s_n) : s_vaddr[AW-1:0];
+   assign s_nc    = xlate & s_nc_e;
 
    // start a walk when the request can't resolve this cycle
    wire start_walk = req_valid & xlate & !noncanon & !tlb_ok & !wdm & (st==IDLE);

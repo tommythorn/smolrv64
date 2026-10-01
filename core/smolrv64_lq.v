@@ -49,6 +49,7 @@ module smolrv64_lq
     parameter PBITS = 9,
     parameter ROBB  = 4,
     parameter SQIB  = 3,               // store-seqno width (smolrv64_sq's IDXB)
+    parameter VAW   = 39,              // Sv39: the VA an entry keeps beside its PA
     // The memory map, for the D12 cross-check below only (smolrv64_lsu's LSU_DRAM_BASE / LRAM_*).
     // A unit bench with synthetic addresses declares everything memory: DRAM_BASE = 0.
     parameter [55:0] DRAM_BASE = 56'h8000_0000,
@@ -75,6 +76,7 @@ module smolrv64_lq
     input  wire                  a_sent,
     input  wire [IDXB-1:0]       a_idx,
     input  wire [PAW-1:0]        a_pa,
+    input  wire [VAW-1:0]        a_va,        // the address the load was translated from
     input  wire [1:0]            a_size,
     input  wire                  a_signed,
     input  wire                  a_fp,
@@ -135,6 +137,12 @@ module smolrv64_lq
     // can and does start between a load's start and its landing.
     output wire [PAW-1:0]        l_pa,
 
+    // ---- read one entry's translation: its VA and what the VA was translated to ----
+    input  wire [IDXB-1:0]       v_idx,
+    output wire [VAW-1:0]        v_va,
+    output wire [PAW-1:0]        v_pa,
+    output wire                  v_unc,
+
     output wire [IDXB:0]         occupancy,
     output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
     input  wire [ROBB-1:0]       rob_head,    // head-gate an uncached (device) load's access (non-speculative)
@@ -144,6 +152,7 @@ module smolrv64_lq
    // is behind acc is outstanding or already landed. Pointers are what make flush a reset.
    reg [NENT-1:0]        v, av;              // live / address known
    reg [PAW-1:0]         pa   [0:NENT-1];
+   reg [VAW-1:0]         va   [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
    // EVERY ATTRIBUTE THE ACCESS NEEDS TRAVELS WITH THE ENTRY. `unc` was missing: a queued
    // load went to the LSU with the uncached bit hardwired to 0 (smolrv64_core's pt_unc), so a
@@ -227,6 +236,10 @@ module smolrv64_lq
    assign l_rob  = rob[l_idx];
    assign l_pa   = pa[l_idx];
 
+   assign v_va   = va[v_idx];
+   assign v_pa   = pa[v_idx];
+   assign v_unc  = unc[v_idx];
+
    always @(posedge clk) begin
       if (reset) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; sent <= {NENT{1'b0}};
@@ -247,7 +260,7 @@ module smolrv64_lq
          else if (~(d_alloc & d_ready) & l_v) cnt <= cnt - 1'b1;
 
          if (a_v) begin
-            pa[a_idx] <= a_pa;  sz[a_idx] <= a_size;
+            pa[a_idx] <= a_pa;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;
             sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  mem[a_idx] <= a_mem;  av[a_idx] <= 1'b1;
          end
          // Filled AND already gone. It cannot collide with x_take above: that one needs

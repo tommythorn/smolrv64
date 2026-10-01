@@ -35,7 +35,8 @@ module smolrv64_sq
     parameter ROBB  = 4,
     parameter NWB   = 3,
     parameter LQN   = 4,               // smolrv64_lq's NENT
-    parameter LQIB  = 2)               // smolrv64_lq's IDXB
+    parameter LQIB  = 2,               // smolrv64_lq's IDXB
+    parameter VAW   = 39)              // Sv39: the VA an entry keeps beside its PA
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -59,6 +60,7 @@ module smolrv64_sq
     input  wire                  a_v,
     input  wire [IDXB-1:0]       a_idx,
     input  wire [PAW-1:0]        a_addr,
+    input  wire [VAW-1:0]        a_va,       // the address the store was translated from
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
     input  wire                  a_unc,      // uncached, decided at translate time
     input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
@@ -123,11 +125,18 @@ module smolrv64_sq
     output wire                  ld_older,   // an older store is live (aliasing or not) --
                                              // the load is REORDERED past it if it starts
 
+    // ---- read one entry's translation: its VA and what the VA was translated to ----
+    input  wire [IDXB-1:0]       v_idx,
+    output wire [VAW-1:0]        v_va,
+    output wire [PAW-1:0]        v_pa,
+    output wire                  v_unc,
+
     output wire [IDXB:0]         occupancy,
     input  wire                  flush);
 
    reg [NENT-1:0]        v, av, dv;          // live / address known / data known
    reg [PAW-1:0]         addr [0:NENT-1];
+   reg [VAW-1:0]         va   [0:NENT-1];
    reg [63:0]            data [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
    reg [NENT-1:0]        unc;
@@ -178,6 +187,9 @@ module smolrv64_sq
    assign d_tag     = tailc;
    assign av_any    = |(v & av);
    assign occupancy = cnt;
+   assign v_va      = va[v_idx];
+   assign v_pa      = addr[v_idx];
+   assign v_unc     = unc[v_idx];
 
    // c_v says the head is READY (address and data present). Committing in program order
    // is the core's job: it takes the entry only when c_rob is the ROB head, so a store
@@ -367,7 +379,7 @@ module smolrv64_sq
 
          // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
-            addr[a_idx] <= a_addr;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
+            addr[a_idx] <= a_addr;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
             unc[a_idx]  <= a_unc;
             if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
          end

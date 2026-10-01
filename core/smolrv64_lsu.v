@@ -91,6 +91,15 @@ module smolrv64_lsu
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
     output wire            xo_early,       // ...and the access started here too (req_early
                                            // honoured: the FSM was idle and the port free)
+    // ---- a queue entry's translation, checked again from the VA it stores ----
+    // The entry the translate pass filled two cycles ago: its stored VA is looked up in the
+    // dTLB's second port (the TLB alone, never a walk); a lookup that resolves must name the
+    // PA and the NC bit the entry holds.
+    input  wire            qx_v,
+    input  wire            qx_st,          // a store-queue entry (else a load's)
+    input  wire [38:0]     qx_va,
+    input  wire [55:0]     qx_pa,
+    input  wire            qx_unc,
 
 
     // ---- translation context (from csr_file) ----
@@ -309,6 +318,8 @@ module smolrv64_lsu
    // ------------------------------------------------------------ translation
    wire        t_ready, t_fault, t_uncached, t_ok, t_fault_raw;
    wire [55:0] t_paddr;
+   wire        qx_ok, qx_tnc;
+   wire [55:0] qx_tpa;
    wire [3:0]  t_cause;
    // An FSM-starting access asks only while it is actually waiting in S_IDLE and the port is
    // not taking the FSM this cycle: once started, the access owns pa_q. The translate-only
@@ -327,7 +338,13 @@ module smolrv64_lsu
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
-      .t_lvl(), .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw));
+      .t_lvl(), .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw),
+      .s_vaddr({{25{qx_va[38]}}, qx_va}), .s_access(qx_st ? 2'd2 : 2'd1),
+      .s_ok(qx_ok), .s_paddr(qx_tpa), .s_nc(qx_tnc));
+   // A queue entry's VA and PA were written together by one fill, so whichever fill the
+   // entry holds now, its pair must agree with the TLB. A lookup that does not resolve (the
+   // entry evicted or flushed, the perms judged under a context changed since) says nothing.
+   wire e_qx_xlate = qx_v & qx_ok & ((qx_tpa != qx_pa) | (qx_tnc != qx_unc));
 
    // A misaligned access whose byte span leaves the page needs a second translation.
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software
@@ -768,6 +785,9 @@ module smolrv64_lsu
          $fatal(1, "smolrv64_lsu: req_early on an access that is not a translate-only load");
       if (e_m_spec)
          $fatal(1, "smolrv64_lsu: an AMO or CBO started off the ROB head: va=%h cbo=%b amo=%b", req_vaddr, req_cbo, req_amo);
+      if (e_qx_xlate)
+         $fatal(1, "smolrv64_lsu: %0s entry va=%h holds pa=%h nc=%b, the dTLB says pa=%h nc=%b",
+                qx_st ? "store" : "load", qx_va, qx_pa, qx_unc, qx_tpa, qx_tnc);
    end
 
    // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------
@@ -783,11 +803,12 @@ module smolrv64_lsu
    //   5 ld_done     pt_ld_done disagrees with pt_done & ~store
    //   6 req_early   req_early on an access that is not a translate-only load
    //   7 m_spec      an AMO or CBO started off the ROB head
+   //   8 qx_xlate    a queue entry's stored VA translates to another PA or NC bit than it holds
    reg [15:0] err_q;
    initial err_q = 16'd0;
    always @(posedge clk)
       err_q <= reset ? 16'd0
-             : {8'd0, e_m_spec, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
+             : {7'd0, e_qx_xlate, e_m_spec, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
                 e_dev_span, e_dev_spec};
    assign err = err_q;
 endmodule

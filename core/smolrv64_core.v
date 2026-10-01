@@ -429,7 +429,8 @@ module smolrv64_core
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
-      .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw());
+      .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw(),
+      .s_vaddr(64'd0), .s_access(2'd1), .s_ok(), .s_paddr(), .s_nc());   // the second lookup is the dTLB's
    assign imem_addr = {8'd0, immu_pa};
 
    // ---- a mapping change ------------------------------------------------------------
@@ -1695,12 +1696,37 @@ module smolrv64_core
    // the LSU holds the store until the D$ takes it and nothing can pass it there.
    wire sq_c_take = lsu_pt_ack & pt_store;
 
+   // ---- THE QUEUES' TRANSLATIONS, CHECKED FROM THE VA THEY STORE ----
+   // The entry M filled at T is read out of its queue at T+1 and looked up again in the
+   // dTLB's second port at T+2 (smolrv64_lsu, qx_*): the queues keep the VA their translation
+   // came from, and the lookup the queue-side translate will make from it gives the same answer.
+   reg                 qx1_v, qx1_st, qx2_v, qx2_st, qx2_unc;
+   reg [SQ_IB-1:0]     qx1_sqi;
+   reg [LQ_IB-1:0]     qx1_lqi;
+   reg [38:0]          qx2_va;
+   reg [55:0]          qx2_pa;
+   wire [38:0]         sq_v_va, lq_v_va;
+   wire [55:0]         sq_v_pa, lq_v_pa;
+   wire                sq_v_unc, lq_v_unc;
+   initial begin qx1_v = 1'b0; qx2_v = 1'b0; end
+   always @(posedge clk) begin
+      qx1_v   <= ~reset & (m_sq_fill | m_lq_fill);
+      qx1_st  <= m_sq_fill;
+      qx1_sqi <= m_sq_tag;
+      qx1_lqi <= m_lq_idx;
+      qx2_v   <= ~reset & qx1_v;
+      qx2_st  <= qx1_st;
+      qx2_va  <= qx1_st ? sq_v_va  : lq_v_va;
+      qx2_pa  <= qx1_st ? sq_v_pa  : lq_v_pa;
+      qx2_unc <= qx1_st ? sq_v_unc : lq_v_unc;
+   end
+
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
      (.clk(clk), .reset(reset),
       .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2),
       .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
-      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_size(m_mem_size),
+      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
@@ -1713,7 +1739,9 @@ module smolrv64_core
       .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
       .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
-      .l_block_unk_q(sq_l_block_unk_q), .occupancy(sq_occ), .flush(redirect));
+      .l_block_unk_q(sq_l_block_unk_q),
+      .v_idx(qx1_sqi), .v_va(sq_v_va), .v_pa(sq_v_pa), .v_unc(sq_v_unc),
+      .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
    // its access only when ~ld_block, so a start with an older store still live is exactly
@@ -1751,7 +1779,7 @@ module smolrv64_core
       .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
-      .a_pa(lsu_xo_pa), .a_size(m_mem_size),
+      .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem),
       .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
@@ -1760,6 +1788,7 @@ module smolrv64_core
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_head(lq_x_head), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_land_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
+      .v_idx(qx1_lqi), .v_va(lq_v_va), .v_pa(lq_v_pa), .v_unc(lq_v_unc),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
@@ -2124,6 +2153,7 @@ module smolrv64_core
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
       .req_vaddr(m_addr), .req_size(m_mem_size), .req_signed(m_mem_signed),
+      .qx_v(qx2_v), .qx_st(qx2_st), .qx_va(qx2_va), .qx_pa(qx2_pa), .qx_unc(qx2_unc),
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush), .flush(redirect), .m_head(m_at_head),

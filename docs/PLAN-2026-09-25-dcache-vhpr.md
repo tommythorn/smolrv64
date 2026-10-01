@@ -512,6 +512,20 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      from the queue. It asserts that the PA, the fault and the NC/`mem` classes equal M's.
    - Bit-identical in every run.
 
+   **5a as built (2026-09-30, `wip/dc-5a`).**
+   - The entry M filled at T is read out of its queue at T+1 and looked up at T+2 in `mmu`'s second
+     port (`s_*`: the TLB alone, never a walk). A lookup that resolves must name the entry's PA and
+     NC bit: a `$fatal`, and integrity bit 40 (`qx_xlate`).
+   - In the first 30 M cycles of the boot every one of the 4.4 M lookups resolved; the boot turns
+     paging on at about 49 M cycles.
+   - Mutations caught: bit 12 of a load's or a store's stored VA flipped, and bit 12 of the second
+     port's Sv39 PA flipped (at 49 M cycles). The LQ/SQ benches read each filled entry back the
+     next cycle, writing the VA as the PA's complement; a read port stuck on entry 0 is caught.
+   - Lockstep identical: 38,695,476 at 60 M, 162,576,179 at 300 M. The storm is clean to 500 M.
+   - Build (the same RTL, uncommitted): the default directive missed by 0.009 ns; the Explore
+     directive met, WNS +0.003. 116,317 -> 121,974 LUTs, the second read port of the 2048-entry
+     LUTRAM. Board gate PASS (login, 0 faults, 900 s GB5 stress, errlog clean).
+
    **5b, walks leave M; the D$ still by PA.**
    - **The dTLB keeps one read port, M's lookup; the walker serves the queues.** An entry reaches
      the walker only after M's lookup missed, so the walker walks at once and needs no lookup of

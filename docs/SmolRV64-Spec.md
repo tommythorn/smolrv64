@@ -955,6 +955,11 @@ cycle is legal and was lost once).
   an NC load that went through the queue (rather than the early start) was cached: the
   board's virtio rings read stale (`id 0 is not a head!`), and no simulation could see it.
   Rule B7.
+- **The queues keep the VA beside the PA.** Every load- and store-queue entry stores the
+  VA[38:0] its translation came from. Two cycles after a fill, the entry is read back and its VA
+  looked up in the dTLB's second port (`mmu`'s `s_*`: the TLB alone, never a walk); a lookup that
+  resolves must name the PA and the NC bit the entry holds (integrity bit 40, `qx_xlate`). This is
+  the queue-side translate of the D$ plan's increment 5, checked against M's before it replaces it.
 - **A queued load's access is one cycle after its fill, unless nothing is ordering it.**
   `smolrv64_lq` registers the address, then selects the oldest entry no older store can alias,
   then accesses; the SELECT cycle is what pays for the alias test. When no store older than
@@ -1320,7 +1325,8 @@ Address translation, two instances (iTLB in `smolrv64_core`, dTLB in `smolrv64_l
 
 | array | shape | width | bits |
 |---|---|---|---|
-| `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 16 | 1+27+44+2+8+1+1 = 84 | 1 344 |
+| iTLB `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 16 | 1+27+44+2+8+1+1 = 84 | 1 344 |
+| dTLB, the same fields | 2048, read by two ports (M's translate, the queue check), so the LUTRAM is held twice | 84 | 172 032 per copy |
 
 Also in `rv_soc_top`: `lmem` — the 256 KiB on-chip boot/monitor SRAM, `NLLINE × 512`.
 
@@ -1414,8 +1420,8 @@ one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has n
 |---|---|---|
 | `[15:0]` | D$ | `rv_dcache.v`, invariants block (11 conditions: an orphan fill beat, a response nothing awaits, a write completion nothing sent, beats out of order, two pvalid copies of a line, VA/PA page-offset mismatch, a tag reused while outstanding, a waiter on a dead MSHR, a beat into a line being read out, vvalid without pvalid, a current-epoch virtual hit on another line) |
 | `[31:16]` | I$ | `rv_icache.v`, invariants block (8 conditions: a line hitting in both ways, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
-| `[47:32]` | LSU | `smolrv64_lsu.v` (7 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`) |
-| `[63:48]` | reserved | the next units plug in without moving anything |
+| `[47:32]` | LSU | `smolrv64_lsu.v` (9 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head, a queue entry's stored VA translating to another PA or NC bit than it holds) |
+| `[63:48]` | frontend | `smolrv64_frontend.v` (the fetch ring's, the predictor's and fetch's invariants) |
 
 Read-only MMIO, 64-bit words, in the window the deleted fetch-buffer diagnostic owned so no
 comparator was added to the `dmem_raddr → is_dev_r` cone (a load-path critical cone): `0x1000_E000`

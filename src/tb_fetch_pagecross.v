@@ -63,7 +63,8 @@ module tb;
      (.clk(clk), .reset(reset), .req_valid(1'b1), .req_vaddr(f_imem_va), .req_access(2'd0),
       .priv(priv), .sum(1'b0), .mxr(1'b0), .satp(satp), .flush(1'b0),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
-      .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause));
+      .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault), .t_cause(immu_cause),
+      .s_vaddr(64'd0), .s_access(2'd1));
 
    // behavioral 3-level page table (registered read)
    always @(posedge clk) begin
