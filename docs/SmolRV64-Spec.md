@@ -1040,11 +1040,15 @@ direction (the effective counter, the corrector's when it hit, is 01 or 10) unti
 CTF stage; the backend squash clears the count, which it can do exactly because it fires at the ROB
 head. While the count is nonzero and no frontend restart is pending, the iMMU starts no walk
 (`walk_ok`): a TLB hit still translates, a miss waits. Every counted branch is older than the
-fetch, so it resolves whatever fetch does. A larger iTLB lets more wrong-path fetch reach the
-I$ (tiny128 boot, 300 M cycles: 64 entries alone -1.54%, the walks halved but the I$ misses up
-4.6%, one line in five never retired from); with the throttle, +1.03% over 16 entries.
-`ITLB-SIM` and `ICMISS-SIM` in the Linux bench count walks and I$ misses whose page or line nothing
-retired from.
+fetch, so it resolves whatever fetch does. The I$ holds a miss's line read on the same terms
+(`fill_hold`); a restart of the fetch stream arriving first (`fill_cancel`, in the cycle the
+hold drops on a mispredict) answers the waiting miss and the request behind it with no data,
+and the ring drops those answers as it drops every stale one. A larger iTLB lets more wrong-path
+fetch reach the I$ (tiny128 boot, 300 M cycles: 64 entries alone -1.54%, the walks halved but the
+I$ misses up 4.6%, one line in five never retired from); with the walk throttle +1.03% over 16
+entries, with the fill hold too +3.20% (fe:icache 24.91% -> 22.67% of cycles). `ITLB-SIM` and
+`ICMISS-SIM` in the Linux bench count walks and I$ misses whose page or line nothing retired
+from; a held miss that is cancelled counts as a miss.
 
 The MMU also range-checks the resolved PA: anything outside {RAM, CLINT, PLIC, UART, LSRAM,
 virtio} faults rather than being silently dropped.

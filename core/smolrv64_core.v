@@ -47,6 +47,8 @@ module smolrv64_core
     // ---- instruction memory: the fetch ring's stream into the I$ (rv_icache) ----
     output wire [PCW-1:0]          imem_addr,       // the fetch PC's PA (diagnostics)
     output wire                    imem_ctx_chg,    // a mapping change: the I$ advances its epoch
+    output wire                    imem_hold,       // fetch is past a weakly predicted branch: an I$ miss waits
+    output wire                    imem_cancel,     // the fetch stream restarts: a waiting I$ miss is stale
     input  wire                    ic_busy,         // fence.i or an I$ invalidation in progress
     output wire                    ic_req,
     output wire [63:0]             ic_va,           // the pair's first byte, 8-byte aligned
@@ -350,7 +352,7 @@ module smolrv64_core
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
-      .imem_xlate_ok(immu_ready & ~immu_fault), .imem_freeze(ic_busy | imem_ctx_chg),
+      .imem_xlate_ok(immu_ready & ~immu_fault), .imem_freeze(ic_busy | imem_ctx_chg), .imem_flush(imem_cancel),
       .fe_avail(imem_avail), .fe_ok(imem_ok),
       .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
@@ -3180,6 +3182,9 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: a weak conditional resolved with none counted in flight");
    end
    wire walk_hold = (wk_n != 0) & ~fr_v;
+   // ...and the I$ holds a miss's line read on the same terms: the pending restart that ends the
+   // hold reaches the fetch ring in the cycle the hold drops, and the I$ takes the cancel first.
+   assign imem_hold = walk_hold;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing

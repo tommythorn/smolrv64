@@ -129,6 +129,7 @@ module rv_soc_top #(
    // ---------------- core <-> caches nets ----------------
    wire [PCW-1:0]      imem_addr;
    wire                imem_ctx_chg;
+   wire                imem_hold, imem_cancel;   // the I$'s miss hold and its cancel (smolrv64_core)
    wire                ic_rd_req, ic_rd_ack, ic_rd_valid, ic_inv_busy, fi_stall;
    wire [63:0]         ic_rd_addr, ic_rd_pa;
    wire [9:0]          ic_tag, ic_rsp_tag;
@@ -155,7 +156,7 @@ module rv_soc_top #(
    smolrv64_core #(.HW(HW), .IW(IW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
                .PABITS(PABITS), .LQ_IB(LQ_IB)) core
      (.clk(clk), .reset(reset),
-      .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip), .mtime(clint_mtime),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
       .ic_tag(ic_tag), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),
       .imem_satp_q(imem_satp_q), .imem_priv_q(imem_priv_q),
@@ -777,7 +778,7 @@ module rv_soc_top #(
       .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr), .rd_resp_tag(ic_rsp_tag),
       .inv_req(ic_inv_req), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),
-      .pb_v(ic_pb_v), .pb_pa(ic_pb_pa),
+      .pb_v(ic_pb_v), .pb_pa(ic_pb_pa), .fill_hold(imem_hold), .fill_cancel(imem_cancel),
       .l2_req(ic_l2_req), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_rdata(ic_l2_rdata), .l2_ack(ic_l2_ack),
       .perf_access(ic_access), .perf_miss(ic_miss), .err(ic_err));

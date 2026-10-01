@@ -60,6 +60,7 @@ module smolrv64_frontend
     input  wire [1:0]              imem_xlvl,         // its leaf level: 0 = 4 KiB, else >= 2 MiB
     input  wire                    imem_xlate_ok,     // the iMMU holds a good translation of imem_addr
     input  wire                    imem_freeze,       // fence.i, an I$ invalidation, a mapping change
+    output wire                    imem_flush,        // the stream restarts: every I$ request in flight is stale
     output wire [$clog2(HW+2)-1:0] fe_avail,          // the fetch ring's window: halfwords held (counters)
     output wire                    fe_ok,             // ...and the window is the PC's bytes
     // ---- the I$ (rv_icache): the fetch ring's stream ----
@@ -248,6 +249,7 @@ module smolrv64_frontend
    // A restart of the stream: reset, a redirect, or a freeze (fence.i, an I$ invalidation, a
    // mapping change, a rejected mark). It begins at the redirect's target, else at the PC.
    wire                st_flush = reset | redirect | imem_freeze | rej_q;
+   assign              imem_flush = st_flush;
    wire [63:0]         st_rst_a = redirect ? redirect_pc : imem_addr;
    smolrv64_fring #(.HW(HW), .PQB(PQB)) u_ring
      (.clk(clk), .reset(reset), .freeze(imem_freeze | rej_q), .restart(reset | redirect),

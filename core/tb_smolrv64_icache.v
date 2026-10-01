@@ -33,6 +33,7 @@ module tb;
    wire [57:0]  l2_addr;  wire [511:0] l2_wdata;  wire [15:0] err;
    reg          inv_req = 0, ep_bump = 0, l2_ack = 0;  reg [511:0] l2_rdata;
    reg          pb_v = 0;  reg [63:0] pb_pa = 0;
+   reg          fill_hold = 0, fill_cancel = 0, hold_q = 0;
 `ifndef IC_KB
  `define IC_KB 64                // the cache size: -DIC_KB=128
 `endif
@@ -41,6 +42,7 @@ module tb;
       .rd_req(rq_v), .rd_addr(rq_va), .rd_pa(rq_pa), .rd_tag(rq_tag), .rd_ack(rd_ack),
       .rd_data(rd_data), .rd_valid(rd_valid), .rd_resp_addr(rd_resp_addr), .rd_resp_tag(rd_resp_tag),
       .inv_req(inv_req), .ep_bump(ep_bump), .inv_busy(inv_busy), .pb_v(pb_v), .pb_pa(pb_pa),
+      .fill_hold(fill_hold), .fill_cancel(fill_cancel),
       .l2_req(l2_req), .l2_we(l2_we), .l2_addr(l2_addr), .l2_wdata(l2_wdata),
       .l2_rdata(l2_rdata), .l2_ack(l2_ack),
       .perf_access(pacc), .perf_miss(pmiss), .err(err));
@@ -63,6 +65,7 @@ module tb;
 
    // ---- the expected answers, in order ----
    reg [63:0] q_va [0:15], q_pa [0:15];  reg [3:0] q_tag [0:15];  reg [127:0] q_old [0:15];
+   reg [15:0] q_st = 0;                 // stale: outstanding at a cancel (data unchecked)
    reg [3:0]  q_wp = 0, q_rp = 0;  reg [4:0] q_n = 0;
    function [127:0] pair_at; input [63:0] pa;
       reg [15:0] wi; begin wi = pa[18:3]; pair_at = {mem[wi + 16'd1], mem[wi]}; end endfunction
@@ -70,6 +73,7 @@ module tb;
    // ---- the requester and the checker ----
    integer cyc = 0, nresp = 0, nreq = 0, nfi = 0, nep = 0, nmiss = 0, nacc = 0, nrc = 0;
    integer npb = 0, nfdead = 0, npfk = 0;
+   integer nhold = 0, ncan = 0, ncanq = 0;
    reg [63:0] pb_va;  reg [57:0] pb_line;
    reg     quiesce = 0;
    reg [63:0] va_n;  reg [6:0] pp;
@@ -97,7 +101,7 @@ module tb;
       if (rd_valid) begin
          if (q_n == 0) begin $display("FAIL: an answer with nothing outstanding"); $finish; end
          if (rd_resp_tag !== q_tag[q_rp] || rd_resp_addr !== q_va[q_rp]
-             || (rd_data !== pair_at(q_pa[q_rp]) && rd_data !== q_old[q_rp])) begin
+             || (~q_st[q_rp] && rd_data !== pair_at(q_pa[q_rp]) && rd_data !== q_old[q_rp])) begin
             $display("FAIL at cycle %0d: tag %h/%h va %h/%h pa %h data %h expected %h", cyc,
                      rd_resp_tag, q_tag[q_rp], rd_resp_addr, q_va[q_rp], q_pa[q_rp], rd_data, pair_at(q_pa[q_rp]));
             $finish;
@@ -107,6 +111,7 @@ module tb;
       // requests: a taken one is recorded; a new one follows (sequential half the time)
       if (rq_v & rd_ack) begin
          q_va[q_wp] <= rq_va;  q_pa[q_wp] <= rq_pa;  q_tag[q_wp] <= rq_tag;  q_old[q_wp] <= pair_at(rq_pa);  q_wp <= q_wp + 1;
+         q_st[q_wp] <= 1'b0;
          nreq <= nreq + 1;
       end
       q_n <= q_n + {4'd0, rq_v & rd_ack} - {4'd0, rd_valid};
@@ -137,6 +142,24 @@ module tb;
       end
       if (dut.pb_fill) nfdead <= nfdead + 1;
       if (pb_v & dut.pf_val & (dut.pf_addr == pb_pa[63:6])) npfk <= npfk + 1;
+      // THE FILL HOLD: windows of hold, a cancel now and then (half of them inside a window, aimed
+      // at a held miss). A demand read must never leave while the hold is up; a cancel makes every
+      // request then outstanding stale, its answer still owed but its data the requester's to drop.
+      // (l2_req and f_l2 rise at the edge the read is decided, on the hold of the cycle before it)
+      hold_q <= fill_hold;
+      if (dut.l2_req & dut.f_l2 & ~dut.pf_infl & hold_q) begin
+         $display("FAIL: a demand line read left under the fill hold (cycle %0d)", cyc); $finish;
+      end
+      if (fill_cancel) begin
+         q_st <= 16'hffff;  ncan <= ncan + 1;
+         if (dut.st == 4'd1 && !dut.f_l2) ncanq <= ncanq + 1;
+      end
+      if (dut.st == 4'd1 && fill_hold && !dut.f_l2) nhold <= nhold + 1;
+      fill_cancel <= 1'b0;
+      if (!quiesce) begin
+         if (($urandom % 400) == 0) fill_hold <= ~fill_hold;
+         if ((fill_hold && dut.st == 4'd1 && ($urandom % 20) == 0) || ($urandom % 3000) == 0) fill_cancel <= 1'b1;
+      end else fill_hold <= 1'b0;
       // a mapping change: a new page table, the epoch advanced, nothing drained
       ep_bump <= 1'b0;
       if (!quiesce && ($urandom % 6000) == 0) begin ep_bump <= 1'b1; nep <= nep + 1; end
@@ -165,9 +188,10 @@ module tb;
       n = 0;
       while ((q_n != 0 || rq_v) && n < 10000) begin @(posedge clk); n = n + 1; end
       if (q_n != 0) begin $display("FAIL: %0d requests never answered", q_n); $finish; end
+      if (ncanq == 0 || nhold == 0) begin $display("FAIL: the hold never held a miss (%0d cycles) or a cancel never met one (%0d)", nhold, ncanq); $finish; end
       if (nfdead == 0 || npfk == 0) begin $display("FAIL: a probe never met a fill in flight (%0d) or a prefetched line (%0d)", nfdead, npfk); $finish; end
-      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d taken, %0d missed on first lookup (%0d reconciled), %0d fence.i, %0d mapping changes, %0d probes (%0d fills killed, %0d prefetches killed)",
-               LAT, nresp, nacc, nmiss, nrc, nfi, nep, npb, nfdead, npfk);
+      $display("ICACHE-TB PASS LAT=%0d: %0d requests answered, %0d taken, %0d missed on first lookup (%0d reconciled), %0d fence.i, %0d mapping changes, %0d probes (%0d fills killed, %0d prefetches killed), %0d cycles a miss held, %0d cancels (%0d of a held miss)",
+               LAT, nresp, nacc, nmiss, nrc, nfi, nep, npb, nfdead, npfk, nhold, ncan, ncanq);
       $finish;
    end
 endmodule

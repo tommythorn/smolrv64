@@ -32,6 +32,10 @@
 // reconcile by physical tag, whose bytes are right under any mapping (docs/VHPR.md: a fill
 // outstanding across an invalidation must not install a current line).
 //
+// THE FILL HOLD. While fill_hold is up (fetch is past a weakly predicted branch) a miss waits
+// before its line read; a fill_cancel (the fetch stream restarted) answers the waiting miss, and
+// the request in the skid, with no data and nothing installed. A read already sent completes.
+//
 // PREFETCH. One line, matched by physical address: after a fill of line L it fetches L+1 when L+1
 // is in the same 4 KiB page, and a miss that finds its line there installs it without an L2 read.
 // A flush drops the buffer, and a prefetch in flight across a flush lands dead.
@@ -70,6 +74,8 @@ module rv_icache #(
    output reg  [RTW-1:0]    rd_resp_tag,
    input  wire              inv_req,     // fence.i: clear every line
    input  wire              ep_bump,     // a mapping change: advance the epoch
+   input  wire              fill_hold,   // fetch is past a weak branch: a miss's line read waits
+   input  wire              fill_cancel, // fetch restarted: a miss still waiting is answered empty
    input  wire              pb_v,        // a write to memory: invalidate its line wherever it lives
    input  wire [63:0]       pb_pa,
    output reg               inv_busy,
@@ -116,9 +122,9 @@ module rv_icache #(
    function [IB+VTB-1:0] line_of;   input [63:0] a; line_of = a[OFFB +: IB+VTB];   endfunction
 
    // ---------------------------------------------------------------- state
-   localparam S_RUN = 3'd0, S_FILL = 3'd1, S_INST = 3'd2, S_RPL = 3'd3, S_CHK = 3'd4,
-              S_RPS = 3'd5, S_SCAN = 3'd6, S_RST = 3'd7;
-   reg [2:0]  st;
+   localparam S_RUN = 4'd0, S_FILL = 4'd1, S_INST = 4'd2, S_RPL = 4'd3, S_CHK = 4'd4,
+              S_RPS = 4'd5, S_SCAN = 4'd6, S_RST = 4'd7, S_CNM = 4'd8, S_CNS = 4'd9;
+   reg [3:0]  st;
    reg        door;                            // the door is open this cycle (a register)
    // the lookup stage
    reg        s1_v, s1_rp;  reg [63:0] s1_va, s1_pa;  reg [RTW-1:0] s1_tag;  reg [EPW-1:0] s1_ep;
@@ -283,9 +289,13 @@ module rv_icache #(
                      st <= S_SCAN;  scan <= 6'd0;  inv_pend <= 1'b0;
                   end
            S_FILL: begin
+              // HELD: fetch is past a weakly predicted branch, so the line read waits for it to
+              // resolve; if fetch restarts first, the request it serves is stale and the miss is
+              // answered empty instead (S_CNM), the line never read. A read already sent completes.
+              if (~f_l2 & fill_cancel) st <= S_CNM;
               // the line is in the prefetch buffer: take it. A prefetch in flight holds the port,
               // so a demand read waits for it -- and it may be the very line.
-              if (~f_l2 & ~pf_infl) begin
+              else if (~f_l2 & ~pf_infl & ~fill_hold) begin
                  if (pf_val & (pf_addr == f_pline)) begin
                     f_data <= pf_line;  f_k <= 2'd0;  f_way <= v_way;  st <= S_INST;
                     pf_val <= 1'b0;
@@ -304,6 +314,15 @@ module rv_icache #(
               if (f_k == 2'd3) st <= S_RPL;
            end
            S_RST: st <= S_RPL;                    // the reconciled way took its new tag
+           // the cancelled miss's answer, then the skid's: every taken request is answered once
+           S_CNM: begin
+              rd_valid <= 1'b1;  rd_data <= {HW*16{1'b0}};  rd_resp_addr <= f_va;  rd_resp_tag <= f_tag;
+              st <= sk_v ? S_CNS : S_RUN;
+           end
+           S_CNS: begin
+              rd_valid <= 1'b1;  rd_data <= {HW*16{1'b0}};  rd_resp_addr <= sk_va;  rd_resp_tag <= sk_tag;
+              sk_v <= 1'b0;  st <= S_RUN;
+           end
            S_RPL: st <= S_CHK;                    // the missed request re-reads the banks
            S_CHK: if (~miss) st <= sk_v ? S_RPS : S_RUN;   // (a miss restarts S_FILL above)
            S_RPS: st <= S_RUN;                    // the skid re-reads the banks
