@@ -1724,10 +1724,12 @@ module smolrv64_core
    wire                wk_st = wk_lk_st;
    wire [38:0]         wk_va = wk_lk_va;
    always @(posedge clk) begin
-      if (reset | redirect | lsu_wk_done) wk_lk <= 1'b0;
-      else if (~wk_lk & (sq_k_v | lq_k_v)) begin
-         wk_lk <= 1'b1;  wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va;
-      end
+      // the payload follows the choice while the walker is free; only the lock bit sees the flush
+      // (rule I11: the redirect gates no enable)
+      if (~wk_lk) begin wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va; end
+      if (~wk_lk & (sq_k_v | lq_k_v)) wk_lk <= 1'b1;
+      if (lsu_wk_done)                wk_lk <= 1'b0;
+      if (reset | redirect)           wk_lk <= 1'b0;
       if (!reset && !redirect && wk_lk && (wk_lk_st ? ~sq_k_v : ~lq_k_v))
          $fatal(1, "smolrv64_core: the walker's entry (%0s) is no longer the untranslated one", wk_lk_st ? "store" : "load");
    end
@@ -2289,9 +2291,26 @@ module smolrv64_core
    // sent, a store never commits), so its op reaches the ROB head and stays; its record then loads
    // the SYSQ as a trap from dispatch does, and fires through sy_fire, the one trap gate. The SYSQ
    // is free then: a system op dispatches only with everything older done.
+   // The record is registered on its way in, so the SYSQ's inputs are flops, never the queues'
+   // muxes and the head compare; its valid bit leaves out a redirect cycle (the entry dies at that
+   // edge), and the payload rides with no redirect in its enable (rule I11).
    wire qf_sq = sq_f_v & (sq_f_rob == rob_head_idx) & ~rob_empty;
    wire qf_lq = lq_f_v & (lq_f_rob == rob_head_idx) & ~rob_empty;
-   wire qf_in = (qf_sq | qf_lq) & ~sy_v & ~redirect;
+   reg                qfr_v;
+   reg [ROB_IDXB-1:0] qfr_rob;
+   reg [3:0]          qfr_fc;
+   reg [38:0]         qfr_va, qfr_pc;
+   reg [SEQW-1:0]     qfr_seq;
+   initial qfr_v = 1'b0;
+   always @(posedge clk) begin
+      qfr_v   <= ~reset & ~redirect & (qf_sq | qf_lq);
+      qfr_rob <= qf_sq ? sq_f_rob : lq_f_rob;
+      qfr_fc  <= qf_sq ? sq_f_fc  : lq_f_fc;
+      qfr_va  <= qf_sq ? sq_f_va  : lq_f_va;
+      qfr_pc  <= qf_sq ? sq_f_pc  : lq_f_pc;
+      qfr_seq <= qf_sq ? sq_f_seq : lq_f_seq;
+   end
+   wire qf_in = qfr_v & ~sy_v;
    wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
    wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
    wire sy_fire    = sy_at_head & ~port_yield & (~sy_instret | sy_head_q);
@@ -2319,13 +2338,13 @@ module smolrv64_core
          sy_qf     <= 1'b0;
       end
       if (qf_in) begin
-         sy_v <= 1'b1;  sy_rob <= qf_sq ? sq_f_rob : lq_f_rob;  sy_prd <= {RN_PBITS{1'b0}};  sy_rd_v <= 1'b0;
+         sy_v <= 1'b1;  sy_rob <= qfr_rob;  sy_prd <= {RN_PBITS{1'b0}};  sy_rd_v <= 1'b0;
          sy_is_csr <= 1'b0;  sy_func <= 3'd0;  sy_addr <= 12'd0;  sy_src <= 64'd0;  sy_insn <= 32'd0;
-         sy_pc  <= qf_sq ? {{(PCW-39){sq_f_pc[38]}}, sq_f_pc} : {{(PCW-39){lq_f_pc[38]}}, lq_f_pc};
-         sy_seq <= qf_sq ? sq_f_seq : lq_f_seq;
+         sy_pc  <= {{(PCW-39){qfr_pc[38]}}, qfr_pc};
+         sy_seq <= qfr_seq;
          sy_xt <= 1'b1;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;
-         sy_xcause <= qf_sq ? sq_f_fc : lq_f_fc;
-         sy_xtval  <= qf_sq ? {{25{sq_f_va[38]}}, sq_f_va} : {{25{lq_f_va[38]}}, lq_f_va};
+         sy_xcause <= qfr_fc;
+         sy_xtval  <= {{25{qfr_va[38]}}, qfr_va};
       end
       if (reset | redirect) sy_v <= 1'b0;                // flush arm last (I11); its own redirect included
    end
@@ -3036,9 +3055,9 @@ module smolrv64_core
       // (c) a queue entry's translation fault loads the SYSQ (its PC was recorded at dispatch, so
       // the SYSQ's check below holds the queue's stored PC and seq to it)
       if (qf_in) begin
-         xtq_kind[qf_sq ? sq_f_rob : lq_f_rob]  <= SYK_XTRAP;
-         xtq_cause[qf_sq ? sq_f_rob : lq_f_rob] <= qf_sq ? sq_f_fc : lq_f_fc;
-         xtq_tval[qf_sq ? sq_f_rob : lq_f_rob]  <= qf_sq ? {{25{sq_f_va[38]}}, sq_f_va} : {{25{lq_f_va[38]}}, lq_f_va};
+         xtq_kind[qfr_rob]  <= SYK_XTRAP;
+         xtq_cause[qfr_rob] <= qfr_fc;
+         xtq_tval[qfr_rob]  <= {{25{qfr_va[38]}}, qfr_va};
       end
       // (b) the LSU reports a data fault for M's op
       if (m_flt_pulse) begin
