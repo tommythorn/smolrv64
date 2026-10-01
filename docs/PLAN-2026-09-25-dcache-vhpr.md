@@ -1,7 +1,7 @@
 # The data cache rewrite: VHPR, non-blocking, end-state shape
 
-Status: increments 1 and 2 are built and on main (2026-09-28); increments 3-5 and the skewed way
-(phase 3, below) are design.
+Status: increments 1-3, 6a and 4a are built and on main; 4b step 1 is built and board-gated
+(`wip/ic-coh-4b`); increment 5 and 6b are design (5 below, 2026-09-30).
 
 ## Why now
 
@@ -484,10 +484,129 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      these workloads; 4b's gain is the boot's fence.i (the lockstep above). Step 2 is not built
      unless a workload shows fence.i clearing the I$.
 
-5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
-   (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
-   D$ translates on a miss through its translate port. This is where the dTLB leaves the load's hit path; it
-   folds into C4b step 3.
+5. **Phase 2: the queues translate, and a load hits by its VA** (design, 2026-09-30; C4b step 3).
+
+   **What it buys.** A load today translates in M in the same cycle it asks the D$ (`req_early`),
+   so a virtual hit alone shortens nothing. What changes is where translation sits:
+   - **Walks leave M.** A load whose dTLB misses holds M, and every memory op behind it, for the
+     walk. After this increment a walk serves only a D$ miss, while other loads proceed.
+   - **The dTLB leaves the hit path,** so it can become the miss-path TLB of the future-TLB design
+     (a registered BRAM read, 4 KiB and 2 MiB tables) with no timing cost on a hit.
+   - **A load never waits for an older store's translation** to learn whether it aliases.
+   - **M never waits on translation,** a precondition for deleting it (C4b steps 4 and 5, the LSA
+     pipe).
+   - **6b's VA-hashed way 1** needs the VA at the D$.
+
+   The tiny128 lockstep walks rarely (the board's `xz` walked 1.6 times per 1000 instructions with
+   the 2048-entry dTLB), so the lockstep gain will be small. The increment is judged against the
+   end state.
+
+   **The translation stays in the LSU, fed by the queues, not in the D$.** Faults and the NC and
+   device classes belong to the queue entries, because the trap fires from the entry at the ROB
+   head. The D$ then stays what it is: every miss is looked up by PA. (This replaces "the D$
+   translates on a miss through its translate port".)
+
+   **5a, the shadow.**
+   - The LQ and SQ entries gain the VA (39 bits) beside the PA.
+   - A second read port on the dTLB (LUTRAM: duplication buys read ports) translates each entry
+     from the queue. It asserts that the PA, the fault and the NC/`mem` classes equal M's.
+   - Bit-identical in every run.
+
+   **5b, walks leave M; the D$ still by PA.**
+   - **The dTLB keeps one read port, M's lookup; the walker serves the queues.** An entry reaches
+     the walker only after M's lookup missed, so the walker walks at once and needs no lookup of
+     its own. 5a's second read port goes: in LUTRAM a read port of the 2048-entry table costs
+     about 5.7 k LUTs (5a's build: 116,317 -> 121,974).
+   - **A TLB hit in M is today's pass, unchanged:** the entry is filled with the PA, M lets go,
+     and a load may start its access in the same pass (`req_early`).
+   - **A TLB miss, or a hit whose perms fail, does not hold M.** M writes the VA alone (the entry's
+     `tv`, translated, stays clear) and lets go. The walker then translates the oldest
+     untranslated entry, stores first (a store cannot commit until it is translated), and writes
+     its PA, NC and memory classes, or its fault.
+   - **M's head-only ops (AMO, LR/SC, CBO) keep M's own translation,** walking through the walker
+     when it is free: they are at the ROB head, so nothing older waits on it.
+   - **What waits for `tv`:** a load's access (the queue's candidate needs it) and a store's
+     commit (`kc_v` needs it). A store's ROB slot already completes at commit (`sq_k_take`), not
+     in M, so the ROB needs no new completion port.
+   - **Page faults ride in the entries:** `{fault, cause}`, with `tval` the entry's VA and `epc` the
+     op's PC, which each entry keeps from dispatch (the ROB holds no PC in synthesis): 16 x 39 bits
+     of flops. The misaligned and non-canonical faults need no TLB and stay M's.
+     - A faulting entry never completes (a load never lands, a store never commits), so its op
+       reaches the ROB head and waits there. The queue's fault record for the head (flops: the
+       store queue's first uncommitted entry, the load queue's candidate) joins the SYSQ's fire at
+       the head, the one trap gate. Its payload is registered a cycle ahead (C3 step 2 lost IW=3
+       closure reading a LUTRAM payload into `csr_file`).
+     - A wrong-path fault dies with the flush.
+   - **The alias matrix compares VA[11:0] byte ranges** (= PA[11:0]).
+     - It is conservative for synonyms, which share their page offset.
+     - It is known when the VA is, at M, so a load never waits for an older store's walk.
+     - A false alias needs the same 8-byte chunk offset in a 4 KiB page: 1 in 512 for a random
+       pair. The lockstep counts false blocks.
+   - **The gain now:** a walk no longer stalls M and every memory op behind it; TLB hits keep
+     today's latency.
+
+   **5c, `VIRT=1`: a load asks by its VA first.**
+   - **A virtual hit answers with no PA.** A virtual miss answers a nack with no side effect: no
+     MSHR and no walk. The entry then asks again by PA once it is translated, exactly as in 5b.
+   - **Two separate choices about when a load uses the TLB:**
+     - **The lookup runs beside the D$ ask**, not after the nack: M's lookup runs in the pass that
+       sends the load's VA-only ask. The PA is then in the entry when the nack
+       arrives, and the re-ask by PA follows at once: about one
+       cycle behind a D$ that translated internally, against 2-3 for a lookup started by the nack.
+     - **A walk starts only after the nack:** the walker takes an untranslated load only once
+       the D$ has refused it. A TLB miss on a load that then hits the D$ needs no
+       walk (its permissions are on the stamp), so walks serve D$ misses only: the stream Simmerv
+       measured for design B. For today's 2048-entry direct-mapped table: 0.21 walks per 1000
+       instructions on that stream, against 0.74 when every access walks on a TLB miss.
+   - **The last cycle, later:** the TLB's answer can reach the D$ in the lookup's compare cycle, so a
+     miss allocates its MSHR without a re-ask. That puts the TLB in front of the allocation, and a
+     fault or an NC page must hold the allocation off; it is left until the L2 makes a miss's
+     cycles count more.
+   - **Permissions on the stamp.**
+     - The leaf's `{U, R, X}` are written with the stamp, from the translation that installed or
+       re-stamped the line.
+     - A hit checks them against the request's effective privilege, SUM and MXR, captured with
+       the request:
+       - the page must be readable: `R | (X & MXR)`;
+       - a U page is readable from U-mode, or from S-mode with SUM;
+       - an S page is readable from S-mode only.
+     - A stamp is written only from a translation that passed, so A is set.
+     - Stores never use the virtual hit: they carry the PA they translated before committing. So
+       W and D are not on the stamp.
+   - **Untranslated accesses go by PA and never stamp.** These are M-mode without MPRV, and a bare
+     `satp`. A VA equal to a PA must not hit a stamp made under a mapping.
+   - **`ep_bump` on `sfence.vma` and `satp` writes.** Both already serialise on an empty ROB and
+     store queue, and `dmem_idle` includes the D$'s store queue since b1b6bb64.
+   - **The D$'s load-behind-queued-store block** compares line bits [11:6] for a VA-only request
+     (synonym-safe) and the PA line for a request by PA.
+   - **NC and device pages never stamp,** so their first ask always misses. The translation
+     classifies them, and they take today's path.
+   - **Way 1 is unskewed at `VIRT=1` until 6b.** 5c alone gives back 6a (lockstep -0.4%, SGEMM
+     fills x3), so 5c and 6b make one board point.
+   - **New counters:**
+     - virtual hits and nacks;
+     - re-stamps (a physical match in the request's own set);
+     - synonym drops;
+     - the translate port busy;
+     - walks by requester.
+
+   **Cost:**
+   - 16 entries x (39 VA bits + fault fields) of flops;
+   - 3 perm bits per stamp (LUTRAM, 2 x 1024);
+   - 5a's second dTLB read port (about 5.7 k LUTs), for 5a only.
+
+   **Decisions (Tommy, 2026-09-30):** the LSU translates (a miss's re-ask costs cycles that will
+   matter for L2 misses, taken for simplicity); the TLB is looked up beside the D$ ask and walked
+   only after a nack; the alias matrix compares page offsets; 5c and 6b make one board point.
+
+   **Risks:**
+   - **Synonym drops between the kernel's linear map and user VAs** (`copy_to_user`): the colours
+     differ, so every crossing drops the line. The Simmerv models ran user and kernel VAs but did
+     not count drops. 5c counts them first.
+   - **Wrong-path walks.** A nacked wrong-path load can walk. That is harmless: walks only read,
+     because the hardware sets no A/D bits.
+   - **The trap payload's timing,** above.
+
 6. **The skewed way.**
    - **6a, at `VIRT=0`:** way 1 is indexed by the xor-fold of the request's PA line. This is
      PIPT-skew as phase 1 already pays for it, with no D and no synonyms. Placement is one NRU
