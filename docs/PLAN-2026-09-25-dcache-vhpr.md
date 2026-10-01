@@ -559,6 +559,24 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - **The gain now:** a walk no longer stalls M and every memory op behind it; TLB hits keep
      today's latency.
 
+   **5b as built (2026-10-01, `wip/dc-5b`).**
+   - As designed, with M's lookup in 5a's port and the walker's port serving the queues; 5a's
+     check goes. M's early-start loads take their PA from the lookup port (`eff_pa`): taken from
+     the walker's port, every AMO test died on the speculative-device assertion.
+   - Each entry keeps its op's PC (VA[38:0]) and seq for the trap. The SYSQ takes a queue fault's
+     record when the op is the ROB head and fires it; two SYSQ assertions (M busy, FP work in
+     flight) exempt it, since younger work may be in flight and dies.
+   - The queue benches assumed PA-wide alias compares: a store in another page at the load's offset
+     now blocks (a new case says so), and a page-crossing load cannot be queued (the store queue
+     asserts it).
+   - Coverage: `rv64si-p-dirty` traps three store page faults from the store queue, and the
+     `rv64*-v-*` tests fault their pages in through both queues; a wrong cause on a queue trap
+     fails them. In the first 60 M cycles of the boot M's lookup hits 14.65 M times and hands
+     166,108 entries to the walker, which answers 134,111 (980 faults, all on wrong paths: no
+     queue trap fires).
+   - Lockstep: 39,179,272 at 60 M (-0.03%), 170,226,822 at 300 M (+1.46%). The storm is clean to
+     500 M.
+
    **5c, `VIRT=1`: a load asks by its VA first.**
    - **A virtual hit answers with no PA.** A virtual miss answers a nack with no side effect: no
      MSHR and no walk. The entry then asks again by PA once it is translated, exactly as in 5b.

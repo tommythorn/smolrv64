@@ -36,7 +36,8 @@ module smolrv64_sq
     parameter NWB   = 3,
     parameter LQN   = 4,               // smolrv64_lq's NENT
     parameter LQIB  = 2,               // smolrv64_lq's IDXB
-    parameter VAW   = 39)              // Sv39: the VA an entry keeps beside its PA
+    parameter VAW   = 39,              // Sv39: the VA an entry keeps beside its PA
+    parameter SEQW  = 8)               // the op's sequence number (a trap restarts fetch at it)
    (input  wire                  clk,
     input  wire                  reset,
 
@@ -44,6 +45,8 @@ module smolrv64_sq
     input  wire                  d_alloc,
     input  wire [ROBB-1:0]       d_rob,       // rides with the store; commit is at the head
     input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
+    input  wire [VAW-1:0]        d_pc,        // the store's PC and seq, for a trap from its translation
+    input  wire [SEQW-1:0]       d_seq,
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
     // An entry with an ADDRESS is a store older than whatever M holds: M translates in
@@ -59,8 +62,9 @@ module smolrv64_sq
     // ---- address (and possibly data) written when the store executes ----
     input  wire                  a_v,
     input  wire [IDXB-1:0]       a_idx,
-    input  wire [PAW-1:0]        a_addr,
-    input  wire [VAW-1:0]        a_va,       // the address the store was translated from
+    input  wire [PAW-1:0]        a_addr,     // ...its PA, when a_tv
+    input  wire [VAW-1:0]        a_va,       // the VA, always: the alias test and the walker read it
+    input  wire                  a_tv,       // M's lookup translated it (else the walker will)
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
     input  wire                  a_unc,      // uncached, decided at translate time
     input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
@@ -105,13 +109,13 @@ module smolrv64_sq
     // failing endpoints, ALL FIVE worst paths sourced at acc. Moving the address off the
     // TRANSLATE path (which is why smolrv64_lq exists) left the compare and its whole downstream
     // tail exactly where they were.
-    input  wire [LQN*PAW-1:0]    l_pa,        // the load queue's entries, flattened
+    input  wire [LQN*12-1:0]     l_off,       // the load queue's entries' page offsets, flattened
     input  wire [LQN*2-1:0]      l_size,
     input  wire [LQN*(IDXB+1)-1:0] l_tag,     // each load's captured store-seqno
     input  wire [LQN-1:0]        l_av,
     input  wire                  l_fill,      // a load's address arrives this cycle...
     input  wire [LQIB-1:0]       l_fill_ix,   // ...into this entry
-    input  wire [PAW-1:0]        l_fill_pa,
+    input  wire [11:0]           l_fill_off,
     input  wire [1:0]            l_fill_size,
     output wire [LQN-1:0]        l_block_unk_q, // per entry, REGISTERED: blocked by an older store whose ADDRESS IS
                                               // UNKNOWN (the rest of l_block_q is a known overlap). Counters only.
@@ -125,11 +129,23 @@ module smolrv64_sq
     output wire                  ld_older,   // an older store is live (aliasing or not) --
                                              // the load is REORDERED past it if it starts
 
-    // ---- read one entry's translation: its VA and what the VA was translated to ----
-    input  wire [IDXB-1:0]       v_idx,
-    output wire [VAW-1:0]        v_va,
-    output wire [PAW-1:0]        v_pa,
-    output wire                  v_unc,
+    // ---- the walker: the first uncommitted entry, when it has no translation yet ----
+    output wire                  k_v,
+    output wire [IDXB-1:0]       k_idx,
+    output wire [VAW-1:0]        k_va,
+    input  wire                  w_v,        // the walker's answer for entry w_idx
+    input  wire [IDXB-1:0]       w_idx,
+    input  wire [PAW-1:0]        w_pa,
+    input  wire                  w_unc,
+    input  wire                  w_flt,
+    input  wire [3:0]            w_fc,
+    // ---- a translation that faulted, at the first uncommitted entry: it traps at the ROB head ----
+    output wire                  f_v,
+    output wire [ROBB-1:0]       f_rob,
+    output wire [3:0]            f_fc,
+    output wire [VAW-1:0]        f_va,
+    output wire [VAW-1:0]        f_pc,
+    output wire [SEQW-1:0]       f_seq,
 
     output wire [IDXB:0]         occupancy,
     input  wire                  flush);
@@ -137,6 +153,10 @@ module smolrv64_sq
    reg [NENT-1:0]        v, av, dv;          // live / address known / data known
    reg [PAW-1:0]         addr [0:NENT-1];
    reg [VAW-1:0]         va   [0:NENT-1];
+   reg [VAW-1:0]         pc   [0:NENT-1];
+   reg [SEQW-1:0]        sqn  [0:NENT-1];
+   reg [NENT-1:0]        tv, flt;            // translated / ...and the translation faulted
+   reg [3:0]             fc   [0:NENT-1];
    reg [63:0]            data [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
    reg [NENT-1:0]        unc;
@@ -187,9 +207,19 @@ module smolrv64_sq
    assign d_tag     = tailc;
    assign av_any    = |(v & av);
    assign occupancy = cnt;
-   assign v_va      = va[v_idx];
-   assign v_pa      = addr[v_idx];
-   assign v_unc     = unc[v_idx];
+   // THE WALKER AND THE TRAP READ THE FIRST UNCOMMITTED ENTRY. Stores commit in order, so an
+   // untranslated store anywhere else waits behind this one anyway, and a store that faulted
+   // never commits: it is this entry when its op reaches the ROB head.
+   wire                  kc_live = (kcc != tailc) & v[kc] & av[kc];
+   assign k_v   = kc_live & ~tv[kc];
+   assign k_idx = kc;
+   assign k_va  = va[kc];
+   assign f_v   = kc_live & tv[kc] & flt[kc];
+   assign f_rob = rob[kc];
+   assign f_fc  = fc[kc];
+   assign f_va  = va[kc];
+   assign f_pc  = pc[kc];
+   assign f_seq = sqn[kc];
 
    // c_v says the head is READY (address and data present). Committing in program order
    // is the core's job: it takes the entry only when c_rob is the ROB head, so a store
@@ -199,7 +229,7 @@ module smolrv64_sq
    // cycles per store-load pair without it). k_take is a compare of registered values in
    // smolrv64_core, the same shape as the old head-index compare this replaced.
    assign c_v    = v[head] & av[head] & dv[head] & (cmt[head] | (k_take & (kcc == headc)));
-   assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc];
+   assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc] & tv[kc] & ~flt[kc];
    assign kc_rob = rob[kc];
    assign kc_addr= addr[kc];
    // The same landing bypass as c_data: the entry commits in the cycle its bytes are still
@@ -228,15 +258,18 @@ module smolrv64_sq
    //     dist(x) = (x - head) mod NENT,   older(g) = dist(g) < dist(ld_tag)
    // No wrap bit is needed: a store younger than the load can never commit before the load
    // retires, so the live region cannot cycle past the load's tag.
-   localparam [PAW:0] SQ_ONE = {{PAW{1'b0}}, 1'b1};   // width-matched, not a bare literal
+   localparam [12:0] SQ_ONE = 13'd1;   // width-matched, not a bare literal
 
    // Byte ranges [a, a + (1<<size)) overlap unless one ends at or before the other begins.
    // ONE definition, used at both matrix-update sites (rule C1) -- a predicate written twice
-   // only has to be updated wrong once.
+   // only has to be updated wrong once. THE RANGES ARE PAGE OFFSETS, VA[11:0] = PA[11:0]: no
+   // queued access crosses a page (M faults it), so two in one page compare exactly, two
+   // synonyms of one physical page (which share the offset) can never miss each other, and the
+   // test needs no translation -- it runs the cycle the VA arrives, whatever the walker does.
    function ovl_ab;
-      input [PAW-1:0] la; input [1:0] ls;
-      input [PAW-1:0] sa; input [1:0] ss;
-      reg [PAW:0] l_lo, l_hi, s_lo, s_hi;
+      input [11:0] la; input [1:0] ls;
+      input [11:0] sa; input [1:0] ss;
+      reg [12:0] l_lo, l_hi, s_lo, s_hi;
       begin
          l_lo = {1'b0, la};  l_hi = l_lo + (SQ_ONE << ls);
          s_lo = {1'b0, sa};  s_hi = s_lo + (SQ_ONE << ss);
@@ -256,8 +289,8 @@ module smolrv64_sq
    always @* begin
       for (fk = 0; fk < NENT; fk = fk + 1)
          fill_row[fk] = (a_v && (fk[IDXB-1:0] == a_idx))
-                      ? ovl_ab(l_fill_pa, l_fill_size, a_addr, a_size)
-                      : (av[fk] & ovl_ab(l_fill_pa, l_fill_size, addr[fk], sz[fk]));
+                      ? ovl_ab(l_fill_off, l_fill_size, a_va[11:0], a_size)
+                      : (av[fk] & ovl_ab(l_fill_off, l_fill_size, va[fk][11:0], sz[fk]));
    end
    // the stores' address-valid bits as they will stand next cycle (a store only gains one)
    wire [NENT-1:0] av_next = av | (a_v ? ({{(NENT-1){1'b0}}, 1'b1} << a_idx) : {NENT{1'b0}});
@@ -339,10 +372,10 @@ module smolrv64_sq
          if (a_v)
             for (li = 0; li < LQN; li = li + 1)
                conf[li][a_idx] <= l_av[li]
-                                & ovl_ab(l_pa[li*PAW +: PAW], l_size[li*2 +: 2], a_addr, a_size);
+                                & ovl_ab(l_off[li*12 +: 12], l_size[li*2 +: 2], a_va[11:0], a_size);
          // A LOAD's address arrives: its ROW, against every live store. Written second, so
          // it wins the one cell both updates can touch -- and it must, because the column
-         // update above would compare that cell against addr[a_idx], which is not written
+         // update above would compare that cell against va[a_idx], which is not written
          // until this same edge. The a_v arm (in fill_row) forwards the arriving address.
          if (l_fill) conf[l_fill_ix] <= fill_row;
          // commit the first uncommitted entry (the ROB released it)
@@ -359,7 +392,7 @@ module smolrv64_sq
          // allocate at the tail
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0; cmt[tail] <= 1'b0;
-            rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;
+            rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;  pc[tail] <= d_pc;  sqn[tail] <= d_seq;
             tailc <= tailc + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;
@@ -380,8 +413,13 @@ module smolrv64_sq
          // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
             addr[a_idx] <= a_addr;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
-            unc[a_idx]  <= a_unc;
+            unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= 1'b0;
             if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
+         end
+         // the walker's answer: the PA and NC bit, or the fault the store traps with at the head
+         if (w_v) begin
+            addr[w_idx] <= w_pa;  unc[w_idx] <= w_unc;  flt[w_idx] <= w_flt;  fc[w_idx] <= w_fc;
+            tv[w_idx]   <= 1'b1;
          end
 
          // SNOOP THE WRITEBACK PORTS, ARMED FROM ALLOCATE.
@@ -445,6 +483,21 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: a store committed in a redirect cycle (the redirecting op is at the irrevocable point)");
       if ((kcc - headc) > cnt)
          $fatal(1, "smolrv64_sq: committed count %0d exceeds occupancy %0d", kcc - headc, cnt);
+      // The walker answers the entry it asked for, which is still the untranslated first
+      // uncommitted one: nothing else moves it (it cannot commit untranslated, and a flush ends
+      // the walk with it).
+      if (w_v & ~(k_v & (w_idx == kc)))
+         $fatal(1, "smolrv64_sq: the walker's answer for entry %0d is not for the untranslated first uncommitted one", w_idx);
+      if (w_v & a_v & (a_idx == w_idx))
+         $fatal(1, "smolrv64_sq: entry %0d filled and translated in one cycle", w_idx);
+      // The alias test compares page offsets, which is exact only because no queued access
+      // crosses a page (M raises address-misaligned for one).
+      if (a_v & (({1'b0, a_va[11:0]} + (13'd1 << a_size)) > 13'h1000))
+         $fatal(1, "smolrv64_sq: store entry %0d at va %h crosses a page", a_idx, a_va);
+      if (l_fill & (({1'b0, l_fill_off} + (13'd1 << l_fill_size)) > 13'h1000))
+         $fatal(1, "smolrv64_sq: load entry %0d at offset %h crosses a page", l_fill_ix, l_fill_off);
+      if (c_take & ~tv[head])
+         $fatal(1, "smolrv64_sq: a store drained without a translation");
       // The landing bypass is exact only if nothing else writes the entry's data in the one
       // cycle the bytes are in flight: the address-time capture is guarded by ~dv, and dv
       // rose with the note, so a collision here is a second producer for one physreg.

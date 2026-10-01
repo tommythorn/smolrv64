@@ -433,7 +433,7 @@ module smolrv64_core
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw(),
       .walk_ok(~walk_hold),
-      .s_vaddr(64'd0), .s_access(2'd1), .s_ok(), .s_paddr(), .s_nc());   // the second lookup is the dTLB's
+      .s_vaddr(64'd0), .s_access(2'd1), .s_ok(), .s_flt(), .s_cause(), .s_paddr(), .s_nc());   // the second lookup is the dTLB's
    assign imem_addr = {8'd0, immu_pa};
 
    // ---- a mapping change ------------------------------------------------------------
@@ -1699,37 +1699,40 @@ module smolrv64_core
    // the LSU holds the store until the D$ takes it and nothing can pass it there.
    wire sq_c_take = lsu_pt_ack & pt_store;
 
-   // ---- THE QUEUES' TRANSLATIONS, CHECKED FROM THE VA THEY STORE ----
-   // The entry M filled at T is read out of its queue at T+1 and looked up again in the
-   // dTLB's second port at T+2 (smolrv64_lsu, qx_*): the queues keep the VA their translation
-   // came from, and the lookup the queue-side translate will make from it gives the same answer.
-   reg                 qx1_v, qx1_st, qx2_v, qx2_st, qx2_unc;
-   reg [SQ_IB-1:0]     qx1_sqi;
-   reg [LQ_IB-1:0]     qx1_lqi;
-   reg [38:0]          qx2_va;
-   reg [55:0]          qx2_pa;
-   wire [38:0]         sq_v_va, lq_v_va;
-   wire [55:0]         sq_v_pa, lq_v_pa;
-   wire                sq_v_unc, lq_v_unc;
-   initial begin qx1_v = 1'b0; qx2_v = 1'b0; end
+   // ---- THE WALKER: a queue entry M handed over untranslated ----
+   // The store queue's first uncommitted entry, else the load queue's candidate, whichever has no
+   // translation (stores commit and loads reach memory in queue order, so no other entry can be
+   // waited on first). Once asked for, an entry keeps the walker until it answers -- a store
+   // filling meanwhile does not take the walk over -- or a redirect ends the walk with the entry.
+   wire                sq_k_v, lq_k_v, sq_f_v, lq_f_v;
+   wire [SQ_IB-1:0]    sq_k_idx;
+   wire [LQ_IB-1:0]    lq_k_idx;
+   wire [38:0]         sq_k_va, lq_k_va, sq_f_va, lq_f_va, sq_f_pc, lq_f_pc;
+   wire [ROB_IDXB-1:0] sq_f_rob, lq_f_rob;
+   wire [3:0]          sq_f_fc, lq_f_fc;
+   wire [SEQW-1:0]     sq_f_seq, lq_f_seq;
+   wire                lsu_wk_done, lsu_wk_unc, lsu_wk_mem, lsu_wk_flt, lsu_xo_tv;
+   wire [55:0]         lsu_wk_pa;
+   wire [3:0]          lsu_wk_fc;
+   reg                 wk_lk, wk_lk_st;
+   initial begin wk_lk = 1'b0; wk_lk_st = 1'b0; end
+   wire                wk_st = wk_lk ? wk_lk_st : sq_k_v;
+   wire                wk_v  = wk_lk | sq_k_v | lq_k_v;
+   wire [38:0]         wk_va = wk_st ? sq_k_va : lq_k_va;
    always @(posedge clk) begin
-      qx1_v   <= ~reset & (m_sq_fill | m_lq_fill);
-      qx1_st  <= m_sq_fill;
-      qx1_sqi <= m_sq_tag;
-      qx1_lqi <= m_lq_idx;
-      qx2_v   <= ~reset & qx1_v;
-      qx2_st  <= qx1_st;
-      qx2_va  <= qx1_st ? sq_v_va  : lq_v_va;
-      qx2_pa  <= qx1_st ? sq_v_pa  : lq_v_pa;
-      qx2_unc <= qx1_st ? sq_v_unc : lq_v_unc;
+      if (reset | redirect | lsu_wk_done) wk_lk <= 1'b0;
+      else if (wk_v) begin wk_lk <= 1'b1; wk_lk_st <= wk_st; end
+      if (!reset && !redirect && wk_lk && (wk_lk_st ? ~sq_k_v : ~lq_k_v))
+         $fatal(1, "smolrv64_core: the walker's entry (%0s) is no longer the untranslated one", wk_lk_st ? "store" : "load");
    end
 
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB)) u_sq
+             .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW)) u_sq
      (.clk(clk), .reset(reset),
       .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2),
+      .d_pc(st_c ? d3_pc[38:0] : st_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(st_c ? d3_seq : st_b ? d2_seq : d_seq),
       .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
-      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_size(m_mem_size),
+      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
@@ -1737,13 +1740,16 @@ module smolrv64_core
       .kc_v(sq_kc_v), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
       // THE ALIAS TEST LIVES HERE, not at issue: smolrv64_lq exports its entries, smolrv64_sq keeps
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
-      .l_pa(lq_e_pa), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
+      .l_off(lq_e_off), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx),
-      .l_fill_pa(lsu_xo_pa), .l_fill_size(m_mem_size),
+      .l_fill_off(m_addr[11:0]), .l_fill_size(m_mem_size),
       .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .l_block_unk_q(sq_l_block_unk_q),
-      .v_idx(qx1_sqi), .v_va(sq_v_va), .v_pa(sq_v_pa), .v_unc(sq_v_unc),
+      .k_v(sq_k_v), .k_idx(sq_k_idx), .k_va(sq_k_va),
+      .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc),
+      .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
+      .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_va(sq_f_va), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
       .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
@@ -1756,7 +1762,7 @@ module smolrv64_core
    wire [LQ_IB-1:0]    lq_d_idx, lq_x_idx;
    wire [55:0]         lq_x_pa;
    wire [1:0]          lq_x_size;
-   wire [LQ_N*56-1:0]  lq_e_pa;
+   wire [LQ_N*12-1:0]  lq_e_off;
    wire [LQ_N*2-1:0]   lq_e_size;
    wire [LQ_N*SQ_TB-1:0] lq_e_tag;
    wire [LQ_N-1:0]     lq_e_av, lq_e_block;
@@ -1776,22 +1782,26 @@ module smolrv64_core
    wire [SQ_TB-1:0] ld_sqtag = sq_d_tag;   // <=1 LS/cycle: a store and a load never co-dispatch
 
    smolrv64_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .SQIB(SQ_TB), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lq
+             .ROBB(ROB_IDXB), .SQIB(SQ_TB), .SEQW(SEQW), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lq
      (.clk(clk), .reset(reset),
       .d_alloc(d_ld_alloc), .d_rob(ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_c ? d3_prd_g : ld_b ? d2_prd_g : d_prd_g),
       .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
+      .d_pc(ld_c ? d3_pc[38:0] : ld_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(ld_c ? d3_seq : ld_b ? d2_seq : d_seq),
       .d_ready(lq_d_ready), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
-      .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_size(m_mem_size),
+      .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem),
-      .e_pa(lq_e_pa), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
+      .e_off(lq_e_off), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
       .b_idx(m_lq_idx), .b_ok(lq_b_ok),
       .x_v(lq_x_v), .x_idx(lq_x_idx), .x_pa(lq_x_pa), .x_size(lq_x_size),
       .x_signed(lq_x_signed), .x_fp(lq_x_fp), .x_unc(lq_x_unc), .x_head(lq_x_head), .x_take(lq_x_take),
       .l_v(ld_land), .l_idx(ld_land_idx),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
-      .v_idx(qx1_lqi), .v_va(lq_v_va), .v_pa(lq_v_pa), .v_unc(lq_v_unc),
+      .k_v(lq_k_v), .k_idx(lq_k_idx), .k_va(lq_k_va),
+      .w_v(lsu_wk_done & ~wk_st), .w_idx(lq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
+      .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
+      .f_v(lq_f_v), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_va(lq_f_va), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
@@ -2156,7 +2166,8 @@ module smolrv64_core
       .req_amo_func(m_amo_func), .req_cbo(m_is_cbo), .req_cbo_zero(m_cbo_zero),
       .req_cbo_keep(m_cbo_keep),
       .req_vaddr(m_addr), .req_size(m_mem_size), .req_signed(m_mem_signed),
-      .qx_v(qx2_v), .qx_st(qx2_st), .qx_va(qx2_va), .qx_pa(qx2_pa), .qx_unc(qx2_unc),
+      .xo_tv(lsu_xo_tv), .wk_v(wk_v), .wk_st(wk_st), .wk_va(wk_va), .wk_done(lsu_wk_done),
+      .wk_pa(lsu_wk_pa), .wk_unc(lsu_wk_unc), .wk_mem(lsu_wk_mem), .wk_flt(lsu_wk_flt), .wk_fc(lsu_wk_fc),
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush), .flush(redirect), .m_head(m_at_head),
@@ -2266,7 +2277,15 @@ module smolrv64_core
    reg                sy_fi;     // ...and FENCE.I flushes the caches and refetches after itself
    reg [3:0]          sy_xcause;
    reg [63:0]         sy_xtval;
-   initial begin sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; end
+   reg                sy_qf;     // the trap is a queue entry's translation fault (the op is a load or store)
+   initial begin sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; sy_qf = 1'b0; end
+   // A QUEUE ENTRY WHOSE TRANSLATION FAULTED TRAPS FROM HERE. It never completes (a load is never
+   // sent, a store never commits), so its op reaches the ROB head and stays; its record then loads
+   // the SYSQ as a trap from dispatch does, and fires through sy_fire, the one trap gate. The SYSQ
+   // is free then: a system op dispatches only with everything older done.
+   wire qf_sq = sq_f_v & (sq_f_rob == rob_head_idx) & ~rob_empty;
+   wire qf_lq = lq_f_v & (lq_f_rob == rob_head_idx) & ~rob_empty;
+   wire qf_in = (qf_sq | qf_lq) & ~sy_v & ~redirect;
    wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
    wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
    wire sy_fire    = sy_at_head & ~port_yield & (~sy_instret | sy_head_q);
@@ -2291,14 +2310,27 @@ module smolrv64_core
          sy_fi <= ~j_istrap & (qf_insn[6:2] == 5'b00011) & qf_insn[12];
          sy_xcause <= qf_fault ? qf_fault_cause : 4'd2;
          sy_xtval  <= qf_fault ? {{(64-PCW){1'b0}}, qf_fault_tval} : 64'd0;
+         sy_qf     <= 1'b0;
+      end
+      if (qf_in) begin
+         sy_v <= 1'b1;  sy_rob <= qf_sq ? sq_f_rob : lq_f_rob;  sy_prd <= {RN_PBITS{1'b0}};  sy_rd_v <= 1'b0;
+         sy_is_csr <= 1'b0;  sy_func <= 3'd0;  sy_addr <= 12'd0;  sy_src <= 64'd0;  sy_insn <= 32'd0;
+         sy_pc  <= qf_sq ? {{(PCW-39){sq_f_pc[38]}}, sq_f_pc} : {{(PCW-39){lq_f_pc[38]}}, lq_f_pc};
+         sy_seq <= qf_sq ? sq_f_seq : lq_f_seq;
+         sy_xt <= 1'b1;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;
+         sy_xcause <= qf_sq ? sq_f_fc : lq_f_fc;
+         sy_xtval  <= qf_sq ? {{25{sq_f_va[38]}}, sq_f_va} : {{25{lq_f_va[38]}}, lq_f_va};
       end
       if (reset | redirect) sy_v <= 1'b0;                // flush arm last (I11); its own redirect included
    end
    always @(posedge clk) if (!reset) begin
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "smolrv64_core: a system op issued into a busy SYSQ (it is serialising)");
+      if (iss_sys & qf_in)               $fatal(1, "smolrv64_core: a system op issued while a queue entry's fault loads the SYSQ");
+      if (qf_sq & qf_lq)                 $fatal(1, "smolrv64_core: a load and a store both fault as the ROB head");
       if (iss_sys & (qf_shard != SH_LD)) $fatal(1, "smolrv64_core: a system op issued with shard %0d, not SH_LD", qf_shard);
-      if (sy_fire & m_valid)             $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
-      if (sy_fire & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
+      if (sy_fire & ~sy_qf & m_valid)    $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
+      if (sy_fire & ~sy_qf & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
       if (sy_fire & ld_land)             $fatal(1, "smolrv64_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "smolrv64_core: a system op reached M (pc %h)", m_pc);
       if (iss_m & (q_fault | q_illegal))   $fatal(1, "smolrv64_core: an op that traps at dispatch issued to M (pc %h)", q_pc);
@@ -2994,6 +3026,13 @@ module smolrv64_core
          xtq_cause[rob_d_idx3] <= d3_fault ? d3_fault_cause : 4'd2;
          xtq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
          xtq_pc[rob_d_idx3]    <= d3_pc;
+      end
+      // (c) a queue entry's translation fault loads the SYSQ (its PC was recorded at dispatch, so
+      // the SYSQ's check below holds the queue's stored PC and seq to it)
+      if (qf_in) begin
+         xtq_kind[qf_sq ? sq_f_rob : lq_f_rob]  <= SYK_XTRAP;
+         xtq_cause[qf_sq ? sq_f_rob : lq_f_rob] <= qf_sq ? sq_f_fc : lq_f_fc;
+         xtq_tval[qf_sq ? sq_f_rob : lq_f_rob]  <= qf_sq ? {{25{sq_f_va[38]}}, sq_f_va} : {{25{lq_f_va[38]}}, lq_f_va};
       end
       // (b) the LSU reports a data fault for M's op
       if (m_flt_pulse) begin

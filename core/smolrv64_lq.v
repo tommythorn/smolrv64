@@ -50,6 +50,7 @@ module smolrv64_lq
     parameter ROBB  = 4,
     parameter SQIB  = 3,               // store-seqno width (smolrv64_sq's IDXB)
     parameter VAW   = 39,              // Sv39: the VA an entry keeps beside its PA
+    parameter SEQW  = 8,               // the op's sequence number (a trap restarts fetch at it)
     // The memory map, for the D12 cross-check below only (smolrv64_lsu's LSU_DRAM_BASE / LRAM_*).
     // A unit bench with synthetic addresses declares everything memory: DRAM_BASE = 0.
     parameter [55:0] DRAM_BASE = 56'h8000_0000,
@@ -65,6 +66,8 @@ module smolrv64_lq
     input  wire [5:0]            d_rd,
     input  wire                  d_rd_v,
     input  wire [SQIB-1:0]       d_sqtag,     // store-seqno captured at the same dispatch
+    input  wire [VAW-1:0]        d_pc,        // the load's PC and seq, for a trap from its translation
+    input  wire [SEQW-1:0]       d_seq,
     output wire                  d_ready,
     output wire [IDXB-1:0]       d_idx,
 
@@ -75,8 +78,9 @@ module smolrv64_lq
     input  wire                  a_v,
     input  wire                  a_sent,
     input  wire [IDXB-1:0]       a_idx,
-    input  wire [PAW-1:0]        a_pa,
-    input  wire [VAW-1:0]        a_va,        // the address the load was translated from
+    input  wire [PAW-1:0]        a_pa,        // ...its PA, when a_tv
+    input  wire [VAW-1:0]        a_va,        // the VA, always: the alias test and the walker read it
+    input  wire                  a_tv,        // M's lookup translated it (else the walker will)
     input  wire [1:0]            a_size,
     input  wire                  a_signed,
     input  wire                  a_fp,
@@ -90,7 +94,7 @@ module smolrv64_lq
     // 166.67 MHz, 18 670 failing endpoints, all five worst paths sourced here. Moving the
     // address off the TRANSLATE path -- this module's original purpose -- left the compare
     // itself, and its whole downstream tail, exactly where they were.
-    output wire [NENT*PAW-1:0]   e_pa,
+    output wire [NENT*12-1:0]    e_off,       // page offsets: VA[11:0] = PA[11:0]
     output wire [NENT*2-1:0]     e_size,
     output wire [NENT*SQIB-1:0]  e_tag,
     output wire [NENT-1:0]       e_av,
@@ -137,11 +141,24 @@ module smolrv64_lq
     // can and does start between a load's start and its landing.
     output wire [PAW-1:0]        l_pa,
 
-    // ---- read one entry's translation: its VA and what the VA was translated to ----
-    input  wire [IDXB-1:0]       v_idx,
-    output wire [VAW-1:0]        v_va,
-    output wire [PAW-1:0]        v_pa,
-    output wire                  v_unc,
+    // ---- the walker: the candidate, when it has no translation yet ----
+    output wire                  k_v,
+    output wire [IDXB-1:0]       k_idx,
+    output wire [VAW-1:0]        k_va,
+    input  wire                  w_v,         // the walker's answer for entry w_idx
+    input  wire [IDXB-1:0]       w_idx,
+    input  wire [PAW-1:0]        w_pa,
+    input  wire                  w_unc,
+    input  wire                  w_mem,
+    input  wire                  w_flt,
+    input  wire [3:0]            w_fc,
+    // ---- a translation that faulted, at the candidate: it traps at the ROB head ----
+    output wire                  f_v,
+    output wire [ROBB-1:0]       f_rob,
+    output wire [3:0]            f_fc,
+    output wire [VAW-1:0]        f_va,
+    output wire [VAW-1:0]        f_pc,
+    output wire [SEQW-1:0]       f_seq,
 
     output wire [IDXB:0]         occupancy,
     output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
@@ -153,6 +170,10 @@ module smolrv64_lq
    reg [NENT-1:0]        v, av;              // live / address known
    reg [PAW-1:0]         pa   [0:NENT-1];
    reg [VAW-1:0]         va   [0:NENT-1];
+   reg [VAW-1:0]         pc   [0:NENT-1];
+   reg [SEQW-1:0]        sqn  [0:NENT-1];
+   reg [NENT-1:0]        tv, flt;             // translated / ...and the translation faulted
+   reg [3:0]             fc   [0:NENT-1];
    reg [1:0]             sz   [0:NENT-1];
    // EVERY ATTRIBUTE THE ACCESS NEEDS TRAVELS WITH THE ENTRY. `unc` was missing: a queued
    // load went to the LSU with the uncached bit hardwired to 0 (smolrv64_core's pt_unc), so a
@@ -200,7 +221,20 @@ module smolrv64_lq
    // Unreachable while one load is in flight at a time (the FSM parks), which is why nothing
    // saw it; the random bench (tb_smolrv64_lqsq_rand, seed 1, cycle 358) found it in its first
    // run, and the tagged fast path can hold NENT in flight.
-   wire cand_v = v[acc] & av[acc] & ~sent[acc];
+   wire cand_v = v[acc] & av[acc] & ~sent[acc] & tv[acc] & ~flt[acc];
+   // THE WALKER AND THE TRAP READ THE CANDIDATE. Loads reach memory in queue order, so an
+   // untranslated load anywhere else waits behind this one anyway, and a load whose translation
+   // faulted is never sent: it is the candidate when its op reaches the ROB head.
+   wire cand_a = v[acc] & av[acc] & ~sent[acc];
+   assign k_v   = cand_a & ~tv[acc];
+   assign k_idx = acc;
+   assign k_va  = va[acc];
+   assign f_v   = cand_a & tv[acc] & flt[acc];
+   assign f_rob = rob[acc];
+   assign f_fc  = fc[acc];
+   assign f_va  = va[acc];
+   assign f_pc  = pc[acc];
+   assign f_seq = sqn[acc];
    // The mirror of cand_v: the candidate is live and its address is NOT yet known, which is
    // exactly a load still in M. q_tag is sqt[acc], so this is also what licenses the core to
    // read smolrv64_sq's ld_older as an answer about the load M is holding.
@@ -209,7 +243,7 @@ module smolrv64_lq
    genvar ge;
    generate
       for (ge = 0; ge < NENT; ge = ge + 1) begin : g_exp
-         assign e_pa  [ge*PAW  +: PAW ] = pa [ge];
+         assign e_off [ge*12   +: 12  ] = va [ge][11:0];
          assign e_size[ge*2    +: 2   ] = sz [ge];
          assign e_tag [ge*SQIB +: SQIB] = sqt[ge];
       end
@@ -236,9 +270,6 @@ module smolrv64_lq
    assign l_rob  = rob[l_idx];
    assign l_pa   = pa[l_idx];
 
-   assign v_va   = va[v_idx];
-   assign v_pa   = pa[v_idx];
-   assign v_unc  = unc[v_idx];
 
    always @(posedge clk) begin
       if (reset) begin
@@ -253,7 +284,7 @@ module smolrv64_lq
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; sent[tail] <= 1'b0;
             rob[tail] <= d_rob; prd[tail] <= d_prd; rdn[tail] <= d_rd;
-            rdv[tail] <= d_rd_v; sqt[tail] <= d_sqtag;
+            rdv[tail] <= d_rd_v; sqt[tail] <= d_sqtag;  pc[tail] <= d_pc;  sqn[tail] <= d_seq;
             tail <= tail + 1'b1;
          end
          if ((d_alloc & d_ready) & ~l_v)      cnt <= cnt + 1'b1;
@@ -262,6 +293,12 @@ module smolrv64_lq
          if (a_v) begin
             pa[a_idx] <= a_pa;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;
             sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  mem[a_idx] <= a_mem;  av[a_idx] <= 1'b1;
+            tv[a_idx] <= a_tv;  flt[a_idx] <= 1'b0;
+         end
+         // the walker's answer: the PA and its classes, or the fault the load traps with at the head
+         if (w_v) begin
+            pa[w_idx] <= w_pa;  unc[w_idx] <= w_unc;  mem[w_idx] <= w_mem;  flt[w_idx] <= w_flt;  fc[w_idx] <= w_fc;
+            tv[w_idx] <= 1'b1;
          end
          // Filled AND already gone. It cannot collide with x_take above: that one needs
          // av[acc], and a_sent is asserted only while b_ok says ~av[acc].
@@ -285,7 +322,12 @@ module smolrv64_lq
    // (a_pa >= DRAM_BASE as a borrow, so a bench's DRAM_BASE = 0 is not a constant compare)
    wire [PAW:0] a_dram_off = {1'b0, a_pa} - {1'b0, DRAM_BASE};
    wire a_mem_chk = ~a_dram_off[PAW] | (a_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]);
-   always @(posedge clk) if (!reset && a_v && (a_mem != a_mem_chk))
+   wire [PAW:0] w_dram_off = {1'b0, w_pa} - {1'b0, DRAM_BASE};
+   wire w_mem_chk = ~w_dram_off[PAW] | (w_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]);
+   always @(posedge clk) if (!reset && w_v && ~w_flt && (w_mem != w_mem_chk))
+      $fatal(1, "smolrv64_lq: the walker classifies pa=%h for entry %0d as %0s, its region says %0s (rule D12)",
+             w_pa, w_idx, w_mem ? "memory" : "device", w_mem_chk ? "memory" : "device");
+   always @(posedge clk) if (!reset && a_v && a_tv && (a_mem != a_mem_chk))
       $fatal(1, "smolrv64_lq: fill %0d classifies pa=%h as %0s, its region says %0s (rule D12)",
              a_idx, a_pa, a_mem ? "memory" : "device", a_mem_chk ? "memory" : "device");
 
@@ -311,6 +353,14 @@ module smolrv64_lq
                 a_idx, acc);
       if (a_v & a_sent & x_v & x_take)
          $fatal(1, "smolrv64_lq: an early start and a candidate start in the same cycle");
+      if (a_v & a_sent & ~a_tv)
+         $fatal(1, "smolrv64_lq: entry %0d started early without a translation", a_idx);
+      if (x_v & x_take & ~tv[acc])
+         $fatal(1, "smolrv64_lq: the candidate started without a translation");
+      if (w_v & ~(k_v & (w_idx == acc)))
+         $fatal(1, "smolrv64_lq: the walker's answer for entry %0d is not for the untranslated candidate", w_idx);
+      if (w_v & a_v & (a_idx == w_idx))
+         $fatal(1, "smolrv64_lq: entry %0d filled and translated in one cycle", w_idx);
    end
 endmodule
 `default_nettype wire

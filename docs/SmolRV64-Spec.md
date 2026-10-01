@@ -955,11 +955,29 @@ cycle is legal and was lost once).
   an NC load that went through the queue (rather than the early start) was cached: the
   board's virtio rings read stale (`id 0 is not a head!`), and no simulation could see it.
   Rule B7.
-- **The queues keep the VA beside the PA.** Every load- and store-queue entry stores the
-  VA[38:0] its translation came from. Two cycles after a fill, the entry is read back and its VA
-  looked up in the dTLB's second port (`mmu`'s `s_*`: the TLB alone, never a walk); a lookup that
-  resolves must name the PA and the NC bit the entry holds (integrity bit 40, `qx_xlate`). This is
-  the queue-side translate of the D$ plan's increment 5, checked against M's before it replaces it.
+- **Walks leave M (D$ plan increment 5b).** M's translate-only pass looks its op up in the
+  dTLB's lookup port (`mmu`'s `s_*`: the TLB alone, never a walk). A hit is the pass above,
+  unchanged: the entry gets its PA and a load may start in the same pass. A miss, or a hit whose
+  permissions fail (which only a fresh walk may turn into a fault), does not hold M: the entry is
+  filled with its VA alone (`tv` clear) and M lets go. M decides only the faults the address
+  alone does: a page-crossing misalignment, a non-canonical VA under Sv39, an address beyond the
+  top under Bare (`s_flt`); so the entry's VA[38:0] is all the walker needs.
+  - **The walker** (`mmu`'s walking port) serves M's FSM-starting op first (an AMO, LR/SC or CBO,
+    at the ROB head), else the store queue's first uncommitted entry, else the load queue's
+    candidate, whichever is untranslated: stores commit and loads reach memory in queue order, so
+    no other entry is waited on first. It keeps the entry it was asked for until it answers
+    (`wk_lk`) or a redirect ends the walk with the entry. Its answer writes the entry's PA,
+    classes and `tv`, or its fault and cause.
+  - **What waits for `tv`:** a load's access (the candidate needs it) and a store's commit
+    (`kc_v`). A queued access may start while the queue's walk runs; only M's own walk keeps the
+    LSU's FSM idle (`wk_m_q`).
+  - **A faulted entry traps at the ROB head.** It never completes (the load is never sent, the
+    store never commits), so its op reaches the head and stays. Its record -- cause, the VA as
+    `tval`, the op's PC and seq, which each entry keeps from dispatch -- then loads the SYSQ as a
+    trap from dispatch does, and fires through `sy_fire`, the one trap gate.
+  - **The alias matrix compares page offsets,** VA[11:0] = PA[11:0]. No queued access crosses a
+    page, so two in one page compare exactly; synonyms share the offset, so they never miss each
+    other; and the test runs the cycle the VA arrives, whatever the walker does.
 - **A queued load's access is one cycle after its fill, unless nothing is ordering it.**
   `smolrv64_lq` registers the address, then selects the oldest entry no older store can alias,
   then accesses; the SELECT cycle is what pays for the alias test. When no store older than
@@ -972,7 +990,8 @@ cycle is legal and was lost once).
   Camera unmoved -- because releasing M lets the following non-memory instructions execute
   while the data is in flight, and that is worth more than the latency it costs. The queue's
   two cycles are not overhead; one of them is.
-- A load's fault is decided **before the access starts**: for an FSM-starting access
+- A load's fault is decided **before the access starts** (by M for the address-only faults, by the
+  walker into the entry for a page fault, above): for an FSM-starting access
   `mis_flt` and `xl_flt` are qualified by `xl_f = req_valid & ~req_xlate & (st == S_IDLE)`,
   and for the translate-only pass by `xl_x = req_valid & req_xlate`, which never enters the
   FSM at all. The pre-translated port's grant (`pt_start`) appears only in the START
@@ -1341,7 +1360,7 @@ Address translation, two instances (iTLB in `smolrv64_core`, dTLB in `smolrv64_l
 | array | shape | width | bits |
 |---|---|---|---|
 | iTLB `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 64 | 1+27+44+2+8+1+1 = 84 | 5 376 |
-| dTLB, the same fields | 2048, read by two ports (M's translate, the queue check), so the LUTRAM is held twice | 84 | 172 032 per copy |
+| dTLB, the same fields | 2048, read by two ports (M's lookup, the walker's), so the LUTRAM is held twice | 84 | 172 032 per copy |
 
 Also in `rv_soc_top`: `lmem` — the 256 KiB on-chip boot/monitor SRAM, `NLLINE × 512`.
 
@@ -1435,7 +1454,7 @@ one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has n
 |---|---|---|
 | `[15:0]` | D$ | `rv_dcache.v`, invariants block (11 conditions: an orphan fill beat, a response nothing awaits, a write completion nothing sent, beats out of order, two pvalid copies of a line, VA/PA page-offset mismatch, a tag reused while outstanding, a waiter on a dead MSHR, a beat into a line being read out, vvalid without pvalid, a current-epoch virtual hit on another line) |
 | `[31:16]` | I$ | `rv_icache.v`, invariants block (8 conditions: a line hitting in both ways, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways) |
-| `[47:32]` | LSU | `smolrv64_lsu.v` (9 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head, a queue entry's stored VA translating to another PA or NC bit than it holds) |
+| `[47:32]` | LSU | `smolrv64_lsu.v` (8 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head) |
 | `[63:48]` | frontend | `smolrv64_frontend.v` (the fetch ring's, the predictor's and fetch's invariants) |
 
 Read-only MMIO, 64-bit words, in the window the deleted fetch-buffer diagnostic owned so no

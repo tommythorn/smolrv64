@@ -58,11 +58,15 @@ module mmu
     // the PA-validity term gated on t_ok instead of t_ready. AND them with your own valid.
     output wire        t_ok,
     output wire        t_fault_raw,
-    // A SECOND LOOKUP: the TLB alone, never a walk, under the same context. s_ok says it
-    // resolved (Bare, or a hit whose perms pass for s_access); s_paddr/s_nc are then valid.
+    // A SECOND LOOKUP: the TLB alone, never a walk, under the same context. s_flt is a fault the
+    // address alone decides (non-canonical under Sv39, beyond the top under Bare), with s_cause;
+    // else s_ok says it resolved (Bare, or a hit whose perms pass for s_access) and s_paddr/s_nc
+    // are valid. Neither means the TLB does not hold it: the walker's port must answer.
     input  wire [63:0] s_vaddr,
     input  wire [1:0]  s_access,
     output wire        s_ok,
+    output wire        s_flt,
+    output wire [3:0]  s_cause,
     output wire [AW-1:0] s_paddr,
     output wire        s_nc);
 
@@ -242,7 +246,12 @@ module mmu
    wire            s_n    = tlb_n[s_idx];
    wire            s_hit  = s_v_e & (s_tag == s_vpn)
                           & ~perm_fault({56'd0, s_perm}, s_access, priv, sum, mxr);
-   assign s_ok    = ~xlate | s_hit;
+   wire            s_noncanon = (s_vaddr[63:39] != {25{s_vaddr[38]}});
+   wire            s_oob      = ({1'b0, s_vaddr} >= {1'b0, DRAM_TOP});
+   assign s_flt   = xlate ? s_noncanon : s_oob;
+   assign s_cause = xlate ? ((s_access == 2'd0) ? 4'd12 : (s_access == 2'd1) ? 4'd13 : 4'd15)
+                          : ((s_access == 2'd0) ? 4'd1  : (s_access == 2'd1) ? 4'd5  : 4'd7);
+   assign s_ok    = ~s_flt & (~xlate | s_hit);
    assign s_paddr = xlate ? leaf_pa(s_ppn, s_lvl, s_vaddr, s_n) : s_vaddr[AW-1:0];
    assign s_nc    = xlate & s_nc_e;
 

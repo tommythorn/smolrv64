@@ -91,15 +91,19 @@ module smolrv64_lsu
     output wire            xo_v,           // translation landed THIS cycle -> fill the entry
     output wire            xo_early,       // ...and the access started here too (req_early
                                            // honoured: the FSM was idle and the port free)
-    // ---- a queue entry's translation, checked again from the VA it stores ----
-    // The entry the translate pass filled two cycles ago: its stored VA is looked up in the
-    // dTLB's second port (the TLB alone, never a walk); a lookup that resolves must name the
-    // PA and the NC bit the entry holds.
-    input  wire            qx_v,
-    input  wire            qx_st,          // a store-queue entry (else a load's)
-    input  wire [38:0]     qx_va,
-    input  wire [55:0]     qx_pa,
-    input  wire            qx_unc,
+    output wire            xo_tv,          // ...with its PA: the TLB held it (else the walker will)
+    // ---- THE WALKER, for a queue entry M handed over untranslated ----
+    // The walker's port serves M's FSM-starting op first (an AMO, LR/SC or CBO: the ROB head),
+    // else this request, held by smolrv64_core until wk_done.
+    input  wire            wk_v,
+    input  wire            wk_st,          // a store's entry (else a load's): the access type
+    input  wire [38:0]     wk_va,
+    output wire            wk_done,        // the walker answers this cycle...
+    output wire [55:0]     wk_pa,
+    output wire            wk_unc,
+    output wire            wk_mem,
+    output wire            wk_flt,         // ...or the fault the entry traps with at the ROB head
+    output wire [3:0]      wk_fc,
 
 
     // ---- translation context (from csr_file) ----
@@ -268,7 +272,12 @@ module smolrv64_lsu
    // fast load may not reuse a tag whose response is still on its way (C4a).
    wire        port_free = ~mem_rbusy & ~mem_ren;
    reg [(1<<LDTW)-1:0] o_v;                      // per tag: a response is still coming
-   wire        pt_start = pt_v & (st == S_IDLE) & ~mmu_walking
+   // ...and only M's walk needs that: the queue walker's request does not depend on the FSM,
+   // so a queued access may start while it walks. Whose walk it is: the port's requester last
+   // cycle (xl_f outranks the queue's, and a walk follows the request it started for).
+   reg         wk_m_q;  initial wk_m_q = 1'b0;
+   always @(posedge clk) wk_m_q <= ~reset & xl_f;
+   wire        pt_start = pt_v & (st == S_IDLE) & ~(mmu_walking & wk_m_q)
                         & (pt_store | (port_free & ~o_v[pt_tag]));
    // A TRANSLATE-ONLY REQUEST DOES NOT ARBITRATE, AND DOES NOT WAIT FOR THE FSM. It needs the
    // MMU and nothing else: no bank, no pa_q, no state. It used to be gated with everything
@@ -316,35 +325,44 @@ module smolrv64_lsu
    wire        wr_class = req_store | (req_amo & ~is_lr);   // store-class for translation/faults
 
    // ------------------------------------------------------------ translation
-   wire        t_ready, t_fault, t_uncached, t_ok, t_fault_raw;
+   wire        t_ready, t_fault, t_uncached;
    wire [55:0] t_paddr;
-   wire        qx_ok, qx_tnc;
-   wire [55:0] qx_tpa;
+   wire        s_ok, s_flt, s_nc;
+   wire [3:0]  s_cause;
+   wire [55:0] s_paddr;
    wire [3:0]  t_cause;
    // An FSM-starting access asks only while it is actually waiting in S_IDLE and the port is
    // not taking the FSM this cycle: once started, the access owns pa_q. The translate-only
    // pass asks unconditionally (xl_x). The MMU's t_ok/t_fault_raw carry no req_valid, so the
    // translate-only answers below are ANDed with xl_x alone and never see xl_f's gating.
-   wire        xl_req = xl_x | xl_f;
+   // THE WALKER'S PORT: M's FSM-starting op first, else the queue's untranslated entry. The
+   // translate-only pass never uses it: it looks up in the other port, and a miss there hands
+   // the entry to the walker instead of holding M.
+   wire        xl_req  = xl_f | wk_v;
+   wire        wk_own  = ~xl_f;                  // the port's request this cycle is the queue's
+   wire [63:0] mm_va   = xl_f ? req_vaddr : {{25{wk_va[38]}}, wk_va};
+   wire [1:0]  mm_acc  = xl_f ? (is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1)
+                              : (wk_st ? 2'd2 : 2'd1);
 
    // The dTLB: 2048 entries, direct-mapped on the VPN's low bits, 8 MiB of 4 KiB pages -- the
    // reach GB5 Machine Learning's SGEMM needs, whose column walk touches a new page every one or
    // two loads. Read in the translate cycle, so distributed RAM, not block RAM.
    mmu #(.AW(56), .DRAM_TOP(DRAM_TOP), .TLBN(2048), .TLBI(11)) u_mmu
      (.clk(clk), .reset(reset),
-      .req_valid(xl_req), .req_vaddr(req_vaddr),
-      .req_access(is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1),
+      .req_valid(xl_req), .req_vaddr(mm_va), .req_access(mm_acc),
       .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush), .walk_ok(1'b1),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
-      .t_lvl(), .t_uncached(t_uncached), .t_ok(t_ok), .t_fault_raw(t_fault_raw),
-      .s_vaddr({{25{qx_va[38]}}, qx_va}), .s_access(qx_st ? 2'd2 : 2'd1),
-      .s_ok(qx_ok), .s_paddr(qx_tpa), .s_nc(qx_tnc));
-   // A queue entry's VA and PA were written together by one fill, so whichever fill the
-   // entry holds now, its pair must agree with the TLB. A lookup that does not resolve (the
-   // entry evicted or flushed, the perms judged under a context changed since) says nothing.
-   wire e_qx_xlate = qx_v & qx_ok & ((qx_tpa != qx_pa) | (qx_tnc != qx_unc));
+      .t_lvl(), .t_uncached(t_uncached), .t_ok(), .t_fault_raw(),
+      .s_vaddr(req_vaddr), .s_access(req_store ? 2'd2 : 2'd1),
+      .s_ok(s_ok), .s_flt(s_flt), .s_cause(s_cause), .s_paddr(s_paddr), .s_nc(s_nc));
+   assign wk_done = wk_v & wk_own & t_ready;
+   assign wk_pa   = t_paddr;
+   assign wk_unc  = t_uncached;
+   assign wk_flt  = t_fault;
+   assign wk_fc   = t_cause;
+   assign wk_mem  = (t_paddr >= LSU_DRAM_BASE) | (t_paddr[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
 
    // A misaligned access whose byte span leaves the page needs a second translation.
    // Raise address-misaligned instead (cause 4 load / 6 store-AMO) and let software
@@ -360,16 +378,21 @@ module smolrv64_lsu
    wire amo_mis = req_amo & ((req_vaddr[3:0] & al_mask) != 4'd0);
 
    wire mis_flt = (xl_x & xpage) | (xl_f & (xpage | amo_mis));
-   wire xl_flt  = (xl_x & t_ok & t_fault_raw) | (xl_f & t_ready & t_fault);
+   // the translate-only pass faults only on what the address alone decides; a page fault is
+   // the walker's, and rides in the entry
+   wire xl_flt  = (xl_x & s_flt) | (xl_f & t_ready & t_fault);
 
    assign fault       = req_valid & (mis_flt | xl_flt);
-   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : t_cause;
+   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : xl_x ? s_cause : t_cause;
    assign fault_tval  = req_vaddr;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
    wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
-   wire xo_ok    = xl_x & t_ok & ~t_fault_raw & ~xpage;
+   wire xo_ok    = xl_x & s_ok & ~xpage;
+   // ...or hands its VA over untranslated: the TLB does not hold it (or its perms failed, which
+   // only a fresh walk may turn into a fault), and M does not wait for the walk
+   wire xo_nopa  = xl_x & ~s_ok & ~s_flt & ~xpage;
    // NO disambiguation here any more. smolrv64_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).
@@ -385,17 +408,18 @@ module smolrv64_lsu
    wire xl_early = xo_ok & req_early & (t_mem | m_head) & (st == S_IDLE) & ~pt_start
                  & port_free & ~o_v[req_tag];   // the translate's region (see xo_mem)
    wire start_ok = pt_start | xl_ok_f | xl_early;
-   assign xo_v     = xo_ok;
+   assign xo_v     = xo_ok | xo_nopa;
+   assign xo_tv    = xo_ok;
    assign xo_early = xl_early;
-   assign xo_pa  = t_paddr;
-   assign xo_unc = t_uncached;
+   assign xo_pa  = s_paddr;
+   assign xo_unc = s_nc;
    // THE TRANSLATE'S OWN REGION, NEVER eff_pa's. eff_pa is the PORT's address whenever the port
    // starts or chains an access in the same cycle a translate completes (pt_start | take_next),
    // and that is exactly when a load's fill would have taken the PORT's DRAM classification:
    // a device load recorded as idempotent, issued off the wrong path past smolrv64_lq's head gate,
    // reading a read-to-clear register on the way (2026-09-17: the board's dead NIC under NFS
    // root; the cosim never took a PLIC interrupt until the SMOLRV64_IRQ_STIM storm caught it).
-   wire t_mem = (t_paddr >= LSU_DRAM_BASE) | (t_paddr[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
+   wire t_mem = (s_paddr >= LSU_DRAM_BASE) | (s_paddr[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
    assign xo_mem = t_mem;
 
    // ------------------------------------------------------- AMO RMW datapath
@@ -508,9 +532,11 @@ module smolrv64_lsu
    // and failed timing. The queue pops at the handoff (pt_ack); nothing can pass a store that
    // sits here, because every access goes through this FSM, and the D$ holds a load to the line
    // of any store it has queued.
-   wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~mmu_walking;   // src_pt: M's op (a CBO) is not a store to chain from
-   assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr;
-   assign eff_unc = (pt_start | take_next) ? pt_unc : t_uncached;
+   wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~(mmu_walking & wk_m_q);   // src_pt: M's op (a CBO) is not a store to chain from
+   // M's own start: a translate-only load (the early start) took its PA from the lookup port, an
+   // FSM-starting op (AMO, LR/SC, CBO) from the walker's
+   assign eff_pa  = (pt_start | take_next) ? pt_pa  : req_xlate ? s_paddr : t_paddr;
+   assign eff_unc = (pt_start | take_next) ? pt_unc : req_xlate ? s_nc    : t_uncached;
 
    // ---------------------------------------------- FAST PATH: a queued load, non-blocking (C4a)
    // A queued load that is cached, inside one word and to memory (DRAM or the local SRAM) needs
@@ -618,7 +644,7 @@ module smolrv64_lsu
    // `fault` needs no such split: it is qualified by xl_req, which is false unless M owns an
    // idle LSU, so a commit can never raise one (it was translated before it was buffered).
    assign done_acc = acc_done & ~own_pt;
-   assign done     = fault | xo_ok | done_acc;
+   assign done     = fault | xo_ok | xo_nopa | done_acc;
    assign pt_done  = acc_done & own_pt;
    // A LOAD'S LANDING FROM THE LOAD TERMS ALONE (plan item T1 (L) step 3, 2026-09-07). pt_done
    // & ~pt_is_store is the same value, but its cone is all of acc_done, and the store terms'
@@ -785,9 +811,6 @@ module smolrv64_lsu
          $fatal(1, "smolrv64_lsu: req_early on an access that is not a translate-only load");
       if (e_m_spec)
          $fatal(1, "smolrv64_lsu: an AMO or CBO started off the ROB head: va=%h cbo=%b amo=%b", req_vaddr, req_cbo, req_amo);
-      if (e_qx_xlate)
-         $fatal(1, "smolrv64_lsu: %0s entry va=%h holds pa=%h nc=%b, the dTLB says pa=%h nc=%b",
-                qx_st ? "store" : "load", qx_va, qx_pa, qx_unc, qx_tpa, qx_tnc);
    end
 
    // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------
@@ -803,12 +826,11 @@ module smolrv64_lsu
    //   5 ld_done     pt_ld_done disagrees with pt_done & ~store
    //   6 req_early   req_early on an access that is not a translate-only load
    //   7 m_spec      an AMO or CBO started off the ROB head
-   //   8 qx_xlate    a queue entry's stored VA translates to another PA or NC bit than it holds
    reg [15:0] err_q;
    initial err_q = 16'd0;
    always @(posedge clk)
       err_q <= reset ? 16'd0
-             : {7'd0, e_qx_xlate, e_m_spec, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
+             : {8'd0, e_m_spec, e_req_early, e_ld_done, e_tag_reuse, e_tag_orphan, e_tag_reissue,
                 e_dev_span, e_dev_spec};
    assign err = err_q;
 endmodule

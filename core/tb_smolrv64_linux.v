@@ -608,6 +608,16 @@ module tb;
    // (a miss being filled), a pair is in flight, or none of these (the restart's own cycle).
    reg [63:0] fe_mmu, fe_page, fe_door, fe_infl, fe_oth;
    initial begin fe_mmu = 0; fe_page = 0; fe_door = 0; fe_infl = 0; fe_oth = 0; end
+   // XLATE-SIM: M's lookups, the misses it hands the walker, the walker's answers and faults, and
+   // the queue entries whose fault traps from the ROB head (D$ plan increment 5b).
+   reg [63:0] xs_hit, xs_nopa, xs_wk, xs_wkf, xs_trap;
+   initial begin xs_hit = 0; xs_nopa = 0; xs_wk = 0; xs_wkf = 0; xs_trap = 0; end
+   always @(negedge clk) if (!reset) begin
+      if (dut.core.u_lsu.xo_tv)  xs_hit  = xs_hit + 1;
+      if (dut.core.u_lsu.xo_v & ~dut.core.u_lsu.xo_tv) xs_nopa = xs_nopa + 1;
+      if (dut.core.lsu_wk_done)  begin xs_wk = xs_wk + 1; if (dut.core.lsu_wk_flt) xs_wkf = xs_wkf + 1; end
+      if (dut.core.qf_in)        xs_trap = xs_trap + 1;
+   end
    // ITLB-SIM: does anything retire from each iTLB walk's page? The last 32 walked pages are kept;
    // a retirement from a page marks it, and a page leaving the ring unmarked counts as a walk for a
    // fetch nothing retired from (a wrong path, or a page left before any instruction of it committed).
@@ -1014,6 +1024,8 @@ module tb;
                fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull);
       $display("FRING-EMPTY immu=%0d page=%0d icache-door=%0d in-flight=%0d other=%0d",
                fe_mmu, fe_page, fe_door, fe_infl, fe_oth);
+      $display("XLATE-SIM M-hits=%0d handed-to-walker=%0d walker-answers=%0d (faults %0d) queue-traps=%0d",
+               xs_hit, xs_nopa, xs_wk, xs_wkf, xs_trap);
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
