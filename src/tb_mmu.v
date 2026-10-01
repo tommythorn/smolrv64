@@ -20,7 +20,7 @@ module tb;
    mmu #(.AW(AW)) dut
      (.clk(clk), .reset(reset), .req_valid(req_valid), .req_vaddr(req_vaddr),
       .req_access(req_access), .priv(priv), .sum(sum), .mxr(mxr), .satp(satp),
-      .flush(flush), .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata),
+      .flush(flush), .walk_ok(1'b1), .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata),
       .ptw_rvalid(ptw_rvalid), .walking(), .t_ready(t_ready), .t_paddr(t_paddr),
       .t_fault(t_fault), .t_cause(t_cause), .t_lvl(), .t_uncached(t_uncached), .t_ok(), .t_fault_raw(),
       .s_vaddr(64'd0), .s_access(2'd1), .s_ok(), .s_paddr(), .s_nc());

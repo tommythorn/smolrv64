@@ -33,6 +33,7 @@ module mmu
     input  wire        mxr,           // mstatus.MXR
     input  wire [63:0] satp,
     input  wire        flush,         // sfence.vma: invalidate the TLB
+    input  wire        walk_ok,       // a TLB miss may start a walk now (else it waits, t_ready low)
     // PTW memory port (registered read: drive ptw_addr, ptw_rdata valid next cycle)
     output reg  [AW-1:0] ptw_addr,
     output reg         ptw_read,
@@ -246,7 +247,7 @@ module mmu
    assign s_nc    = xlate & s_nc_e;
 
    // start a walk when the request can't resolve this cycle
-   wire start_walk = req_valid & xlate & !noncanon & !tlb_ok & !wdm & (st==IDLE);
+   wire start_walk = req_valid & walk_ok & xlate & !noncanon & !tlb_ok & !wdm & (st==IDLE);
 
    // PTE address = (table_ppn << 12) | (vpn[lvl] << 3)
    wire [8:0] vpn_lvl = (lvl==2'd2) ? va_q[38:30] : (lvl==2'd1) ? va_q[29:21] : va_q[20:12];

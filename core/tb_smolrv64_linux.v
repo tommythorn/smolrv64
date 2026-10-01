@@ -608,6 +608,45 @@ module tb;
    // (a miss being filled), a pair is in flight, or none of these (the restart's own cycle).
    reg [63:0] fe_mmu, fe_page, fe_door, fe_infl, fe_oth;
    initial begin fe_mmu = 0; fe_page = 0; fe_door = 0; fe_infl = 0; fe_oth = 0; end
+   // ITLB-SIM: does anything retire from each iTLB walk's page? The last 32 walked pages are kept;
+   // a retirement from a page marks it, and a page leaving the ring unmarked counts as a walk for a
+   // fetch nothing retired from (a wrong path, or a page left before any instruction of it committed).
+   reg [26:0] iw_pg [0:31];
+   reg [31:0] iw_v, iw_u;
+   reg [4:0]  iw_wp;
+   reg [63:0] iw_n, iw_waste;
+   integer    iwi;
+   initial begin iw_v = 0; iw_u = 0; iw_wp = 0; iw_n = 0; iw_waste = 0; end
+   // ...and the same for I$ misses, by VA line: the last 64 missing lines.
+   reg [32:0] im_ln [0:63];
+   reg [63:0] im_v, im_u;
+   reg [5:0]  im_wp;
+   reg [63:0] im_n, im_waste;
+   initial begin im_v = 0; im_u = 0; im_wp = 0; im_n = 0; im_waste = 0; end
+   always @(negedge clk) if (!reset) begin
+      for (iwi = 0; iwi < 64; iwi = iwi + 1) if (im_v[iwi] && (
+             (dut.core.retire  && dut.core.retire_pc[38:6]  == im_ln[iwi]) ||
+             (dut.core.retire2 && dut.core.retire2_pc[38:6] == im_ln[iwi]) ||
+             (dut.core.retire3 && dut.core.cs_pc[dut.core.rob_head3_idx][38:6] == im_ln[iwi])))
+         im_u[iwi] = 1'b1;
+      if (dut.u_icache.perf_miss) begin
+         if (im_v[im_wp] && !im_u[im_wp]) im_waste = im_waste + 1;
+         im_ln[im_wp] = dut.u_icache.s1_va[38:6]; im_v[im_wp] = 1'b1; im_u[im_wp] = 1'b0;
+         im_wp = im_wp + 1; im_n = im_n + 1;
+      end
+   end
+   always @(negedge clk) if (!reset) begin
+      for (iwi = 0; iwi < 32; iwi = iwi + 1) if (iw_v[iwi] && (
+             (dut.core.retire  && dut.core.retire_pc[38:12]  == iw_pg[iwi]) ||
+             (dut.core.retire2 && dut.core.retire2_pc[38:12] == iw_pg[iwi]) ||
+             (dut.core.retire3 && dut.core.cs_pc[dut.core.rob_head3_idx][38:12] == iw_pg[iwi])))
+         iw_u[iwi] = 1'b1;
+      if (dut.core.u_immu.start_walk) begin
+         if (iw_v[iw_wp] && !iw_u[iw_wp]) iw_waste = iw_waste + 1;
+         iw_pg[iw_wp] = dut.core.u_immu.req_vaddr[38:12]; iw_v[iw_wp] = 1'b1; iw_u[iw_wp] = 1'b0;
+         iw_wp = iw_wp + 1; iw_n = iw_n + 1;
+      end
+   end
    always @(posedge clk) if (!reset && dut.core.fe.u_ring.rg_cnt == 0 && !dut.core.fe.u_ring.freeze) begin
       if (!dut.core.fe.u_ring.xlate_ok)                               fe_mmu  <= fe_mmu + 1;
       else if (!dut.core.fe.u_ring.inpg)                              fe_page <= fe_page + 1;
@@ -975,6 +1014,8 @@ module tb;
                fr_req, fr_hw, fr_tk, fr_nt, fr_drop, fr_rft, fr_rmid, fr_pqfull, fr_rgfull);
       $display("FRING-EMPTY immu=%0d page=%0d icache-door=%0d in-flight=%0d other=%0d",
                fe_mmu, fe_page, fe_door, fe_infl, fe_oth);
+      $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
+      $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
                ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,

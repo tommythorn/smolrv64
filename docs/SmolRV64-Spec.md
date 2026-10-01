@@ -1028,12 +1028,23 @@ Two independent `mmu` instances — **iTLB** in `smolrv64_core`, **dTLB** in `sm
 
 | | |
 |---|---|
-| TLB | **direct-mapped** on the VPN's low bits, read in the translate cycle: the dTLB **2048 entries** (LUTRAM, 8 MiB of 4 KiB pages), the iTLB 16 |
+| TLB | **direct-mapped** on the VPN's low bits, read in the translate cycle: the dTLB **2048 entries** (LUTRAM, 8 MiB of 4 KiB pages), the iTLB 64 (one LUTRAM depth: no read mux) |
 | Scheme | Sv39, 3-level hardware page-table walk |
 | PTW | reads through the D$ read port (§8); a miss fills through the D$ |
 | Superpages | 2 MiB / 1 GiB; misaligned superpage → fault |
 | Ssvnapot | level-0 NAPOT leaves recognised |
 | PA width | 56 bits produced (`AW`), 34 significant to the caches |
+
+**No iTLB walk past a weak branch.** The core counts the conditionals dispatched on a weak
+direction (the effective counter, the corrector's when it hit, is 01 or 10) until each leaves the
+CTF stage; the backend squash clears the count, which it can do exactly because it fires at the ROB
+head. While the count is nonzero and no frontend restart is pending, the iMMU starts no walk
+(`walk_ok`): a TLB hit still translates, a miss waits. Every counted branch is older than the
+fetch, so it resolves whatever fetch does. A larger iTLB lets more wrong-path fetch reach the
+I$ (tiny128 boot, 300 M cycles: 64 entries alone -1.54%, the walks halved but the I$ misses up
+4.6%, one line in five never retired from); with the throttle, +1.03% over 16 entries.
+`ITLB-SIM` and `ICMISS-SIM` in the Linux bench count walks and I$ misses whose page or line nothing
+retired from.
 
 The MMU also range-checks the resolved PA: anything outside {RAM, CLINT, PLIC, UART, LSRAM,
 virtio} faults rather than being silently dropped.
@@ -1325,7 +1336,7 @@ Address translation, two instances (iTLB in `smolrv64_core`, dTLB in `smolrv64_l
 
 | array | shape | width | bits |
 |---|---|---|---|
-| iTLB `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 16 | 1+27+44+2+8+1+1 = 84 | 1 344 |
+| iTLB `tlb_v`/`tag`/`ppn`/`lvl`/`perm`/`nc`/`n` | 64 | 1+27+44+2+8+1+1 = 84 | 5 376 |
 | dTLB, the same fields | 2048, read by two ports (M's translate, the queue check), so the LUTRAM is held twice | 84 | 172 032 per copy |
 
 Also in `rv_soc_top`: `lmem` — the 256 KiB on-chip boot/monitor SRAM, `NLLINE × 512`.

@@ -334,7 +334,7 @@ module smolrv64_lsu
      (.clk(clk), .reset(reset),
       .req_valid(xl_req), .req_vaddr(req_vaddr),
       .req_access(is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1),
-      .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush),
+      .priv(xl_priv), .sum(xl_sum), .mxr(xl_mxr), .satp(xl_satp), .flush(xl_flush), .walk_ok(1'b1),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),

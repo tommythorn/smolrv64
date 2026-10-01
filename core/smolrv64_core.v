@@ -422,7 +422,7 @@ module smolrv64_core
    wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
 
-   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP)) u_immu
+   mmu #(.AW(56), .DRAM_TOP(DRAM_TOP), .TLBN(64), .TLBI(6)) u_immu
      (.clk(clk), .reset(reset),
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
       .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
@@ -430,6 +430,7 @@ module smolrv64_core
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw(),
+      .walk_ok(~walk_hold),
       .s_vaddr(64'd0), .s_access(2'd1), .s_ok(), .s_paddr(), .s_nc());   // the second lookup is the dTLB's
    assign imem_addr = {8'd0, immu_pa};
 
@@ -3149,6 +3150,36 @@ module smolrv64_core
    assign res_ret   = cf_is_jalr & cf_link_rs & ~cf_link_rd;
    assign res_taken = cf_taken;
    assign res_tgt   = cf_taken_tgt;
+
+   // ---- the fetch stream's exposure to a wrong path: weak conditionals in flight ----
+   // A conditional dispatched on a WEAK direction (its effective counter, the corrector's when it
+   // hit, is 01 or 10) is counted until it leaves the CTF stage (cf_done: once per CTI, wrong-path
+   // ones included). Every counted branch is older than anything fetch asks for, so it resolves
+   // whatever fetch does; the backend squash kills every younger one with nothing older left, so it
+   // clears the count exactly. While one is in flight the iMMU starts no walk: a page reached past
+   // a coin-flip branch is not worth a walk until the branch says so. A pending restart (fr_v)
+   // means fetch has already left the wrong path, so the branches younger than it hold nothing.
+   localparam integer PD_YHIT = PD_GHR - 1;                  // the corrector-hit bit
+   localparam integer PD_YCTR = PD_GHR - 3;                  // the corrector's counter
+   function weak_cond(input [PDW-1:0] pd);
+      reg [1:0] c;
+      begin
+         c = pd[PD_YHIT] ? pd[PD_YCTR +: 2] : pd[1:0];
+         weak_cond = pd[DCR_HIT] & (c[1] ^ c[0]);
+      end
+   endfunction
+   wire [1:0] wk_d = {1'b0, rn_valid   & d_is_branch  & weak_cond(d_pdet)}
+                   + {1'b0, rn_valid_b & d2_is_branch & weak_cond(d2_pdet)}
+                   + {1'b0, rn_valid_c & d3_is_branch & weak_cond(d3_pdet)};
+   wire       wk_r = cf_done & cf_is_branch & weak_cond(cf_pdet);
+   reg  [ROB_IDXB:0] wk_n;   initial wk_n = 0;
+   always @(posedge clk) begin
+      if (reset | redirect) wk_n <= 0;
+      else                  wk_n <= wk_n + wk_d - {{ROB_IDXB{1'b0}}, wk_r};
+      if (!reset && !redirect && wk_r && wk_n == 0 && wk_d == 2'd0)
+         $fatal(1, "smolrv64_core: a weak conditional resolved with none counted in flight");
+   end
+   wire walk_hold = (wk_n != 0) & ~fr_v;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing
