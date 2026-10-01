@@ -576,6 +576,12 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      queue trap fires).
    - Lockstep: 39,179,272 at 60 M (-0.03%), 170,226,822 at 300 M (+1.46%). The storm is clean to
      500 M.
+   - **The walker's request is a register.** Built with the entry chosen combinationally, the
+     design missed by 0.42 ns (default) and 0.45 ns (Explore), with 12,917 endpoints under +0.35 ns:
+     the queues' candidate pointers ran through the entry's VA into the 2048-entry TLB's read
+     address (`u_lq/acc -> u_lsu/u_mmu`, 1,560 paths) and congested the whole core. The walker now
+     latches the entry's VA as it takes it, a cycle per walk: 39,529,260 at 60 M (+0.89%),
+     168,133,862 at 300 M (-1.23%; +0.21% over the fill hold alone).
 
    **5c, `VIRT=1`: a load asks by its VA first.**
    - **A virtual hit answers with no PA.** A virtual miss answers a nack with no side effect: no

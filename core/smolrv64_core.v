@@ -1702,8 +1702,8 @@ module smolrv64_core
    // ---- THE WALKER: a queue entry M handed over untranslated ----
    // The store queue's first uncommitted entry, else the load queue's candidate, whichever has no
    // translation (stores commit and loads reach memory in queue order, so no other entry can be
-   // waited on first). Once asked for, an entry keeps the walker until it answers -- a store
-   // filling meanwhile does not take the walk over -- or a redirect ends the walk with the entry.
+   // waited on first). Once taken, an entry keeps the walker until it answers -- a store filling
+   // meanwhile does not take the walk over -- or a redirect ends the walk with the entry.
    wire                sq_k_v, lq_k_v, sq_f_v, lq_f_v;
    wire [SQ_IB-1:0]    sq_k_idx;
    wire [LQ_IB-1:0]    lq_k_idx;
@@ -1714,14 +1714,20 @@ module smolrv64_core
    wire                lsu_wk_done, lsu_wk_unc, lsu_wk_mem, lsu_wk_flt, lsu_xo_tv;
    wire [55:0]         lsu_wk_pa;
    wire [3:0]          lsu_wk_fc;
+   // THE REQUEST IS A REGISTER. Choosing the entry (the queues' candidate pointers, the store-
+   // or-load pick) and the walker's 2048-entry TLB read are a cycle apart, so the choice never
+   // reaches the TLB's read address in the cycle it is made.
    reg                 wk_lk, wk_lk_st;
+   reg [38:0]          wk_lk_va;
    initial begin wk_lk = 1'b0; wk_lk_st = 1'b0; end
-   wire                wk_st = wk_lk ? wk_lk_st : sq_k_v;
-   wire                wk_v  = wk_lk | sq_k_v | lq_k_v;
-   wire [38:0]         wk_va = wk_st ? sq_k_va : lq_k_va;
+   wire                wk_v  = wk_lk;
+   wire                wk_st = wk_lk_st;
+   wire [38:0]         wk_va = wk_lk_va;
    always @(posedge clk) begin
       if (reset | redirect | lsu_wk_done) wk_lk <= 1'b0;
-      else if (wk_v) begin wk_lk <= 1'b1; wk_lk_st <= wk_st; end
+      else if (~wk_lk & (sq_k_v | lq_k_v)) begin
+         wk_lk <= 1'b1;  wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va;
+      end
       if (!reset && !redirect && wk_lk && (wk_lk_st ? ~sq_k_v : ~lq_k_v))
          $fatal(1, "smolrv64_core: the walker's entry (%0s) is no longer the untranslated one", wk_lk_st ? "store" : "load");
    end
