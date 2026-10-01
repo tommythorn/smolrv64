@@ -425,8 +425,8 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - The D$ bench asks for I$ cleans about 1,400 times a run (a third find the line dirty) and
      checks memory at each ack. Two mutations are caught: acking at take, and the clean
      completing the store port.
-   - Build (036440f2): the default directive met, WNS +0.044. Board gate PASS (login, 0 faults,
-     900 s GB5 stress, errlog clean).
+   - Build (036440f2): the default directive missed by 0.081 ns; the Explore directive met, WNS
+     +0.044. Board gate PASS (login, 0 faults, 900 s GB5 stress, errlog clean).
 
    **4b, invalidation by probe.**
    - **Layout:** the I$'s valid bits and physical tags move to the D$'s layout, one array per
@@ -460,8 +460,8 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - **The device write event:** in the platform, each device write burst's address handshake,
      held four `ui_clk` cycles and synchronised to `probe_clk`. In simulation, the virtio-blk
      slave's and the DMA agent's writes.
-   - **Step 2 (open):** exact DMA probes, per line through an async FIFO, so network receive
-     traffic stops clearing the I$ at every fence.i on the NFS-root board.
+   - **Step 2:** exact DMA probes, per line through an async FIFO, so device writes stop clearing
+     the I$ at fence.i. Measured below as not needed yet.
    - **Bench:** the I$ bench rewrites and probes a line every ~150 cycles with requests in
      flight. A third of the probes are aimed at the line being filled or prefetched: about 550-800
      fills and 20-120 prefetches killed a run. Three mutations are caught: no kill, fills never
@@ -469,6 +469,20 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
    - **Lockstep** (tiny128: no device writes, so fence.i never clears the I$):
      37,767,298 -> 38,695,476 at 60 M (+2.46%), 160,629,194 -> 162,576,179 at 300 M (+1.21%).
      fe:icache 23.4% -> 21.5% at 60 M. The storm is clean to 500 M.
+   - **Build (76e0e0cd):** the default directive missed by 0.058 ns; the Explore directive met, WNS
+     +0.003. Board gate PASS (login, 0 faults, 900 s GB5 stress, errlog clean).
+   - **Board A/B against 4a,** each bitstream booted clean, I$ misses per 1000 instructions and IPC:
+
+     | workload | 4a: I$ misses | 4a: IPC | 4b: I$ misses | 4b: IPC |
+     |---|---|---|---|---|
+     | 300 execs of `/bin/true` | 48.8 | 0.303 | 49.0 | 0.303 |
+     | 6 x `gcc -O2 -c` | 11.5 | 0.580 | 11.5 | 0.581 |
+     | `xz -6`, 10 MB of /usr/bin | 1.9 | 0.911 | 1.4 | 0.912 |
+
+     Steady-state userspace barely runs fence.i: Linux flushes the I$ when a page-cache page is
+     first mapped executable, not on every exec of it. So neither 4b nor exact DMA probes move
+     these workloads; 4b's gain is the boot's fence.i (the lockstep above). Step 2 is not built
+     unless a workload shows fence.i clearing the I$.
 
 5. **Phase 2, with the queue-side translate:** the LQ/SQ keep the VA and the core presents it
    (`VIRT=1`), with `ep_bump` on a data-side mapping change; the load path stops translating; the
