@@ -1,119 +1,121 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="546" font-family="Helvetica, Arial, sans-serif" font-size="12">
 <rect width="100%" height="100%" fill="white"/>
 <text x="12" y="24" font-size="15" font-weight="bold">Geekbench 5.4.1 single-core, score per subtest</text>
-<text x="12" y="41" fill="#555">SmolRV64 on the XCKU5P at 166.67 MHz, 2026-09-29</text>
+<text x="12" y="41" fill="#555">SmolRV64 on the XCKU5P at 166.67 MHz, 2026-10-01</text>
 <text x="12" y="55" fill="#555">single-core 10: Integer 12, Crypto 1, Floating Point 8 (a geometric mean; one 0 zeroes it)</text>
 <text x="12" y="86" font-weight="bold" fill="#b5651d">Crypto</text>
 <text x="144" y="105" text-anchor="end">AES-XTS</text>
-<rect x="160" y="95" width="10.8" height="12" fill="#b5651d"/>
-<text x="176.8" y="105" font-weight="bold">1</text>
-<text x="450" y="105" fill="#666">2.17 MB/sec</text>
+<rect x="160" y="95" width="10.0" height="12" fill="#b5651d"/>
+<text x="176.0" y="105" font-weight="bold">1</text>
+<text x="450" y="105" fill="#666">2.16 MB/sec</text>
 <text x="12" y="128" font-weight="bold" fill="#2b6cb0">Integer</text>
 <text x="144" y="147" text-anchor="end">Text Compression</text>
 <rect x="160" y="137" width="260.0" height="12" fill="#2b6cb0"/>
-<text x="426.0" y="147" font-weight="bold">24</text>
-<text x="450" y="147" fill="#666">125.9 KB/sec</text>
+<text x="426.0" y="147" font-weight="bold">26</text>
+<text x="450" y="147" fill="#666">132.3 KB/sec</text>
 <text x="144" y="165" text-anchor="end">Image Compression</text>
-<rect x="160" y="155" width="86.7" height="12" fill="#2b6cb0"/>
-<text x="252.7" y="165" font-weight="bold">8</text>
-<text x="450" y="165" fill="#666">391.2 Kpixels/sec</text>
+<rect x="160" y="155" width="100.0" height="12" fill="#2b6cb0"/>
+<text x="266.0" y="165" font-weight="bold">10</text>
+<text x="450" y="165" fill="#666">457.1 Kpixels/sec</text>
 <text x="144" y="183" text-anchor="end">Navigation</text>
-<rect x="160" y="173" width="260.0" height="12" fill="#2b6cb0"/>
-<text x="426.0" y="183" font-weight="bold">24</text>
-<text x="450" y="183" fill="#666">66.4 KTE/sec</text>
+<rect x="160" y="173" width="210.0" height="12" fill="#2b6cb0"/>
+<text x="376.0" y="183" font-weight="bold">21</text>
+<text x="450" y="183" fill="#666">59.4 KTE/sec</text>
 <text x="144" y="201" text-anchor="end">HTML5</text>
-<rect x="160" y="191" width="97.5" height="12" fill="#2b6cb0"/>
-<text x="263.5" y="201" font-weight="bold">9</text>
-<text x="450" y="201" fill="#666">10.8 KElements/sec</text>
+<rect x="160" y="191" width="100.0" height="12" fill="#2b6cb0"/>
+<text x="266.0" y="201" font-weight="bold">10</text>
+<text x="450" y="201" fill="#666">11.6 KElements/sec</text>
 <text x="144" y="219" text-anchor="end">SQLite</text>
-<rect x="160" y="209" width="119.2" height="12" fill="#2b6cb0"/>
-<text x="285.2" y="219" font-weight="bold">11</text>
-<text x="450" y="219" fill="#666">3.40 Krows/sec</text>
+<rect x="160" y="209" width="120.0" height="12" fill="#2b6cb0"/>
+<text x="286.0" y="219" font-weight="bold">12</text>
+<text x="450" y="219" fill="#666">3.66 Krows/sec</text>
 <text x="144" y="237" text-anchor="end">PDF Rendering</text>
-<rect x="160" y="227" width="130.0" height="12" fill="#2b6cb0"/>
-<text x="296.0" y="237" font-weight="bold">12</text>
-<text x="450" y="237" fill="#666">676.2 Kpixels/sec</text>
+<rect x="160" y="227" width="110.0" height="12" fill="#2b6cb0"/>
+<text x="276.0" y="237" font-weight="bold">11</text>
+<text x="450" y="237" fill="#666">599.2 Kpixels/sec</text>
 <text x="144" y="255" text-anchor="end">Text Rendering</text>
-<rect x="160" y="245" width="119.2" height="12" fill="#2b6cb0"/>
-<text x="285.2" y="255" font-weight="bold">11</text>
-<text x="450" y="255" fill="#666">3.50 KB/sec</text>
+<rect x="160" y="245" width="110.0" height="12" fill="#2b6cb0"/>
+<text x="276.0" y="255" font-weight="bold">11</text>
+<text x="450" y="255" fill="#666">3.57 KB/sec</text>
 <text x="144" y="273" text-anchor="end">Clang</text>
-<rect x="160" y="263" width="140.8" height="12" fill="#2b6cb0"/>
-<text x="306.8" y="273" font-weight="bold">13</text>
-<text x="450" y="273" fill="#666">99.5 lines/sec</text>
+<rect x="160" y="263" width="140.0" height="12" fill="#2b6cb0"/>
+<text x="306.0" y="273" font-weight="bold">14</text>
+<text x="450" y="273" fill="#666">105.3 lines/sec</text>
 <text x="144" y="291" text-anchor="end">Camera</text>
-<rect x="160" y="281" width="54.2" height="12" fill="#2b6cb0"/>
-<text x="220.2" y="291" font-weight="bold">5</text>
+<rect x="160" y="281" width="50.0" height="12" fill="#2b6cb0"/>
+<text x="216.0" y="291" font-weight="bold">5</text>
 <text x="450" y="291" fill="#666">0.05 images/sec</text>
 <text x="12" y="314" font-weight="bold" fill="#2f855a">Floating Point</text>
 <text x="144" y="333" text-anchor="end">N-Body Physics</text>
-<rect x="160" y="323" width="130.0" height="12" fill="#2f855a"/>
-<text x="296.0" y="333" font-weight="bold">12</text>
-<text x="450" y="333" fill="#666">15.2 Kpairs/sec</text>
+<rect x="160" y="323" width="120.0" height="12" fill="#2f855a"/>
+<text x="286.0" y="333" font-weight="bold">12</text>
+<text x="450" y="333" fill="#666">15.0 Kpairs/sec</text>
 <text x="144" y="351" text-anchor="end">Rigid Body Physics</text>
-<rect x="160" y="341" width="140.8" height="12" fill="#2f855a"/>
-<text x="306.8" y="351" font-weight="bold">13</text>
-<text x="450" y="351" fill="#666">83.3 FPS</text>
+<rect x="160" y="341" width="140.0" height="12" fill="#2f855a"/>
+<text x="306.0" y="351" font-weight="bold">14</text>
+<text x="450" y="351" fill="#666">84.4 FPS</text>
 <text x="144" y="369" text-anchor="end">Gaussian Blur</text>
-<rect x="160" y="359" width="21.7" height="12" fill="#2f855a"/>
-<text x="187.7" y="369" font-weight="bold">2</text>
-<text x="450" y="369" fill="#666">96.6 Kpixels/sec</text>
+<rect x="160" y="359" width="20.0" height="12" fill="#2f855a"/>
+<text x="186.0" y="369" font-weight="bold">2</text>
+<text x="450" y="369" fill="#666">95.9 Kpixels/sec</text>
 <text x="144" y="387" text-anchor="end">Face Detection</text>
-<rect x="160" y="377" width="130.0" height="12" fill="#2f855a"/>
-<text x="296.0" y="387" font-weight="bold">12</text>
+<rect x="160" y="377" width="110.0" height="12" fill="#2f855a"/>
+<text x="276.0" y="387" font-weight="bold">11</text>
 <text x="450" y="387" fill="#666">0.09 images/sec</text>
 <text x="144" y="405" text-anchor="end">Horizon Detection</text>
-<rect x="160" y="395" width="119.2" height="12" fill="#2f855a"/>
-<text x="285.2" y="405" font-weight="bold">11</text>
-<text x="450" y="405" fill="#666">268.7 Kpixels/sec</text>
+<rect x="160" y="395" width="110.0" height="12" fill="#2f855a"/>
+<text x="276.0" y="405" font-weight="bold">11</text>
+<text x="450" y="405" fill="#666">274.7 Kpixels/sec</text>
 <text x="144" y="423" text-anchor="end">Image Inpainting</text>
-<rect x="160" y="413" width="130.0" height="12" fill="#2f855a"/>
-<text x="296.0" y="423" font-weight="bold">12</text>
-<text x="450" y="423" fill="#666">584.3 Kpixels/sec</text>
+<rect x="160" y="413" width="120.0" height="12" fill="#2f855a"/>
+<text x="286.0" y="423" font-weight="bold">12</text>
+<text x="450" y="423" fill="#666">581.9 Kpixels/sec</text>
 <text x="144" y="441" text-anchor="end">HDR</text>
-<rect x="160" y="431" width="195.0" height="12" fill="#2f855a"/>
-<text x="361.0" y="441" font-weight="bold">18</text>
-<text x="450" y="441" fill="#666">239.1 Kpixels/sec</text>
+<rect x="160" y="431" width="180.0" height="12" fill="#2f855a"/>
+<text x="346.0" y="441" font-weight="bold">18</text>
+<text x="450" y="441" fill="#666">241.1 Kpixels/sec</text>
 <text x="144" y="459" text-anchor="end">Ray Tracing</text>
-<rect x="160" y="449" width="151.7" height="12" fill="#2f855a"/>
-<text x="317.7" y="459" font-weight="bold">14</text>
-<text x="450" y="459" fill="#666">11.4 Kpixels/sec</text>
+<rect x="160" y="449" width="130.0" height="12" fill="#2f855a"/>
+<text x="296.0" y="459" font-weight="bold">13</text>
+<text x="450" y="459" fill="#666">10.6 Kpixels/sec</text>
 <text x="144" y="477" text-anchor="end">Structure from Motion</text>
-<rect x="160" y="467" width="43.3" height="12" fill="#2f855a"/>
-<text x="209.3" y="477" font-weight="bold">4</text>
-<text x="450" y="477" fill="#666">36.5 pixels/sec</text>
+<rect x="160" y="467" width="40.0" height="12" fill="#2f855a"/>
+<text x="206.0" y="477" font-weight="bold">4</text>
+<text x="450" y="477" fill="#666">36.8 pixels/sec</text>
 <text x="144" y="495" text-anchor="end">Speech Recognition</text>
-<rect x="160" y="485" width="184.2" height="12" fill="#2f855a"/>
-<text x="350.2" y="495" font-weight="bold">17</text>
-<text x="450" y="495" fill="#666">0.55 Words/sec</text>
+<rect x="160" y="485" width="170.0" height="12" fill="#2f855a"/>
+<text x="336.0" y="495" font-weight="bold">17</text>
+<text x="450" y="495" fill="#666">0.54 Words/sec</text>
 <text x="144" y="513" text-anchor="end">Machine Learning</text>
-<rect x="160" y="503" width="10.8" height="12" fill="#2f855a"/>
-<text x="176.8" y="513" font-weight="bold">1</text>
+<rect x="160" y="503" width="10.0" height="12" fill="#2f855a"/>
+<text x="176.0" y="513" font-weight="bold">1</text>
 <text x="450" y="513" fill="#666">0.02 images/sec</text>
 <line x1="160.0" y1="68" x2="160.0" y2="524" stroke="#ddd"/>
 <text x="160.0" y="538" text-anchor="middle" fill="#555">0</text>
-<line x1="181.7" y1="68" x2="181.7" y2="524" stroke="#ddd"/>
-<text x="181.7" y="538" text-anchor="middle" fill="#555">2</text>
-<line x1="203.3" y1="68" x2="203.3" y2="524" stroke="#ddd"/>
-<text x="203.3" y="538" text-anchor="middle" fill="#555">4</text>
-<line x1="225.0" y1="68" x2="225.0" y2="524" stroke="#ddd"/>
-<text x="225.0" y="538" text-anchor="middle" fill="#555">6</text>
-<line x1="246.7" y1="68" x2="246.7" y2="524" stroke="#ddd"/>
-<text x="246.7" y="538" text-anchor="middle" fill="#555">8</text>
-<line x1="268.3" y1="68" x2="268.3" y2="524" stroke="#ddd"/>
-<text x="268.3" y="538" text-anchor="middle" fill="#555">10</text>
-<line x1="290.0" y1="68" x2="290.0" y2="524" stroke="#ddd"/>
-<text x="290.0" y="538" text-anchor="middle" fill="#555">12</text>
-<line x1="311.7" y1="68" x2="311.7" y2="524" stroke="#ddd"/>
-<text x="311.7" y="538" text-anchor="middle" fill="#555">14</text>
-<line x1="333.3" y1="68" x2="333.3" y2="524" stroke="#ddd"/>
-<text x="333.3" y="538" text-anchor="middle" fill="#555">16</text>
-<line x1="355.0" y1="68" x2="355.0" y2="524" stroke="#ddd"/>
-<text x="355.0" y="538" text-anchor="middle" fill="#555">18</text>
-<line x1="376.7" y1="68" x2="376.7" y2="524" stroke="#ddd"/>
-<text x="376.7" y="538" text-anchor="middle" fill="#555">20</text>
-<line x1="398.3" y1="68" x2="398.3" y2="524" stroke="#ddd"/>
-<text x="398.3" y="538" text-anchor="middle" fill="#555">22</text>
+<line x1="180.0" y1="68" x2="180.0" y2="524" stroke="#ddd"/>
+<text x="180.0" y="538" text-anchor="middle" fill="#555">2</text>
+<line x1="200.0" y1="68" x2="200.0" y2="524" stroke="#ddd"/>
+<text x="200.0" y="538" text-anchor="middle" fill="#555">4</text>
+<line x1="220.0" y1="68" x2="220.0" y2="524" stroke="#ddd"/>
+<text x="220.0" y="538" text-anchor="middle" fill="#555">6</text>
+<line x1="240.0" y1="68" x2="240.0" y2="524" stroke="#ddd"/>
+<text x="240.0" y="538" text-anchor="middle" fill="#555">8</text>
+<line x1="260.0" y1="68" x2="260.0" y2="524" stroke="#ddd"/>
+<text x="260.0" y="538" text-anchor="middle" fill="#555">10</text>
+<line x1="280.0" y1="68" x2="280.0" y2="524" stroke="#ddd"/>
+<text x="280.0" y="538" text-anchor="middle" fill="#555">12</text>
+<line x1="300.0" y1="68" x2="300.0" y2="524" stroke="#ddd"/>
+<text x="300.0" y="538" text-anchor="middle" fill="#555">14</text>
+<line x1="320.0" y1="68" x2="320.0" y2="524" stroke="#ddd"/>
+<text x="320.0" y="538" text-anchor="middle" fill="#555">16</text>
+<line x1="340.0" y1="68" x2="340.0" y2="524" stroke="#ddd"/>
+<text x="340.0" y="538" text-anchor="middle" fill="#555">18</text>
+<line x1="360.0" y1="68" x2="360.0" y2="524" stroke="#ddd"/>
+<text x="360.0" y="538" text-anchor="middle" fill="#555">20</text>
+<line x1="380.0" y1="68" x2="380.0" y2="524" stroke="#ddd"/>
+<text x="380.0" y="538" text-anchor="middle" fill="#555">22</text>
+<line x1="400.0" y1="68" x2="400.0" y2="524" stroke="#ddd"/>
+<text x="400.0" y="538" text-anchor="middle" fill="#555">24</text>
 <line x1="420.0" y1="68" x2="420.0" y2="524" stroke="#ddd"/>
-<text x="420.0" y="538" text-anchor="middle" fill="#555">24</text>
+<text x="420.0" y="538" text-anchor="middle" fill="#555">26</text>
 </svg>
