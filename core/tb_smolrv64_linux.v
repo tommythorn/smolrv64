@@ -671,6 +671,32 @@ module tb;
          ls_pulse_held = ls_pulse_held + 1;
    end
 
+   // ---- SER-SIM: be:serialize's cycles by the serialising op's class -------------------------
+   // The op in flight (captured at its dispatch) or the one waiting at dispatch for the drain:
+   // 0 csr read, 1 csr write, 2 amo/lr/sc, 3 fence, 4 fence.i, 5 sfence.vma, 6 xret/ecall/ebreak/wfi,
+   // 7 a trapping op (illegal or fetch fault).
+   reg [63:0] ser_c [0:7];
+   reg [2:0]  ser_k_q;
+   integer    seri;
+   initial begin for (seri = 0; seri < 8; seri = seri + 1) ser_c[seri] = 0; ser_k_q = 0; end
+   function automatic [2:0] ser_cls(input [31:0] i, input amo, input csr, input fi, input ill);
+      begin
+         if (ill)                                    ser_cls = 3'd7;
+         else if (amo)                               ser_cls = 3'd2;
+         else if (csr)                               ser_cls = ((i[13:12] == 2'b01) || (i[19:15] != 5'd0)) ? 3'd1 : 3'd0;
+         else if (i[6:2] == 5'b00011)                ser_cls = fi ? 3'd4 : 3'd3;
+         else if (i[31:25] == 7'h09)                 ser_cls = 3'd5;
+         else                                        ser_cls = 3'd6;
+      end
+   endfunction
+   always @(negedge clk) if (!reset) begin : sersim
+      reg [2:0] dk;
+      dk = ser_cls(dut.core.d_insn, dut.core.d_is_amo, dut.core.d_is_csr, dut.core.d_is_fencei,
+                   dut.core.d_illegal | dut.core.d_fault);
+      if (td_k == 5'd19) ser_c[dut.core.ser_inflight ? ser_k_q : dk] = ser_c[dut.core.ser_inflight ? ser_k_q : dk] + 1;
+      if (dut.core.rn_valid & dut.core.d_ser) ser_k_q = dk;
+   end
+
    // ---- FRING-SIM: the fetch stream and its predictions, printed with TOPDOWN-SIM ----------
    // pairs requested and the halfwords they append; marks taken and honoured, not taken, dropped;
    // restarts by the rejected mark's kind; cycles the stream could have asked for a pair but the
@@ -1104,6 +1130,8 @@ module tb;
                ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
       $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
                al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);
+      $display("SER-SIM be:serialize by class: csr-read=%0d csr-write=%0d amo=%0d fence=%0d fence.i=%0d sfence=%0d xret/ecall=%0d trap=%0d",
+               ser_c[0], ser_c[1], ser_c[2], ser_c[3], ser_c[4], ser_c[5], ser_c[6], ser_c[7]);
       $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
