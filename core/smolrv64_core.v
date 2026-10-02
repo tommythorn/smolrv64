@@ -2261,15 +2261,15 @@ module smolrv64_core
 
    // ---- the SYSQ (C3 step 3, 2026-09-18): system ops fire at the ROB head from flops ------------
    // A CSR/system op (SYSTEM opcode: csr*, ecall/ebreak/xret/wfi/sfence.vma, the irqop pseudo-op)
-   // is the F/CTF/MD port's fourth drain. Every one of them is serialising at dispatch
-   // (ser_block drains the ROB and the store queue before it and lets nothing dispatch behind
-   // it), so at most ONE is in flight and it is the ROB head the moment it exists: the queue is
-   // this one register, and its fire is a flop compare. csr_file's upd_* port is driven from
-   // these flops (step 2's lesson: a LUTRAM read in front of csr_file's combinational redirect
-   // cost IW=3 its closure); the CSR read address is sy_addr, a flop, like m_imm before it.
-   // The read's value goes to SH_LD through M's port (M is empty by construction, asserted);
-   // the completion through M's ROB port; a trap through c_kill; a redirect through the one
-   // redirect gate. A read of instret takes its second cycle at head so the delayed retire
+   // is the F/CTF/MD port's fourth drain. At most ONE is in flight: every one but a CSR op is
+   // serialising at dispatch (ser_block drains the ROB and the store queue before it and lets
+   // nothing dispatch behind it), and a CSR op waits at dispatch for the one before it (csr_infl).
+   // The queue is this one register, and its fire is a flop compare at the ROB head. csr_file's
+   // upd_* port is driven from these flops (step 2's lesson: a LUTRAM read in front of
+   // csr_file's combinational redirect cost IW=3 its closure); the CSR read address is sy_addr,
+   // a flop, like m_imm before it. The read's value goes to SH_LD through M's port (M, whose op
+   // is younger then, does not complete while the SYSQ's op is the head); the completion through
+   // M's ROB port; a trap through c_kill; a redirect through the one redirect gate. A read of instret takes its second cycle at head so the delayed retire
    // count has every older retirement (M1b), unchanged.
    reg                sy_v, sy_rd_v, sy_is_csr, sy_head_q;
    reg [ROB_IDXB-1:0] sy_rob;
@@ -2290,7 +2290,7 @@ module smolrv64_core
    // A QUEUE ENTRY WHOSE TRANSLATION FAULTED TRAPS FROM HERE. It never completes (a load is never
    // sent, a store never commits), so its op reaches the ROB head and stays; its record then loads
    // the SYSQ as a trap from dispatch does, and fires through sy_fire, the one trap gate. The SYSQ
-   // is free then: a system op dispatches only with everything older done.
+   // is free then or holds a younger CSR op, which the record displaces.
    // The record is registered on its way in, so the SYSQ's inputs are flops, never the queues'
    // muxes and the head compare; its valid bit leaves out a redirect cycle (the entry dies at that
    // edge), and the payload rides with no redirect in its enable (rule I11).
@@ -2310,8 +2310,10 @@ module smolrv64_core
       qfr_pc  <= qf_sq ? sq_f_pc  : lq_f_pc;
       qfr_seq <= qf_sq ? sq_f_seq : lq_f_seq;
    end
-   wire qf_in = qfr_v & ~sy_v;
+   // The faulting entry is the ROB head, so anything else in the SYSQ (a CSR op waiting for the
+   // head) is younger and dies at the trap's redirect: the record takes the SYSQ from it.
    wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
+   wire qf_in = qfr_v & ~sy_at_head;
    wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
    wire sy_fire    = sy_at_head & ~port_yield & (~sy_instret | sy_head_q);
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
@@ -2350,12 +2352,15 @@ module smolrv64_core
    end
    always @(posedge clk) if (!reset) begin
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "smolrv64_core: a system op issued into a busy SYSQ (it is serialising)");
-      if (iss_sys & qf_in)               $fatal(1, "smolrv64_core: a system op issued while a queue entry's fault loads the SYSQ");
+      if (qf_in & sy_v & ~sy_is_csr)      $fatal(1, "smolrv64_core: a queue entry's fault displaces a SYSQ op that is not a younger CSR op");
       if (qf_sq & qf_lq)                 $fatal(1, "smolrv64_core: a load and a store both fault as the ROB head");
       if (iss_sys & (qf_shard != SH_LD)) $fatal(1, "smolrv64_core: a system op issued with shard %0d, not SH_LD", qf_shard);
       // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
-      if (sy_fire & ~sy_qf & m_valid)    $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
-      if (sy_fire & ~sy_qf & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      // (a CSR op does not drain: younger work may be in flight; M yields to it, see m_done)
+      if (sy_fire & ~sy_qf & ~sy_is_csr & m_valid) $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
+      if (sy_fire & ~sy_qf & ~sy_is_csr & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      if (sy_fire & sy_wr & m_done)      $fatal(1, "smolrv64_core: the SYSQ and M write SH_LD in one cycle");
+      if (rn_valid & d_csr_op & csr_infl) $fatal(1, "smolrv64_core: a second CSR op dispatched with one in flight");
       if (sy_fire & ld_land)             $fatal(1, "smolrv64_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "smolrv64_core: a system op reached M (pc %h)", m_pc);
       if (iss_m & (q_fault | q_illegal))   $fatal(1, "smolrv64_core: an op that traps at dispatch issued to M (pc %h)", q_pc);
@@ -3008,7 +3013,7 @@ module smolrv64_core
 
    // One write port, one ROB completion port: when a load lands, M yields the cycle. Costs
    // ~0.3 cycles per load against the ~2.3 the early release saves.
-   assign m_done = m_done_raw & ~head_block & ~port_yield & ~m_flt_pulse;
+   assign m_done = m_done_raw & ~head_block & ~port_yield & ~sy_at_head & ~m_flt_pulse;
    assign m_advance = ~m_valid | m_done;
 
 
@@ -3101,7 +3106,7 @@ module smolrv64_core
    wire m_unit_ok_nomem = ~m_valid            ? 1'b1
                         : m_mem_op            ? 1'b0
                         :                       1'b1;
-   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~port_yield;
+   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~port_yield & ~sy_at_head;
    // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
    // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
    // now; the branch squash comes from the CTF pipe (cf_red_fire).
@@ -3281,8 +3286,8 @@ module smolrv64_core
    // same hazard existed whenever a landing load held a CSR op at head.) Live is also what
    // makes the delayed minstret read exact: it is sampled in the completion cycle.
    assign wb_ld = ld_wb                     ? lsu_rd_val
-                : sy_wr                     ? csr_rdata    // before M's arms: M is EMPTY when the SYSQ
-                : (m_is_mem | m_is_amo)     ? lsu_rd_val   // fires, and its m_is_* are the last op's, stale
+                : sy_wr                     ? csr_rdata    // before M's arms: M does not complete while
+                : (m_is_mem | m_is_amo)     ? lsu_rd_val   // the SYSQ's op is the head (m_done), so M's m_is_* are not a result
                 : m_unit_done_q             ? m_unit_res_q
                 :                             m_result;
    // SH_FE's writers: the F stage's landing, the CTF link (when the F stage isn't landing) and
@@ -3306,7 +3311,7 @@ module smolrv64_core
    wire m_unit_ok_wb = ~m_valid            ? 1'b1
                      : m_mem_op            ? lsu_done_acc
                      :                       1'b1;
-   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~port_yield;
+   wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~port_yield & ~sy_at_head;
    wire m_trap_wb = m_mem_op & m_lsu_flt;
    wire m_wb  = m_valid & m_done_wb & m_rd_v & ~m_trap_wb & ~m_ld_nb;
    wire m_wb_ref = m_valid & m_done & m_rd_v & ~m_trap & ~m_ld_nb;
@@ -3833,12 +3838,26 @@ module smolrv64_core
    initial ser_inflight = 1'b0;
    // An instruction that traps at dispatch serialises like a system op: it fires from the SYSQ,
    // which holds one op and fires it as the ROB head.
-   wire d_ser = d_is_serialize | d_illegal | d_fault;
+   // A CSR OP DOES NOT DRAIN. It waits in the SYSQ for the ROB head and fires there in program
+   // order, while younger work dispatches and runs behind it: a write that changes what younger
+   // ops already used (FS, the data-translation bits, satp, frm, the envcfg/stateen enables)
+   // refetches them through csr_file's redirect, and anything else (sstatus.SIE above all, the
+   // kernel's irq save and restore) changes nothing a younger op computed. One CSR op is in
+   // flight at a time (csr_infl): the SYSQ holds one, and the F/CTF/MD/SYS queue reorders, so a
+   // second could take the SYSQ before an older one and never reach the head.
+   wire d_csr_op = d_is_csr & ~d_illegal & ~d_fault;
+   wire d_ser = (d_is_serialize & ~d_csr_op) | d_illegal | d_fault;
    always @(posedge clk)
       if (reset | redirect)      ser_inflight <= 1'b0;
       else if (rn_valid & d_ser) ser_inflight <= 1'b1;
       else if (drained)          ser_inflight <= 1'b0;
-   wire ser_block = ser_inflight | (d_valid & d_ser & ~drained);
+   reg  csr_infl;
+   initial csr_infl = 1'b0;
+   always @(posedge clk)
+      if (reset | redirect)        csr_infl <= 1'b0;
+      else if (rn_valid & d_csr_op) csr_infl <= 1'b1;
+      else if (sy_fire & sy_is_csr) csr_infl <= 1'b0;
+   wire ser_block = ser_inflight | (d_valid & d_ser & ~drained) | (d_valid & (d_csr_op | d_ser) & csr_infl);
 
    // An instruction may not enter M while it reads the in-flight load's destination. Compared
    // as TAGS, not through a pending bit per physical register: NPHYS is 320, so a pending

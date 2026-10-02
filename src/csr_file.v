@@ -709,10 +709,17 @@ module csr_file
    // fall-through recipe as FS/MPRV; satp writes are context-switch-rare.
    wire        do_satp  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
                         & (upd_addr == SATP);
+   // A CSR op does not drain: younger work runs while it waits for the head. A write that changes
+   // what younger ops already used refetches them too: the rounding mode (frm, fcsr) an FP op read
+   // at execute, and the enables (menvcfg, senvcfg, mstateen0) decode judged a CBO by and the
+   // translation honours (PBMTE). Rare writes, at the cost of FS's refetch.
+   wire        do_ctxw  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
+                        & ((upd_addr == FRM) | (upd_addr == FCSR) | (upd_addr == MENVCFG)
+                         | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0));
 
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp;
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw;
    assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
@@ -729,6 +736,7 @@ module csr_file
       else if (do_fschg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else if (do_dxchg)        redir_target = upd_pc + 64'd4;   // CSR op is 4 bytes
       else if (do_satp)         redir_target = upd_pc + 64'd4;   // refetch under the new satp
+      else if (do_ctxw)         redir_target = upd_pc + 64'd4;   // refetch under the new frm/enables
       else                      redir_target = trap_tgt;
    end
 

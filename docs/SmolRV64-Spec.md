@@ -139,7 +139,7 @@ complements.
 | `~rob_ready` | ROB full (32 entries) |
 | `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (8 from 2026-08-28 to gate V4 on 2026-09-05; the two-wide core closed at exactly 0.000 ns and did not boot, and FP gives first) (§6.1) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers |
-| `ser_block` | a serializing op is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits |
+| `ser_block` | a serializing op -- a fence, `fence.i`, an AMO, an xret, `ecall`/`ebreak`/`wfi`/`sfence.vma`, a trap from dispatch -- is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits. A CSR op does not drain: it waits only for the CSR op before it (`csr_infl`) |
 
 ### 3.3 M stalls — `m_done` low
 
@@ -660,22 +660,12 @@ The **rounding mode is not like that**. A dynamic-rm op (`rnd == 3'b111`) reads 
 when stage F hands it to the unit, so **an frm change must be an FP barrier** -- it must
 neither overtake nor be overtaken by an FP op in flight.
 
-Today that holds for a reason that is not about FP at all: `decode_exec.v:158` sets
-`is_serialize` on *every* CSRRW/S/C, and `ser_block` drains the ROB and the store queue before such an op
-dispatches and lets nothing dispatch behind it until it commits. An FP op commits only once
-its result has landed, so a drained ROB means nothing is in flight.
-
-That is an accident of a broader rule, and it evaporates the moment CSR ops stop being
-serializing -- an obvious future optimisation, since serialising every CSR *read* to make
-frm safe is heavy-handed. `smolrv64_core` therefore asserts the property directly:
-
-```
-if (m_valid & m_is_csr & (fpu_busy | f_valid))
-   $fatal("a CSR op is in M while FP work is in flight -- frm may change under it");
-```
-
-Verified over 240/240 and 300M cycles of Linux boot, which exercises dynamic rounding in
-glibc.
+A CSR op fires from the SYSQ at the ROB head, so every older FP op has retired and none sees a
+new frm. Younger work is not held back (a CSR op does not drain, §3), so a younger FP op may
+already have read the old frm: a write to `frm` or `fcsr` therefore refetches everything after
+it (`csr_file`'s `do_ctxw`, the fall-through redirect FS and the translation bits already use),
+and the refetched ops read the new mode. A write to `fflags` refetches nothing: a younger op's
+flags are ORed in when it retires, after the write.
 
 `u_iq_f` reorders, and that is the point rather than a detail. `workloads/blurbench`, taken
 from a hardware trace of GB5 Gaussian Blur, is a 4-deep serial `fadds` chain whose taps are
@@ -749,7 +739,7 @@ runs inside every 240-test and cosim run.
 | ALU / branch | 1 cycle (at issue) | — | no | IE shard |
 | second ALU (slot B's ALU ops, item 10d-ii) | 1 cycle (at issue) | — | no | IE2 shard |
 | jump link (`jal`/`jalr`) | 1 cycle | 1 | yes | LD shard (M writes it) |
-| CSR | 1 cycle, **serializing** | 1 | yes | LD shard (M writes it) |
+| CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
 | FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | FE shard |
@@ -793,16 +783,19 @@ An FPU result and an in-core compare never land in the same cycle (the compare w
 
 A CSR or system op (SYSTEM opcode: `csr*`, `ecall`/`ebreak`/`xret`/`wfi`/`sfence.vma`, the
 irqop pseudo-op) is dispatch class S, shares the F/CTF/MD queue and is its fourth drain
-(`iss_sys`). Every one of them is serialising at dispatch (`ser_block` drains the ROB and the
-store queue before it and lets nothing dispatch behind it), so at most one is in flight and it
-is the ROB head the moment it exists: the SYSQ is one register `{rob, prd, rd_v, is_csr, func,
+(`iss_sys`). At most one is in flight: every one but a CSR op is serialising at dispatch
+(`ser_block` drains the ROB and the store queue before it and lets nothing dispatch behind it),
+and a CSR op dispatches without draining but only once the CSR op before it has fired
+(`csr_infl`: the SYSQ holds one, and the queue it comes through reorders). The SYSQ is one
+register `{rob, prd, rd_v, is_csr, func,
 addr, src (rs1 or zimm from the port's forwarded read), pc, seq, insn}` and its fire is a flop
 compare, `sy_fire = sy_at_head & ~port_yield & (~sy_instret | sy_head_q)` -- the same one yield
 gate M's dones use (`port_yield = ld_land | fp_land`, computed once), and the
 instret read's second cycle at head (M1b) kept. `csr_file`'s `raddr` and `upd_*` are the
 register's flops (step 2's lesson: a LUTRAM read in front of `csr_file`'s combinational redirect
 cost IW=3 its closure). The read's value goes to SH_LD and the completion to the ROB through
-M's ports (M is empty by construction, asserted); a trap through `c_kill`; a redirect through
+M's ports (M, whose op is younger then, does not complete while the SYSQ's op is the ROB head,
+asserted); a trap through `c_kill`; a redirect through
 the one redirect gate (`redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`).
 
 The SYSQ also takes FENCE and FENCE.I and every instruction that traps at dispatch (a fetch fault,
