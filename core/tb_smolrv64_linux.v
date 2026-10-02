@@ -598,6 +598,67 @@ module tb;
       end
    end
 
+   // ---- DISP-SIM: the dispatch rules and ALU waiting (docs/PLAN-2026-10-01-uniform-lanes.md, step 2) ----
+   // Slot B (C) valid behind a dispatching older slot but held: by an op that dispatches alone
+   // (not plain), by the class rule (two memory ops, two F/control-flow/mul-div ops, slot C's
+   // three-ALU rule), squashed behind a decode resteer, or by room (scheduler, ROB, rename, queues).
+   // ALU: ready entries an ALU scheduler leaves behind each cycle beyond the one it issues, those
+   // left while the other ALU issues nothing, and issues that pass over an older ready entry.
+   // Memory: u_iq_l issues, issues in back-to-back cycles, cycles its head is ready and not
+   // issued; LSU access starts and starts in back-to-back cycles.
+   localparam integer NI_SIM = 10;           // an ALU scheduler's entries (smolrv64_core NI)
+   reg [63:0] ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room;
+   reg [63:0] al_wait, al_wait_idle, al_young;
+   reg [63:0] ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b;
+   reg        ml_iss_q, ls_st_q;
+   initial begin ds_b_alone = 0; ds_b_rule = 0; ds_b_sq = 0; ds_b_room = 0; ds_c_alone = 0; ds_c_rule = 0;
+                 ds_c_sq = 0; ds_c_room = 0; al_wait = 0; al_wait_idle = 0; al_young = 0;
+                 ml_iss = 0; ml_b2b = 0; ml_hrdy = 0; ls_st = 0; ls_b2b = 0; ml_iss_q = 0; ls_st_q = 0; end
+   function automatic integer older_ready(input [31:0] rdy_v, input integer sel, input integer n, input integer which);
+      integer k, ak, as;
+      begin
+         older_ready = 0;
+         as = (which == 0 ? 32'(dut.core.u_iq_i.e_rob[sel]) : 32'(dut.core.u_iq_i2.e_rob[sel])) - 32'(dut.core.rob_head_idx);
+         as = as & 31;
+         for (k = 0; k < n; k = k + 1) if (rdy_v[k]) begin
+            ak = ((which == 0 ? 32'(dut.core.u_iq_i.e_rob[k]) : 32'(dut.core.u_iq_i2.e_rob[k])) - 32'(dut.core.rob_head_idx)) & 31;
+            if (ak < as) older_ready = 1;
+         end
+      end
+   endfunction
+   always @(negedge clk) if (!reset) begin : dispsim
+      reg b_rule, c_rule;
+      integer na, nb, ia, ib;
+      b_rule = (dut.core.d_cls_l & dut.core.d2_cls_l) | (dut.core.d_cls_fc & dut.core.d2_cls_fc)
+             | (dut.core.d2_st_nb & dut.core.d_st_nb) | (dut.core.d2_ld_nb & dut.core.d_ld_nb);
+      c_rule = ~dut.core.d3_accept;
+      if (dut.core.d_take & dut.core.d2_valid & ~dut.core.d2_take) begin
+         if (~dut.core.d_plain | ~dut.core.d2_plain) ds_b_alone = ds_b_alone + 1;
+         else if (b_rule)                            ds_b_rule  = ds_b_rule + 1;
+         else if (dut.core.dcr0)                     ds_b_sq    = ds_b_sq + 1;
+         else                                        ds_b_room  = ds_b_room + 1;
+      end
+      if (dut.core.d2_take & dut.core.d3_valid & ~dut.core.d3_take) begin
+         if (~dut.core.d_plain | ~dut.core.d2_plain | ~dut.core.d3_plain) ds_c_alone = ds_c_alone + 1;
+         else if (c_rule)                                                ds_c_rule  = ds_c_rule + 1;
+         else if (dut.core.dcr1)                                         ds_c_sq    = ds_c_sq + 1;
+         else                                                            ds_c_room  = ds_c_room + 1;
+      end
+      na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
+      nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
+      al_wait = al_wait + 64'(na - ia) + 64'(nb - ib);
+      if (ib == 0) al_wait_idle = al_wait_idle + 64'(na - ia);
+      if (ia == 0) al_wait_idle = al_wait_idle + 64'(nb - ib);
+      if (ia != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i.rdy),  32'(dut.core.ri_iss_ent),  NI_SIM, 0));
+      if (ib != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i2.rdy), 32'(dut.core.ri2_iss_ent), NI_SIM, 1));
+      if (dut.core.rl_iss_v) begin ml_iss = ml_iss + 1; if (ml_iss_q) ml_b2b = ml_b2b + 1; end
+      if (dut.core.u_iq_l.v[dut.core.u_iq_l.qhead] & (&dut.core.u_iq_l.srdy[dut.core.u_iq_l.qhead*3 +: 3])
+          & ~dut.core.rl_iss_v) ml_hrdy = ml_hrdy + 1;
+      ml_iss_q = dut.core.rl_iss_v;
+      if (dut.core.lsu_started) begin ls_st = ls_st + 1; if (ls_st_q) ls_b2b = ls_b2b + 1; end
+      ls_st_q = dut.core.lsu_started;
+   end
+
    // ---- FRING-SIM: the fetch stream and its predictions, printed with TOPDOWN-SIM ----------
    // pairs requested and the halfwords they append; marks taken and honoured, not taken, dropped;
    // restarts by the rejected mark's kind; cycles the stream could have asked for a pair but the
@@ -1027,6 +1088,10 @@ module tb;
       $display("XLATE-SIM M-hits=%0d handed-to-walker=%0d walker-answers=%0d (faults %0d) queue-traps=%0d",
                xs_hit, xs_nopa, xs_wk, xs_wkf, xs_trap);
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
+      $display("DISP-SIM slot-B held behind a dispatch: alone=%0d rule=%0d resteer=%0d room=%0d | slot-C: alone=%0d rule=%0d resteer=%0d room=%0d",
+               ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
+      $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
+               al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",

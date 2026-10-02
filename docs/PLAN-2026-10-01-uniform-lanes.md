@@ -115,6 +115,23 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
      results in each lane's bypass; wakeup and back-to-back issue do not change;
    - the survey's three findings: the memory scheduler selects at most every other cycle, the LSU
      starts D$ reads at most every other cycle, the schedulers pick the lowest-numbered ready entry.
+   Measured so far (the 60 M tiny128 lockstep's `DISP-SIM` lines, tools/trace-limit.py and
+   tools/bp-model.py, `make util`):
+   - the class rule holds a ready slot B behind a dispatching slot A in 8.20 M cycles (13.7%) and
+     slot C in 5.03 M more (8.4%); room (scheduler, ROB, queues) holds slot B in only 2.08 M;
+   - `u_iq_l` never issues in back-to-back cycles (0 of 15.1 M issues), nor does the LSU start
+     two accesses in a row (0 of 2.76 M), and its head is ready and not issued in 13.9 M cycles
+     (23%);
+   - ready ALU work left waiting: 3.42 M op-cycles, 1.59 M of them while the other ALU had
+     nothing ready (a steering imbalance fixed lanes do not cure either); issue passed an older
+     ready entry 1.17 M times;
+   - the limit model (GB5 board traces, perfect caches, 32 entries): today's rules 1.31-1.92 on
+     the integer workloads against 1.89-2.05 for four lanes, camera 0.41 against 1.38;
+   - path history: 2.55 direction MPKI against 2.71 (16 bits, shift 2); the BTB-unknown taken
+     transfers, 3.06 MPKI on the boot, are 1.25 conditional, 0.82 direct jump or call, 0.67
+     return, 0.32 indirect; ending a pair only at a taken transfer cuts fetch pairs 17%;
+   - kernel system ops per 1000 instructions: 0.31 CSR writes (mostly `sstatus.SIE`), 0.36 AMOs,
+     0.05 `sfence.vma`, 0.03 `fence.i`.
 3. **Serialisation out of dispatch** (small, independent).
 4. **D$ 5c + 6b.**
 5. **The lanes, in lockstep-gated steps:**
