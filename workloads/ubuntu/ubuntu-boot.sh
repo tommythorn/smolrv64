@@ -100,7 +100,10 @@ wait_for_loaded() {
 }
 
 send_file() {
-    local addr=$1 file=$2 target_count=$3
+    # sx runs inside the screen session, in ITS directory (the checkout that owns the console),
+    # so a relative name would send that checkout's file, not this one's: pass the absolute path.
+    local addr=$1 file target_count=$3
+    file=$(realpath "$2")
     echo "[ubuntu-boot]   Y$addr + sx -k $file"
     send_line "Y${addr}"
     # give monitor a beat to print its "start XMODEM" prompt

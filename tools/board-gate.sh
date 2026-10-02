@@ -24,11 +24,12 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
-# The serial console (`screen -L`, screenlog.0) lives in ONE checkout's workloads/ubuntu --
-# the main one. A gate run from a worktree programs the board and then cannot watch it boot
-# (gate V4, 2026-09-05: "BOARD: FAIL (upload)" with the bitstream already on the board), so
-# fall back to the main worktree's copy, which `git worktree list` prints first.
-[ -f "$UB/screenlog.0" ] || UB=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu
+# The device tree and the payload that boot are THIS tree's (UB); the serial console (`screen -L`,
+# screenlog.0) lives in ONE checkout's workloads/ubuntu -- the main one, which `git worktree list`
+# prints first. A gate run from a worktree reads the console there (gate V4, 2026-09-05: "BOARD:
+# FAIL (upload)" with the bitstream already on the board) and still boots its own tree.
+CON=$UB/screenlog.0
+[ -f "$CON" ] || CON=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu/screenlog.0
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG|nfs: server .* not responding'
 MARK='riscv: base ISA extensions'
@@ -47,13 +48,18 @@ stress() {
       sleep 10
    done
    [ -n "$ip" ] || { echo "BOARD: FAIL (stress: no ssh to the board within 400 s)"; return 1; }
-   pre_d=$(timeout 20 ssh -o BatchMode=yes tommy@$ip 'dmesg | wc -l' 2>/dev/null); pre_c=$(wc -c < "$UB/screenlog.0")
+   # The board must be running THIS tree's device tree: its ISA string is what Linux enables.
+   local want got
+   want=$(sed -n 's/.*riscv,isa = "\(.*\)";.*/\1/p' "$UB/ubuntu-nfs.dts.in" | head -1)
+   got=$(timeout 20 ssh -o BatchMode=yes tommy@$ip 'tr -d "\0" < /proc/device-tree/cpus/cpu@0/riscv,isa' 2>/dev/null)
+   [ "$got" = "$want" ] || { echo "BOARD: FAIL (the board's device tree says riscv,isa=$got, this tree's $want)"; return 1; }
+   pre_d=$(timeout 20 ssh -o BatchMode=yes tommy@$ip 'dmesg | wc -l' 2>/dev/null); pre_c=$(wc -c < "$CON")
    echo "stress: $ip, ${STRESS_S:-900}s of Geekbench (dmesg lines before: $pre_d)"
    timeout $(( ${STRESS_S:-900} + 120 )) ssh -o BatchMode=yes -o ServerAliveInterval=30 tommy@$ip \
       "cd ~/Geekbench-5.4.1-LinuxRISCVPreview && timeout ${STRESS_S:-900} ./geekbench_riscv64 > /var/tmp/gate-stress.log 2>&1; echo RC=\$?; dmesg | tail -n +$((pre_d+1)) | grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG'" > "$RES/stress.log" 2>&1
    rc=$(grep -o 'RC=[0-9]*' "$RES/stress.log" | tail -1 | cut -d= -f2)
    faults=$(( $(grep -cE 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG' "$RES/stress.log") ))
-   faults=$(( faults + $(tail -c +$((pre_c+1)) "$UB/screenlog.0" | tr -d '\r' | grep -acE "$BAD") ))
+   faults=$(( faults + $(tail -c +$((pre_c+1)) "$CON" | tr -d '\r' | grep -acE "$BAD") ))
    echo "stress: rc=${rc:-?} (124 = ran the whole budget) faults=$faults  subtests: $(timeout 20 ssh -o BatchMode=yes tommy@$ip 'grep -c "^  Running" /var/tmp/gate-stress.log' 2>/dev/null)"
    if [ "$faults" -eq 0 ] && { [ "${rc:-1}" = 124 ] || [ "${rc:-1}" = 0 ]; }; then errlog || return 1; return 0; fi
    grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$RES/stress.log" | head -4
@@ -73,7 +79,7 @@ errlog() {
 if [ -n "${STRESS_ONLY:-}" ]; then RES=${1:?result dir}; mkdir -p "$RES"; stress && { echo "BOARD: PASS (stress only)"; exit 0; }; exit 1; fi
 
 if [ -n "${REPLAY:-}" ]; then PRE=$REPLAY; BOOT_WAIT=0; echo "replay from byte $PRE"; else
-PRE=$(wc -c < "$UB/screenlog.0")
+PRE=$(wc -c < "$CON")
 # Never program over a benchmark: a board that answers ssh and runs Geekbench is in use.
 # FORCE_PROGRAM=1 overrides.
 if [ -z "${FORCE_PROGRAM:-}" ]; then
@@ -91,7 +97,7 @@ echo "programmed ${BIT:-impl_1}"
 # reads the PREVIOUS build's banner (W7's board turn, 2026-09-07: the DTB said 9b3050f9 on
 # a 6c1eeff1 bitstream).
 for i in $(seq 1 30); do
-   RTL_BANNER=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]{7,12}\+?' | tail -1 | cut -d= -f2)
+   RTL_BANNER=$(tail -c +$((PRE+1)) "$CON" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]{7,12}\+?' | tail -1 | cut -d= -f2)
    [ -n "$RTL_BANNER" ] && break; sleep 2
 done
 echo "banner: rtl=${RTL_BANNER:-?}"
@@ -104,30 +110,30 @@ case "${RTL_BANNER:-}" in
    *+) echo "WARNING: the loaded bitstream is a DIRTY tree (${RTL_BANNER}) -- its verdict belongs to no commit" ;;
 esac
 export RTL_BANNER
-( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
+( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs >/dev/null 2>&1; LOG="$CON" timeout 3000 ./ubuntu-boot.sh ) > "$RES/upload.log" 2>&1 \
    || { echo "BOARD: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
 fi
 echo "booting, watching past byte $PRE"
 # The boot's own marker: its byte offset anchors everything below.
 END=$(( $(date +%s) + BOOT_WAIT )); POS=""
 while :; do
-   OFF=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | grep -abm1 "$MARK" | cut -d: -f1)
+   OFF=$(tail -c +$((PRE+1)) "$CON" | grep -abm1 "$MARK" | cut -d: -f1)
    [ -n "$OFF" ] && { POS=$((PRE+OFF)); break; }
    [ "$(date +%s)" -ge "$END" ] && break; sleep 10
 done
 [ -n "$POS" ] || { echo "BOARD: FAIL (no kernel marker past byte $PRE within ${BOOT_WAIT}s)"; exit 1; }
 echo "kernel marker at byte $POS"
 while [ "$(date +%s)" -lt "$END" ]; do
-   NEW=$(tail -c +$((POS+1)) "$UB/screenlog.0" | tr -d '\r')
+   NEW=$(tail -c +$((POS+1)) "$CON" | tr -d '\r')
    printf '%s' "$NEW" | grep -aq "login:" && break
    printf '%s' "$NEW" | grep -aqE "$BAD" && break
    sleep 10
 done
-NEW=$(tail -c +$((POS+1)) "$UB/screenlog.0" | tr -d '\r')
+NEW=$(tail -c +$((POS+1)) "$CON" | tr -d '\r')
 # A replayed boot ends where the next programming's monitor banner begins.
 [ -n "${REPLAY:-}" ] && NEW=$(printf '%s' "$NEW" | awk '/smolrv64 monitor/{exit} {print}')
 printf '%s' "$NEW" > "$RES/boot.log"
-RTL=$(tail -c +$((PRE+1)) "$UB/screenlog.0" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+\+?' | head -1)   # the banner precedes the marker
+RTL=$(tail -c +$((PRE+1)) "$CON" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+\+?' | head -1)   # the banner precedes the marker
 FAULTS=$(printf '%s' "$NEW" | grep -acE "$BAD")
 LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
 echo "login: $LOGIN   faults: $FAULTS   ${RTL:-rtl=?}   last: $(printf '%s' "$NEW" | grep -aoE '^\[ *[0-9]+\.[0-9]+\]' | tail -1)"
