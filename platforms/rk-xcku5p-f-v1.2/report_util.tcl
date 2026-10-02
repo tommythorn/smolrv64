@@ -15,6 +15,9 @@ puts "UTIL: reading $dcp"
 open_checkpoint $dcp
 report_utilization -file $rundir/rk_xcku5p_utilization.rpt
 puts "UTIL: wrote $rundir/rk_xcku5p_utilization.rpt"
+# Per instance, four levels down: what each structure costs (the PRF shards, the schedulers, the ROB).
+report_utilization -hierarchical -hierarchical_depth 4 -file $rundir/rk_xcku5p_utilization_hier.rpt
+puts "UTIL: wrote $rundir/rk_xcku5p_utilization_hier.rpt"
 foreach l [split [report_utilization -return_string] "\n"] {
     if {[regexp {^\| (CLB LUTs|CLB Registers|CLB  |LUT as Logic|LUT as Memory|Block RAM Tile|DSPs|CARRY8)} $l]} { puts "UTIL| $l" }
 }

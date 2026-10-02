@@ -139,6 +139,12 @@ census:
 	  $(if $(DCP),$(DCP),rk_xcku5p.runs/impl_1/rk_xcku5p_postroute_physopt.dcp) \
 	  $(if $(OUT),$(OUT),census.txt) $(if $(SLACK),$(SLACK),0.35)
 
+# The worst routed path between two cell groups, pin by pin (the census names the family).
+#   make path FROM=<cell glob> TO=<cell glob> [N=1]
+path:
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make path FROM=<cell glob> TO=<cell glob> [N=1]"; exit 2; }
+	$(VIVADO) $(VFLAGS) -source report_path.tcl -tclargs '$(FROM)' '$(TO)' $(if $(N),$(N),1)
+
 # Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
 # (no re-place/route). Writes the .bit iff it reaches WNS >= 0. See physopt_close.tcl.
 physopt:
