@@ -129,7 +129,9 @@ module csr_file
                      // without real (WARL, readback) counter CSRs, pmu_sbi_devinit hangs
                      // because its counter start/stop writes vanish into the read-0 default.
                      MCOUNTINHIBIT=12'h320, MHPMEVENT3=12'h323,
-                     MHPMCOUNTER3=12'hB03, HPMCOUNTER3=12'hC03;
+                     MHPMCOUNTER3=12'hB03, HPMCOUNTER3=12'hC03,
+                     // Sscofpmf: the OF bits of mhpmevent3.. as one read-only S-mode CSR.
+                     SCOUNTOVF=12'hDA0;
 
    // system-op selectors (imm[11:0] of a funct3==0 SYSTEM op)
    localparam [11:0] OP_ECALL=12'h000, OP_EBREAK=12'h001, OP_SRET=12'h102,
@@ -151,8 +153,9 @@ module csr_file
    // sstatus view: SIE,SPIE,SPP,FS,VS,XS,SUM,MXR,UXL + SD
    localparam [63:0] SSTATUS_RMASK = 64'h8000_0003_000D_E133;
    localparam [63:0] SSTATUS_WMASK = 64'h0000_0000_000C_6122;
-   // interrupt-enable/pending S-visible bits (SSIE/STIE/SEIE = 1,5,9)
-   localparam [63:0] S_INT_MASK = 64'h0000_0000_0000_0222;
+   // interrupt-enable/pending S-visible bits (SSIE/STIE/SEIE = 1,5,9, Sscofpmf's LCOFIE = 13)
+   localparam [63:0] S_INT_MASK = 64'h0000_0000_0000_2222;
+   localparam        LCOFIP_B = 13;   // Sscofpmf local counter-overflow interrupt
    // mip bits owned read-only by hardware (MEIP/MTIP/MSIP = 11,7,3): software MIP
    // writes can't touch them (they reflect the device lines, cleared at the device).
    localparam [63:0] HW_RO_MASK = 64'h0000_0000_0000_0888;
@@ -343,6 +346,12 @@ module csr_file
    reg [63:0] mcountinhibit;
    reg [63:0] mhpmevent  [0:HPMN-1];
    reg [63:0] mhpmcounter[0:HPMN-1];
+   // Sscofpmf, in the top bits of mhpmeventN: OF(63) is set when counter N wraps and raises
+   // LCOFIP on its 0 -> 1 edge only, so a set OF silences the counter's interrupt until software
+   // clears it; MINH/SINH/UINH (62:60) stop the counter in that privilege. VSINH/VUINH (59:58)
+   // are stored and never consulted (no H).
+   localparam OF_B = 63, MINH_B = 62, SINH_B = 61, UINH_B = 60;
+   wire [HPMN-1:0] hpm_of;            // mhpmeventN.OF, N = 3.. (scountovf's bits)
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
    assign o_fs_off = (mstatus[14:13] == 2'b00);
@@ -502,6 +511,8 @@ module csr_file
         // root-domain hart isolation ("insufficient PMP entries"); 0 entries makes it skip
         // PMP isolation entirely (PMP is optional). All accesses are permitted (M-mode only).
         MCOUNTINHIBIT: rdata = mcountinhibit & HPM_INHIBIT_MASK;
+        // Below M a bit reads 0 unless mcounteren grants that counter; U cannot reach it (0xDA0).
+        SCOUNTOVF:  rdata = {{(61-HPMN){1'b0}}, hpm_of, 3'b000} & ((priv == M) ? ~64'd0 : mcounteren);
         // Zihpm mhpmevent3.. / mhpmcounter3.. / hpmcounter3.. resolve via hpm_sel (decoded
         // above); otherwise PMP / unimplemented optional CSRs read 0.
         default:    rdata = hpm_sel ? hpm_rdata : 64'd0;
@@ -606,16 +617,17 @@ module csr_file
    // in M. Priority MEI(11),MSI(3),MTI(7),SEI(9),SSI(1),STI(5) -- matches smolrv64.
    wire        m_glob = (priv == M) ? mstatus[3] : 1'b1;            // mstatus.MIE
    wire        s_glob = (priv == S) ? mstatus[1] : (priv == U);    // mstatus.SIE
-   wire [11:0] ip_ie  = eff_mip[11:0] & mie[11:0];
-   wire [11:0] pend_m = ip_ie & ~mideleg[11:0];
-   wire [11:0] pend_s = ip_ie &  mideleg[11:0];
-   wire        take_m = m_glob & (pend_m != 12'd0);
-   wire        take_s = ~take_m & s_glob & (pend_s != 12'd0);
-   wire [11:0] pend   = take_m ? pend_m : (take_s ? pend_s : 12'd0);
+   wire [13:0] ip_ie  = eff_mip[13:0] & mie[13:0];
+   wire [13:0] pend_m = ip_ie & ~mideleg[13:0];
+   wire [13:0] pend_s = ip_ie &  mideleg[13:0];
+   wire        take_m = m_glob & (pend_m != 14'd0);
+   wire        take_s = ~take_m & s_glob & (pend_s != 14'd0);
+   wire [13:0] pend   = take_m ? pend_m : (take_s ? pend_s : 14'd0);
    wire        irq_to_s = take_s;
    assign      irq_v     = take_m | take_s;
    assign      irq_cause = pend[11] ? 4'd11 : pend[3] ? 4'd3 : pend[7] ? 4'd7
-                         : pend[9]  ? 4'd9  : pend[1] ? 4'd1 : 4'd5;   // STI(5) last
+                         : pend[9]  ? 4'd9  : pend[1] ? 4'd1 : pend[5] ? 4'd5
+                         : 4'd13;                                       // LCOFI(13) last
 
    // exception this op raises (ecall/ebreak/illegal-CSR/illegal-sfence/sret) + cause + delegation
    wire        exc_active = is_ecall | is_ebreak | csr_illegal | sys_illegal;
@@ -721,6 +733,29 @@ module csr_file
    end
 
    localparam MIE_B=3, SIE_B=1, MPIE_B=7, SPIE_B=5, SPP_B=8;  // [12:11]=MPP
+
+   // ---- Zihpm/Sscofpmf per-counter terms ----
+   // A counter-CSR write is an op that writes (a csrr of mhpmeventN rewrites nothing, so it
+   // cannot swallow that cycle's increment or overflow). A counter runs unless mcountinhibit or
+   // its event's *INH bit for the current privilege stops it; it wraps when the add carries out.
+   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal;
+   wire [HPMN-1:0] hpm_wev, hpm_wct, hpm_run, hpm_wrap;
+   wire [63:0]     hpm_nxt [0:HPMN-1];
+   genvar g;
+   generate for (g = 0; g < HPMN; g = g + 1) begin : g_hpm
+      localparam [11:0] EVA = MHPMEVENT3 + g, CTA = MHPMCOUNTER3 + g;
+      wire [64:0] sum = {1'b0, mhpmcounter[g]} + {59'd0, hpm_val(hpm_esel[g])};
+      wire        inh = (priv == M) ? mhpmevent[g][MINH_B]
+                      : (priv == S) ? mhpmevent[g][SINH_B] : mhpmevent[g][UINH_B];
+      assign hpm_wev[g]  = hpm_csr_we & (upd_addr == EVA);
+      assign hpm_wct[g]  = hpm_csr_we & (upd_addr == CTA);
+      assign hpm_run[g]  = ~mcountinhibit[g+3] & ~inh;
+      assign hpm_wrap[g] = hpm_run[g] & sum[64] & ~hpm_wct[g];
+      assign hpm_nxt[g]  = sum[63:0];
+      assign hpm_of[g]   = mhpmevent[g][OF_B];
+   end endgenerate
+   // A wrap with OF clear sets OF and LCOFIP; an mhpmeventN write that cycle wins.
+   wire hpm_lcof = |(hpm_wrap & ~hpm_wev & ~hpm_of);
 
    integer i;
    always @(posedge clk) begin
@@ -845,10 +880,10 @@ module csr_file
                        ? newv : minstret + ((mcountinhibit[2] | minstret_wr_q) ? 64'd0 : {58'd0, retire_cnt});
       end
       // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
-      // mhpmeventN-selected event's count this cycle unless inhibited (mcountinhibit[N]); an
-      // M-mode write loads the value (that cycle's increment dropped). mhpmeventN + mcountinhibit
-      // are plain WARL. Only CYCLES/INSTRET are tapped in Phase 1; other event codes contribute
-      // 0 (the counter holds) -- the extension point for branch/cache/TLB events.
+      // mhpmeventN-selected event's count this cycle while it runs (hpm_run: mcountinhibit[N]
+      // and the event's *INH bit for the current privilege); an M-mode write loads the value
+      // (that cycle's increment dropped). A wrap sets OF (Sscofpmf). mhpmeventN + mcountinhibit
+      // are plain WARL; an unimplemented event code contributes 0 (the counter holds).
       if (reset) begin
          mcountinhibit <= 64'd0;
          for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; hpm_esel[i] <= HSEL_NONE; end
@@ -856,13 +891,17 @@ module csr_file
          if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= newv & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
-            if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMEVENT3+i))
+            if (hpm_wev[i])
                begin mhpmevent[i] <= newv;  hpm_esel[i] <= hpm_sel_of(newv[15:0]); end
-            if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==(MHPMCOUNTER3+i))
+            else if (hpm_wrap[i])
+               mhpmevent[i][OF_B] <= 1'b1;
+            if (hpm_wct[i])
                mhpmcounter[i] <= newv;
-            else if (!mcountinhibit[i+3])
-               mhpmcounter[i] <= mhpmcounter[i] + {58'd0, hpm_val(hpm_esel[i])};
+            else if (hpm_run[i])
+               mhpmcounter[i] <= hpm_nxt[i];
          end
+         // After the mip CSR write above: an overflow in the cycle software clears LCOFIP stays.
+         if (hpm_lcof) mip[LCOFIP_B] <= 1'b1;
       end
    end
 endmodule

@@ -209,7 +209,9 @@ int csr_read_to_override(uint32_t insn) {
         case 0xF11: case 0xF12: case 0xF13:
         // PMP cfg/addr: no enforcement modeled; the DUT stores them verbatim while
         // simmerv's CSR fast-path ignores writes -> let the DUT's read value win.
-        case 0x3A0: case 0x3B0: return (int)csrno;
+        case 0x3A0: case 0x3B0:
+        // scountovf: the OF bits of the counters, which run on the DUT's events.
+        case 0xDA0: return (int)csrno;
         default:
             if ((csrno >= 0xB03 && csrno <= 0xB1F) ||
                 (csrno >= 0xC03 && csrno <= 0xC1F) ||

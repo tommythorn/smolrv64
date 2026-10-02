@@ -16,7 +16,7 @@ login prompt on the board with zero faults before it lands.
 
 | | |
 |---|---|
-| Geekbench 5.4.1, board, 2026-09-29 | **10** single-core (Integer 12, Crypto 1, Floating Point 8), **10** multi-core ([result 24677233](https://browser.geekbench.com/v5/cpu/24677233), [every subtest](workloads/gb5/result-2026-09-29.md)); the whole suite in 3 h 00 min at IPC 0.73 |
+| Geekbench 5.4.1, board, 2026-10-01 | **10** single-core (Integer 12, Crypto 1, Floating Point 8), **10** multi-core ([result 24682169](https://browser.geekbench.com/v5/cpu/24682169), [every subtest](workloads/gb5/result-2026-10-01.md)); the whole suite in 2 h 58 min at IPC 0.73 |
 | Geekbench 6.7.1, board, 2026-09-21 to 23 | 4 single-core, 4 multi-core ([result 19246188](https://browser.geekbench.com/v6/cpu/19246188)) |
 | `sha256sum` of a 30 MB file, board, 2026-09-25 | IPC 1.56 to 1.63 over three runs, 43 cycles per byte |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed three-wide; DDR4 at 333 MHz |
@@ -100,7 +100,7 @@ is read off the RTL or measured with the workload named):
   lines in even/odd 64-bit block-RAM banks. Page-table walks read through the data cache, so
   a walk always sees dirty page-table entries.
 - **Virtual memory as Linux expects it.** Sv39 with hardware page-table walkers, a
-  2048-entry direct-mapped dTLB (8 MiB of reach) and a 16-entry iTLB, superpages, Ssvnapot leaves, Svpbmt non-cacheable mappings plus Zicbom
+  2048-entry direct-mapped dTLB (8 MiB of reach) and a 64-entry iTLB, superpages, Ssvnapot leaves, Svpbmt non-cacheable mappings plus Zicbom
   and Zicboz cache-management operations, so the kernel drives non-coherent virtio DMA
   rings with its standard machinery. Misaligned loads and stores are handled in hardware,
   including across cache lines. The physical address space is 36 bits, capped at the
@@ -163,7 +163,8 @@ time.
   rule from the project's own defect record, with the commit that paid for it.
 
 **Observability on hardware.** 49 performance events through 13 `mhpmcounter`s, exposed to
-Linux `perf` by a generated event file. One classifier charges every cycle to exactly one of
+Linux `perf` by a generated event file. Sscofpmf's overflow interrupt and privilege filters
+make every counter a sampling source, so `perf record -g` profiles on the board. One classifier charges every cycle to exactly one of
 dispatching, bad speculation, front-end or back-end, with the back-end split into memory,
 ROB full and a full scheduler or queue, and the front-end's latency cycles apart; the
 events count it, so a `perf stat` run is a Top-Down report that closes to the cycle count.
@@ -173,7 +174,7 @@ The simulator prints the same classifier's finer causes. The same counters, samp
 ## Performance
 
 Geekbench 5 on the board is the target metric: the scores above, with every subtest's rate
-in [workloads/gb5/result-2026-09-28.md](workloads/gb5/result-2026-09-28.md). The whole-run
+in [workloads/gb5/result-2026-10-01.md](workloads/gb5/result-2026-10-01.md). The whole-run
 IPC from `perf stat` is the number comparable across builds, and the subtest rates are what
 the scores follow.
 
@@ -181,14 +182,16 @@ Geekbench 6.7.1 on 27f03a7f, three-wide ([result 19246188](https://browser.geekb
 2026-09-21 to 23): 4 single-core, 4 multi-core. Geekbench 6 is more load-bound than
 Geekbench 5 and multiplies far more.
 
-In lockstep simulation the tiny128 Linux boot retires 33,867,866 instructions in its first
-60 million cycles and 135,292,357 in 300 million. Those counts are the reference in
+In lockstep simulation the tiny128 Linux boot retires 39,334,491 instructions in its first
+60 million cycles and 169,425,544 in 300 million. Those counts are the reference in
 `core/cosim-expected.txt`, and a change that moves them names the delta in its commit.
 
 The plans behind the design, with every item justified by a measurement on this core,
 are [docs/PLAN-2026-09-05-ipc.md](docs/PLAN-2026-09-05-ipc.md) and
-[docs/PLAN-2026-09-24-frontend-stage4.md](docs/PLAN-2026-09-24-frontend-stage4.md). SPEC
-results will be added as they are run.
+[docs/PLAN-2026-09-24-frontend-stage4.md](docs/PLAN-2026-09-24-frontend-stage4.md); the
+direction from here, four uniform execution lanes behind a front end that never stalls past
+its fetch queue, is [docs/PLAN-2026-10-01-uniform-lanes.md](docs/PLAN-2026-10-01-uniform-lanes.md).
+SPEC results will be added as they are run.
 
 ## Quick start
 
@@ -197,6 +200,7 @@ git clone --recursive https://github.com/tommythorn/smolrv64
 cd smolrv64
 src/lint.sh                                   # lint: clean
 core/run-vl.sh                           # riscv-tests under Verilator: pass=240 fail=0
+core/run-directed.sh                     # directed tests for what riscv-tests never does
 for t in core/run-*-tb.sh; do $t; done   # the core's unit benches
 src/run-tb.sh                                 # the shared blocks' and devices' benches
 core/run-linux.sh                        # boot Linux (tiny128 initramfs) under Verilator

@@ -19,7 +19,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | ISA | RV64IMAFDC (`misa` = A, C, D, F, I, M, S, U; MXL=2) |
 | Privilege | M / S / U |
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
-| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sstc, Smstateen, Ssvnapot |
+| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops (two schedulers, two ALUs) reorder freely; FP ops, branches, jumps and mul/div reorder on the F/CTF/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
@@ -1388,6 +1388,25 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 `hpm_ev` bus plus three per-cycle counts (the queue occupancies and `DPATCH`). A 13-event `perf
 stat` fills the counters; more is multiplexed, and its counts are estimates.
 
+**Sscofpmf (sampling).** Each `mhpmeventN` carries OF (bit 63) and MINH/SINH/UINH (62:60);
+VSINH/VUINH (59:58) are stored and never consulted. A counter stops in a privilege whose INH bit
+is set, and also under `mcountinhibit`. A counter that wraps sets OF, and OF's 0 -> 1 edge sets
+`mip.LCOFIP` (bit 13): while OF stays set the counter keeps counting and raises nothing more,
+until software clears OF. LCOFI is delegable (`mideleg[13]`), `sie`/`sip` show bit 13, and it
+ranks last, after STI. `scountovf` (0xDA0) reads the OF bits; below M a bit reads 0 unless
+`mcounteren` grants that counter. Linux's SBI PMU driver samples on it, so `perf record -g`
+works (the kernel keeps frame pointers). The privilege filter compares the current privilege
+with the event bus, which runs a cycle late, so an event in the cycle of a privilege change
+may count on either side of it. A read of `mhpmeventN` or `mhpmcounterN` (`csrr`) writes
+nothing, so it cannot swallow that cycle's increment or overflow. `core/directed/sscofpmf.S`
+checks overflow, OF's silence, the INH bits in M and S, LCOFI's priority and delegation, and
+`scountovf`'s masking and U-mode trap.
+
+Unimplemented CSRs read 0 and ignore writes instead of trapping, so OpenSBI's probe also
+reports Smcntrpmf (`mcyclecfg`/`minstretcfg`) and Sdtrig (one trigger): neither exists, and
+`mcycle`/`minstret` are never filtered. With Sscofpmf present OpenSBI places cycles and
+instructions on programmable counters, which do filter.
+
 **TOP-DOWN (§11.2, on the board).** `smolrv64_core`'s one classifier (`td_k`) charges every cycle to
 exactly one of bad speculation, front-end, back-end or dispatching; its events count it, so
 `TD_BS + TD_FE + TD_BE` plus the dispatching cycles is the cycle count by construction, and the
@@ -1516,6 +1535,7 @@ then `../../tools/pipeview/target/release/pipeview s.kanata sillyloop.elf`.
 |---|---|---|
 | lint | `src/lint.sh` | `lint: clean` |
 | riscv-tests | `core/run-vl.sh` | `pass=240 fail=0` |
+| directed tests, for what riscv-tests never does (a misaligned AMO; a counter overflow, Sscofpmf) | `core/run-directed.sh` (after `run-vl.sh`) | `PASS` for every test in `core/directed/` |
 | unit benches of the shared blocks and devices, under Verilator | `src/run-tb.sh` | `tb pass=20 / 20` |
 | Linux lockstep vs simmerv | `CYC=300000000 core/run-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
 | the D$ | `core/run-dcache-tb.sh` | `DCACHE-TB: 48 of 48 runs pass` (6 seeds × in-order/reordering memory × default, slow, fast-with-stores, remap-heavy; every outcome occurs; memory equals gold after every clean) |
