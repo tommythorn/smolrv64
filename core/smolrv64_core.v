@@ -3756,7 +3756,9 @@ module smolrv64_core
          if (cot_take) begin                     // M's trap, or the SYSQ's (C3 step 3)
             e_v <= 1'b1;  e_trap <= 1'b1;
             e_pc <= sy_fire ? sy_pc : m_pc;
-            e_insn <= (cot_intr | cot_ifault) ? 32'd0 : sy_fire ? sy_insn : m_insn;
+            // a queue entry's fault reaches the SYSQ without its instruction: it is the ROB head's
+            e_insn <= (cot_intr | cot_ifault) ? 32'd0 : (sy_fire & sy_qf) ? cs_insn[sy_rob]
+                    : sy_fire ? sy_insn : m_insn;
             e_rk <= 2'd0;  e_ri <= 5'd0;  e_val <= 64'd0;
             e_cause <= cot_cause;  e_tval <= cot_tval;
             e_prv <= u_csr.priv;                  // privilege BEFORE the trap
