@@ -1079,7 +1079,7 @@ module smolrv64_core
       .d_ps(stg_ps_l),.d_r(stg_r_l),
       .d_prd(stg_prd_l),.d_ent(rl_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(~m_advance | (i_v & i_needs_m)),
+      .unit_busy(~m_advance),
       .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
      .iss_take(rl_take),
       .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),

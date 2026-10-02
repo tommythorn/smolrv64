@@ -624,7 +624,7 @@ moves the wall.
 | holds | pure ALU and non-trapping ops, slot A's | the same, slot B's (item 10d-ii) | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
 | ordering | **reorders freely** | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
 | unit | completes at issue, writes IE | completes at issue, writes IE2 | M | **stage F** |
-| `unit_busy` | **none** — IE has one writer | **none** — IE2 has one writer | `~m_advance \| (i_v & i_needs_m)` | `~f_advance \| (i_v & i_needs_f)` |
+| `unit_busy` | **none** — IE has one writer | **none** — IE2 has one writer | `~m_advance`: the issue register refills in the cycle M takes its op, so memory ops issue back to back | `j_v & ~j_adv`: the F/CTF select register is full and not draining |
 
 **One scheduler per unit is what makes four safe.** Three schedulers feeding ONE execute
 stage deadlock (`Area-Efficient-Scalar-OoO.md` 12.2): an op reaches the shared stage, finds
