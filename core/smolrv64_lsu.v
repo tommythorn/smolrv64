@@ -274,10 +274,10 @@ module smolrv64_lsu
    reg [(1<<LDTW)-1:0] o_v;                      // per tag: a response is still coming
    // ...and only M's walk needs that: the queue walker's request does not depend on the FSM,
    // so a queued access may start while it walks. Whose walk it is: the port's requester last
-   // cycle (xl_f outranks the queue's, and a walk follows the request it started for).
-   reg         wk_m_q;  initial wk_m_q = 1'b0;
-   always @(posedge clk) wk_m_q <= ~reset & xl_f;
-   wire        pt_start = pt_v & (st == S_IDLE) & ~(mmu_walking & wk_m_q)
+   // cycle (the port's requester, pm_q below; a walk follows the request it started for).
+   reg         pm_q;  initial pm_q = 1'b0;
+   always @(posedge clk) pm_q <= ~reset & xl_f;
+   wire        pt_start = pt_v & (st == S_IDLE) & ~(mmu_walking & pm_q)
                         & (pt_store | (port_free & ~o_v[pt_tag]));
    // A TRANSLATE-ONLY REQUEST DOES NOT ARBITRATE, AND DOES NOT WAIT FOR THE FSM. It needs the
    // MMU and nothing else: no bank, no pa_q, no state. It used to be gated with everything
@@ -338,10 +338,13 @@ module smolrv64_lsu
    // THE WALKER'S PORT: M's FSM-starting op first, else the queue's untranslated entry. The
    // translate-only pass never uses it: it looks up in the other port, and a miss there hands
    // the entry to the walker instead of holding M.
-   wire        xl_req  = xl_f | wk_v;
-   wire        wk_own  = ~xl_f;                  // the port's request this cycle is the queue's
-   wire [63:0] mm_va   = xl_f ? req_vaddr : {{25{wk_va[38]}}, wk_va};
-   wire [1:0]  mm_acc  = xl_f ? (is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1)
+   // WHICH REQUEST IS A REGISTER (pm_q): M's FSM-starting op takes the port the cycle after it asks,
+   // so nothing of M's control reaches the 2048-entry TLB's read address or the walker's answer.
+   wire        xl_req  = pm_q ? xl_f : wk_v;
+   wire        wk_own  = ~pm_q;                  // the port's request this cycle is the queue's
+   wire        xl_fp   = xl_f & pm_q;            // M's op, and the port is its
+   wire [63:0] mm_va   = pm_q ? req_vaddr : {{25{wk_va[38]}}, wk_va};
+   wire [1:0]  mm_acc  = pm_q ? (is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1)
                               : (wk_st ? 2'd2 : 2'd1);
 
    // The dTLB: 2048 entries, direct-mapped on the VPN's low bits, 8 MiB of 4 KiB pages -- the
@@ -380,19 +383,21 @@ module smolrv64_lsu
    wire mis_flt = (xl_x & xpage) | (xl_f & (xpage | amo_mis));
    // the translate-only pass faults only on what the address alone decides; a page fault is
    // the walker's, and rides in the entry
-   wire xl_flt  = (xl_x & s_flt) | (xl_f & t_ready & t_fault);
+   wire xl_flt  = (xl_x & s_flt) | (xl_fp & t_ready & t_fault);
 
    assign fault       = req_valid & (mis_flt | xl_flt);
    assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : xl_x ? s_cause : t_cause;
    assign fault_tval  = req_vaddr;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
-   wire xl_ok_f  = xl_f & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
+   wire xl_ok_f  = xl_fp & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
    wire xo_ok    = xl_x & s_ok & ~xpage;
-   // ...or hands its VA over untranslated: the TLB does not hold it (or its perms failed, which
-   // only a fresh walk may turn into a fault), and M does not wait for the walk
-   wire xo_nopa  = xl_x & ~s_ok & ~s_flt & ~xpage;
+   // ...or hands its VA over untranslated (the TLB does not hold it, or its perms failed, which
+   // only a fresh walk may turn into a fault) and does not wait for the walk. M lets go either
+   // way, so its completion is the address-only test: the TLB is in the PA and `tv` the entry
+   // gets, never in M's done or the entry's fill.
+   wire xo_any   = xl_x & ~s_flt & ~xpage;
    // NO disambiguation here any more. smolrv64_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).
@@ -408,7 +413,7 @@ module smolrv64_lsu
    wire xl_early = xo_ok & req_early & (t_mem | m_head) & (st == S_IDLE) & ~pt_start
                  & port_free & ~o_v[req_tag];   // the translate's region (see xo_mem)
    wire start_ok = pt_start | xl_ok_f | xl_early;
-   assign xo_v     = xo_ok | xo_nopa;
+   assign xo_v     = xo_any;
    assign xo_tv    = xo_ok;
    assign xo_early = xl_early;
    assign xo_pa  = s_paddr;
@@ -532,7 +537,7 @@ module smolrv64_lsu
    // and failed timing. The queue pops at the handoff (pt_ack); nothing can pass a store that
    // sits here, because every access goes through this FSM, and the D$ holds a load to the line
    // of any store it has queued.
-   wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~(mmu_walking & wk_m_q);   // src_pt: M's op (a CBO) is not a store to chain from
+   wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~(mmu_walking & pm_q);   // src_pt: M's op (a CBO) is not a store to chain from
    // M's own start: a translate-only load (the early start) took its PA from the lookup port, an
    // FSM-starting op (AMO, LR/SC, CBO) from the walker's
    assign eff_pa  = (pt_start | take_next) ? pt_pa  : req_xlate ? s_paddr : t_paddr;
@@ -644,7 +649,7 @@ module smolrv64_lsu
    // `fault` needs no such split: it is qualified by xl_req, which is false unless M owns an
    // idle LSU, so a commit can never raise one (it was translated before it was buffered).
    assign done_acc = acc_done & ~own_pt;
-   assign done     = fault | xo_ok | xo_nopa | done_acc;
+   assign done     = fault | xo_any | done_acc;
    assign pt_done  = acc_done & own_pt;
    // A LOAD'S LANDING FROM THE LOAD TERMS ALONE (plan item T1 (L) step 3, 2026-09-07). pt_done
    // & ~pt_is_store is the same value, but its cone is all of acc_done, and the store terms'

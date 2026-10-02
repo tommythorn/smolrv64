@@ -959,11 +959,14 @@ cycle is legal and was lost once).
   dTLB's lookup port (`mmu`'s `s_*`: the TLB alone, never a walk). A hit is the pass above,
   unchanged: the entry gets its PA and a load may start in the same pass. A miss, or a hit whose
   permissions fail (which only a fresh walk may turn into a fault), does not hold M: the entry is
-  filled with its VA alone (`tv` clear) and M lets go. M decides only the faults the address
+  filled with its VA alone (`tv` clear) and M lets go: M's completion is the address-only test
+  (`xo_any`), so the TLB is never in M's done or the entry's fill enable. M decides only the faults the address
   alone does: a page-crossing misalignment, a non-canonical VA under Sv39, an address beyond the
   top under Bare (`s_flt`); so the entry's VA[38:0] is all the walker needs.
   - **The walker** (`mmu`'s walking port) serves M's FSM-starting op first (an AMO, LR/SC or CBO,
-    at the ROB head), else the store queue's first uncommitted entry, else the load queue's
+    at the ROB head; the port's requester is a register, `pm_q`, so it takes the port the cycle
+    after it asks and M's control never reaches the TLB's read address), else the store queue's
+    first uncommitted entry, else the load queue's
     candidate, whichever is untranslated: stores commit and loads reach memory in queue order, so
     no other entry is waited on first. It keeps the entry it was asked for until it answers
     (`wk_lk`) or a redirect ends the walk with the entry. Its answer writes the entry's PA,

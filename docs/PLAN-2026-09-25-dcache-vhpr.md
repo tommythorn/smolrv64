@@ -582,6 +582,17 @@ shadow op included), unit benches, a build at IW=3, the board gate, then GB5.
      address (`u_lq/acc -> u_lsu/u_mmu`, 1,560 paths) and congested the whole core. The walker now
      latches the entry's VA as it takes it, a cycle per walk: 39,529,260 at 60 M (+0.89%),
      168,133,862 at 300 M (-1.23%; +0.21% over the fill hold alone).
+   - **Two more cones, found by `make census` on the next builds.** The SYSQ took a queue fault's
+     record on `qf_in & ~redirect` and the walker latched its VA in the else of the redirect arm
+     (rule I11); the record now takes a register stage and the payloads load with no redirect. Then
+     the census still put `u_rob/head` on the queues' PA registers and the dTLB: the walking port's
+     address mux selected on M's live `xl_f`, and M's completion was written `xo_ok | xo_nopa`,
+     whose TLB terms synthesis kept. The port's requester is now a register (`pm_q`: an AMO, LR/SC
+     or CBO takes the port a cycle after it asks) and M's completion is the address-only test.
+   - Build (the tree of 286af18f + those two): the default directive met, WNS +0.005. Board gate PASS
+     (login, 0 faults, 900 s GB5 stress, errlog clean): the first bitstream with the I$ fill hold too.
+     Lockstep 39,218,710 at 60 M, 170,075,891 at 300 M (+1.37% over the fill hold alone); the storm
+     is clean to 500 M.
 
    **5c, `VIRT=1`: a load asks by its VA first.**
    - **A virtual hit answers with no PA.** A virtual miss answers a nack with no side effect: no
