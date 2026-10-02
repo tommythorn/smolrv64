@@ -139,7 +139,12 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
    - the memory pipe's cadence, root-caused: `u_iq_l`'s busy counted its issue register's
      occupancy (fixed: fc351fa0, +6.37% at 300 M); the LSU starts at most every other cycle
      because its one-deep read request buffer frees only the cycle after the request, and
-     knowing the accept sooner would mean a combinational D$ accept: a two-deep buffer fixes it.
+     knowing the accept sooner would mean a combinational D$ accept. In the 60 M lockstep the D$
+     sees 7.66 M reads, none in consecutive cycles, and in 4.73 M cycles a load is ready to
+     start and held only by the previous cycle's request. A two-deep buffer needs either a
+     registered-select mux on the request address (whose worst path into the D$'s block RAM has
+     +0.308 ns today) or a credit the D$ gives a cycle ahead with a skid of its own; both belong
+     to the lanes' memory unit (step 5.2), built to take a load every cycle, not to today's LSU.
 3. **Serialisation out of dispatch** (small, independent).
 4. **D$ 5c + 6b.**
 5. **The lanes, in lockstep-gated steps:**

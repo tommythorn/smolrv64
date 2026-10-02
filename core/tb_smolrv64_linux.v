@@ -610,6 +610,11 @@ module tb;
    reg [63:0] ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room;
    reg [63:0] al_wait, al_wait_idle, al_young;
    reg [63:0] ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b;
+   // A read held only by the request register: the port's load or M's early load could start but
+   // for last cycle's request pulse (mem_ren) -- what a two-deep request buffer would start.
+   reg [63:0] ls_rd, ls_rd_b2b, ls_pulse_held;
+   reg        ls_rd_q;
+   initial begin ls_rd = 0; ls_rd_b2b = 0; ls_pulse_held = 0; ls_rd_q = 0; end
    reg        ml_iss_q, ls_st_q;
    initial begin ds_b_alone = 0; ds_b_rule = 0; ds_b_sq = 0; ds_b_room = 0; ds_c_alone = 0; ds_c_rule = 0;
                  ds_c_sq = 0; ds_c_room = 0; al_wait = 0; al_wait_idle = 0; al_young = 0;
@@ -657,6 +662,13 @@ module tb;
       ml_iss_q = dut.core.rl_iss_v;
       if (dut.core.lsu_started) begin ls_st = ls_st + 1; if (ls_st_q) ls_b2b = ls_b2b + 1; end
       ls_st_q = dut.core.lsu_started;
+      if (dut.core.u_lsu.mem_ren) begin ls_rd = ls_rd + 1; if (ls_rd_q) ls_rd_b2b = ls_rd_b2b + 1; end
+      ls_rd_q = dut.core.u_lsu.mem_ren;
+      if (dut.core.u_lsu.mem_ren & ~dut.core.u_lsu.mem_rbusy & (dut.core.u_lsu.st == 0)
+          & ~(dut.core.u_lsu.mmu_walking & dut.core.u_lsu.pm_q)
+          & ((dut.core.u_lsu.pt_v & ~dut.core.u_lsu.pt_store & ~dut.core.u_lsu.o_v[dut.core.u_lsu.pt_tag])
+           | (dut.core.u_lsu.xo_ok & dut.core.u_lsu.req_early & dut.core.u_lsu.t_mem & ~dut.core.u_lsu.o_v[dut.core.u_lsu.req_tag])))
+         ls_pulse_held = ls_pulse_held + 1;
    end
 
    // ---- FRING-SIM: the fetch stream and its predictions, printed with TOPDOWN-SIM ----------
@@ -1092,6 +1104,7 @@ module tb;
                ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
       $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
                al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);
+      $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
