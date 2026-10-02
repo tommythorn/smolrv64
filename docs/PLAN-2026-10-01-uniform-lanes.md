@@ -132,6 +132,14 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
      return, 0.32 indirect; ending a pair only at a taken transfer cuts fetch pairs 17%;
    - kernel system ops per 1000 instructions: 0.31 CSR writes (mostly `sstatus.SIE`), 0.36 AMOs,
      0.05 `sfence.vma`, 0.03 `fence.i`.
+   - the PRF at the lanes geometry (four 64-entry shards, eight 64-bit read ports), alone with
+     `make ooc`: block RAM with a registered read and its bypass is 2,152 LUTs and 32 RAMB36
+     (6.7% of the part), its read stage 336.6 MHz; LUTRAM is 5,032 LUTs (2,368 of them LUTRAM).
+     Block RAM is the PRF; the same 32 RAMB36 hold 512 registers a shard.
+   - the memory pipe's cadence, root-caused: `u_iq_l`'s busy counted its issue register's
+     occupancy (fixed: fc351fa0, +6.37% at 300 M); the LSU starts at most every other cycle
+     because its one-deep read request buffer frees only the cycle after the request, and
+     knowing the accept sooner would mean a combinational D$ accept: a two-deep buffer fixes it.
 3. **Serialisation out of dispatch** (small, independent).
 4. **D$ 5c + 6b.**
 5. **The lanes, in lockstep-gated steps:**
