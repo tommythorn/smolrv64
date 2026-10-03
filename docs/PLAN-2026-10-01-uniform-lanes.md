@@ -265,33 +265,25 @@ What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system o
 integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
 slot, which dissolves SH_FE.
 
-## The PRF in block RAM (design, 2026-10-03)
+## The PRF in block RAM: built, measured, dropped (2026-10-03)
 
-Why now: 5.2a (lane C) misses 166.67 MHz on a congestion plateau (the census's worst families
-run through unrelated units: the D$, the FPU, the MMIO FIFO), and 5.2b's prototype more so
-(-0.763 ns, 5.5 ns routes at 9-14 levels). The LUTRAM PRF is the largest LUT consumer the lanes
-grow: every read port is a copy of every shard it can read. Out of context, the block-RAM PRF
-at the lanes geometry is 2,152 LUTs against 5,032 (step 2 above).
+Built on `wip/prf-r` (parked): a read stage on the lanes, a two-deep bypass, the lanes waking
+each other from the read stage, then the lanes' six read ports as block RAM (30 RAMB36). It
+is cycle-identical between the two increments and correct in the lockstep, and it is out
+(Tommy, 2026-10-03):
 
-**The timing.** A block RAM reads registered: the address in cycle R, the data in R+1. Each
-issue port gains a register-read stage between select and execute:
-
-- select at N (as today), read address at N+1, execute at N+2;
-- a producer selected at N executes at N+2 and writes the array at N+3 (its result register);
-  a dependent selected at N+1 (woken at select, as today) reads at N+2 and misses it, so it
-  takes the producer's result register at N+3 (bypass level 1); a dependent reading at N+3
-  meets the write in the same cycle (read-first), so it takes a second result register at
-  N+4 (bypass level 2). Wakeup and back-to-back issue do not change;
-- a late writer (a load landing, the FPU, the MD stage) wakes at its write, as today; its
-  dependent reads the cycle after, past the write;
-- a mispredict resolves a cycle later, which restart at resolve absorbs.
-
-**The increments.**
-1. The register-read stage on every port with the arrays still LUTRAM, read through a
-   pipeline register: the block RAM's timing exactly, so the lockstep measures the IPC cost
-   and the bypasses are proven before the technology changes.
-2. The arrays become block RAM (one RAMB36 per shard per read port, 512 x 72), and the
-   LUTRAM copies and their read muxes go.
+- **It saved little area.** `u_prf` went from 18,856 to 17,120 LUTs, all of it LUTRAM. The
+  instance's 13.5K logic LUTs are not the register file's: counted by cell name they are its
+  consumers (the lanes' ALUs, M's and the CTF stage's exec units, the FPU's operand muxes, the
+  divider's operands), which Vivado pulls across the boundary. The out-of-context comparison
+  (2,152 against 5,032 LUTs) did not carry over to the chip. Per-instance utilization after
+  flattening is not evidence of what an RTL block costs.
+- **It cost IPC.** -1.15% at 60 M against 5.2a with the early wake. At ROB 64 the ROB-full
+  stalls vanish and the gap stays (-1.22%): it is latency, ALU results reaching M, F and the
+  serialise drain a cycle later, spread thinly over many stall causes.
+- **It added a path.** Block-RAM clock-to-out now led the execute cycle (block RAM -> shard
+  mux -> bypass -> ALU -> result register, 16-17 levels), and WNS moved only from -0.334 to
+  -0.310 ns.
 
 ## Decisions (Tommy, 2026-10-01)
 
