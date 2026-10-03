@@ -242,15 +242,13 @@ Top-Down event set and prints the report.
 
 ## What comes next
 
-- The data cache's next steps ([docs/PLAN-2026-09-25-dcache-vhpr.md](docs/PLAN-2026-09-25-dcache-vhpr.md)):
-  a store every cycle; an instruction cache kept coherent with stores, so `fence.i` touches
-  no cache; then virtual indexing, with loads translated in their queue and the dTLB off the
-  hit path.
+- The data cache's end state ([docs/PLAN-2026-10-03-dcache-vipt-l2.md](docs/PLAN-2026-10-03-dcache-vipt-l2.md)):
+  a 1.5 MiB L2 in UltraRAM, in the memory controller's 333 MHz domain; then a virtually indexed,
+  physically tagged L1 of 32 ways of 4 KiB, free of aliases, its dTLB read beside the data.
 - One out-of-order load/store pipe: loads and stores issued out of order, translated in
   their queues, with memory speculation and replay.
 - A review of the clock: 250 MHz would be worth 50%, with the memory controller's 333 MHz
   behind a clock crossing.
-- An L2 in UltraRAM, which the part has 64 blocks of and the design uses none of.
 - The question of whether a vector unit fits without giving up the clock.
 - SPEC CPU on the board.
 
