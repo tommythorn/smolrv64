@@ -218,6 +218,35 @@ timing is fought.
    the oldest mispredict wins by age into the existing early restart (`fr_*`), and predictor
    training goes through a short buffer that drops on overflow (it is a hint). The CTF stage
    leaves `u_iq_f`.
+   **5.2b in detail (design for review).** Today one CTF stage (`cf_*`, fed from `u_iq_f`)
+   resolves every branch, writes jal/jalr links into SH_FE when the FPU is not landing, tracks
+   the oldest pending restart (`fr_v`, `fr_seq`, `fr_rob`), trains the predictor once per CTI
+   (`res_*`), and marks a mispredict done only at its squash so that the ROB head stops on it.
+   In the lanes:
+   - **Resolve.** Each lane's `smolrv64_exec` gets its branch inputs (today tied 0). A CTI's
+     link is the lane's ALU result, written at issue into the lane's shard like any ALU result:
+     the link no longer waits for a port, and `cf_link_pend` and its squash interlock go.
+   - **A resolve register per lane** (`lr_*`: valid, seq, ROB index, mispredict, target, taken,
+     PC, predictor snapshot, call/return bits), loaded at issue. Everything downstream reads
+     registers, so the exec unit's compare never reaches the restart logic in its own cycle.
+   - **Oldest wins.** From the three resolve registers and the tracked restart, the oldest
+     mispredict (wrap-safe seq compares, three pairwise among the lanes plus each against
+     `fr_seq`) sets `fr_*` and drives `fe_red_tgt`, the RAS and history restore.
+   - **ROB completion.** A correctly predicted CTI completes at issue on its lane's port, like
+     an ALU op. A mispredict must not retire past its squash: it completes on the squash
+     (`cf_red_fire` with `fr_rob`, as today) through one shared port, and the lane's port does
+     not mark it at issue. That needs the mispredict known at issue on the lane's ROB port;
+     if that is too late for timing, the alternative is a per-entry "stop" bit the ROB's
+     multi-retire honours (retire stops before a stop entry, which then retires alone as the
+     head, in the squash cycle).
+   - **Training.** Up to three CTIs resolve per cycle; the predictor trains one per cycle
+     through a short queue that drops on overflow (training is a hint), except the tracked
+     restart's CTI, which takes the queue's head so rule D16 (it trains before its squash)
+     holds by construction. The weak-branch count (`wk_n`) subtracts up to three per cycle.
+   - **Dispatch.** Branches stop being class FC, so the class rule (which holds slot B behind
+     a slot A of its class: 13.7% of cycles in the 60 M boot, `DISP-SIM`, loads and FC
+     together) no longer separates two branches, or a branch and an FP op.
+
 3. **5.2c, a multiplier per lane, and write-slot reservation.** `mul3` in every lane. Each
    lane keeps a short reservation register of its write port's future cycles: an ALU op takes
    the next cycle, a multiply the third; select never issues into a reserved slot. The divide
