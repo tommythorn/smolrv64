@@ -933,24 +933,30 @@ module smolrv64_core
    wire d3_cls_i = ~d3_ord;
    wire d3_cls_fc = d3_cls_f | d3_cls_c | d3_cls_m | d3_cls_s;
    // Destination shard = the UNIT that writes it (declared with its rationale above).
-   assign d_shard  = d_rd[5]                                       ? SH_F0   // an f-register, trap or not
-                   : (d_is_mem | d_is_amo | d_illegal | d_fault) ? SH_LD   // a trap writes nothing
-                   : (d_is_fp | d_is_mul)                          ? SH_FE   // FP ops, in-core included: the base routing
-                   : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
-                   : d_ord                            ? SH_LD   // the SYSQ's CSR read
-                   :                                    SH_IE;  // the ALU, alone
-   assign d2_shard = d2_rd[5]                                          ? SH_F1
-                   : (d2_is_mem | d2_is_amo | d2_illegal | d2_fault) ? SH_LD
-                   : (d2_is_fp | d2_is_mul)                            ? SH_FE
-                   : d2_cls_c                            ? SH_FE   // jal/jalr link: FP/CTF pipe's slice
-                   : d2_ord                              ? SH_LD
-                   :                                       SH_IE2;   // the second ALU's shard
-   assign d3_shard = d3_rd[5]                                          ? SH_F2
-                   : (d3_is_mem | d3_is_amo | d3_illegal | d3_fault) ? SH_LD
-                   : (d3_is_fp | d3_is_mul)                            ? SH_FE
-                   : d3_cls_c                            ? SH_FE   // jal/jalr link: the FP/CTF slice
-                   : d3_ord                              ? SH_LD
-                   :                        (d2_cls_i ? SH_IE : SH_IE2);  // ALU: swizzled -- ALUa if I2 is ALU, else ALUb (ALUb preferred)
+   // From the opcode alone, never from the trap decode: a trapping op writes nothing, so any
+   // shard serves it, and the trap decode carries mstatus.FS (an FP op with FS off is illegal)
+   // into the new register's number and every pending-table set behind it.
+   function [2:0] shard_of(input rd_fp, input [31:0] i, input mem, input amo, input fp,
+                           input mul, input br, input jmp, input jalr, input [2:0] f_slice,
+                           input [2:0] alu);
+      shard_of = rd_fp                                ? f_slice   // an f-register
+               : (mem | amo)                          ? SH_LD     // M, a landing load
+               : (fp | mul | br | jmp | jalr)         ? SH_FE     // the F stage, the MD stage, a link
+               : (i[6:2] == 5'b11100) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00))
+                                                      ? SH_LD     // the SYSQ (a CSR read)
+               :                                        alu;      // the ALU, alone
+   endfunction
+   assign d_shard  = shard_of(d_rd[5],  d_insn,  d_is_mem,  d_is_amo,  d_is_fp,  d_is_mul,
+                              d_is_branch,  d_is_jump,  d_is_jalr,  SH_F0, SH_IE);
+   assign d2_shard = shard_of(d2_rd[5], d2_insn, d2_is_mem, d2_is_amo, d2_is_fp, d2_is_mul,
+                              d2_is_branch, d2_is_jump, d2_is_jalr, SH_F1, SH_IE2);
+   // slot C's ALU op is swizzled: ALUa if slot B's is an ALU op, else ALUb. Slot C dispatches
+   // only behind a plain (non-trapping) slot B, so the opcode test agrees with d2_cls_i then.
+   wire d2_alu_cls = ~(d2_is_mem | d2_is_amo | d2_is_fp | d2_is_mul | d2_is_branch | d2_is_jump
+                    | d2_is_jalr | d2_is_csr | d2_is_serialize | d2_is_fencei | d2_is_cbo);
+   assign d3_shard = shard_of(d3_rd[5], d3_insn, d3_is_mem, d3_is_amo, d3_is_fp, d3_is_mul,
+                              d3_is_branch, d3_is_jump, d3_is_jalr, SH_F2,
+                              d2_alu_cls ? SH_IE : SH_IE2);
    wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
    // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
    wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
@@ -2359,8 +2365,6 @@ module smolrv64_core
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "smolrv64_core: a system op issued into a busy SYSQ (it is serialising)");
       if (qf_in & sy_v & ~sy_is_csr)      $fatal(1, "smolrv64_core: a queue entry's fault displaces a SYSQ op that is not a younger CSR op");
       if (qf_sq & qf_lq)                 $fatal(1, "smolrv64_core: a load and a store both fault as the ROB head");
-      // (an FP slice is a trapping FP op's: it writes nothing)
-      if (iss_sys & (qf_shard != SH_LD) & (qf_shard < SH_F0)) $fatal(1, "smolrv64_core: a system op issued with shard %0d, not SH_LD", qf_shard);
       if (sy_wr & (sy_prd[RN_PBITS-1:RN_IDXB] != SH_LD)) $fatal(1, "smolrv64_core: the SYSQ wrote pr=%h, not SH_LD", sy_prd);
       // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
       // (a CSR op does not drain: younger work may be in flight; M yields to it, see m_done)
@@ -4006,6 +4010,8 @@ module smolrv64_core
       if (c_to_ia & (rn_valid & d_cls_i))   $fatal(1, "smolrv64_core: swizzle put two ops on ALUa");
       if (c_to_ib & b_to_i2)                $fatal(1, "smolrv64_core: swizzle put two ops on ALUb");
       if ((l_slot0 + b_to_l + c_to_l) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the M pipe");
+      if (c_to_ia & (d3_shard != SH_IE))    $fatal(1, "smolrv64_core: slot C's ALU op swizzled to ALUa in shard %0d", d3_shard);
+      if (c_to_ib & (d3_shard != SH_IE2))   $fatal(1, "smolrv64_core: slot C's ALU op swizzled to ALUb in shard %0d", d3_shard);
       if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the F pipe");
    end
 
