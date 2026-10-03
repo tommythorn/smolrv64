@@ -4,16 +4,18 @@
 <text x="12" y="41" fill="#555">SmolRV64 on the XCKU5P board at 166.67 MHz, one point per result</text>
 <line x1="48" y1="260.0" x2="616" y2="260.0" stroke="#e2e2e2" stroke-width="1"/>
 <text x="40" y="264.0" text-anchor="end" fill="#555">0</text>
-<line x1="48" y1="222.2" x2="616" y2="222.2" stroke="#e2e2e2" stroke-width="1"/>
-<text x="40" y="226.2" text-anchor="end" fill="#555">2</text>
-<line x1="48" y1="184.4" x2="616" y2="184.4" stroke="#e2e2e2" stroke-width="1"/>
-<text x="40" y="188.4" text-anchor="end" fill="#555">4</text>
-<line x1="48" y1="146.5" x2="616" y2="146.5" stroke="#e2e2e2" stroke-width="1"/>
-<text x="40" y="150.5" text-anchor="end" fill="#555">6</text>
-<line x1="48" y1="108.7" x2="616" y2="108.7" stroke="#e2e2e2" stroke-width="1"/>
-<text x="40" y="112.7" text-anchor="end" fill="#555">8</text>
-<line x1="48" y1="70.9" x2="616" y2="70.9" stroke="#e2e2e2" stroke-width="1"/>
-<text x="40" y="74.9" text-anchor="end" fill="#555">10</text>
+<line x1="48" y1="225.3" x2="616" y2="225.3" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="229.3" text-anchor="end" fill="#555">2</text>
+<line x1="48" y1="190.7" x2="616" y2="190.7" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="194.7" text-anchor="end" fill="#555">4</text>
+<line x1="48" y1="156.0" x2="616" y2="156.0" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="160.0" text-anchor="end" fill="#555">6</text>
+<line x1="48" y1="121.3" x2="616" y2="121.3" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="125.3" text-anchor="end" fill="#555">8</text>
+<line x1="48" y1="86.7" x2="616" y2="86.7" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="90.7" text-anchor="end" fill="#555">10</text>
+<line x1="48" y1="52.0" x2="616" y2="52.0" stroke="#e2e2e2" stroke-width="1"/>
+<text x="40" y="56.0" text-anchor="end" fill="#555">12</text>
 <line x1="48.0" y1="260" x2="48.0" y2="265" stroke="#555555" stroke-width="1"/>
 <text x="103.7" y="280" text-anchor="middle" fill="#555">Jun 2026</text>
 <line x1="159.4" y1="260" x2="159.4" y2="265" stroke="#555555" stroke-width="1"/>
@@ -26,26 +28,28 @@
 <text x="556.6" y="280" text-anchor="middle" fill="#555">Oct 2026</text>
 <line x1="616.0" y1="260" x2="616.0" y2="265" stroke="#555555" stroke-width="1"/>
 <line x1="48" y1="260" x2="616" y2="260" stroke="#555555" stroke-width="1"/>
-<path d="M 148.2 243.0 L 333.9 222.2 L 352.4 184.4 L 363.6 184.4 L 371.0 184.4 L 374.7 184.4 L 411.8 165.5 L 474.9 146.5 L 478.6 127.6 L 478.6 127.6 L 489.8 108.7 L 493.5 70.9 L 500.9 70.9" fill="none" stroke="#2b6cb0" stroke-width="2"/>
-<circle cx="148.2" cy="243.0" r="3.5" fill="#2b6cb0"/>
-<text x="141.2" y="235.0" text-anchor="end" font-weight="bold" fill="#2b6cb0">0.9</text>
-<circle cx="333.9" cy="222.2" r="3.5" fill="#2b6cb0"/>
-<text x="326.9" y="214.2" text-anchor="end" font-weight="bold" fill="#2b6cb0">2</text>
-<circle cx="352.4" cy="184.4" r="3.5" fill="#2b6cb0"/>
-<text x="345.4" y="176.4" text-anchor="end" font-weight="bold" fill="#2b6cb0">4</text>
-<circle cx="363.6" cy="184.4" r="3.5" fill="#2b6cb0"/>
-<circle cx="371.0" cy="184.4" r="3.5" fill="#2b6cb0"/>
-<circle cx="374.7" cy="184.4" r="3.5" fill="#2b6cb0"/>
-<circle cx="411.8" cy="165.5" r="3.5" fill="#2b6cb0"/>
-<text x="404.8" y="157.5" text-anchor="end" font-weight="bold" fill="#2b6cb0">5</text>
-<circle cx="474.9" cy="146.5" r="3.5" fill="#2b6cb0"/>
-<text x="467.9" y="138.5" text-anchor="end" font-weight="bold" fill="#2b6cb0">6</text>
-<circle cx="478.6" cy="127.6" r="3.5" fill="#2b6cb0"/>
-<text x="471.6" y="119.6" text-anchor="end" font-weight="bold" fill="#2b6cb0">7</text>
-<circle cx="478.6" cy="127.6" r="3.5" fill="#2b6cb0"/>
-<circle cx="489.8" cy="108.7" r="3.5" fill="#2b6cb0"/>
-<text x="482.8" y="100.7" text-anchor="end" font-weight="bold" fill="#2b6cb0">8</text>
-<circle cx="493.5" cy="70.9" r="3.5" fill="#2b6cb0"/>
-<text x="486.5" y="62.9" text-anchor="end" font-weight="bold" fill="#2b6cb0">10</text>
-<circle cx="500.9" cy="70.9" r="3.5" fill="#2b6cb0"/>
+<path d="M 148.2 244.4 L 333.9 225.3 L 352.4 190.7 L 363.6 190.7 L 371.0 190.7 L 374.7 190.7 L 411.8 173.3 L 474.9 156.0 L 478.6 138.7 L 478.6 138.7 L 489.8 121.3 L 493.5 86.7 L 500.9 86.7 L 504.6 69.3" fill="none" stroke="#2b6cb0" stroke-width="2"/>
+<circle cx="148.2" cy="244.4" r="3.5" fill="#2b6cb0"/>
+<text x="141.2" y="236.4" text-anchor="end" font-weight="bold" fill="#2b6cb0">0.9</text>
+<circle cx="333.9" cy="225.3" r="3.5" fill="#2b6cb0"/>
+<text x="326.9" y="217.3" text-anchor="end" font-weight="bold" fill="#2b6cb0">2</text>
+<circle cx="352.4" cy="190.7" r="3.5" fill="#2b6cb0"/>
+<text x="345.4" y="182.7" text-anchor="end" font-weight="bold" fill="#2b6cb0">4</text>
+<circle cx="363.6" cy="190.7" r="3.5" fill="#2b6cb0"/>
+<circle cx="371.0" cy="190.7" r="3.5" fill="#2b6cb0"/>
+<circle cx="374.7" cy="190.7" r="3.5" fill="#2b6cb0"/>
+<circle cx="411.8" cy="173.3" r="3.5" fill="#2b6cb0"/>
+<text x="404.8" y="165.3" text-anchor="end" font-weight="bold" fill="#2b6cb0">5</text>
+<circle cx="474.9" cy="156.0" r="3.5" fill="#2b6cb0"/>
+<text x="467.9" y="148.0" text-anchor="end" font-weight="bold" fill="#2b6cb0">6</text>
+<circle cx="478.6" cy="138.7" r="3.5" fill="#2b6cb0"/>
+<text x="471.6" y="130.7" text-anchor="end" font-weight="bold" fill="#2b6cb0">7</text>
+<circle cx="478.6" cy="138.7" r="3.5" fill="#2b6cb0"/>
+<circle cx="489.8" cy="121.3" r="3.5" fill="#2b6cb0"/>
+<text x="482.8" y="113.3" text-anchor="end" font-weight="bold" fill="#2b6cb0">8</text>
+<circle cx="493.5" cy="86.7" r="3.5" fill="#2b6cb0"/>
+<text x="486.5" y="78.7" text-anchor="end" font-weight="bold" fill="#2b6cb0">10</text>
+<circle cx="500.9" cy="86.7" r="3.5" fill="#2b6cb0"/>
+<circle cx="504.6" cy="69.3" r="3.5" fill="#2b6cb0"/>
+<text x="497.6" y="61.3" text-anchor="end" font-weight="bold" fill="#2b6cb0">11</text>
 </svg>
