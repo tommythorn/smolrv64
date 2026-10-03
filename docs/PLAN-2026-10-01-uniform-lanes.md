@@ -76,8 +76,9 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
 
 ## What stays
 
-- **D$ plan:** 5c (a load asks the D$ by its VA first) and 6b (way 1 hashed by the VA, the reverse
-  directory), one board point. The walker that 5b moved to the queues stays.
+- **D$:** the walker that 5b moved to the queues. The D$'s end state is
+  `PLAN-2026-10-03-dcache-vipt-l2.md`: an alias-free VIPT L1 (32 ways of 4 KiB) whose dTLB is read
+  in the access cycle, and a 1.5 MiB L2.
 - **Memory-backend program:** loads past unknown-address stores with replay and a wait predictor
   (C4b step 6), the MSHR window (C5), mid-window recovery (C6), the wrong-path throttle (C9).
 - **The wrong-path holds:** no iTLB walk and no I$ line read past a weakly predicted conditional.
@@ -146,7 +147,7 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
      +0.308 ns today) or a credit the D$ gives a cycle ahead with a skid of its own; both belong
      to the lanes' memory unit (step 5.2), built to take a load every cycle, not to today's LSU.
 3. **Serialisation out of dispatch** (small, independent).
-4. **D$ 5c + 6b.**
+4. **The D$ end state:** the L2, then the VIPT L1 (`PLAN-2026-10-03-dcache-vipt-l2.md`).
 5. **The lanes, in lockstep-gated steps:**
    1. the FP register file split, with sliced FP rename;
    2. uniform integer lanes at IW=3: slot = lane, an ALU and a multiplier per lane, write-slot

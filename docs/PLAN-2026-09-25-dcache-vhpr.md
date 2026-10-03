@@ -1,7 +1,10 @@
 # The data cache rewrite: VHPR, non-blocking, end-state shape
 
 Status: increments 1-3, 6a and 4a are built and on main; 4b step 1 is built and board-gated
-(`wip/ic-coh-4b`); increment 5 and 6b are design (5 below, 2026-09-30).
+(`wip/ic-coh-4b`); increments 5a and 5b are built. **The D$'s VHPR end state (5c, phase 3 and 6b,
+decisions 1 and 5) is superseded by `PLAN-2026-10-03-dcache-vipt-l2.md`** (Tommy, 2026-10-03): an
+alias-free VIPT L1 of 32 ways of 4 KiB and a 1.5 MiB L2. 5c is parked on `wip/dc-5c` and
+`wip/dc-5c-4b` as the record. Everything else built under this plan stays.
 
 ## Why now
 
@@ -830,14 +833,15 @@ stream it walks 0.089 times per 1000 instructions, against 22.3 for today's 16-e
 
 ## Decisions (Tommy, 2026-09-25)
 
-1. **VHPR, not VIPT.** Two large ways and no dTLB on the hit path are the point. Cache size is
+1. **VHPR, not VIPT** (superseded 2026-10-03: VIPT with page-sized ways). Two large ways and no dTLB on the hit path are the point. Cache size is
    decided by measurement; a 128 KiB D$ and I$ is under test, with the probe allowed to take a
    few cycles.
 2. **fence.i:** the I$ becomes coherent with stores (a filtered physical probe), so fence.i is a
    pipeline-only operation. This is its own increment after the D$.
 3. **Sizes:** `NMSHR` 8, `NWB` 2, `NOUT` 8, if they fit and time.
 4. **The open-source memory controller** is out of scope; the tagged path keeps the door open.
-5. **Two ways stay** (Tommy, 2026-09-28): the only sacred structure, for the fast lookup.
+5. **Two ways stay** (Tommy, 2026-09-28; superseded 2026-10-03: 32 ways of 4 KiB): the only
+   sacred structure, for the fast lookup.
    - Way 1 is skewed by a hash that takes bits at 16 and above. Both ways answer at the same latency.
    - No line moves on a hit.
    - Measured and chosen 2026-09-29: design B (phase 3 above) over the physically indexed way
