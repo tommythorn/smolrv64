@@ -79,7 +79,7 @@ the full chip with the core, the default directive went from -0.026 to -0.120 ns
 | data | 32 RAMB36 at 512 x 72, simple dual port | one 64-bit chunk per (set, chunk) per array, laid out diagonally (below) |
 | tag | LUTRAM, 32 arrays of 64 x (PA tag + valid + dirty), one per way, read at VA[11:6] from a replicated set-index register | the line's PA[35:12] |
 | store tag copy | the same, a second copy | the committed store's lookup in the same cycle as a load's |
-| replacement | per set | chosen by the model (step 0) |
+| replacement | per set | not-recently-used, one bit per line (the model: 8.09 L1 misses per 1000 instructions on GB5, against 8.17 for true LRU and 8.09 for tree pseudo-LRU) |
 
 The block-RAM count is today's: 128 KiB of data is 32 RAMB36 either way.
 
@@ -144,6 +144,19 @@ on write done, the store port's one store per cycle, the integrity log and the Z
   ECC or tag bits later) by six deep in one cascade. A line is read or written whole in one
   access. Associativity and index (12 ways x 2048 sets, 24 x 1024, a hashed index or not) come
   from the model (step 0).
+- **Measured (Simmerv, whole GB5, 172 windows; the L2 sees both L1s' fills and the D$'s dirty
+  evictions).** DRAM reads per 1000 instructions, data + instructions:
+
+  | L2 | whole suite | without ML | ML |
+  |---|---|---|---|
+  | 1 MiB 16-way, behind VIPT 128 KiB | 2.77 | 2.67 | 5.00 |
+  | 1.5 MiB 6-way, behind VIPT 128 KiB | 2.42 | 2.52 | 0.47 |
+  | 1.5 MiB 6-way, behind the skewed PIPT | 2.42 | 2.52 | 0.47 |
+
+  At 1.5 MiB ML's SGEMM working set fits, so the L1's organisation stops mattering below it.
+  6, 12 and 24 ways and a hashed index are within 1% of each other: **6 ways of 4096 sets**,
+  one way per URAM in the cascade's depth. DRAM writes are 0.63 per 1000 instructions without
+  ML.
 - **Tags.** Block RAM, all of a set's ways read at once.
 - **Place and clock.** Behind the core's memory port, in the memory controller's clock domain
   (333 MHz), between the asynchronous FIFOs and the AXI master. The L1s see it only as a faster
@@ -164,10 +177,7 @@ Every step is measured or modelled first, then gated by riscv-tests, the unit be
 
 0. **Park VHPR.** Commit 4a, 4b and the in-L1 synonym move on their branches as the record.
    **Model** in Simmerv (`wip/wset`):
-   - the L2 at 1.5 MiB, at 12 and 24 ways, with a straight and a hashed index;
-   - the L2 seeing the I$'s fills and both L1s' write-backs, not only the D$'s fetches;
-   - the 32-way L1's replacement: the model's true LRU against tree pseudo-LRU and
-     not-recently-used.
+   - done: the L2's geometry (6 ways) and the L1's replacement (NRU), above;
    - the dTLBs: the first level (32 or 64 entries; direct-mapped, 2-way, 4-way, fully
      associative) by its second-level lookups, and a large second level (2K, 8K, 32K entries;
      direct-mapped, 4-way, 2-way skewed, 2-way cuckoo) by its walks. Both are ASID-tagged with
