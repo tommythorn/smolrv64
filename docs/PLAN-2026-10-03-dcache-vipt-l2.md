@@ -167,6 +167,14 @@ Every step is measured or modelled first, then gated by riscv-tests, the unit be
    - the L2 seeing the I$'s fills and both L1s' write-backs, not only the D$'s fetches;
    - the 32-way L1's replacement: the model's true LRU against tree pseudo-LRU and
      not-recently-used.
+   - the dTLBs: the first level (32 or 64 entries; direct-mapped, 2-way, 4-way, fully
+     associative) by its second-level lookups, and a large second level (2K, 8K, 32K entries;
+     direct-mapped, 4-way, 2-way skewed, 2-way cuckoo) by its walks. Both are ASID-tagged with
+     global pages, and `sfence.vma` flushes by its address and ASID operands;
+   - the ASID width: Linux uses ASIDs only when there are more than two per hart, and when it
+     runs out it flushes everything. So the cost of a narrow ASID scales with how many address
+     spaces a workload creates (the boot, systemd), not with its instructions (GB5's one
+     process). The guest must see the same width as the hardware, since `satp.ASID` is WARL.
 1. **The L2, below today's caches.** The D$ and the I$ do not change. Its own bench first, then the
    SoC. The lockstep needs the L2 under the testbench's memory model, so the bench gains the second
    clock and the crossing it sits behind on the board.
