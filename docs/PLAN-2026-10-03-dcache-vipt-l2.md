@@ -1,6 +1,7 @@
 # The data cache end state: an alias-free VIPT L1 and a 1.5 MiB L2
 
-Status: direction decided (Tommy, 2026-10-03). Nothing below is built. This plan supersedes the
+Status: direction decided and deferred (Tommy, 2026-10-03): the lanes plan's step 5 comes first.
+Nothing below is built. This plan supersedes the
 VHPR end state of the D$ plan (`PLAN-2026-09-25-dcache-vhpr.md`: increment 5c, phase 3 / increment
 6b, decisions 1 and 5) and step 4 of the lanes plan. The memory path, the MSHRs, the write-back
 buffer, the store port, NC, the CBOs and the coherent I$ that the D$ plan built all stay.
@@ -175,6 +176,9 @@ Every step is measured or modelled first, then gated by riscv-tests, the unit be
      runs out it flushes everything. So the cost of a narrow ASID scales with how many address
      spaces a workload creates (the boot, systemd), not with its instructions (GB5's one
      process). The guest must see the same width as the hardware, since `satp.ASID` is WARL.
+
+   The workloads are GB5, SPEC CPU2006 for footprint (rebuilt first with every extension
+   SmolRV64 implements; the existing build is RV64GC), and a make/gcc build for process churn.
 1. **The L2, below today's caches.** The D$ and the I$ do not change. Its own bench first, then the
    SoC. The lockstep needs the L2 under the testbench's memory model, so the bench gains the second
    clock and the crossing it sits behind on the board.

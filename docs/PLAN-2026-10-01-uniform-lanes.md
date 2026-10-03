@@ -147,7 +147,9 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
      +0.308 ns today) or a credit the D$ gives a cycle ahead with a skid of its own; both belong
      to the lanes' memory unit (step 5.2), built to take a load every cycle, not to today's LSU.
 3. **Serialisation out of dispatch** (small, independent).
-4. **The D$ end state:** the L2, then the VIPT L1 (`PLAN-2026-10-03-dcache-vipt-l2.md`).
+4. **The D$ end state:** the L2, then the VIPT L1 (`PLAN-2026-10-03-dcache-vipt-l2.md`), deferred
+   until after step 5. Step 5.2 deletes M, where loads translate today; it keeps that translation
+   in the memory unit until the VIPT L1 takes the dTLB into its access cycle.
 5. **The lanes, in lockstep-gated steps:**
    1. the FP register file split, with sliced FP rename;
    2. uniform integer lanes at IW=3: slot = lane, an ALU and a multiplier per lane, write-slot
