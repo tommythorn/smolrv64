@@ -37,7 +37,8 @@ module tb;
 `ifndef IC_KB
  `define IC_KB 64                // the cache size: -DIC_KB=128
 `endif
-   rv_icache #(.RTW(4), .SIZE_KB(`IC_KB)) dut
+   // a 2-bit epoch: a run's ~60 mapping changes wrap it, so every run invalidates by wrap
+   rv_icache #(.RTW(4), .SIZE_KB(`IC_KB), .EPW(2)) dut
      (.clk(clk), .reset(reset),
       .rd_req(rq_v), .rd_addr(rq_va), .rd_pa(rq_pa), .rd_tag(rq_tag), .rd_ack(rd_ack),
       .rd_data(rd_data), .rd_valid(rd_valid), .rd_resp_addr(rd_resp_addr), .rd_resp_tag(rd_resp_tag),

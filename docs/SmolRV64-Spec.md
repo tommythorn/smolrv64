@@ -228,7 +228,7 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   compare. VAs are Sv39, sign-extended to 64 bits and masked to the canonical 39
   (`PAW_SIG=39`); the virtual tag is that 39-bit VA. A `satp`/`sfence.vma` mapping change
   (`imem_ctx_chg`, narrowed to satp/sfence — a bare U↔S privilege change needs no I$ action;
-  permissions stay the iMMU's) advances a **2-bit epoch**, staling every virtual tag in one
+  permissions stay the iMMU's) advances an **8-bit epoch**, staling every virtual tag in one
   cycle without clearing arrays. Retained lines are then re-validated by **physical-tag
   reconcile** on the next miss, so code physically resident survives a mapping change exactly
   as the old PIPT I$ retained it across `satp` — the coherence requirement that a virtual-hit
@@ -1126,11 +1126,13 @@ after every `fence.i` clean).
 **VHPR I$ (`rv_icache`).** A pair is a 16-byte-aligned quarter of a line (asserted), so it is one
 line's lookup; each way's data is two BRAM banks, the even and the odd 8-byte chunks, read at the
 same row. Per line: valid, the **virtual tag**, the
-**physical tag** (PA above the 4 KiB offset) and a **2-bit epoch**. Every request carries the
+**physical tag** (PA above the 4 KiB offset) and an **8-bit epoch**. Every request carries the
 epoch it was taken in, and **a hit is `valid & (vtag == VA) & (epoch == the request's)` -- no
 translation and no physical tag on the hit path**, so an I$ hit never waits on the iTLB. A
 `satp`/`sfence.vma` (`ep_bump = imem_ctx_chg`) advances the epoch, staling every line in one
-cycle. **Reconcile is the miss path:** a virtual miss compares the same set's physical tags against
+cycle. A wrap (every 256 bumps) invalidates every line over a 64-cycle scan; the tiny128 boot makes
+about 9,000 bumps in 60 M cycles, so at 2 bits the I$ was emptied 2,261 times and at 8 bits 38
+(lockstep +11.02% at 60 M, `fe:icache` 21.3% -> 13.0% of cycles; +23.83% at 300 M). **Reconcile is the miss path:** a virtual miss compares the same set's physical tags against
 the request's PA, and a match is re-stamped with the new virtual tag and epoch and replays (one
 cycle), so physically resident code survives a mapping change; otherwise the line is filled
 (prefetch buffer or L2) and installs stamped with the request's epoch, so a request taken before

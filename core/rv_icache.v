@@ -59,7 +59,8 @@ module rv_icache #(
    parameter HW      = 8,          // the pair in halfwords: 16 bytes
    parameter RTW     = 4,          // the requester's opaque tag
    parameter VAW     = 39,         // virtual address bits the tag covers (Sv39)
-   parameter PGW     = 39          // physical address bits the reconcile tag covers
+   parameter PGW     = 39,         // physical address bits the reconcile tag covers
+   parameter EPW     = 8           // epoch bits: a wrap, every 2^EPW mapping changes, invalidates every line
 ) (
    input  wire              clk,
    input  wire              reset,
@@ -95,7 +96,6 @@ module rv_icache #(
    localparam IB   = $clog2(SETS);
    localparam VTB  = VAW - OFFB - IB;          // virtual tag
    localparam PTB  = PGW - 12;                 // physical tag: PA above the 4 KiB page offset
-   localparam EPW  = 2;
    localparam RB   = IB + 2;                   // bank row: {set, pair}
    assign l2_we    = 1'b0;
    assign l2_wdata = 512'd0;

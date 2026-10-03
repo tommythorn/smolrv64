@@ -182,8 +182,8 @@ Geekbench 6.7.1 on 27f03a7f, three-wide ([result 19246188](https://browser.geekb
 2026-09-21 to 23): 4 single-core, 4 multi-core. Geekbench 6 is more load-bound than
 Geekbench 5 and multiplies far more.
 
-In lockstep simulation the tiny128 Linux boot retires 40,708,771 instructions in its first
-60 million cycles and 180,138,571 in 300 million. Those counts are the reference in
+In lockstep simulation the tiny128 Linux boot retires 45,193,259 instructions in its first
+60 million cycles and 223,070,997 in 300 million. Those counts are the reference in
 `core/cosim-expected.txt`, and a change that moves them names the delta in its commit.
 
 The plans behind the design, with every item justified by a measurement on this core,
