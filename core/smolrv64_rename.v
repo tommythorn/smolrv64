@@ -284,7 +284,7 @@ module smolrv64_rename
    wire [IDXB-1:0] rd_a [0:NSH-1];   // each list's register for slot A, B and C
    wire [IDXB-1:0] rd_b [0:NSH-1];
    wire [IDXB-1:0] rd_c [0:NSH-1];
-   wire [NSH-1:0]  low;
+   wire [NSH-1:0]  low_n;   // each list's low-water flag for next cycle
    wire [NSH-1:0]  sel_r_a, sel_r_b, sel_a, sel_b, sel_c;   // which list each slot allocates from
    wire [NSH-1:0]  cmt_a, cmt_b, cmt_c, fre_a, fre_b, fre_c;
 
@@ -319,7 +319,12 @@ module smolrv64_rename
       wire [PW-2:0] hb  = h[PW-2:0] + {{(PW-2){1'b0}}, sel_r_a[gL]};
       wire [PW-2:0] hcc = h[PW-2:0] + {{(PW-2){1'b0}}, sel_r_a[gL]} + {{(PW-2){1'b0}}, sel_r_b[gL]};
       wire [PW-1:0] avail = t - h;
-      assign low[gL] = avail < LOWAT[PW-1:0];
+      // The pointers' next values, so the low-water flag can be a register (see `stall`).
+      wire [PW-1:0] t_n = reset ? t
+                        : t + {{(PW-1){1'b0}}, fre_q[gL]} + {{(PW-1){1'b0}}, fre2_q[gL]} + {{(PW-1){1'b0}}, fre3_q[gL]};
+      wire [PW-1:0] h_n = reset ? hc : flush ? hc_n
+                        : h + {{(PW-1){1'b0}}, sel_a[gL]} + {{(PW-1){1'b0}}, sel_b[gL]} + {{(PW-1){1'b0}}, sel_c[gL]};
+      assign low_n[gL] = (t_n - h_n) < LOWAT[PW-1:0];
 
       wire [IDXB-1:0]  flrd [0:FLNB-1];
       wire [FLNB-1:0]  behind = ~({FLNB{1'b1}} << h[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
@@ -342,13 +347,8 @@ module smolrv64_rename
       // The pointers come from configuration, like the arrays (see the reset note below).
       initial begin h = {PW{1'b0}}; hc = {PW{1'b0}}; t = T0; end
       always @(posedge clk) begin
-         if (reset) h <= hc;
-         else begin
-            hc <= hc_n;
-            t  <= t + {{(PW-1){1'b0}}, fre_q[gL]} + {{(PW-1){1'b0}}, fre2_q[gL]} + {{(PW-1){1'b0}}, fre3_q[gL]};
-            if (flush) h <= hc_n;
-            else       h <= h + {{(PW-1){1'b0}}, sel_a[gL]} + {{(PW-1){1'b0}}, sel_b[gL]} + {{(PW-1){1'b0}}, sel_c[gL]};
-         end
+         h <= h_n;  t <= t_n;
+         if (!reset) hc <= hc_n;
       end
 
       // Allocating past the free set would hand out a register that is still live; the stall
@@ -381,6 +381,13 @@ module smolrv64_rename
    // discovers it one instruction too late.  The cost is that the stall probability is the
    // union across shards -- which is the argument for sizing them unequally rather than
    // adding more of them.
+   // THE STALL IS A REGISTER: next cycle's low-water flags, from the pointers' next values. It
+   // equals the flags of the pointers it is used with, exactly, but no pointer's adder or
+   // compare stands in front of the dispatch take: fl.h -> avail -> low -> stall -> d_take ->
+   // the allocation -> the pending table's set was 16 levels at -0.552 ns (lanes step 5.2a).
+   reg [NSH-1:0] low;
+   initial low = {NSH{1'b0}};
+   always @(posedge clk) low <= low_n;
    assign shard_low = low;
    assign stall = |low;
 
