@@ -24,7 +24,7 @@
 // This is where the design departs from docs/Area-Efficient-Scalar-OoO.md 9.1: that scheme
 // derives the tail from a FIXED occupancy ("free entries are always FREE - n_alloc"), which
 // holds only because exactly 32 architectural registers are mapped at all times.  Per shard
-// the mapped count VARIES -- 0..64 for the load shard, 0..32 for the others -- so occupancy
+// the mapped count VARIES -- 0..32 for every shard -- so occupancy
 // is not fixed and the tail cannot be derived.  Each shard therefore carries a real tail.
 //
 // Rollback is still pointer-only: rename never writes the array (commit is its only
@@ -35,8 +35,9 @@ module smolrv64_rename
   #(parameter IDXB  = 7,
     parameter PBITS = IDXB + 3,               // 3 shard bits: room for a 5th shard (the 3rd ALU)
     parameter N_IE  = 64,
-    parameter N_LD  = 128,
-    parameter N_FE  = 128,
+    parameter N_LD  = 64,                 // integer loads, AMOs, CSR reads
+    parameter N_FE  = 64,                 // integer results of the F stage, mul/div, links
+    parameter N_FP  = 64,                 // each FP slice (SH_F0..SH_F2), one per rename slot
     parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
     parameter N_IE3 = 64,                 // the third ALU's shard (Stage 3)
     parameter LOWAT = 4,                  // stall fetch when any shard has < LOWAT free
@@ -124,10 +125,10 @@ module smolrv64_rename
 
     // ---- back pressure and instrumentation ----
     output wire             stall,        // ANY shard low -- see the note below
-        output wire [4:0]       shard_low);   // per-shard (5 shards), for the hpm counters
+    output wire [7:0]       shard_low);   // per shard, for the hpm counters
 
-      localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
-   localparam [IDXB-1:0] OFF32 = 32;   // sized, so the inits do not truncate
+   localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
+                    SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;
 
    // ---- the map -------------------------------------------------------------------
    // W COPIES OF THE SPECULATIVE MAP, one write port each: port A writes smap_a, B smap_b, C
@@ -216,17 +217,20 @@ module smolrv64_rename
    // Rollback is pointer-only: rename never writes the arrays (the frees are their only
    // writer), so the entries between hc and h still hold the in-flight allocations, and
    // h := hc frees them all in one cycle, with no walk and no checkpoints.
-   localparam integer NSH  = 5;
+   // SH_F0..SH_F2 hold f0-f31 and nothing else, one slice per rename slot: an FP destination in
+   // slot A allocates from SH_F0, B from SH_F1, C from SH_F2, so no FP allocation counts the
+   // slots before it. Each slice must exceed 32: every f-register may map into one slice.
+   localparam integer NSH  = 8;
    localparam integer FLNB = 1 << $clog2(IW);   // free-list banks = next_pow2(IW); >=2
    localparam integer FLLB = $clog2(FLNB);
-   // A shard's size, and the first free index at reset: SH_IE and SH_FE hold the reset
+   // A shard's size, and the first free index at reset: SH_IE and SH_F0 hold the reset
    // mappings of x0-x31 and f0-f31 at indices 0..31, so their lists start at 32.
    function automatic integer n_of(input integer sh);
       n_of = (sh == SH_IE) ? N_IE : (sh == SH_LD) ? N_LD : (sh == SH_FE) ? N_FE
-           : (sh == SH_IE2) ? N_IE2 : N_IE3;
+           : (sh == SH_IE2) ? N_IE2 : (sh == SH_IE3) ? N_IE3 : N_FP;
    endfunction
    function automatic integer base_of(input integer sh);
-      base_of = (sh == SH_IE || sh == SH_FE) ? 32 : 0;
+      base_of = (sh == SH_IE || sh == SH_F0) ? 32 : 0;
    endfunction
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
@@ -412,12 +416,12 @@ module smolrv64_rename
    integer j;
    initial begin
       // x0 -> physical 0 (SH_IE index 0), which smolrv64_prf hardwires to read zero and never
-      // writes.  Integer regs start in SH_IE, FP regs in SH_FE.
+      // writes.  Integer regs start in SH_IE, FP regs in SH_F0.
       for (j = 0; j < 32; j = j + 1) begin
          rmap_a[j]      = {SH_IE, j[IDXB-1:0]};  rmap_b[j]      = {SH_IE, j[IDXB-1:0]};
          smap_a[j]      = {SH_IE, j[IDXB-1:0]};  smap_b[j]      = {SH_IE, j[IDXB-1:0]};
-         rmap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  rmap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
-         smap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  smap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
+         rmap_a[32 + j] = {SH_F0, j[IDXB-1:0]};  rmap_b[32 + j] = {SH_F0, j[IDXB-1:0]};
+         smap_a[32 + j] = {SH_F0, j[IDXB-1:0]};  smap_b[32 + j] = {SH_F0, j[IDXB-1:0]};
       end
       lv = 64'd0;
       for (j = 0; j < 64; j = j + 1) begin newer[j] = 2'd0; rnewer[j] = 2'd0; end
@@ -483,12 +487,20 @@ module smolrv64_rename
          $fatal(1, "smolrv64_rename: renamed x0 (B)");
       if (r_valid_b && !r_valid)
          $fatal(1, "smolrv64_rename: port B without port A");
+      // f-registers and FP slices go together, and each slot owns one slice.
+      if (alloc   && (r_rd[5]   != (r_shard   >= SH_F0) || (r_shard   >= SH_F0 && r_shard   != SH_F0)))
+         $fatal(1, "smolrv64_rename: slot A renames r%0d into shard %0d", r_rd, r_shard);
+      if (alloc_b && (r_rd_b[5] != (r_shard_b >= SH_F0) || (r_shard_b >= SH_F0 && r_shard_b != SH_F1)))
+         $fatal(1, "smolrv64_rename: slot B renames r%0d into shard %0d", r_rd_b, r_shard_b);
+      if (alloc_c && (r_rd_c[5] != (r_shard_c >= SH_F0) || (r_shard_c >= SH_F0 && r_shard_c != SH_F2)))
+         $fatal(1, "smolrv64_rename: slot C renames r%0d into shard %0d", r_rd_c, r_shard_c);
    end
 
    initial begin
       if (N_IE <= 32)  $fatal(1, "smolrv64_rename: N_IE=%0d must exceed 32", N_IE);
-      if (N_LD <= 64)  $fatal(1, "smolrv64_rename: N_LD=%0d must exceed 64", N_LD);
-      if (N_FE <= 32)  $fatal(1, "smolrv64_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
+      if (N_LD <= 32)  $fatal(1, "smolrv64_rename: N_LD=%0d must exceed 32", N_LD);
+      if (N_FE <= 32)  $fatal(1, "smolrv64_rename: N_FE=%0d must exceed 32", N_FE);
+      if (N_FP <= 32)  $fatal(1, "smolrv64_rename: N_FP=%0d must exceed 32", N_FP);
       if (LOWAT < 1)   $fatal(1, "smolrv64_rename: LOWAT must be >= 1");
    end
    `undef RN_SMAP

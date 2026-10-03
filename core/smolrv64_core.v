@@ -483,7 +483,8 @@ module smolrv64_core
    // structure rather than a big-bang swap of the core's most load-bearing datapath.
    localparam integer RN_IDXB  = 7;
    localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
-   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4;
+   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
+                      SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;   // the FP file's slices, one per slot
 
    wire d_ord   = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
                 | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
@@ -499,11 +500,12 @@ module smolrv64_core
                 | d3_is_fencei | d3_is_cbo | d3_is_branch | d3_is_jump | d3_is_jalr
                 | d3_illegal | d3_fault | d3_is_irqop;
 
-   // Destination shard = the UNIT that writes it, and nothing else. Loads and AMOs take SH_LD
-   // (M, a landing load), and so do the SYSQ's results (a CSR read). mul/div and every FP op
-   // take SH_FE (the MD stage and the F stage: the FPU writes integer regs too, which is why
-   // N_FE > 64), and so does a jal/jalr link (the CTF pipe). Each ALU is its own shard's only
-   // writer. A second writer on a shard costs a port arbiter on the wakeup broadcast: M on
+   // An f-register destination takes the FP file's slice of its slot (SH_F0/F1/F2 for A/B/C),
+   // whoever writes it: the file has a bank per writer (smolrv64_prf). Every other destination
+   // takes the shard of the UNIT that writes it, and nothing else. Loads and AMOs take SH_LD
+   // (M, a landing load), and so do the SYSQ's results (a CSR read). mul/div and the FP ops
+   // with integer destinations take SH_FE (the MD stage and the F stage), and so does a
+   // jal/jalr link (the CTF pipe). Each ALU is its own shard's only writer. A second writer on a shard costs a port arbiter on the wakeup broadcast: M on
    // SH_IE put the LSU's completion cone into the integer scheduler's ready bits (24 levels),
    // M on SH_FE put it in front of the CTF link (22 levels). Assigned after the class wires
    // below (d_cls_f is declared there).
@@ -521,7 +523,7 @@ module smolrv64_core
    wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
    wire                rn_lv1, rn_lv2, rn_lv3;
    wire                rn_stall;
-   wire [4:0]          rn_shard_low;   // 5 shards (SH_IE3 added, Stage 3)
+   wire [7:0]          rn_shard_low;   // per shard
    // Rename exactly when the instruction is dispatched (d_take: structural room, no fault
    // replay, not the cycle after a redirect). It MAY be renamed in the redirect cycle
    // itself: that instruction is younger than the redirecting op and the rename's flush arm
@@ -529,7 +531,7 @@ module smolrv64_core
    // completion in front of every dispatch write (gate V3, 2026-09-05).
    wire rn_valid = d_take;      // dispatch is no longer gated on M being free
 
-   smolrv64_rename #(.IDXB(RN_IDXB), .N_FE(128), .IW(IW)) u_rename
+   smolrv64_rename #(.IDXB(RN_IDXB), .IW(IW)) u_rename
      (.clk(clk), .reset(reset),
       .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
@@ -567,7 +569,7 @@ module smolrv64_core
    wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
    wire [63:0] prf_a21, prf_a22;                       // the second ALU port's (10d-ii)
    wire [63:0] prf_a31, prf_a32;                       // the third ALU port's (Stage 3)
-   smolrv64_prf #(.IDXB(RN_IDXB), .N_FE(128)) u_prf
+   smolrv64_prf #(.IDXB(RN_IDXB)) u_prf
      (.clk(clk),
       .we_ie(alu_q_v), .we_ld(we_ld), .we_fe(we_fe),       // int-exec: from the writeback register
       .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
@@ -931,17 +933,20 @@ module smolrv64_core
    wire d3_cls_i = ~d3_ord;
    wire d3_cls_fc = d3_cls_f | d3_cls_c | d3_cls_m | d3_cls_s;
    // Destination shard = the UNIT that writes it (declared with its rationale above).
-   assign d_shard  = (d_is_mem | d_is_amo | d_illegal | d_fault) ? SH_LD   // a trap writes nothing
+   assign d_shard  = d_rd[5]                                       ? SH_F0   // an f-register, trap or not
+                   : (d_is_mem | d_is_amo | d_illegal | d_fault) ? SH_LD   // a trap writes nothing
                    : (d_is_fp | d_is_mul)                          ? SH_FE   // FP ops, in-core included: the base routing
                    : d_cls_c                          ? SH_FE   // jal/jalr link: the FP/CTF pipe's slice
                    : d_ord                            ? SH_LD   // the SYSQ's CSR read
                    :                                    SH_IE;  // the ALU, alone
-   assign d2_shard = (d2_is_mem | d2_is_amo | d2_illegal | d2_fault) ? SH_LD
+   assign d2_shard = d2_rd[5]                                          ? SH_F1
+                   : (d2_is_mem | d2_is_amo | d2_illegal | d2_fault) ? SH_LD
                    : (d2_is_fp | d2_is_mul)                            ? SH_FE
                    : d2_cls_c                            ? SH_FE   // jal/jalr link: FP/CTF pipe's slice
                    : d2_ord                              ? SH_LD
                    :                                       SH_IE2;   // the second ALU's shard
-   assign d3_shard = (d3_is_mem | d3_is_amo | d3_illegal | d3_fault) ? SH_LD
+   assign d3_shard = d3_rd[5]                                          ? SH_F2
+                   : (d3_is_mem | d3_is_amo | d3_illegal | d3_fault) ? SH_LD
                    : (d3_is_fp | d3_is_mul)                            ? SH_FE
                    : d3_cls_c                            ? SH_FE   // jal/jalr link: the FP/CTF slice
                    : d3_ord                              ? SH_LD
@@ -2354,7 +2359,9 @@ module smolrv64_core
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "smolrv64_core: a system op issued into a busy SYSQ (it is serialising)");
       if (qf_in & sy_v & ~sy_is_csr)      $fatal(1, "smolrv64_core: a queue entry's fault displaces a SYSQ op that is not a younger CSR op");
       if (qf_sq & qf_lq)                 $fatal(1, "smolrv64_core: a load and a store both fault as the ROB head");
-      if (iss_sys & (qf_shard != SH_LD)) $fatal(1, "smolrv64_core: a system op issued with shard %0d, not SH_LD", qf_shard);
+      // (an FP slice is a trapping FP op's: it writes nothing)
+      if (iss_sys & (qf_shard != SH_LD) & (qf_shard < SH_F0)) $fatal(1, "smolrv64_core: a system op issued with shard %0d, not SH_LD", qf_shard);
+      if (sy_wr & (sy_prd[RN_PBITS-1:RN_IDXB] != SH_LD)) $fatal(1, "smolrv64_core: the SYSQ wrote pr=%h, not SH_LD", sy_prd);
       // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
       // (a CSR op does not drain: younger work may be in flight; M yields to it, see m_done)
       if (sy_fire & ~sy_qf & ~sy_is_csr & m_valid) $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
@@ -2524,8 +2531,8 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: F stage holds a non-FP op (insn %08x)", f_insn);
       if (m_valid & m_is_fp & ~m_is_mem)
          $fatal(1, "smolrv64_core: a non-memory FP op reached M (pc %h)", m_pc);
-      if (iss_f & (qf_shard != SH_FE))
-         $fatal(1, "smolrv64_core: F-class op is not SH_FE");
+      if (iss_f & (qf_shard != SH_FE) & (qf_shard < SH_F0))
+         $fatal(1, "smolrv64_core: F-class op is in shard %0d, neither SH_FE nor an FP slice", qf_shard);
       // ROUNDING MODE IS AN FP BARRIER, and out-of-order FP depends on it.
       //
       // Reordering FP is safe for the exception FLAGS because they accumulate: csr_file
@@ -2677,10 +2684,12 @@ module smolrv64_core
                               | (rf_blk_v & (bsh_f == SH_LD))
                               | (ri_blk_v & (bsh_i == SH_LD))
                               | (ri2_blk_v & (bsh_i2 == SH_LD)));
-   wire dep_fp    = no_issue & ((rl_blk_v & (bsh_l == SH_FE))
-                              | (rf_blk_v & (bsh_f == SH_FE))
-                              | (ri_blk_v & (bsh_i == SH_FE))
-                              | (ri2_blk_v & (bsh_i2 == SH_FE)));
+   // An f-register (FP slices: an FP op's or an FP load's) or SH_FE (an FP op's integer
+   // result, a mul/div, a link).
+   wire dep_fp    = no_issue & ((rl_blk_v & ((bsh_l == SH_FE) | (bsh_l >= SH_F0)))
+                              | (rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
+                              | (ri_blk_v & ((bsh_i == SH_FE) | (bsh_i >= SH_F0)))
+                              | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0))));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v &  md_div;                 // the MD stage holds a divide (C1: occupancy, not an M stall)
    wire st_mul    = md_v & ~md_div;                 // ...a multiply
@@ -3356,8 +3365,8 @@ module smolrv64_core
       // shard would drop its result silently: we_ie and we_fe ignore M.
       if (alu3_q_v)
          $fatal(1, "smolrv64_core: the third ALU wrote back -- it is dead since the swizzle and SH_IE3 is tied off");
-      if (m_wb & (m_shard != SH_LD))
-         $fatal(1, "smolrv64_core: M wrote shard %0d -- d_shard must route M's ops to SH_LD", m_shard);
+      if (m_wb & (m_shard != SH_LD) & (m_shard < SH_F0))
+         $fatal(1, "smolrv64_core: M wrote shard %0d -- d_shard must route M's ops to SH_LD or an FP slice", m_shard);
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot

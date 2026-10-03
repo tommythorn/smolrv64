@@ -381,7 +381,8 @@ them. Full OoO will need them back.
 ## 5. Rename and the physical register file
 
 Architectural registers are a **unified 64-entry space**: 0–31 integer, 32–63 FP, matching
-`decode_operands`' `{fp_bit, field}` encoding.
+`decode_operands`' `{fp_bit, field}` encoding. The physical registers are not: f0–f31 rename
+only into the **FP file**, three slices SH_F0–SH_F2, and x1–x31 only into the integer shards.
 
 `smolrv64_rename` carries a full speculative/committed split — SMAP/RMAP/lv for the map, and a
 per-shard free list with a speculative head and a committed head. Rollback is `h := hc` in
@@ -418,8 +419,19 @@ rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are t
 |---|---|---|---|
 | IE | 64 | **the ALU, alone** (slot A's ALU ops) | > 32 (integer arch regs) |
 | IE2 | 64 | **the second ALU, alone** (slot B's ALU ops, item 10d-ii, 2026-09-05) | > 32, like IE; code 3 of the shard field was free |
-| LD | 128 | everything M completes: LSU, CSR | > 64: can hold integer *and* FP mappings |
-| FE | 128 | FPU, the CTF link register, the MD stage (mul/div, C1) | > 64: the FPU writes integer regs too (`fcvt.w.d`, `fmv.x.d`, `fle.d`) |
+| LD | 64 | M and the load landing: integer loads, AMOs, CSR reads | > 32 (integer arch regs) |
+| FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the CTF link register, the MD stage (mul/div, C1) | > 32 |
+| F0, F1, F2 | 64 each | f0–f31 only: FP loads (the load port) and FP results (the F stage's port) | > 32 (FP arch regs) each |
+
+**The FP file is sliced by rename slot and banked by writer.** An f-register destination
+renamed in slot A allocates from SH_F0, B from SH_F1, C from SH_F2, so no FP allocation counts
+the slots before it (a trapping FP op too: it writes nothing). At reset f0–f31 map to SH_F0.
+Each slice has two banks, one written by the load landing (`we_ld`, an FP load) and one by the
+F stage (`we_fe`, an FP result), through the address, data and wakeup broadcast each writer
+already had, and a live-value bit per register, set by the write, picks the bank a read takes.
+So the FP file adds no wakeup port and no write ever waits. It is read by M's store-data
+operand (`ra2`, `fsw`/`fsd`) and the F/CTF port's three operands (`ra10-12`); the ALU ports and
+M's base operand never name an f-register (asserted).
 
 **A destination's shard is chosen by the UNIT that writes it, never by the data type.** A
 CSR read and a jump's link register are integer results, but M produces them, so they take
@@ -738,12 +750,12 @@ runs inside every 240-test and cosim run.
 |---|---|---|---|---|
 | ALU / branch | 1 cycle (at issue) | — | no | IE shard |
 | second ALU (slot B's ALU ops, item 10d-ii) | 1 cycle (at issue) | — | no | IE2 shard |
-| jump link (`jal`/`jalr`) | 1 cycle | 1 | yes | LD shard (M writes it) |
+| jump link (`jal`/`jalr`) | 1 cycle | 1 | no (the CTF stage) | FE shard |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
-| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | FE shard |
-| LSU load | see §8 | 4 fast (by tag, C4a) + 1 slow | **no** | LD shard |
+| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | the FP file's F-stage bank; FE shard for an integer result |
+| LSU load | see §8 | 4 fast (by tag, C4a) + 1 slow | **no** | LD shard; the FP file's load bank for an FP load |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
 Only loads, FP and (since C1) mul/div are non-blocking. Stores and AMOs still hold M: a
@@ -1258,18 +1270,17 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | array | module | shape | width | bits | storage | ports |
 |---|---|---|---|---|---|---|
 | `mem_ie` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared (3 for the M/F port, 2 per ALU port), 1W |
-| `mem_ld` | `smolrv64_prf` | 128 | 64 | 8 192 | LUTRAM | 7R shared, 1W |
-| `mem_fe` | `smolrv64_prf` | 128 | 64 | 8 192 | LUTRAM | 7R shared, 1W |
+| `mem_ld` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W |
+| `mem_fe` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W |
+| `fp[0..2].mem_l`, `fp[0..2].mem_f` | `smolrv64_prf` | 64 each | 64 | 24 576 | LUTRAM | 4R (`ra2`, `ra10-12`), 1W each: the FP file's load and F-stage banks |
+| `fp[0..2].lvt` | `smolrv64_prf` | 64 each | 1 | 192 | flops | which bank holds each FP register |
 | `mem_ie2` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W (item 10d-ii) |
 | `smap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 3R, 1W + bulk |
 | `rmap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 4R, 1W |
 | `lv` | `smolrv64_rename` | 64 | 1 | 64 | flops | bulk-cleared on flush |
-| `fl_ie` | `smolrv64_rename` | 64 | 7 | 448 | LUTRAM | free list |
-| `fl_ld` | `smolrv64_rename` | 128 | 7 | 896 | LUTRAM | free list |
-| `fl_fe` | `smolrv64_rename` | 128 | 7 | 896 | LUTRAM | free list |
+| `fl[0..7].bank[*].mem` | `smolrv64_rename` | 64 per shard | 7 | 448 per shard | LUTRAM | one free list per shard (IE, LD, FE, IE2, IE3, F0-F2), `next_pow2(IW)` banks each |
 | `ent0`, `ent1` | `smolrv64_rob` | 8 each | 16 | 256 | LUTRAM | entry parity: 1W dispatch each, read at head and head+1 |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
-| `fl_i20`, `fl_i21` | `smolrv64_rename` | 32 each | 7 | 448 | LUTRAM | free list parity banks of the second ALU's shard IE2 (item 10d-ii) |
 | `v`, `done` | `smolrv64_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `irr` | `smolrv64_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |

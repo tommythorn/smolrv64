@@ -1031,7 +1031,7 @@ module tb;
       if (dut.core.retire && dut.core.retire_pc == watch_pc)
          $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h hit_cf=%b cs_val[head]=%h  prf_fe[%0d]=%h",
                   c, dut.core.retire_pc, dut.core.rob_head_idx, dut.core.cs_val_h, dut.core.cs_hit_cf,
-                  dut.core.cs_val[dut.core.rob_head_idx], watch_prd[6:0], dut.core.u_prf.mem_fe[watch_prd[6:0]]);
+                  dut.core.cs_val[dut.core.rob_head_idx], watch_prd[5:0], dut.core.u_prf.mem_fe[watch_prd[5:0]]);
       if (dut.core.cf_land && dut.core.cf_pc == watch_pc)
          $display("[c=%0d] watch CTF-land pc=%h cf_link=%h cf_prd=%0d wrote=%b redirect=%b land_rob=%0d",
                   c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_link_wrote, dut.core.cf_redirect, dut.core.cf_land_rob);

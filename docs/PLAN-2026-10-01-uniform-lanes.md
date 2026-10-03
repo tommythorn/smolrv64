@@ -162,6 +162,46 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
 7. **The predictor:** path history, blocks cut at the first predicted-taken transfer.
 8. Then loads past unknown-address stores (C4b step 6), C5, the future TLB, the clock review.
 
+## Step 5.1: the FP register file (design, 2026-10-03)
+
+**Today.** f0-f31 rename into the shards of their WRITERS: an FP load's result lives in SH_LD, an
+FP op's in SH_FE, beside integer results of loads, CSR reads, mul/div, links and the FP ops with
+integer destinations. So SH_LD and SH_FE each carry the 64-register floor, and every one of the
+twelve read ports decodes both.
+
+**The step.** f0-f31 get their own physical registers and nothing else maps there.
+
+- **Number space.** The FP registers are shards SH_F0, SH_F1, SH_F2 (shard codes 5-7, free today),
+  64 registers each at IW=3, inside today's 10-bit physical number. Every tag compare (the
+  schedulers' wakeup, the pending table, the store queue's snoop, the ALU forwards) and
+  "physical 0 is x0" keep working unchanged, because no FP register shares a number with an
+  integer one.
+- **Sliced rename.** An FP destination renamed in slot k allocates from slice k: one free list per
+  slot, so no FP allocation counts the slots before it in the bundle. Each slice holds more than
+  the 32 architectural FP registers (the deadlock floor: every f-register may map into one
+  slice). At reset f0-f31 map to SH_F0, which starts with 32 free; SH_F1 and SH_F2 start empty.
+  The slice is chosen by the destination's register class first, so an FP op that traps (FS off)
+  allocates from the FP slices as well, never from an integer shard.
+- **Two writers, two banks, one live-value bit.** The FP file has the same two writers the FP
+  values have today: the load landing (FP loads) and the F stage (FP results). Each writes its
+  own bank, through the write address, data and WAKE PORT it already uses: FP loads keep
+  waking on the load port, FP results on the F stage's port. A one-bit-per-register live-value
+  table, set by the write, says which bank a read takes. A physical register is written once
+  per allocation, so the table is exact. No scheduler gains a wake port, no write waits, and
+  no latency changes.
+- **Reads.** The FP file is read by the F/CTF port's three operands and by M's store-data
+  operand (`fsw`/`fsd`). The integer-only ports (M's base, the two ALUs) no longer decode it, and
+  no longer decode FP values in SH_LD/SH_FE either.
+- **The integer shards shrink.** SH_LD (integer loads, AMOs, CSR reads) and SH_FE (FP ops with
+  integer destinations, mul/div, links) hold integers only: 64 each, floor 32.
+- **Counters.** The FP dependency stall is a wait on SH_F0-F2; a wait on SH_FE is a mul/div, a
+  link or an FP compare/convert result.
+- **Gate.** Architectural behaviour is unchanged, so the cosims must pass as before; retire
+  counts move only through the free lists' new sizes.
+
+**Toward 5.2.** The lanes dissolve SH_LD and SH_FE into the lanes' shards; the FP file and its two
+banks stay, the load bank written by the memory unit and the other by the FP unit.
+
 ## Decisions (Tommy, 2026-10-01)
 
 - Four uniform execution lanes, two read ports and one write port each; ALUs are cheap, PRF write
