@@ -28,7 +28,7 @@
 <text x="556.6" y="280" text-anchor="middle" fill="#555">Oct 2026</text>
 <line x1="616.0" y1="260" x2="616.0" y2="265" stroke="#555555" stroke-width="1"/>
 <line x1="48" y1="260" x2="616" y2="260" stroke="#555555" stroke-width="1"/>
-<path d="M 148.2 244.4 L 333.9 225.3 L 352.4 190.7 L 363.6 190.7 L 371.0 190.7 L 374.7 190.7 L 411.8 173.3 L 474.9 156.0 L 478.6 138.7 L 478.6 138.7 L 489.8 121.3 L 493.5 86.7 L 500.9 86.7 L 504.6 69.3" fill="none" stroke="#2b6cb0" stroke-width="2"/>
+<path d="M 148.2 244.4 L 333.9 225.3 L 352.4 190.7 L 363.6 190.7 L 371.0 190.7 L 374.7 190.7 L 411.8 173.3 L 474.9 156.0 L 478.6 138.7 L 478.6 138.7 L 489.8 121.3 L 493.5 86.7 L 500.9 86.7 L 504.6 69.3 L 508.3 69.3" fill="none" stroke="#2b6cb0" stroke-width="2"/>
 <circle cx="148.2" cy="244.4" r="3.5" fill="#2b6cb0"/>
 <text x="141.2" y="236.4" text-anchor="end" font-weight="bold" fill="#2b6cb0">0.9</text>
 <circle cx="333.9" cy="225.3" r="3.5" fill="#2b6cb0"/>
@@ -52,4 +52,5 @@
 <circle cx="500.9" cy="86.7" r="3.5" fill="#2b6cb0"/>
 <circle cx="504.6" cy="69.3" r="3.5" fill="#2b6cb0"/>
 <text x="497.6" y="61.3" text-anchor="end" font-weight="bold" fill="#2b6cb0">11</text>
+<circle cx="508.3" cy="69.3" r="3.5" fill="#2b6cb0"/>
 </svg>
