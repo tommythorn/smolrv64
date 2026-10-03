@@ -48,10 +48,22 @@ DRAM reads behind a physically indexed L2 that sees the L1's fetches:
   per 1000 instructions against 1.1 for the skew, and the rest are L2 hits.
 - Behind any L2 of 1 MiB or more, DRAM traffic is the same for every L1 above.
 
-**The hit path closes.** Out of context at 6 ns (`wip/l2-spike`, `smolrv64_vipt_spike.v`: a
-2048-entry LUTRAM dTLB, the per-way tag LUTRAMs, the compare into a registered one-hot hit, the
-select a cycle later): 8 ways +2.43 ns, 16 ways +2.46 ns, 32 ways +1.93 ns WNS. The 32-way worst
-path, VA -> dTLB LUTRAM -> 24-bit compare -> hit register, is 4.05 ns, 87% of it route.
+**The hit path closes, and a small first-level dTLB takes it past 300 MHz.** Out of context at 6 ns
+(`wip/l2-spike`, `smolrv64_vipt_spike.v`: a direct-mapped LUTRAM dTLB, the per-way tag LUTRAMs, the
+compare into a registered one-hot hit, the select a cycle later):
+
+| ways | dTLB entries | set index | Fmax | worst path |
+|---|---|---|---|---|
+| 8 | 2048 | one register | 280 MHz | dTLB read (7 levels) into the compare |
+| 16 | 2048 | one register | 282 MHz | the same |
+| 32 | 2048 | one register | 246 MHz | the set index into the 32 tag arrays: 928 loads, 3.05 ns of route |
+| 32 | 2048 | 8 copies | 240 MHz | dTLB read into the compare, 4.14 ns |
+| 16 | 64 | one register | 368 MHz | the data select |
+| 32 | 64 | one register | 267 MHz | the set index's fanout |
+| 32 | 64 | 8 copies | 330 MHz | the PPN into the 32 compares (32 loads) |
+
+So the 32-way geometry costs nothing once the set index is replicated; what limits the clock is
+the 2048-entry dTLB's read.
 
 **The URAM fits.** 48 URAM288 out of context: +2.8 ns at 166.67 MHz, +0.1 ns at 333 MHz. Placed in
 the full chip with the core, the default directive went from -0.026 to -0.120 ns and Explore from
@@ -64,7 +76,7 @@ the full chip with the core, the default directive went from -0.026 to -0.120 ns
 | array | shape | holds |
 |---|---|---|
 | data | 32 RAMB36 at 512 x 72, simple dual port | one 64-bit chunk per (set, chunk) per array, laid out diagonally (below) |
-| tag | LUTRAM, 32 arrays of 64 x (PA tag + valid + dirty), one per way, read at VA[11:6] | the line's PA[35:12] |
+| tag | LUTRAM, 32 arrays of 64 x (PA tag + valid + dirty), one per way, read at VA[11:6] from a replicated set-index register | the line's PA[35:12] |
 | store tag copy | the same, a second copy | the committed store's lookup in the same cycle as a load's |
 | replacement | per set | chosen by the model (step 0) |
 
@@ -176,8 +188,8 @@ Every step is measured or modelled first, then gated by riscv-tests, the unit be
 - **What store-to-load ordering compares**, VA or PA, once loads carry only a VA until the D$
   answers.
 - **A small first-level dTLB** in the hit path, the 2048 entries behind it, if the clock goes past
-  about 240 MHz. The 4.05 ns path runs through the 2048-entry LUTRAM read; an out-of-context build
-  with a small dTLB splits it from the compare. It joins the future TLB plan.
+  about 240 MHz: at 64 entries the 32-way hit path runs at 330 MHz out of context. It joins the
+  future TLB plan.
 - **Fills straight into the L1 from the 333 MHz domain** (a block RAM's two ports may sit in two
   clock domains). The data arrays' write port also takes the stores, which are in the core's
   clock, so this needs either the stores on the read port's cycles or a different split of the
