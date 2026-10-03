@@ -17,11 +17,13 @@
 # One payload and one source-tag array PER SCHEDULER since two-wide dispatch (item 10b,
 # 2026-09-05): a pair dispatches to two different schedulers, so each array keeps one write.
 plmem_i : issue payload, slot A's integer scheduler; read at the selected entry, one indexed read
-plmem_i2: issue payload, slot B's integer scheduler (item 10d-ii)
+plmem_i2: issue payload, slot B's integer scheduler
+plmem_i3: issue payload, slot C's integer scheduler
 plmem_l : issue payload, the in-order scheduler
 plmem_f : issue payload, the FP scheduler
 psmem_i : source tags; added 3b518832 after e_ps was demoted by the wakeup broadcast
 psmem_i2: source tags, slot B's integer scheduler
+psmem_i3: source tags, slot C's integer scheduler
 psmem_l : source tags, the in-order scheduler
 psmem_f : source tags, the FP scheduler
 e_rob   : issue-queue ROB index, read only at [sel]
@@ -30,7 +32,8 @@ e_rob   : issue-queue ROB index, read only at [sel]
 mem_ie  : PRF integer shard; sharded by WRITER so each has ONE write port
 mem_ld  : PRF load shard
 mem_fe  : PRF F-stage shard (the FP ops' integer results, mul/div, links)
-mem_ie2 : PRF second integer shard, written by the second ALU alone (item 10d-ii)
+mem_ie2 : PRF lane B's integer shard, written by lane B's ALU alone
+mem_ie3 : PRF lane C's integer shard, written by lane C's ALU alone
 fp[*].mem_l x3 : PRF FP file, each slice's bank written by the load port
 fp[*].mem_f x3 : PRF FP file, each slice's bank written by the F stage
 
@@ -48,7 +51,7 @@ fl[3].bank[*].mem x4 : free list, IE2 shard, 4 banks at IW=3 (circular FIFO, hea
 fl[5].bank[*].mem x4 : free list, FP slice 0, 4 banks at IW=3 (circular FIFO, head read / tail write)
 fl[6].bank[*].mem x4 : free list, FP slice 1, 4 banks at IW=3 (circular FIFO, head read / tail write)
 fl[7].bank[*].mem x4 : free list, FP slice 2, 4 banks at IW=3 (circular FIFO, head read / tail write)
-# (fl[4], SH_IE3, has no allocator and no writer: synthesis may remove it)
+fl[4].bank[*].mem x4 : free list, IE3 shard (lane C), 4 banks at IW=3
 rmap_a  : committed map, copy A; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
 rmap_b  : committed map, copy B (the second commit port's write; `rnewer` picks)
 smap_a  : speculative map, copy A; flush clears `lv`, so no wholesale copy is ever needed

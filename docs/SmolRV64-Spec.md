@@ -64,9 +64,9 @@ The scheduler holds the instruction until its sources are ready and then issues 
 **fixed priority, lowest entry index** — there is no age anywhere (§6.1).
 
 What may reorder is deliberately narrow, but it is no longer only the ALU. **Pure ALU ops
-and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2` and `u_iq_f` respectively (two
-integer schedulers since item 10d-ii, 2026-09-05: slot A's ALU ops and slot B's, each with its
-own ALU). An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
+and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2`/`u_iq_i3` and `u_iq_f`
+respectively. **Slot k's ALU op goes to lane k** (lanes plan step 5.2a): three integer
+schedulers, each with its own ALU and shard, and no steering. An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
 
 Everything else carries an `ord` bit; of those, memory, AMO, CSR, `fence.i`, cbo and
 anything already known to fault keep program order in `u_iq_l`, while FP, branches, jumps
@@ -418,7 +418,8 @@ rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are t
 | shard | entries | written by | why the size |
 |---|---|---|---|
 | IE | 64 | **the ALU, alone** (slot A's ALU ops) | > 32 (integer arch regs) |
-| IE2 | 64 | **the second ALU, alone** (slot B's ALU ops, item 10d-ii, 2026-09-05) | > 32, like IE; code 3 of the shard field was free |
+| IE2 | 64 | **lane B's ALU, alone** (slot B's ALU ops) | > 32, like IE |
+| IE3 | 64 | **lane C's ALU, alone** (slot C's ALU ops) | > 32, like IE |
 | LD | 64 | M and the load landing: integer loads, AMOs, CSR reads | > 32 (integer arch regs) |
 | FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the CTF link register, the MD stage (mul/div, C1) | > 32 |
 | F0, F1, F2 | 64 each | f0–f31 only: FP loads (the load port) and FP results (the F stage's port) | > 32 (FP arch regs) each |
@@ -629,14 +630,14 @@ latency, and in-order memory issue), so neither can see a deeper FP queue. Recor
 standing rule rather than a measured optimum, and worth re-measuring once the store buffer
 moves the wall.
 
-| | `u_iq_i` | `u_iq_i2` | `u_iq_l` | `u_iq_f` |
-|---|---|---|---|---|
-| entries (`NENT`) | 10 | 10 | 12 | 5 |
-| sources (`NSRC`) | 2 | 2 | 3 | 3 |
-| holds | pure ALU and non-trapping ops, slot A's | the same, slot B's (item 10d-ii) | memory, AMO, mul/div, CSR, branches, jumps | **FP arithmetic** |
-| ordering | **reorders freely** | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
-| unit | completes at issue, writes IE | completes at issue, writes IE2 | M | **stage F** |
-| `unit_busy` | **none** — IE has one writer | **none** — IE2 has one writer | `~m_advance`: the issue register refills in the cycle M takes its op, so memory ops issue back to back | `j_v & ~j_adv`: the F/CTF select register is full and not draining |
+| | `u_iq_i`, `u_iq_i2`, `u_iq_i3` | `u_iq_l` | `u_iq_f` |
+|---|---|---|---|
+| entries (`NENT`) | 10 each | 12 | 8 |
+| sources (`NSRC`) | 2 | 3 | 3 |
+| holds | pure ALU and non-trapping ops of slot A, B, C | memory, AMO, CBO | FP arithmetic, branches and jumps, mul/div, system ops |
+| ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
+| unit | completes at issue, writes IE, IE2, IE3 | M | stage F, the CTF stage, the MD stage, the SYSQ |
+| `unit_busy` | **none** — each shard has one writer | `~m_advance`: the issue register refills in the cycle M takes its op, so memory ops issue back to back | `j_v & ~j_adv`: the F/CTF select register is full and not draining |
 
 **One scheduler per unit is what makes four safe.** Three schedulers feeding ONE execute
 stage deadlock (`Area-Efficient-Scalar-OoO.md` 12.2): an op reaches the shared stage, finds
@@ -748,8 +749,9 @@ runs inside every 240-test and cosim run.
 
 | unit | latency | outstanding | blocks M? | writes |
 |---|---|---|---|---|
-| ALU / branch | 1 cycle (at issue) | — | no | IE shard |
-| second ALU (slot B's ALU ops, item 10d-ii) | 1 cycle (at issue) | — | no | IE2 shard |
+| lane A's ALU (slot A's ALU ops) | 1 cycle (at issue) | — | no | IE shard |
+| lane B's ALU (slot B's ALU ops) | 1 cycle (at issue) | — | no | IE2 shard |
+| lane C's ALU (slot C's ALU ops) | 1 cycle (at issue) | — | no | IE3 shard |
 | jump link (`jal`/`jalr`) | 1 cycle | 1 | no (the CTF stage) | FE shard |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
@@ -1285,7 +1287,7 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | `v`, `done` | `smolrv64_rob` | 16 | 1 each | 32 | flops | bulk-clearable |
 | `irr` | `smolrv64_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
-| `u_iq_i2` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot B's (item 10d-ii), `NSRC`=2 (§6.1) |
+| `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
 | `u_iq_l` entry | `smolrv64_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
 | `u_iq_f` entry | `smolrv64_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `smolrv64_core` | 37 (10+10+12+5) | 413 | 15 281 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |

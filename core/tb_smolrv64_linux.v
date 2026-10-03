@@ -625,17 +625,17 @@ module tb;
       integer k, ak, as;
       begin
          older_ready = 0;
-         as = (which == 0 ? 32'(dut.core.u_iq_i.e_rob[sel]) : 32'(dut.core.u_iq_i2.e_rob[sel])) - 32'(dut.core.rob_head_idx);
+         as = (which == 0 ? 32'(dut.core.u_iq_i.e_rob[sel]) : which == 1 ? 32'(dut.core.u_iq_i2.e_rob[sel]) : 32'(dut.core.u_iq_i3.e_rob[sel])) - 32'(dut.core.rob_head_idx);
          as = as & 31;
          for (k = 0; k < n; k = k + 1) if (rdy_v[k]) begin
-            ak = ((which == 0 ? 32'(dut.core.u_iq_i.e_rob[k]) : 32'(dut.core.u_iq_i2.e_rob[k])) - 32'(dut.core.rob_head_idx)) & 31;
+            ak = ((which == 0 ? 32'(dut.core.u_iq_i.e_rob[k]) : which == 1 ? 32'(dut.core.u_iq_i2.e_rob[k]) : 32'(dut.core.u_iq_i3.e_rob[k])) - 32'(dut.core.rob_head_idx)) & 31;
             if (ak < as) older_ready = 1;
          end
       end
    endfunction
    always @(negedge clk) if (!reset) begin : dispsim
       reg b_rule, c_rule;
-      integer na, nb, ia, ib;
+      integer na, nb, nc, ia, ib, ic;
       b_rule = (dut.core.d_cls_l & dut.core.d2_cls_l) | (dut.core.d_cls_fc & dut.core.d2_cls_fc)
              | (dut.core.d2_st_nb & dut.core.d_st_nb) | (dut.core.d2_ld_nb & dut.core.d_ld_nb);
       c_rule = ~dut.core.d3_accept;
@@ -653,11 +653,15 @@ module tb;
       end
       na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
       nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
-      al_wait = al_wait + 64'(na - ia) + 64'(nb - ib);
-      if (ib == 0) al_wait_idle = al_wait_idle + 64'(na - ia);
-      if (ia == 0) al_wait_idle = al_wait_idle + 64'(nb - ib);
+      nc = $countones(dut.core.u_iq_i3.rdy);  ic = dut.core.ri3_iss_v ? 1 : 0;
+      al_wait = al_wait + 64'(na - ia) + 64'(nb - ib) + 64'(nc - ic);
+      // ready ALU work waiting in one lane while another lane issued nothing
+      if ((ib == 0) | (ic == 0)) al_wait_idle = al_wait_idle + 64'(na - ia);
+      if ((ia == 0) | (ic == 0)) al_wait_idle = al_wait_idle + 64'(nb - ib);
+      if ((ia == 0) | (ib == 0)) al_wait_idle = al_wait_idle + 64'(nc - ic);
       if (ia != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i.rdy),  32'(dut.core.ri_iss_ent),  NI_SIM, 0));
       if (ib != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i2.rdy), 32'(dut.core.ri2_iss_ent), NI_SIM, 1));
+      if (ic != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i3.rdy), 32'(dut.core.ri3_iss_ent), NI_SIM, 2));
       if (dut.core.rl_iss_v) begin ml_iss = ml_iss + 1; if (ml_iss_q) ml_b2b = ml_b2b + 1; end
       if (dut.core.u_iq_l.v[dut.core.u_iq_l.qhead] & (&dut.core.u_iq_l.srdy[dut.core.u_iq_l.qhead*3 +: 3])
           & ~dut.core.rl_iss_v) ml_hrdy = ml_hrdy + 1;
@@ -918,6 +922,7 @@ module tb;
       for (kw = 0; kw < 8; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
       if (dut.core.iss_alu)  kan_stage(5'(dut.core.a_rob),  "Xa");
       if (dut.core.iss_alu2) kan_stage(5'(dut.core.a2_rob), "Xb");
+      if (dut.core.iss_alu3) kan_stage(5'(dut.core.a3_rob), "Xc");
       if (dut.core.iss_m)    kan_stage(5'(dut.core.i_rob),  "M");
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
       if (dut.core.iss_c)    kan_stage(5'(dut.core.j_rob),  "Ct");

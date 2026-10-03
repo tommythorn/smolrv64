@@ -202,6 +202,40 @@ twelve read ports decodes both.
 **Toward 5.2.** The lanes dissolve SH_LD and SH_FE into the lanes' shards; the FP file and its two
 banks stay, the load bank written by the memory unit and the other by the FP unit.
 
+## Step 5.2: uniform integer lanes at IW=3 (design, 2026-10-03)
+
+Four sub-steps, each gated by the lockstep and the userspace cosims; IPC is measured before
+timing is fought.
+
+1. **5.2a, slot = lane for ALU ops.** Slot k's ALU op goes to lane k: scheduler `u_iq_i`,
+   `u_iq_i2`, `u_iq_i3`, shard IE, IE2, IE3, ALU `u_xa`, `u_xb`, `u_xc`. The swizzle goes, and
+   slot C's ALU op is accepted whatever A and B are. Lane C's issue register, ALU, forwards,
+   write-back register and ROB port already exist; it gets its dispatch stage, source-tag and
+   payload arrays, its PRF ports (`ra8/ra9`) and its shard's write. The fifth wakeup port
+   (IE3) becomes live in every scheduler.
+2. **5.2b, branches in any lane.** A branch, `jal` or `jalr` issues in its slot's lane, whose
+   ALU resolves it and writes the link into the lane's shard. Up to three resolve in a cycle:
+   the oldest mispredict wins by age into the existing early restart (`fr_*`), and predictor
+   training goes through a short buffer that drops on overflow (it is a hint). The CTF stage
+   leaves `u_iq_f`.
+3. **5.2c, a multiplier per lane, and write-slot reservation.** `mul3` in every lane. Each
+   lane keeps a short reservation register of its write port's future cycles: an ALU op takes
+   the next cycle, a multiply the third; select never issues into a reserved slot. The divide
+   stays shared and returns like a miss: it announces itself a cycle ahead and takes its
+   lane's next free slot.
+4. **5.2d, address generation in the lanes, M deleted.** A load or store issues in its slot's
+   lane, whose ALU adds the address, and enters the memory unit (the LQ/SQ entry takes the
+   VA). The memory unit translates in its own stage (the dTLB lookup M does today), takes the
+   faults into the entry (as since 5b), and starts the access. A load's result returns through
+   its lane's write port: it announces itself a cycle ahead and takes the next free slot. AMOs,
+   LR/SC and CBOs, which run only at the ROB head, execute in the memory unit there. SH_LD
+   dissolves into the lanes' shards. Until the VIPT L1 takes the dTLB into its access cycle
+   (`PLAN-2026-10-03-dcache-vipt-l2.md`), the memory unit translates before the access.
+
+What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system ops. Their
+integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
+slot, which dissolves SH_FE.
+
 ## Decisions (Tommy, 2026-10-01)
 
 - Four uniform execution lanes, two read ports and one write port each; ALUs are cheap, PRF write

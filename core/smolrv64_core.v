@@ -575,7 +575,7 @@ module smolrv64_core
       .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
       .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
       .we_ie2(alu2_q_v), .wa_ie2(alu2_q_prd), .wd_ie2(alu2_q_val),   // the second ALU (10d-ii)
-      .we_ie3(1'b0), .wa_ie3({RN_PBITS{1'b0}}), .wd_ie3(64'd0),   // the third ALU is dead since the swizzle: SH_IE3 has no writer (asserted below)
+      .we_ie3(alu3_q_v), .wa_ie3(alu3_q_prd), .wd_ie3(alu3_q_val),   // lane C's ALU
       // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
@@ -584,7 +584,7 @@ module smolrv64_core
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
       .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
-      .ra8({RN_PBITS{1'b0}}), .ra9({RN_PBITS{1'b0}}), .rd8(prf_a31), .rd9(prf_a32),   // ...and no reader
+      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32),       // lane C's operands
       .ra10(j_ps1), .ra11(j_ps2), .ra12(j_ps3), .rd10(prf_f1), .rd11(prf_f2), .rd12(prf_f3));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
@@ -956,13 +956,8 @@ module smolrv64_core
                               d_is_branch,  d_is_jump,  d_is_jalr,  SH_F0, SH_IE);
    assign d2_shard = shard_of(d2_rd[5], d2_insn, d2_is_mem, d2_is_amo, d2_is_fp, d2_is_mul,
                               d2_is_branch, d2_is_jump, d2_is_jalr, SH_F1, SH_IE2);
-   // slot C's ALU op is swizzled: ALUa if slot B's is an ALU op, else ALUb. Slot C dispatches
-   // only behind a plain (non-trapping) slot B, so the opcode test agrees with d2_cls_i then.
-   wire d2_alu_cls = ~(d2_is_mem | d2_is_amo | d2_is_fp | d2_is_mul | d2_is_branch | d2_is_jump
-                    | d2_is_jalr | d2_is_csr | d2_is_serialize | d2_is_fencei | d2_is_cbo);
    assign d3_shard = shard_of(d3_rd[5], d3_insn, d3_is_mem, d3_is_amo, d3_is_fp, d3_is_mul,
-                              d3_is_branch, d3_is_jump, d3_is_jalr, SH_F2,
-                              d2_alu_cls ? SH_IE : SH_IE2);
+                              d3_is_branch, d3_is_jump, d3_is_jalr, SH_F2, SH_IE3);
    wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
    // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
    wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
@@ -1040,17 +1035,18 @@ module smolrv64_core
    // below, computed from the early slot pregs so it stays off the mux->register path); every
    // later stuck cycle ORs a fresh wkv snoop of the stage's own pregs; and the move cycle is
    // caught by the scheduler's own fill hit(d_ps). See docs/SmolRV64-Spec.md 15.
-   reg              stg_v_ia, stg_v_ib, stg_v_l, stg_v_f;
-   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_l, stg_rob_f;
-   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_l, stg_ps_f;
-   reg [1:0]        stg_r_ia, stg_r_ib;
+   reg              stg_v_ia, stg_v_ib, stg_v_ic, stg_v_l, stg_v_f;
+   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_ic, stg_rob_l, stg_rob_f;
+   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_ic, stg_ps_l, stg_ps_f;
+   reg [1:0]        stg_r_ia, stg_r_ib, stg_r_ic;
    reg [2:0]        stg_r_l, stg_r_f;
-   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_l, stg_prd_f;
-   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_l, stg_pl_f;
-   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_l=1'b0; stg_v_f=1'b0; end
+   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_ic, stg_prd_l, stg_prd_f;
+   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_ic, stg_pl_l, stg_pl_f;
+   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_ic=1'b0; stg_v_l=1'b0; stg_v_f=1'b0; end
    // The scheduler accepts the stage op when it has room; back-pressure to the frontend below.
    wire mv_ia = stg_v_ia & ri_ready;
    wire mv_ib = stg_v_ib & ri2_ready;
+   wire mv_ic = stg_v_ic & ri3_ready;
    wire mv_l  = stg_v_l  & rl_ready;
    wire mv_f  = stg_v_f  & rf_ready;
 
@@ -1080,8 +1076,8 @@ module smolrv64_core
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i3
      (.clk(clk),.reset(reset),
-      .d_valid(1'b0),.d_ready(ri3_ready),.d_rob(rob_d_idx3),   // DEAD: the 3rd ALU is removed; slot-3 ALU swizzles to ALUa/ALUb
-      .d_ps({rn_prs2_c, rn_prs1_c}),.d_r(d3_srdy[1:0]),.d_prd(d3_prd_g),.d_ent(ri3_d_ent),
+      .d_valid(mv_ic),.d_ready(ri3_ready),.d_rob(stg_rob_ic),
+      .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_ent(ri3_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(1'b0),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
      .iss_take(ri3_take),
@@ -1128,26 +1124,22 @@ module smolrv64_core
    // holds dispatch at the frontend rather than losing the op behind the stage register.
    wire alua_room = ~stg_v_ia | ri_ready;
    wire alub_room = ~stg_v_ib | ri2_ready;
+   wire aluc_room = ~stg_v_ic | ri3_ready;
    wire m_room    = ~stg_v_l  | rl_ready;
    wire f_room    = ~stg_v_f  | rf_ready;
    wire iq_ready = d_cls_i ? alua_room : d_cls_l ? m_room : f_room;   // CTF falls to F (shared queue)
    wire iq_ready_b = d2_cls_i ? alub_room : d2_cls_l ? m_room : f_room;
    wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_l = rn_valid_b & d2_cls_l, b_to_f = rn_valid_b & d2_cls_fc;
-   // ---- dispatch swizzle: slot C reaches ANY pipe (the 3rd ALU is gone) ----
-   // ALUa <- I1 if ALU, else I3(ALU & ALU2); ALUb <- I2 if ALU, else I3(ALU & ~ALU2).
-   // I3's ALU PREFERS ALUb (falls to ALUa only when ALUb is taken by an I2 ALU): I1 always
-   // takes ALUa, so ALUa is busier under the fetch-length bias; this evens the two ALUs.
-   // LS/FC <- whichever slot is LS/FC (the accepted prefix has <=1 of each).
-   wire c_to_ib = rn_valid_c & d3_cls_i & ~d2_cls_i;  // slot3 ALU -> ALUb (PREFERRED: free unless I2 is ALU)
-   wire c_to_ia = rn_valid_c & d3_cls_i &  d2_cls_i;  // slot3 ALU -> ALUa (ALUb taken by an I2 ALU)
+   // ---- slot = lane: slot k's ALU op goes to lane k; slot C's other ops go to the one ----
+   // LS or FC op's queue (the accepted prefix has <=1 of each).
+   wire c_to_ic = rn_valid_c & d3_cls_i;              // slot3 ALU -> lane C
    wire c_to_l  = rn_valid_c & d3_cls_l;              // slot3 LS  -> M
    wire c_to_f  = rn_valid_c & d3_cls_fc;             // slot3 FC  -> F/CTF
    wire l_slot0 = rn_valid   & d_cls_l;               // slot1 -> M
    wire f_slot0 = rn_valid   & d_cls_fc;              // slot1 -> F/CTF
    // slot-3's destination-scheduler ready (by class, NOT rn_valid_c -> no combinational loop
-   // through d3_take): ALU->ALUa/ALUb by I1's class, LS->M, FC->F.
-   wire iq_ready_c = d3_cls_i ? (d2_cls_i ? alua_room : alub_room)
-                   : d3_cls_l ? m_room : f_room;
+   // through d3_take): ALU->lane C, LS->M, FC->F.
+   wire iq_ready_c = d3_cls_i ? aluc_room : d3_cls_l ? m_room : f_room;
    wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
                                : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
                                :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
@@ -1203,13 +1195,14 @@ module smolrv64_core
    // 3:1 mux, now on three reads instead of three indexes.
    reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_i2 [0:NI-1];
+   reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
    wire [3*RN_PBITS-1:0] ps_out   = psmem_l[rl_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
    wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
-   wire [3*RN_PBITS-1:0] ps_out_a3 = {(3*RN_PBITS){1'b0}};   // the third ALU is dead since the swizzle (u_iq_i3 never fills)
+   wire [3*RN_PBITS-1:0] ps_out_a3 = psmem_i3[ri3_iss_ent];
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
    wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
@@ -1218,6 +1211,7 @@ module smolrv64_core
       // allocates (*_d_ent), from the REGISTERED stage payload -- co-timed with the e_ps write.
       if (mv_ia) psmem_i[ri_d_ent]  <= stg_ps_ia;
       if (mv_ib) psmem_i2[ri2_d_ent] <= stg_ps_ib;
+      if (mv_ic) psmem_i3[ri3_d_ent] <= stg_ps_ic;
       if (mv_l)  psmem_l[rl_d_ent]  <= stg_ps_l;
       if (mv_f)  psmem_f[rf_d_ent]  <= stg_ps_f;
    end
@@ -1227,7 +1221,7 @@ module smolrv64_core
    wire iq_iss_take;
    assign ri_take = pick_i;                              // the ALU port takes every cycle; a take in
    assign ri2_take = pick_i2;                            // the redirect cycle dies in a_v/a2_v (cleared)
-   assign ri3_take = pick_i3;                            // the third ALU, likewise (dead at IW=2)
+   assign ri3_take = pick_i3;                            // lane C, likewise
    assign rl_take = pick_l & iq_iss_take;
    // The shared FP/CTF queue feeds j_* directly (single source). j_isctf, from the picked op's
    // payload, routes the drain: control flow to cf_*, FP to f_valid. (CTF-over-FP priority is a
@@ -1418,31 +1412,40 @@ module smolrv64_core
    // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
    wire [1:0] snp_ia = {wk(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
    wire [1:0] snp_ib = {wk(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
+   wire [1:0] snp_ic = {wk(stg_ps_ic[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ic[0*RN_PBITS +: RN_PBITS])};
    wire [2:0] snp_l  = {wk(stg_ps_l[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[0*RN_PBITS +: RN_PBITS])};
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
-      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
       else begin
-         // ALUa: I1(ALU)->ALUa, or I3(ALU & I2 ALU)->ALUa. Single-in (the swizzle's <=2 ALU).
-         if ((rn_valid & d_cls_i) | c_to_ia) begin
+         // Lane k's stage takes slot k's ALU op.
+         if (rn_valid & d_cls_i) begin
             stg_v_ia   <= 1'b1;
-            stg_rob_ia <= c_to_ia ? rob_d_idx3 : rob_d_idx;
-            stg_ps_ia  <= c_to_ia ? ps_in_c : ps_in;
-            stg_r_ia   <= c_to_ia ? srdy_hit2[1:0] : srdy_hit0[1:0];
-            stg_prd_ia <= c_to_ia ? d3_prd_g : d_prd_g;
-            stg_pl_ia  <= c_to_ia ? pl_in_c : pl_in;
+            stg_rob_ia <= rob_d_idx;
+            stg_ps_ia  <= ps_in;
+            stg_r_ia   <= srdy_hit0[1:0];
+            stg_prd_ia <= d_prd_g;
+            stg_pl_ia  <= pl_in;
          end else if (mv_ia) stg_v_ia <= 1'b0;
          else if (stg_v_ia) stg_r_ia <= stg_r_ia | snp_ia;
-         // ALUb: I2(ALU)->ALUb, or I3(ALU & ~I2 ALU)->ALUb.
-         if (b_to_i2 | c_to_ib) begin
+         if (b_to_i2) begin
             stg_v_ib   <= 1'b1;
-            stg_rob_ib <= c_to_ib ? rob_d_idx3 : rob_d_idx2;
-            stg_ps_ib  <= c_to_ib ? ps_in_c : ps_in_b;
-            stg_r_ib   <= c_to_ib ? srdy_hit2[1:0] : srdy_hit1[1:0];
-            stg_prd_ib <= c_to_ib ? d3_prd_g : d2_prd_g;
-            stg_pl_ib  <= c_to_ib ? pl_in_c : pl_in_b;
+            stg_rob_ib <= rob_d_idx2;
+            stg_ps_ib  <= ps_in_b;
+            stg_r_ib   <= srdy_hit1[1:0];
+            stg_prd_ib <= d2_prd_g;
+            stg_pl_ib  <= pl_in_b;
          end else if (mv_ib) stg_v_ib <= 1'b0;
          else if (stg_v_ib) stg_r_ib <= stg_r_ib | snp_ib;
+         if (c_to_ic) begin
+            stg_v_ic   <= 1'b1;
+            stg_rob_ic <= rob_d_idx3;
+            stg_ps_ic  <= ps_in_c;
+            stg_r_ic   <= srdy_hit2[1:0];
+            stg_prd_ic <= d3_prd_g;
+            stg_pl_ic  <= pl_in_c;
+         end else if (mv_ic) stg_v_ic <= 1'b0;
+         else if (stg_v_ic) stg_r_ic <= stg_r_ic | snp_ic;
          // M (load/store): whichever slot is the (single) LS.
          if (l_slot0 | b_to_l | c_to_l) begin
             stg_v_l   <= 1'b1;
@@ -1464,7 +1467,7 @@ module smolrv64_core
          end else if (mv_f) stg_v_f <= 1'b0;
          else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
          // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
-         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
       end
    end
 
@@ -1473,6 +1476,7 @@ module smolrv64_core
    // what stop them aliasing.
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_i2 [0:NI-1];
+   reg [PLW-1:0] plmem_i3 [0:NI-1];
    reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
    // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
@@ -1490,7 +1494,7 @@ module smolrv64_core
       if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
       if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
       if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
-      if (ri3_take)                pla3_q <= {PLW{1'b0}};   // dead: the third ALU never issues
+      if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
       if (rf_take)                 plf_q  <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
    end
    wire [PLW-1:0] pl_out   = pl_q;
@@ -1502,6 +1506,7 @@ module smolrv64_core
       // Co-timed with the scheduler fill (T+1), from the REGISTERED stage payload.
       if (mv_ia) plmem_i[ri_d_ent]  <= stg_pl_ia;
       if (mv_ib) plmem_i2[ri2_d_ent] <= stg_pl_ib;
+      if (mv_ic) plmem_i3[ri3_d_ent] <= stg_pl_ic;
       if (mv_l)  plmem_l[rl_d_ent]  <= stg_pl_l;
       if (mv_f)  plmem_f[rf_d_ent]  <= stg_pl_f;
    end
@@ -2684,22 +2689,25 @@ module smolrv64_core
    wire [2:0] bsh_f = rf_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_i = ri_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_i2 = ri2_blk_pr[RN_PBITS-1:RN_IDXB];
+   wire [2:0] bsh_i3 = ri3_blk_pr[RN_PBITS-1:RN_IDXB];
    // Gated on "nothing issued", NOT on m_advance. The old `m_advance &` gate dated from M
    // being the only unit, where "M could accept" was the same thing as "issue could
    // proceed". With three units it silently masks: on workloads/mlbench M is busy with
    // loads nearly every cycle, so dep_fp could never fire and the FP add chain that IS the
    // critical path reported 0%.
-   wire no_issue  = ~(iq_iss_v | pick_i | pick_i2);
+   wire no_issue  = ~(iq_iss_v | pick_i | pick_i2 | pick_i3);
    wire dep_ld    = no_issue & ((rl_blk_v & (bsh_l == SH_LD))
                               | (rf_blk_v & (bsh_f == SH_LD))
                               | (ri_blk_v & (bsh_i == SH_LD))
-                              | (ri2_blk_v & (bsh_i2 == SH_LD)));
+                              | (ri2_blk_v & (bsh_i2 == SH_LD))
+                              | (ri3_blk_v & (bsh_i3 == SH_LD)));
    // An f-register (FP slices: an FP op's or an FP load's) or SH_FE (an FP op's integer
    // result, a mul/div, a link).
    wire dep_fp    = no_issue & ((rl_blk_v & ((bsh_l == SH_FE) | (bsh_l >= SH_F0)))
                               | (rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
                               | (ri_blk_v & ((bsh_i == SH_FE) | (bsh_i >= SH_F0)))
-                              | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0))));
+                              | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0)))
+                              | (ri3_blk_v & ((bsh_i3 == SH_FE) | (bsh_i3 >= SH_F0))));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v &  md_div;                 // the MD stage holds a divide (C1: occupancy, not an M stall)
    wire st_mul    = md_v & ~md_div;                 // ...a multiply
@@ -3373,8 +3381,6 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: LD shard written by both M and a landing load");
       // M writes SH_LD alone (d_shard: memory ops and AMOs). An op reaching M with another
       // shard would drop its result silently: we_ie and we_fe ignore M.
-      if (alu3_q_v)
-         $fatal(1, "smolrv64_core: the third ALU wrote back -- it is dead since the swizzle and SH_IE3 is tied off");
       if (m_wb & (m_shard != SH_LD) & (m_shard < SH_F0))
          $fatal(1, "smolrv64_core: M wrote shard %0d -- d_shard must route M's ops to SH_LD or an FP slice", m_shard);
    end
@@ -3932,7 +3938,7 @@ module smolrv64_core
    // the take3 rule and swizzled -- LS->M, FC->F, ALU->ALUb if I1 is ALU else ALUa. three_wide
    // is the master enable (0 at IW=2 -> C never dispatches -> retire-identical to the 2-wide core).
    // take3 class-accept (spec): ALU3 ok unless I1&I2 both ALU; LS3/FC3 ok unless already used.
-   wire d3_accept = (d3_cls_i  & ~(d_cls_i & d2_cls_i))
+   wire d3_accept = d3_cls_i
                   | (d3_cls_l  & ~d_cls_l  & ~d2_cls_l)
                   | (d3_cls_fc & ~d_cls_fc & ~d2_cls_fc);
    wire d3_hold = ~three_wide | ~d3_accept | ~d_plain | ~d2_plain | ~d3_plain
@@ -4012,12 +4018,9 @@ module smolrv64_core
       if (rn_valid_b & ((d_st_nb & d2_st_nb) | (d_ld_nb & d2_ld_nb)))
          $fatal(1, "smolrv64_core: two allocations into one memory queue");
       if (rn_valid_c & ~rn_valid_b)     $fatal(1, "smolrv64_core: slot C dispatched without slot B");
-      // swizzle mutual-exclusion: no two dispatched ops can target the same pipe.
-      if (c_to_ia & (rn_valid & d_cls_i))   $fatal(1, "smolrv64_core: swizzle put two ops on ALUa");
-      if (c_to_ib & b_to_i2)                $fatal(1, "smolrv64_core: swizzle put two ops on ALUb");
+      // no two dispatched ops target the same memory or F/CTF pipe (each ALU lane has one slot).
       if ((l_slot0 + b_to_l + c_to_l) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the M pipe");
-      if (c_to_ia & (d3_shard != SH_IE))    $fatal(1, "smolrv64_core: slot C's ALU op swizzled to ALUa in shard %0d", d3_shard);
-      if (c_to_ib & (d3_shard != SH_IE2))   $fatal(1, "smolrv64_core: slot C's ALU op swizzled to ALUb in shard %0d", d3_shard);
+      if (c_to_ic & d3_rd_v & (d3_shard != SH_IE3)) $fatal(1, "smolrv64_core: slot C's ALU op in shard %0d, not lane C's", d3_shard);
       if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the F pipe");
    end
 
