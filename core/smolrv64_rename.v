@@ -194,163 +194,54 @@ module smolrv64_rename
    assign r_prs3_c = byp3_c_b ? r_prd_b : byp3_c_a ? r_prd : r_lv3_c ? r_sprs3_c : r_mprs3_c;
 
    // ---- free lists, one per shard ---------------------------------------------------
-   // Pointers carry an extra MSB so full and empty are distinguishable without a separate
-   // count: the list is empty when h == t, full when h == t ^ {1'b1, 0}.
-   localparam integer PW_IE = $clog2(N_IE) + 1;
-   localparam integer PW_LD = $clog2(N_LD) + 1;
-   localparam integer PW_FE = $clog2(N_FE) + 1;
-   localparam integer PW_I2 = $clog2(N_IE2) + 1;
-   localparam integer PW_I3 = $clog2(N_IE3) + 1;
+   // Shard s's list is the generate block fl[s]: a circular FIFO of the shard's free indices,
+   // with a speculative head h (allocation), a committed head hc (the rollback target) and a
+   // tail t (frees). Pointers carry an extra MSB so full and empty are distinguishable without
+   // a count: empty when h == t, full when h == t ^ {1'b1, 0}.
+   //
+   // FLNB = next_pow2(IW) banks per list, one muxed write per bank: a cycle's up to three frees
+   // land at t, t+1, t+2, which fall in different banks. Bank g reads its next free entry at
+   // h's index plus one when g is behind h's bank -- REGISTERS ONLY on the read address. Which
+   // slot allocates from which shard (the class decode) selects among the banks' OUTPUTS, not
+   // their addresses, and the stall never reaches an address: with it there, the whole rename
+   // decision (five tail-minus-head subtractions, the low-water compares, the OR) sat in front
+   // of the LUTRAM read, and the read's data in front of the dispatch stage and the store queue
+   // (t_ld -> avail -> stall -> hb -> flrd -> stg_ps -> u_sq/ld_w, 20-23 levels, eight families
+   // of the IW=3 census). A stall holds every slot, so entries read and not consumed are simply
+   // read again.
+   //
+   // NO FUNCTION READS THESE ARRAYS (rule F4): Vivado keeps one read port for a function that
+   // reads a RAM, the last call site's, and folds the earlier calls to 0.
+   //
+   // Rollback is pointer-only: rename never writes the arrays (the frees are their only
+   // writer), so the entries between hc and h still hold the in-flight allocations, and
+   // h := hc frees them all in one cycle, with no walk and no checkpoints.
+   localparam integer NSH  = 5;
    localparam integer FLNB = 1 << $clog2(IW);   // free-list banks = next_pow2(IW); >=2
    localparam integer FLLB = $clog2(FLNB);
-
-   // FLNB=next_pow2(IW) banks per list (Stage 3 inc 3, was the two parity banks): the generate
-   // blocks below hold each shard's list; one muxed write per bank, head/head+1 reads.
-   reg [PW_IE-1:0] h_ie, hc_ie, t_ie;
-   reg [PW_LD-1:0] h_ld, hc_ld, t_ld;
-   reg [PW_FE-1:0] h_fe, hc_fe, t_fe;
-   reg [PW_I2-1:0] h_i2, hc_i2, t_i2;
-   reg [PW_I3-1:0] h_i3, hc_i3, t_i3;
-   // NO FUNCTION READS THESE ARRAYS (rule F4, 2026-09-06): Vivado keeps one read port for a
-   // function that reads a RAM, the last call site's, and folds the earlier call to 0 -- port
-   // A's r_prd[6:0] was 0 on V4, V7 and W2. One continuous assign per reader, below.
-
-   // Initial tails, sized: SH_IE/SH_FE start with N-32 free, SH_LD with all N.
-   localparam [PW_IE-1:0] T0_IE = (N_IE - 32);
-   localparam [PW_LD-1:0] T0_LD = N_LD;
-   localparam [PW_FE-1:0] T0_FE = (N_FE - 32);
-   localparam [PW_I2-1:0] T0_I2 = N_IE2;             // nothing maps there at reset: wholly free
-   localparam [PW_I3-1:0] T0_I3 = N_IE3;             // likewise the third ALU's shard
-
-   genvar gS;
-   // ---- shard ie free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
-   wire [IDXB-1:0] ha_rd_ie, hb_rd_ie, hcc_rd_ie;
-   wire [IDXB-1:0] flrd_ie [0:FLNB-1];
-   wire [FLNB-1:0] behind_ie = ~({FLNB{1'b1}} << h_ie[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
-   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ie
-      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE/FLNB-1];
-      integer jj; integer pp; initial for (jj = 0; jj < N_IE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
-      wire w0 = fre_ie  & (t_ie [FLLB-1:0] == gS);
-      wire w1 = fre2_ie & (t2_ie[FLLB-1:0] == gS);
-      wire w2 = fre3_ie & (t3_ie[FLLB-1:0] == gS);   // 3rd free (IW>=3; dead otherwise)
-      always @(posedge clk)
-         if (w0 | w1 | w2) mem[w0 ? t_ie[PW_IE-2:FLLB] : w1 ? t2_ie[PW_IE-2:FLLB] : t3_ie[PW_IE-2:FLLB]]
-                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
-      // Registers only -- which slot allocates from which shard (the class decode) selects
-      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
-      assign flrd_ie[gS] = mem[h_ie[PW_IE-2:FLLB] + {{(PW_IE-2-FLLB){1'b0}}, behind_ie[gS]}];
-   end endgenerate
-   assign ha_rd_ie  = flrd_ie[h_ie [FLLB-1:0]];
-   assign hb_rd_ie  = flrd_ie[hb_ie[FLLB-1:0]];
-   assign hcc_rd_ie = flrd_ie[hcc_ie[FLLB-1:0]];
-
-   // ---- shard ld free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
-   wire [IDXB-1:0] ha_rd_ld, hb_rd_ld, hcc_rd_ld;
-   wire [IDXB-1:0] flrd_ld [0:FLNB-1];
-   wire [FLNB-1:0] behind_ld = ~({FLNB{1'b1}} << h_ld[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
-   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_ld
-      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_LD/FLNB-1];
-      integer jj; integer pp; initial for (jj = 0; jj < N_LD/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
-      wire w0 = fre_ld  & (t_ld [FLLB-1:0] == gS);
-      wire w1 = fre2_ld & (t2_ld[FLLB-1:0] == gS);
-      wire w2 = fre3_ld & (t3_ld[FLLB-1:0] == gS);
-      always @(posedge clk)
-         if (w0 | w1 | w2) mem[w0 ? t_ld[PW_LD-2:FLLB] : w1 ? t2_ld[PW_LD-2:FLLB] : t3_ld[PW_LD-2:FLLB]]
-                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
-      // Registers only -- which slot allocates from which shard (the class decode) selects
-      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
-      assign flrd_ld[gS] = mem[h_ld[PW_LD-2:FLLB] + {{(PW_LD-2-FLLB){1'b0}}, behind_ld[gS]}];
-   end endgenerate
-   assign ha_rd_ld  = flrd_ld[h_ld [FLLB-1:0]];
-   assign hb_rd_ld  = flrd_ld[hb_ld[FLLB-1:0]];
-   assign hcc_rd_ld = flrd_ld[hcc_ld[FLLB-1:0]];
-
-   // ---- shard fe free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
-   wire [IDXB-1:0] ha_rd_fe, hb_rd_fe, hcc_rd_fe;
-   wire [IDXB-1:0] flrd_fe [0:FLNB-1];
-   wire [FLNB-1:0] behind_fe = ~({FLNB{1'b1}} << h_fe[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
-   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_fe
-      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_FE/FLNB-1];
-      integer jj; integer pp; initial for (jj = 0; jj < N_FE/FLNB; jj = jj + 1) begin pp = 32 + FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
-      wire w0 = fre_fe  & (t_fe [FLLB-1:0] == gS);
-      wire w1 = fre2_fe & (t2_fe[FLLB-1:0] == gS);
-      wire w2 = fre3_fe & (t3_fe[FLLB-1:0] == gS);
-      always @(posedge clk)
-         if (w0 | w1 | w2) mem[w0 ? t_fe[PW_FE-2:FLLB] : w1 ? t2_fe[PW_FE-2:FLLB] : t3_fe[PW_FE-2:FLLB]]
-                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
-      // Registers only -- which slot allocates from which shard (the class decode) selects
-      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
-      assign flrd_fe[gS] = mem[h_fe[PW_FE-2:FLLB] + {{(PW_FE-2-FLLB){1'b0}}, behind_fe[gS]}];
-   end endgenerate
-   assign ha_rd_fe  = flrd_fe[h_fe [FLLB-1:0]];
-   assign hb_rd_fe  = flrd_fe[hb_fe[FLLB-1:0]];
-   assign hcc_rd_fe = flrd_fe[hcc_fe[FLLB-1:0]];
-
-   // ---- shard i2 free list: FLNB banks, one muxed write (tail/tail+1), head/head+1 reads ----
-   wire [IDXB-1:0] ha_rd_i2, hb_rd_i2, hcc_rd_i2;
-   wire [IDXB-1:0] flrd_i2 [0:FLNB-1];
-   wire [FLNB-1:0] behind_i2 = ~({FLNB{1'b1}} << h_i2[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
-   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i2
-      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE2/FLNB-1];
-      integer jj; integer pp; initial for (jj = 0; jj < N_IE2/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
-      wire w0 = fre_i2  & (t_i2 [FLLB-1:0] == gS);
-      wire w1 = fre2_i2 & (t2_i2[FLLB-1:0] == gS);
-      wire w2 = fre3_i2 & (t3_i2[FLLB-1:0] == gS);
-      always @(posedge clk)
-         if (w0 | w1 | w2) mem[w0 ? t_i2[PW_I2-2:FLLB] : w1 ? t2_i2[PW_I2-2:FLLB] : t3_i2[PW_I2-2:FLLB]]
-                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
-      // Registers only -- which slot allocates from which shard (the class decode) selects
-      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
-      assign flrd_i2[gS] = mem[h_i2[PW_I2-2:FLLB] + {{(PW_I2-2-FLLB){1'b0}}, behind_i2[gS]}];
-   end endgenerate
-   assign ha_rd_i2  = flrd_i2[h_i2 [FLLB-1:0]];
-   assign hb_rd_i2  = flrd_i2[hb_i2[FLLB-1:0]];
-   assign hcc_rd_i2 = flrd_i2[hcc_i2[FLLB-1:0]];
-
-   // ---- shard i3 free list (the third ALU, Stage 3): identical shape to i2 ----
-   wire [IDXB-1:0] ha_rd_i3, hb_rd_i3, hcc_rd_i3;
-   wire [IDXB-1:0] flrd_i3 [0:FLNB-1];
-   wire [FLNB-1:0] behind_i3 = ~({FLNB{1'b1}} << h_i3[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
-   generate for (gS = 0; gS < FLNB; gS = gS + 1) begin: fl_i3
-      (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N_IE3/FLNB-1];
-      integer jj; integer pp; initial for (jj = 0; jj < N_IE3/FLNB; jj = jj + 1) begin pp = FLNB*jj + gS; mem[jj] = pp[IDXB-1:0]; end
-      wire w0 = fre_i3  & (t_i3 [FLLB-1:0] == gS);
-      wire w1 = fre2_i3 & (t2_i3[FLLB-1:0] == gS);
-      wire w2 = fre3_i3 & (t3_i3[FLLB-1:0] == gS);
-      always @(posedge clk)
-         if (w0 | w1 | w2) mem[w0 ? t_i3[PW_I3-2:FLLB] : w1 ? t2_i3[PW_I3-2:FLLB] : t3_i3[PW_I3-2:FLLB]]
-                              <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
-      // Bank gS's next free entry: h's index, plus one when this bank is behind h's bank.
-      // Registers only -- which slot allocates from which shard (the class decode) selects
-      // among the banks' OUTPUTS (ha/hb/hcc_rd below), not their addresses.
-      assign flrd_i3[gS] = mem[h_i3[PW_I3-2:FLLB] + {{(PW_I3-2-FLLB){1'b0}}, behind_i3[gS]}];
-   end endgenerate
-   assign ha_rd_i3  = flrd_i3[h_i3 [FLLB-1:0]];
-   assign hb_rd_i3  = flrd_i3[hb_i3[FLLB-1:0]];
-   assign hcc_rd_i3 = flrd_i3[hcc_i3[FLLB-1:0]];
-
+   // A shard's size, and the first free index at reset: SH_IE and SH_FE hold the reset
+   // mappings of x0-x31 and f0-f31 at indices 0..31, so their lists start at 32.
+   function automatic integer n_of(input integer sh);
+      n_of = (sh == SH_IE) ? N_IE : (sh == SH_LD) ? N_LD : (sh == SH_FE) ? N_FE
+           : (sh == SH_IE2) ? N_IE2 : N_IE3;
+   endfunction
+   function automatic integer base_of(input integer sh);
+      base_of = (sh == SH_IE || sh == SH_FE) ? 32 : 0;
+   endfunction
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
    // instructions behind it are squashed.  The restore target must therefore be the
-   // POST-commit committed head.  Written as an explicit next-value rather than relying on
-   // statement order, because `h <= hc` inside a nonblocking block reads the PRE-commit hc
-   // and would hand the just-committed instruction's register back to the free list while
-   // it is the live mapping.
-   // TWO INDEPENDENT SHARDS PER COMMIT, and conflating them was a bug.  c_shard is where
+   // POST-commit committed head (hc_n below), not hc.
+   // TWO INDEPENDENT SHARDS PER COMMIT, and conflating them was a bug.  c_prd's shard is where
    // the instruction ALLOCATED (so it says which head advanced), but the displaced register
    // c_pold belongs to whichever shard last wrote that architectural register -- x29 written
    // by the ALU and then by a load displaces an SH_IE register while allocating an SH_LD
    // one.  A register's shard is encoded in its number and never changes, so the free push
-   // must be routed by c_pold's own shard.  Routing it by c_shard moves registers between
-   // shards, which breaks the one-writer-per-bank property the whole design rests on.
+   // must be routed by c_pold's own shard.  Routing it by the allocation shard moves registers
+   // between shards, which breaks the one-writer-per-bank property the whole design rests on.
    // NEITHER the displaced register NOR the destination shard travels in the ROB (doc 5.1).
    // rmap holds committed state, so in the cycle this entry commits rmap[c_rd] is still the
-   // mapping it displaced -- the write below is what replaces it. And a physical register's
-   // shard is the top bits of its number, so the allocation shard is read off c_prd.
+   // mapping it displaced -- the write below is what replaces it.
    wire [PBITS-1:0] c_pold  = `RN_RMAP(c_rd);
    // the second commit displaces the FIRST's mapping when both write one architectural register
    wire [PBITS-1:0] c2_pold = (c_valid & c_rd_v & (c2_rd == c_rd)) ? c_prd : `RN_RMAP(c2_rd);
@@ -358,170 +249,149 @@ module smolrv64_rename
    wire [PBITS-1:0] c3_pold = (c2_valid & c2_rd_v & (c3_rd == c2_rd)) ? c2_prd
                             : (c_valid  & c_rd_v  & (c3_rd == c_rd))  ? c_prd
                             : `RN_RMAP(c3_rd);
-   wire [2:0] c2_shard  = c2_prd[PBITS-1:IDXB];
-   wire [2:0] pold2_sh  = c2_pold[PBITS-1:IDXB];
-   wire cmt2_ie = c2_valid & c2_rd_v & (c2_shard == SH_IE);
-   wire cmt2_ld = c2_valid & c2_rd_v & (c2_shard == SH_LD);
-   wire cmt2_fe = c2_valid & c2_rd_v & (c2_shard == SH_FE);
-   wire fre2_ie_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE);
-   wire fre2_ld_c = c2_valid & c2_rd_v & (pold2_sh == SH_LD);
-   wire fre2_fe_c = c2_valid & c2_rd_v & (pold2_sh == SH_FE);
-   wire cmt2_i2 = c2_valid & c2_rd_v & (c2_shard == SH_IE2);
-   wire fre2_i2_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE2);
-   wire cmt2_i3 = c2_valid & c2_rd_v & (c2_shard == SH_IE3);
-   wire fre2_i3_c = c2_valid & c2_rd_v & (pold2_sh == SH_IE3);
-   wire [2:0] c3_shard  = c3_prd[PBITS-1:IDXB];
-   wire [2:0] pold3_sh  = c3_pold[PBITS-1:IDXB];
-   wire cmt3_ie = c3_valid & c3_rd_v & (c3_shard == SH_IE);
-   wire cmt3_ld = c3_valid & c3_rd_v & (c3_shard == SH_LD);
-   wire cmt3_fe = c3_valid & c3_rd_v & (c3_shard == SH_FE);
-   wire cmt3_i2 = c3_valid & c3_rd_v & (c3_shard == SH_IE2);
-   wire cmt3_i3 = c3_valid & c3_rd_v & (c3_shard == SH_IE3);
-   wire fre3_ie_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE);
-   wire fre3_ld_c = c3_valid & c3_rd_v & (pold3_sh == SH_LD);
-   wire fre3_fe_c = c3_valid & c3_rd_v & (pold3_sh == SH_FE);
-   wire fre3_i2_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE2);
-   wire fre3_i3_c = c3_valid & c3_rd_v & (pold3_sh == SH_IE3);
-   wire [2:0] c_shard = c_prd[PBITS-1:IDXB];
-   wire [2:0] pold_sh = c_pold[PBITS-1:IDXB];
-   wire cmt_ie = c_valid & c_rd_v & (c_shard == SH_IE);   // head advance: allocation shard
-   wire cmt_ld = c_valid & c_rd_v & (c_shard == SH_LD);
-   wire cmt_fe = c_valid & c_rd_v & (c_shard == SH_FE);
-   wire cmt_i2 = c_valid & c_rd_v & (c_shard == SH_IE2);
-   wire cmt_i3 = c_valid & c_rd_v & (c_shard == SH_IE3);
-   wire fre_ie_c = c_valid & c_rd_v & (pold_sh == SH_IE);   // free push: the register's shard
-   wire fre_ld_c = c_valid & c_rd_v & (pold_sh == SH_LD);
-   wire fre_fe_c = c_valid & c_rd_v & (pold_sh == SH_FE);
-   wire fre_i2_c = c_valid & c_rd_v & (pold_sh == SH_IE2);
-   wire fre_i3_c = c_valid & c_rd_v & (pold_sh == SH_IE3);
+   wire c1_w = c_valid  & c_rd_v;
+   wire c2_w = c2_valid & c2_rd_v;
+   wire c3_w = c3_valid & c3_rd_v;
 
    // ---- FLOP THE REGISTER RELEASE (2026-09-15) --------------------------------------
-   // The freelist FREE (write + tail advance) is registered one cycle off the retire cone.
-   // c_valid rides m_addr -> dTLB -> lsu_done -> retire, and fanning it to all five free
-   // lists' write ports and tails combinationally was ~1400 of the IW=3 near-critical
-   // endpoints (m_addr -> u_rename/fl_*.mem_reg).  The physreg is released one cycle later,
-   // which is free here: the free lists are never the allocation bottleneck (shard_low
-   // throttles the HEAD, and avail = tail - head simply counts a committed free one cycle
-   // later, which is strictly MORE conservative).  ROLLBACK-SAFE WITH NO EXTRA HANDLING:
-   // the tail advances ONLY on committed frees (fre_* come from c_valid) and flush never
-   // touches the tail -- it restores the HEAD to hc_* -- so a pending free is always a
-   // committed one that must complete, exactly what a plain register does.  c_pold is
-   // captured HERE, at commit, while RMAP[c_rd] still holds the old mapping (a cycle later
-   // RMAP[c_rd] is c_prd), so the registered copy frees the right register.
-   reg fre_ie, fre_ld, fre_fe, fre_i2, fre_i3;
-   reg fre2_ie, fre2_ld, fre2_fe, fre2_i2, fre2_i3;
-   reg fre3_ie, fre3_ld, fre3_fe, fre3_i2, fre3_i3;
+   // The free (write + tail advance) is registered one cycle off the retire cone. c_valid
+   // rides m_addr -> dTLB -> lsu_done -> retire, and fanning it to every free list's write
+   // ports and tails combinationally was ~1400 of the IW=3 near-critical endpoints
+   // (m_addr -> u_rename/fl_*.mem_reg). The register is released one cycle later, which is
+   // free: the lists are never the allocation bottleneck, and avail = t - h counts a
+   // committed free one cycle later, which is strictly MORE conservative. ROLLBACK-SAFE WITH
+   // NO EXTRA HANDLING: the tail advances only on committed frees and flush never touches it,
+   // so a pending free is always a committed one that must complete. c_pold is captured HERE,
+   // at commit, while RMAP[c_rd] still holds the old mapping.
+   reg [NSH-1:0]   fre_q, fre2_q, fre3_q;
    reg [PBITS-1:0] c_pold_q, c2_pold_q, c3_pold_q;
    initial begin
-      fre_ie=1'b0; fre_ld=1'b0; fre_fe=1'b0; fre_i2=1'b0; fre_i3=1'b0;
-      fre2_ie=1'b0; fre2_ld=1'b0; fre2_fe=1'b0; fre2_i2=1'b0; fre2_i3=1'b0;
-      fre3_ie=1'b0; fre3_ld=1'b0; fre3_fe=1'b0; fre3_i2=1'b0; fre3_i3=1'b0;
-      c_pold_q={PBITS{1'b0}}; c2_pold_q={PBITS{1'b0}}; c3_pold_q={PBITS{1'b0}};
+      fre_q = {NSH{1'b0}}; fre2_q = {NSH{1'b0}}; fre3_q = {NSH{1'b0}};
+      c_pold_q = {PBITS{1'b0}}; c2_pold_q = {PBITS{1'b0}}; c3_pold_q = {PBITS{1'b0}};
    end
+
+   // THE FREE-LIST READ ADDRESSES DO NOT SEE THE STALL (ar_* address; a_* advance).
+   wire alloc_r   = r_valid   & r_rd_v;
+   wire alloc_r_b = r_valid_b & r_rd_v_b;
+   wire alloc   = alloc_r   & ~stall;
+   wire alloc_b = alloc_r_b & ~stall;
+   wire alloc_c = r_valid_c & r_rd_v_c & ~stall;
+
+   wire [IDXB-1:0] rd_a [0:NSH-1];   // each list's register for slot A, B and C
+   wire [IDXB-1:0] rd_b [0:NSH-1];
+   wire [IDXB-1:0] rd_c [0:NSH-1];
+   wire [NSH-1:0]  low;
+   wire [NSH-1:0]  sel_r_a, sel_r_b, sel_a, sel_b, sel_c;   // which list each slot allocates from
+   wire [NSH-1:0]  cmt_a, cmt_b, cmt_c, fre_a, fre_b, fre_c;
+
+   genvar gL, gB;
+   generate for (gL = 0; gL < NSH; gL = gL + 1) begin: fl
+      localparam integer N  = n_of(gL);
+      localparam integer PW = $clog2(N) + 1;
+      localparam integer  NFREE = N - base_of(gL);   // the initially free entries: base..N-1
+      localparam [PW-1:0] T0 = NFREE[PW-1:0];
+
+      assign sel_r_a[gL] = alloc_r   & (r_shard   == gL);
+      assign sel_r_b[gL] = alloc_r_b & (r_shard_b == gL);
+      assign sel_a[gL]   = alloc     & (r_shard   == gL);
+      assign sel_b[gL]   = alloc_b   & (r_shard_b == gL);
+      assign sel_c[gL]   = alloc_c   & (r_shard_c == gL);
+      assign cmt_a[gL]   = c1_w & (c_prd [PBITS-1:IDXB] == gL);   // head advance: allocation shard
+      assign cmt_b[gL]   = c2_w & (c2_prd[PBITS-1:IDXB] == gL);
+      assign cmt_c[gL]   = c3_w & (c3_prd[PBITS-1:IDXB] == gL);
+      assign fre_a[gL]   = c1_w & (c_pold [PBITS-1:IDXB] == gL);  // free push: the register's shard
+      assign fre_b[gL]   = c2_w & (c2_pold[PBITS-1:IDXB] == gL);
+      assign fre_c[gL]   = c3_w & (c3_pold[PBITS-1:IDXB] == gL);
+
+      reg [PW-1:0] h, hc, t;
+      wire [PW-1:0] hc_n = hc + {{(PW-1){1'b0}}, cmt_a[gL]} + {{(PW-1){1'b0}}, cmt_b[gL]}
+                              + {{(PW-1){1'b0}}, cmt_c[gL]};
+      // the second and third frees' slots: the tail plus the earlier frees this cycle
+      wire [PW-2:0] t2  = t[PW-2:0] + {{(PW-2){1'b0}}, fre_q[gL]};
+      wire [PW-2:0] t3  = t[PW-2:0] + {{(PW-2){1'b0}}, fre_q[gL]} + {{(PW-2){1'b0}}, fre2_q[gL]};
+      // B's entry: the head, or the one after it when A allocates here; C's: the head plus
+      // A's and B's allocations here. A second and third LUTRAM read port, not more pointers;
+      // LOWAT >= 3 keeps all three inside the free set.
+      wire [PW-2:0] hb  = h[PW-2:0] + {{(PW-2){1'b0}}, sel_r_a[gL]};
+      wire [PW-2:0] hcc = h[PW-2:0] + {{(PW-2){1'b0}}, sel_r_a[gL]} + {{(PW-2){1'b0}}, sel_r_b[gL]};
+      wire [PW-1:0] avail = t - h;
+      assign low[gL] = avail < LOWAT[PW-1:0];
+
+      wire [IDXB-1:0]  flrd [0:FLNB-1];
+      wire [FLNB-1:0]  behind = ~({FLNB{1'b1}} << h[FLLB-1:0]);   // behind[g] = (g < h's bank): the banks that wrapped
+      for (gB = 0; gB < FLNB; gB = gB + 1) begin: bank
+         (* ram_style = "distributed" *) reg [IDXB-1:0] mem [0:N/FLNB-1];
+         integer jj; integer pp;
+         initial for (jj = 0; jj < N/FLNB; jj = jj + 1) begin pp = base_of(gL) + FLNB*jj + gB; mem[jj] = pp[IDXB-1:0]; end
+         wire w0 = fre_q [gL] & (t [FLLB-1:0] == gB);
+         wire w1 = fre2_q[gL] & (t2[FLLB-1:0] == gB);
+         wire w2 = fre3_q[gL] & (t3[FLLB-1:0] == gB);   // 3rd free (IW>=3; dead otherwise)
+         always @(posedge clk)
+            if (w0 | w1 | w2) mem[w0 ? t[PW-2:FLLB] : w1 ? t2[PW-2:FLLB] : t3[PW-2:FLLB]]
+                                 <= w0 ? c_pold_q[IDXB-1:0] : w1 ? c2_pold_q[IDXB-1:0] : c3_pold_q[IDXB-1:0];
+         assign flrd[gB] = mem[h[PW-2:FLLB] + {{(PW-2-FLLB){1'b0}}, behind[gB]}];
+      end
+      assign rd_a[gL] = flrd[h  [FLLB-1:0]];
+      assign rd_b[gL] = flrd[hb [FLLB-1:0]];
+      assign rd_c[gL] = flrd[hcc[FLLB-1:0]];
+
+      // The pointers come from configuration, like the arrays (see the reset note below).
+      initial begin h = {PW{1'b0}}; hc = {PW{1'b0}}; t = T0; end
+      always @(posedge clk) begin
+         if (reset) h <= hc;
+         else begin
+            hc <= hc_n;
+            t  <= t + {{(PW-1){1'b0}}, fre_q[gL]} + {{(PW-1){1'b0}}, fre2_q[gL]} + {{(PW-1){1'b0}}, fre3_q[gL]};
+            if (flush) h <= hc_n;
+            else       h <= h + {{(PW-1){1'b0}}, sel_a[gL]} + {{(PW-1){1'b0}}, sel_b[gL]} + {{(PW-1){1'b0}}, sel_c[gL]};
+         end
+      end
+
+      // Allocating past the free set would hand out a register that is still live; the stall
+      // is supposed to make it unreachable, and "supposed to" is what assertions are for.
+      always @(posedge clk) if (!reset) begin
+         if ({{(PW-2){1'b0}}, sel_a[gL]} + {{(PW-2){1'b0}}, sel_b[gL]} + {{(PW-2){1'b0}}, sel_c[gL]} > avail)
+            $fatal(1, "smolrv64_rename: shard %0d allocated past its free list (%0d free)", gL, avail);
+         if (avail > N[PW-1:0])
+            $fatal(1, "smolrv64_rename: shard %0d has %0d free of %0d", gL, avail, N);
+      end
+      // Sizes MUST be powers of two: the pointers index with their low bits, which only wraps
+      // correctly at a power of two. At N=40 the pointer walked past the end of the array and
+      // read 0 -- i.e. handed out physical register 0, the architectural zero.
+      initial begin
+         if ((N & (N - 1)) != 0) $fatal(1, "smolrv64_rename: shard %0d size %0d is not a power of two", gL, N);
+         if (N > (1 << IDXB))    $fatal(1, "smolrv64_rename: shard %0d size %0d exceeds IDXB=%0d", gL, N, IDXB);
+      end
+   end endgenerate
+
    always @(posedge clk) begin
-      fre_ie  <= ~reset & fre_ie_c;   fre_ld  <= ~reset & fre_ld_c;   fre_fe  <= ~reset & fre_fe_c;
-      fre_i2  <= ~reset & fre_i2_c;   fre_i3  <= ~reset & fre_i3_c;
-      fre2_ie <= ~reset & fre2_ie_c;  fre2_ld <= ~reset & fre2_ld_c;  fre2_fe <= ~reset & fre2_fe_c;
-      fre2_i2 <= ~reset & fre2_i2_c;  fre2_i3 <= ~reset & fre2_i3_c;
-      fre3_ie <= ~reset & fre3_ie_c;  fre3_ld <= ~reset & fre3_ld_c;  fre3_fe <= ~reset & fre3_fe_c;
-      fre3_i2 <= ~reset & fre3_i2_c;  fre3_i3 <= ~reset & fre3_i3_c;
+      fre_q  <= reset ? {NSH{1'b0}} : fre_a;
+      fre2_q <= reset ? {NSH{1'b0}} : fre_b;
+      fre3_q <= reset ? {NSH{1'b0}} : fre_c;
       c_pold_q <= c_pold;  c2_pold_q <= c2_pold;  c3_pold_q <= c3_pold;
    end
-   wire [PW_IE-1:0] hc_ie_n = hc_ie + {{(PW_IE-1){1'b0}}, cmt_ie} + {{(PW_IE-1){1'b0}}, cmt2_ie} + {{(PW_IE-1){1'b0}}, cmt3_ie};
-   wire [PW_LD-1:0] hc_ld_n = hc_ld + {{(PW_LD-1){1'b0}}, cmt_ld} + {{(PW_LD-1){1'b0}}, cmt2_ld} + {{(PW_LD-1){1'b0}}, cmt3_ld};
-   wire [PW_FE-1:0] hc_fe_n = hc_fe + {{(PW_FE-1){1'b0}}, cmt_fe} + {{(PW_FE-1){1'b0}}, cmt2_fe} + {{(PW_FE-1){1'b0}}, cmt3_fe};
-   wire [PW_I2-1:0] hc_i2_n = hc_i2 + {{(PW_I2-1){1'b0}}, cmt_i2} + {{(PW_I2-1){1'b0}}, cmt2_i2} + {{(PW_I2-1){1'b0}}, cmt3_i2};
-   wire [PW_I3-1:0] hc_i3_n = hc_i3 + {{(PW_I3-1){1'b0}}, cmt_i3} + {{(PW_I3-1){1'b0}}, cmt2_i3} + {{(PW_I3-1){1'b0}}, cmt3_i3};
 
-   wire [PW_IE-2:0] t2_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie};   // the second free's slot
-   wire [PW_LD-2:0] t2_ld = t_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, fre_ld};
-   wire [PW_FE-2:0] t2_fe = t_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, fre_fe};
-   wire [PW_I2-2:0] t2_i2 = t_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, fre_i2};
-   wire [PW_I3-2:0] t2_i3 = t_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, fre_i3};
-   // the third free's slot = tail + (# of earlier frees this cycle)
-   wire [PW_IE-2:0] t3_ie = t_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, fre_ie} + {{(PW_IE-2){1'b0}}, fre2_ie};
-   wire [PW_LD-2:0] t3_ld = t_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, fre_ld} + {{(PW_LD-2){1'b0}}, fre2_ld};
-   wire [PW_FE-2:0] t3_fe = t_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, fre_fe} + {{(PW_FE-2){1'b0}}, fre2_fe};
-   wire [PW_I2-2:0] t3_i2 = t_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, fre_i2} + {{(PW_I2-2){1'b0}}, fre2_i2};
-   wire [PW_I3-2:0] t3_i3 = t_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, fre_i3} + {{(PW_I3-2){1'b0}}, fre2_i3};
-   wire [PW_IE-1:0] avail_ie = t_ie - h_ie;
-   wire [PW_LD-1:0] avail_ld = t_ld - h_ld;
-   wire [PW_FE-1:0] avail_fe = t_fe - h_fe;
-   wire [PW_I2-1:0] avail_i2 = t_i2 - h_i2;
-   wire [PW_I3-1:0] avail_i3 = t_i3 - h_i3;
    // STALL WHEN *ANY* SHARD IS LOW, not when the destination's shard is.  A shard that runs
    // dry stalls rename regardless of which one the next instruction wants, so throttling on
    // the minimum is what actually prevents the stall; throttling per-destination only
    // discovers it one instruction too late.  The cost is that the stall probability is the
    // union across shards -- which is the argument for sizing them unequally rather than
    // adding more of them.
-   assign shard_low = {avail_i3 < LOWAT[PW_I3-1:0],
-                       avail_i2 < LOWAT[PW_I2-1:0],
-                       avail_fe < LOWAT[PW_FE-1:0],
-                       avail_ld < LOWAT[PW_LD-1:0],
-                       avail_ie < LOWAT[PW_IE-1:0]};
-   assign stall = |shard_low;
+   assign shard_low = low;
+   assign stall = |low;
 
-   // THE FREE-LIST READ ADDRESSES DO NOT SEE THE STALL. A stall holds every slot, so the
-   // heads do not move and the entries read at h, h+A, h+A+B are simply not consumed; the
-   // stall belongs only on the head ADVANCE and on the alloc outputs. With it in the address
-   // the whole rename decision -- five tail-minus-head subtractions, the low-water compares,
-   // the OR -- sat in front of the LUTRAM read, the read's data in front of the dispatch
-   // stage and the store queue: t_ld -> avail -> stall -> hb -> flrd -> stg_ps -> u_sq/ld_w,
-   // 20-23 levels, eight families of the IW=3 census. (ar_*/br_* address; a_*/b_* advance.)
-   wire alloc_r   = r_valid   & r_rd_v;
-   wire alloc_r_b = r_valid_b & r_rd_v_b;
-   wire alloc   = alloc_r   & ~stall;
-   wire alloc_b = alloc_r_b & ~stall;
-   wire alloc_c = r_valid_c & r_rd_v_c & ~stall;
-   wire a_ie = alloc & (r_shard == SH_IE), a_ld = alloc & (r_shard == SH_LD), a_fe = alloc & (r_shard == SH_FE), a_i2 = alloc & (r_shard == SH_IE2), a_i3 = alloc & (r_shard == SH_IE3);
-   wire b_ie = alloc_b & (r_shard_b == SH_IE), b_ld = alloc_b & (r_shard_b == SH_LD), b_fe = alloc_b & (r_shard_b == SH_FE), b_i2 = alloc_b & (r_shard_b == SH_IE2), b_i3 = alloc_b & (r_shard_b == SH_IE3);
-   wire ar_ie = alloc_r & (r_shard == SH_IE), ar_ld = alloc_r & (r_shard == SH_LD), ar_fe = alloc_r & (r_shard == SH_FE), ar_i2 = alloc_r & (r_shard == SH_IE2), ar_i3 = alloc_r & (r_shard == SH_IE3);
-   wire br_ie = alloc_r_b & (r_shard_b == SH_IE), br_ld = alloc_r_b & (r_shard_b == SH_LD), br_fe = alloc_r_b & (r_shard_b == SH_FE), br_i2 = alloc_r_b & (r_shard_b == SH_IE2), br_i3 = alloc_r_b & (r_shard_b == SH_IE3);
-   wire c_ie = alloc_c & (r_shard_c == SH_IE), c_ld = alloc_c & (r_shard_c == SH_LD), c_fe = alloc_c & (r_shard_c == SH_FE), c_i2 = alloc_c & (r_shard_c == SH_IE2), c_i3 = alloc_c & (r_shard_c == SH_IE3);
-   wire [IDXB-1:0] head_idx = (r_shard == SH_IE) ? ha_rd_ie
-                            : (r_shard == SH_LD) ? ha_rd_ld
-                            : (r_shard == SH_FE) ? ha_rd_fe
-                            : (r_shard == SH_IE2)? ha_rd_i2
-                                                 : ha_rd_i3;
-   assign r_prd = {r_shard, head_idx};
-   // B's entry: the head, or the one after it when A allocates from the same shard. A second
-   // LUTRAM read port, not a second pointer; LOWAT >= 2 keeps both inside the free set.
-   wire [PW_IE-2:0] hb_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, ar_ie};
-   wire [PW_LD-2:0] hb_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, ar_ld};
-   wire [PW_FE-2:0] hb_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, ar_fe};
-   wire [PW_I2-2:0] hb_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, ar_i2};
-   wire [PW_I3-2:0] hb_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, ar_i3};
-   wire [IDXB-1:0] head_idx_b = (r_shard_b == SH_IE) ? hb_rd_ie
-                              : (r_shard_b == SH_LD) ? hb_rd_ld
-                              : (r_shard_b == SH_FE) ? hb_rd_fe
-                              : (r_shard_b == SH_IE2)? hb_rd_i2
-                                                     : hb_rd_i3;
-   assign r_prd_b = {r_shard_b, head_idx_b};
-   // C's entry: the head plus the number of EARLIER allocations from the same shard this cycle.
-   // A third LUTRAM read port; LOWAT >= 3 keeps all three inside the free set.
-   wire [PW_IE-2:0] hcc_ie = h_ie[PW_IE-2:0] + {{(PW_IE-2){1'b0}}, ar_ie} + {{(PW_IE-2){1'b0}}, br_ie};
-   wire [PW_LD-2:0] hcc_ld = h_ld[PW_LD-2:0] + {{(PW_LD-2){1'b0}}, ar_ld} + {{(PW_LD-2){1'b0}}, br_ld};
-   wire [PW_FE-2:0] hcc_fe = h_fe[PW_FE-2:0] + {{(PW_FE-2){1'b0}}, ar_fe} + {{(PW_FE-2){1'b0}}, br_fe};
-   wire [PW_I2-2:0] hcc_i2 = h_i2[PW_I2-2:0] + {{(PW_I2-2){1'b0}}, ar_i2} + {{(PW_I2-2){1'b0}}, br_i2};
-   wire [PW_I3-2:0] hcc_i3 = h_i3[PW_I3-2:0] + {{(PW_I3-2){1'b0}}, ar_i3} + {{(PW_I3-2){1'b0}}, br_i3};
-   wire [IDXB-1:0] head_idx_c = (r_shard_c == SH_IE) ? hcc_rd_ie
-                              : (r_shard_c == SH_LD) ? hcc_rd_ld
-                              : (r_shard_c == SH_FE) ? hcc_rd_fe
-                              : (r_shard_c == SH_IE2)? hcc_rd_i2
-                                                     : hcc_rd_i3;
-   assign r_prd_c = {r_shard_c, head_idx_c};
+   assign r_prd   = {r_shard,   rd_a[r_shard]};
+   assign r_prd_b = {r_shard_b, rd_b[r_shard_b]};
+   assign r_prd_c = {r_shard_c, rd_c[r_shard_c]};
 
-   // THESE FIVE ARRAYS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
+   // THE FREE LISTS AND THE MAPS ARE INITIALISED BY THE BITSTREAM AND NEVER RESET.
    //
    // They used to be written at EVERY index in the reset branch. No RAM can be written at
-   // every address in one cycle, so that one `for` loop pinned ~3,400 bits into flops --
-   // fl_ie/fl_ld/fl_fe (~2,240) and rmap/smap (~1,152) -- even though every one of them is
-   // one-write/few-read once running: the free lists are circular FIFOs read at the head and
-   // written at the tail, and the maps are read at r_rs1/r_rs2/r_rs3 (+rmap[c_rd]) and
-   // written at one index. On an FPGA the contents come from configuration for free, so the
-   // loop bought nothing and cost the RAM inference plus a reset net fanning out to all of
-   // them. Rule I7.
+   // every address in one cycle, so that one `for` loop pinned ~3,400 bits into flops even
+   // though every one of them is one-write/few-read once running: the free lists are circular
+   // FIFOs read at the head and written at the tail, and the maps are read at the sources
+   // (+rmap[c_rd]) and written at one index. On an FPGA the contents come from configuration
+   // for free. Rule I7.
    //
    // THE VALUES ONLY HAVE TO BE A PERMUTATION of the shard's indices; which permutation is
    // irrelevant, because a free list only ever moves entries around. Identity is used.
@@ -529,11 +399,12 @@ module smolrv64_rename
    // WHY A RUNTIME RESET IS STILL SAFE. `ui_cpu_reset` is a RUNTIME reset (rk_xcku5p.v:
    // ui_rst | ~init_calib_complete | ~key[1] | fbdiag_rst_sync), so a button press restarts
    // the core without reconfiguring and the arrays keep the PREVIOUS run's contents. That is
-   // sound because the contents are only meaningful through the pointers, and slots
-   // [head,tail) still hold exactly the free set. The pointers are therefore not reset
-   // either -- resetting them over stale slots is what would republish already-allocated
-   // registers as free. Reset instead does what `flush` does (h_* <= hc_*), which reclaims
-   // everything renamed but uncommitted, so nothing leaks across a restart.
+   // sound because the contents are only meaningful through the pointers, and slots [h, t)
+   // still hold exactly the free set. The pointers are therefore not reset either --
+   // resetting them over stale slots is what would republish already-allocated registers as
+   // free, handing out DUPLICATE physical registers. Reset instead does what `flush` does
+   // (h := hc), which reclaims everything renamed but uncommitted, so nothing leaks across a
+   // restart.
    //
    // x0 is safe across all of this: x0 destinations are excluded from rename (r_rd_v), so
    // rmap[0]/smap[0] are never written and keep the {SH_IE,0} that smolrv64_prf hardwires to
@@ -541,54 +412,26 @@ module smolrv64_rename
    integer j;
    initial begin
       // x0 -> physical 0 (SH_IE index 0), which smolrv64_prf hardwires to read zero and never
-      // writes.  Integer regs start in SH_IE, FP regs in SH_FE; the load shard starts
-      // entirely free.
+      // writes.  Integer regs start in SH_IE, FP regs in SH_FE.
       for (j = 0; j < 32; j = j + 1) begin
          rmap_a[j]      = {SH_IE, j[IDXB-1:0]};  rmap_b[j]      = {SH_IE, j[IDXB-1:0]};
          smap_a[j]      = {SH_IE, j[IDXB-1:0]};  smap_b[j]      = {SH_IE, j[IDXB-1:0]};
          rmap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  rmap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
          smap_a[32 + j] = {SH_FE, j[IDXB-1:0]};  smap_b[32 + j] = {SH_FE, j[IDXB-1:0]};
       end
-      // Indices 0..31 of SH_IE and SH_FE are taken by the initial architectural mappings, so
-      // their free lists start with 32..N-1 -- N-32 entries.  SH_LD starts wholly free.
-      // Slots at or beyond the tail are never read (a circular FIFO only reads between head
-      // and tail) but are given a legal index anyway so a pointer bug shows up as an
-      // assertion rather than as an out-of-range PRF access.
-      // The pointers come from configuration for the same reason the arrays do. They are
-      // the ONLY thing that says which slots are free, so resetting them while the arrays
-      // keep the previous run's contents would republish stale slots as free and hand out
-      // DUPLICATE physical registers -- the one combination that is worse than either
-      // choice alone.
-      h_ie = {PW_IE{1'b0}}; hc_ie = {PW_IE{1'b0}}; t_ie = T0_IE;
-      h_ld = {PW_LD{1'b0}}; hc_ld = {PW_LD{1'b0}}; t_ld = T0_LD;
-      h_fe = {PW_FE{1'b0}}; hc_fe = {PW_FE{1'b0}}; t_fe = T0_FE;
-      h_i2 = {PW_I2{1'b0}}; hc_i2 = {PW_I2{1'b0}}; t_i2 = T0_I2;
-      h_i3 = {PW_I3{1'b0}}; hc_i3 = {PW_I3{1'b0}}; t_i3 = T0_I3;
       lv = 64'd0;
       for (j = 0; j < 64; j = j + 1) begin newer[j] = 2'd0; rnewer[j] = 2'd0; end
    end
 
-   integer i;
    always @(posedge clk) begin
-      // RESET IS A TOTAL SQUASH, which is exactly what `flush` already means here, so it
-      // does what flush does and nothing else: drop the speculative map and roll the
-      // allocation heads back to the committed heads. That RECLAIMS every register renamed
-      // but not committed, so restarting the core leaks nothing -- without it, each reset
-      // would strand up to a ROB's worth of registers and repeated presses of key[1] would
-      // eventually run a shard dry and stall the machine forever.
-      // It touches no array and no free-list contents: t_* and hc_* carry the free set
-      // across the reset, which is what makes the arrays safe to leave in configuration
-      // state. See the initial block above.
+      // RESET IS A TOTAL SQUASH, which is exactly what `flush` already means here: drop the
+      // speculative map (lv) and roll the allocation heads back (in fl[*] above). That
+      // RECLAIMS every register renamed but not committed, so restarting the core leaks
+      // nothing. It touches no array and no free-list contents.
       if (reset) begin
-         lv   <= 64'd0;
-         h_ie <= hc_ie;
-         h_ld <= hc_ld;
-         h_fe <= hc_fe;
-         h_i2 <= hc_i2;
-         h_i3 <= hc_i3;
+         lv <= 64'd0;
       end else begin
-         // ---- commit: RMAP takes the committed mapping, the displaced register is freed
-         hc_ie <= hc_ie_n;  hc_ld <= hc_ld_n;  hc_fe <= hc_fe_n;  hc_i2 <= hc_i2_n;  hc_i3 <= hc_i3_n;
+         // ---- commit: RMAP takes the committed mapping
          if (c_valid & c_rd_v) begin
             rmap_a[c_rd] <= c_prd;  rnewer[c_rd] <= 2'd0;
          end
@@ -598,16 +441,9 @@ module smolrv64_rename
          if (c3_valid & c3_rd_v) begin           // ...and the third youngest of all
             rmap_c[c3_rd] <= c3_prd;  rnewer[c3_rd] <= 2'd2;
          end
-         // the frees: the head's at the tail, the later ones at the slots after it
-         t_ie <= t_ie + {{(PW_IE-1){1'b0}}, fre_ie} + {{(PW_IE-1){1'b0}}, fre2_ie} + {{(PW_IE-1){1'b0}}, fre3_ie};
-         t_ld <= t_ld + {{(PW_LD-1){1'b0}}, fre_ld} + {{(PW_LD-1){1'b0}}, fre2_ld} + {{(PW_LD-1){1'b0}}, fre3_ld};
-         t_fe <= t_fe + {{(PW_FE-1){1'b0}}, fre_fe} + {{(PW_FE-1){1'b0}}, fre2_fe} + {{(PW_FE-1){1'b0}}, fre3_fe};
-         t_i2 <= t_i2 + {{(PW_I2-1){1'b0}}, fre_i2} + {{(PW_I2-1){1'b0}}, fre2_i2} + {{(PW_I2-1){1'b0}}, fre3_i2};
-         t_i3 <= t_i3 + {{(PW_I3-1){1'b0}}, fre_i3} + {{(PW_I3-1){1'b0}}, fre2_i3} + {{(PW_I3-1){1'b0}}, fre3_i3};
 
-         // ---- rename: SMAP takes the new mapping, the head advances.  A flush in the same
-         // cycle squashes this instruction, so the flush arm below wins on the pointers;
-         // lv is cleared wholesale so the SMAP write becomes invisible either way.
+         // ---- rename: SMAP takes the new mapping.  A flush in the same cycle squashes this
+         // instruction; lv is cleared wholesale so the SMAP write becomes invisible either way.
          if (alloc) begin
             smap_a[r_rd] <= r_prd;
             newer[r_rd]  <= 2'd0;
@@ -625,39 +461,18 @@ module smolrv64_rename
          end
 
          // ---- rollback
-         if (flush) begin
-            lv   <= 64'd0;
-            h_ie <= hc_ie_n;
-            h_ld <= hc_ld_n;
-            h_fe <= hc_fe_n;
-            h_i2 <= hc_i2_n;
-            h_i3 <= hc_i3_n;
-         end else begin
-            h_ie <= h_ie + {{(PW_IE-1){1'b0}}, a_ie} + {{(PW_IE-1){1'b0}}, b_ie} + {{(PW_IE-1){1'b0}}, c_ie};
-            h_ld <= h_ld + {{(PW_LD-1){1'b0}}, a_ld} + {{(PW_LD-1){1'b0}}, b_ld} + {{(PW_LD-1){1'b0}}, c_ld};
-            h_fe <= h_fe + {{(PW_FE-1){1'b0}}, a_fe} + {{(PW_FE-1){1'b0}}, b_fe} + {{(PW_FE-1){1'b0}}, c_fe};
-            h_i2 <= h_i2 + {{(PW_I2-1){1'b0}}, a_i2} + {{(PW_I2-1){1'b0}}, b_i2} + {{(PW_I2-1){1'b0}}, c_i2};
-            h_i3 <= h_i3 + {{(PW_I3-1){1'b0}}, a_i3} + {{(PW_I3-1){1'b0}}, b_i3} + {{(PW_I3-1){1'b0}}, c_i3};
-         end
+         if (flush) lv <= 64'd0;
       end
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
    always @(posedge clk) if (!reset) begin
-      // Allocating from an empty list would hand out a register that is still live.  The
-      // stall above is supposed to make this unreachable; "supposed to" is what assertions
-      // are for.
-      if (alloc && r_shard == SH_IE && avail_ie == 0)
-         $fatal(1, "smolrv64_rename: allocated from an empty int-exec free list");
-      if (alloc && r_shard == SH_LD && avail_ld == 0)
-         $fatal(1, "smolrv64_rename: allocated from an empty load free list");
-      if (alloc && r_shard == SH_FE && avail_fe == 0)
-         $fatal(1, "smolrv64_rename: allocated from an empty fp-exec free list");
-      // c_pold may legitimately belong to a DIFFERENT shard than c_shard (see pold_sh
-      // above); what must hold is that it names a shard that exists, so it is returned to a
-      // real free list rather than dropped.
-      if (c_valid && c_rd_v && (c_prd[PBITS-1:IDXB] != c_shard))
-         $fatal(1, "smolrv64_rename: committing pr=%h whose shard is not %0d", c_prd, c_shard);
+      // c_pold may legitimately belong to a DIFFERENT shard than c_prd (see fre_* above);
+      // what must hold is that the shards exist, so a register is never dropped.
+      if (c1_w && !(|fre_a))
+         $fatal(1, "smolrv64_rename: commit frees pr=%h of no shard", c_pold);
+      if (c1_w && !(|cmt_a))
+         $fatal(1, "smolrv64_rename: committing pr=%h of no shard", c_prd);
       if (c2_valid && !c_valid)
          $fatal(1, "smolrv64_rename: second commit without a first");
       // x0 must never be renamed: it has no value to hold and freeing it would inject
@@ -668,27 +483,13 @@ module smolrv64_rename
          $fatal(1, "smolrv64_rename: renamed x0 (B)");
       if (r_valid_b && !r_valid)
          $fatal(1, "smolrv64_rename: port B without port A");
-      if (b_ie && (avail_ie < {{(PW_IE-2){1'b0}}, 1'b1, a_ie}))
-         $fatal(1, "smolrv64_rename: B allocated past the int-exec free list");
-      if (b_ld && (avail_ld < {{(PW_LD-2){1'b0}}, 1'b1, a_ld}))
-         $fatal(1, "smolrv64_rename: B allocated past the load free list");
-      if (b_fe && (avail_fe < {{(PW_FE-2){1'b0}}, 1'b1, a_fe}))
-         $fatal(1, "smolrv64_rename: B allocated past the fp-exec free list");
    end
 
    initial begin
-      // Sizes MUST be powers of two: the free-list pointers carry one extra MSB and index
-      // with the low bits, which only wraps correctly at a power of two.  At N=40 the
-      // pointer walked past the end of the array and read 0 -- i.e. handed out physical
-      // register 0, the architectural zero.  Caught by smolrv64_prf's pr0 assertion on the
-      // first riscv-test; checked here so it cannot come back.
-      if ((N_IE & (N_IE-1)) != 0) $fatal(1, "smolrv64_rename: N_IE=%0d is not a power of two", N_IE);
-      if ((N_LD & (N_LD-1)) != 0) $fatal(1, "smolrv64_rename: N_LD=%0d is not a power of two", N_LD);
-      if ((N_FE & (N_FE-1)) != 0) $fatal(1, "smolrv64_rename: N_FE=%0d is not a power of two", N_FE);
-      if (N_IE <= 32) $fatal(1, "smolrv64_rename: N_IE=%0d must exceed 32", N_IE);
-      if (N_LD <= 64) $fatal(1, "smolrv64_rename: N_LD=%0d must exceed 64", N_LD);
-      if (N_FE <= 32) $fatal(1, "smolrv64_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
-      if (LOWAT < 1) $fatal(1, "smolrv64_rename: LOWAT must be >= 1");
+      if (N_IE <= 32)  $fatal(1, "smolrv64_rename: N_IE=%0d must exceed 32", N_IE);
+      if (N_LD <= 64)  $fatal(1, "smolrv64_rename: N_LD=%0d must exceed 64", N_LD);
+      if (N_FE <= 32)  $fatal(1, "smolrv64_rename: N_FE=%0d must exceed 32 (fp only)", N_FE);
+      if (LOWAT < 1)   $fatal(1, "smolrv64_rename: LOWAT must be >= 1");
    end
    `undef RN_SMAP
    `undef RN_RMAP
