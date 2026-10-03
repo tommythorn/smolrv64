@@ -265,6 +265,34 @@ What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system o
 integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
 slot, which dissolves SH_FE.
 
+## The PRF in block RAM (design, 2026-10-03)
+
+Why now: 5.2a (lane C) misses 166.67 MHz on a congestion plateau (the census's worst families
+run through unrelated units: the D$, the FPU, the MMIO FIFO), and 5.2b's prototype more so
+(-0.763 ns, 5.5 ns routes at 9-14 levels). The LUTRAM PRF is the largest LUT consumer the lanes
+grow: every read port is a copy of every shard it can read. Out of context, the block-RAM PRF
+at the lanes geometry is 2,152 LUTs against 5,032 (step 2 above).
+
+**The timing.** A block RAM reads registered: the address in cycle R, the data in R+1. Each
+issue port gains a register-read stage between select and execute:
+
+- select at N (as today), read address at N+1, execute at N+2;
+- a producer selected at N executes at N+2 and writes the array at N+3 (its result register);
+  a dependent selected at N+1 (woken at select, as today) reads at N+2 and misses it, so it
+  takes the producer's result register at N+3 (bypass level 1); a dependent reading at N+3
+  meets the write in the same cycle (read-first), so it takes a second result register at
+  N+4 (bypass level 2). Wakeup and back-to-back issue do not change;
+- a late writer (a load landing, the FPU, the MD stage) wakes at its write, as today; its
+  dependent reads the cycle after, past the write;
+- a mispredict resolves a cycle later, which restart at resolve absorbs.
+
+**The increments.**
+1. The register-read stage on every port with the arrays still LUTRAM, read through a
+   pipeline register: the block RAM's timing exactly, so the lockstep measures the IPC cost
+   and the bypasses are proven before the technology changes.
+2. The arrays become block RAM (one RAMB36 per shard per read port, 512 x 72), and the
+   LUTRAM copies and their read muxes go.
+
 ## Decisions (Tommy, 2026-10-01)
 
 - Four uniform execution lanes, two read ports and one write port each; ALUs are cheap, PRF write
