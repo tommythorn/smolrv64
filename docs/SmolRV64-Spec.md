@@ -22,7 +22,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
-| Issue | **dynamic**: ALU ops (two schedulers, two ALUs) reorder freely; FP ops, branches, jumps and mul/div reorder on the F/CTF/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Issue | **dynamic**: ALU ops, branches and jumps issue in their slot's lane (three schedulers, three ALUs) and reorder freely; FP ops and mul/div reorder on the F/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to `IW`/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
@@ -346,16 +346,18 @@ frontend reaches 214.6 MHz (196.5 with the ring alone).
 **RAS recovery.** Each instruction's predict details carry the RAS pointer from before it, before
 its own push or pop. A redirect restores the pointer (`rb_rsp`, formed in `smolrv64_core`
 beside the redirect target and registered with it) from the redirecting instruction itself:
-a CTF-stage restart from the mispredicting CTI's snapshot plus its own push or pop; a decode
+a lane's restart from the mispredicting CTI's snapshot plus its own push or pop; a decode
 resteer from the redirected slot's snapshot plus its push when it is a call; a redirect at
 the ROB head from `rsp_r`, the pointer the retired calls and returns leave (two class bits
 per ROB entry, written at dispatch and read at commit). The array itself is not restored. A
 count kept at resolve cannot serve as the committed pointer: control flow resolves out of
 order on its own pipe, and a wrong-path call or return resolves before its squash (rule D14).
 
-**Training.** Every CTI trains the predictor once, as it leaves the CTF stage (`cf_done`),
-mispredicted or not, from its own stage fields. A mispredict's squash at the ROB head comes
-later, when the stage holds another instruction, and trains nothing (rule D16). A mispredicting
+**Training.** Every CTI trains the predictor once, mispredicted or not, from its lane's resolve
+register (`lr_*`). Up to three resolve per cycle and the predictor trains one: the tracked
+restart's own CTI trains in its restart cycle, before its squash (rule D16); the others wait in
+an 8-entry queue in age order and are dropped only when it is full (29 of 7.9 M in the 60 M
+boot). A CTI younger than a pending restart trains nothing, and a squash empties the queue. A mispredicting
 conditional branch's early restart restores its own history snapshot plus its outcome. The key
 is the CTI's last halfword (its PC and length). Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3): 1.06
 redirects per iteration, the strcmp loop exit; 3 102 919 cycles. The Linux lockstep (IW=3)
@@ -397,23 +399,16 @@ core's pending lookup indexes the MAP's candidate and masks its result with `r_b
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
 read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
-the F stage (FPU results, integer destinations included), the CTF link and the MD stage
-(mul/div results by tag, since C1 of the memory backend program, 2026-09-17). The F stage's
+the F stage (FPU results, integer destinations included) and the MD stage (mul/div results
+by tag, since C1 of the memory backend program, 2026-09-17). The F stage's
 writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4b step 1(c)):
 one cycle off the stage's operand registers into a one-entry result register (`icr_*`) that
 lands through the FPU's own landing in any cycle the FPU is not landing; a waiting result
 holds the stage. An FP op with mstatus.FS off is illegal at dispatch and traps from the SYSQ.
-M writes SH_LD alone (asserted), so **the link never waits on M**: `cf_link_wb = pend &
-~fp_wb`, and M's completion cone (the SQ's commit, the MMU) is off the CTF pipe's wakeup
-broadcast. **And since 2026-09-21 the squash waits for the link it owes**: `cf_red_fire = fr_v &
-(rob_head_idx == fr_rob) & ~cf_link_pend`. A mispredicting `jal`/`jalr` early-restarts the
-frontend at resolve and stays in the CTF stage until its link is written; if it reached the
-ROB head while the FPU still held the FE port, the squash fired, `redirect` cleared the stage,
-and the branch retired with its link unwritten -- its rd's physreg kept its old contents and
-the next `ret` jumped there (Geekbench 6 PDF Renderer, every IW=3 bitstream, ~90 min in,
-`epc == ra == 0`; rule D13). The wait is bounded by the ROB filling behind the head. The
-live read ports are nine: M rs1/rs2, ALUa rs1/rs2, ALUb rs1/rs2, F/CTF rs1/rs2/rs3 -- M's
-rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are tied off.
+M writes SH_LD alone (asserted). **A link is its lane's ALU result**, written into the lane's
+shard at issue, so a jal/jalr never waits for a port and its squash waits for nothing (rule D13
+is satisfied by construction). The live read ports are eleven: M rs1/rs2, the three lanes' rs1/rs2, F rs1/rs2/rs3 -- M's rs3
+(`ra3`) is tied off.
 
 | shard | entries | written by | why the size |
 |---|---|---|---|
@@ -421,7 +416,7 @@ rs3 (`ra3`) and the dead third ALU's ports and shard (`ra8/ra9`, `we_ie3`) are t
 | IE2 | 64 | **lane B's ALU, alone** (slot B's ALU ops) | > 32, like IE |
 | IE3 | 64 | **lane C's ALU, alone** (slot C's ALU ops) | > 32, like IE |
 | LD | 64 | M and the load landing: integer loads, AMOs, CSR reads | > 32 (integer arch regs) |
-| FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the CTF link register, the MD stage (mul/div, C1) | > 32 |
+| FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the MD stage (mul/div, C1) | > 32 |
 | F0, F1, F2 | 64 each | f0–f31 only: FP loads (the load port) and FP results (the F stage's port) | > 32 (FP arch regs) each |
 
 **The FP file is sliced by rename slot and banked by writer.** An f-register destination
@@ -634,9 +629,9 @@ moves the wall.
 |---|---|---|---|
 | entries (`NENT`) | 10 each | 12 | 8 |
 | sources (`NSRC`) | 2 | 3 | 3 |
-| holds | pure ALU and non-trapping ops of slot A, B, C | memory, AMO, CBO | FP arithmetic, branches and jumps, mul/div, system ops |
+| holds | ALU ops, branches and jumps of slot A, B, C | memory, AMO, CBO | FP arithmetic, mul/div, system ops |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
-| unit | completes at issue, writes IE, IE2, IE3 | M | stage F, the CTF stage, the MD stage, the SYSQ |
+| unit | completes at issue (a mispredict at its squash), writes IE, IE2, IE3 | M | stage F, the MD stage, the SYSQ |
 | `unit_busy` | **none** — each shard has one writer | `~m_advance`: the issue register refills in the cycle M takes its op, so memory ops issue back to back | `j_v & ~j_adv`: the F/CTF select register is full and not draining |
 
 **One scheduler per unit is what makes four safe.** Three schedulers feeding ONE execute
@@ -752,7 +747,7 @@ runs inside every 240-test and cosim run.
 | lane A's ALU (slot A's ALU ops) | 1 cycle (at issue) | — | no | IE shard |
 | lane B's ALU (slot B's ALU ops) | 1 cycle (at issue) | — | no | IE2 shard |
 | lane C's ALU (slot C's ALU ops) | 1 cycle (at issue) | — | no | IE3 shard |
-| jump link (`jal`/`jalr`) | 1 cycle | 1 | no (the CTF stage) | FE shard |
+| branch, `jal`/`jalr` (its slot's lane) | 1 cycle (at issue) | — | no | the lane's shard (the link) |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
 | div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
@@ -1066,8 +1061,8 @@ Two independent `mmu` instances — **iTLB** in `smolrv64_core`, **dTLB** in `sm
 | Flush | `sfence.vma` and `satp` writes advance a 16-bit generation (`GB`); an entry hits only when it was installed in the current one (`tlb_g` = {installed, generation}, LUTRAM beside the entry). No entry is written on a flush; the array is cleared over `TLBN` cycles at reset and when the generation wraps, and nothing hits or installs while it is |
 
 **No iTLB walk past a weak branch.** The core counts the conditionals dispatched on a weak
-direction (the effective counter, the corrector's when it hit, is 01 or 10) until each leaves the
-CTF stage; the backend squash clears the count, which it can do exactly because it fires at the ROB
+direction (the effective counter, the corrector's when it hit, is 01 or 10) until each resolves in
+its lane; the backend squash clears the count, which it can do exactly because it fires at the ROB
 head. While the count is nonzero and no frontend restart is pending, the iMMU starts no walk
 (`walk_ok`): a TLB hit still translates, a miss waits. Every counted branch is older than the
 fetch, so it resolves whatever fetch does. The I$ holds a miss's line read on the same terms
