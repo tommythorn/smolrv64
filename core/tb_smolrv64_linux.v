@@ -776,12 +776,14 @@ module tb;
    // the ROB entry, dispatch into it clears the mark, a commit of a marked entry counts.
    reg [31:0] tr_mk;
    reg [63:0] tr_n, tr_ret;
-   initial begin tr_mk = 0; tr_n = 0; tr_ret = 0; end
+   reg [63:0] tr_drops;
+   initial begin tr_mk = 0; tr_n = 0; tr_ret = 0; tr_drops = 0; end
    always @(posedge clk) if (!reset) begin
       if (dut.core.rn_valid)   tr_mk[dut.core.rob_d_idx]  <= 1'b0;
       if (dut.core.rn_valid_b) tr_mk[dut.core.rob_d_idx2] <= 1'b0;
       if (dut.core.rn_valid_c) tr_mk[dut.core.rob_d_idx3] <= 1'b0;
-      if (dut.core.res_v) begin tr_mk[dut.core.cf_rob] <= 1'b1;  tr_n <= tr_n + 1; end
+      if (dut.core.res_v) begin tr_mk[dut.core.tr_rob] <= 1'b1;  tr_n <= tr_n + 1; end
+      tr_drops <= tr_drops + 64'(dut.core.tr_drop);
       tr_ret <= tr_ret + (dut.core.rob_c_valid  & tr_mk[dut.core.rob_head_idx])
                        + (dut.core.rob_c2_valid & tr_mk[dut.core.rob_head2_idx])
                        + (dut.core.rob_c3_valid & tr_mk[dut.core.rob_head3_idx]);
@@ -925,10 +927,10 @@ module tb;
       if (dut.core.iss_alu3) kan_stage(5'(dut.core.a3_rob), "Xc");
       if (dut.core.iss_m)    kan_stage(5'(dut.core.i_rob),  "M");
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
-      if (dut.core.iss_c)    kan_stage(5'(dut.core.j_rob),  "Ct");
-      kan_wv_q  <= {dut.core.md_wb, dut.core.cf_land, dut.core.iss_alu3, dut.core.iss_alu2,
-                    dut.core.sq_k_take, dut.core.fp_land, dut.core.iss_alu, dut.core.rob_w_valid};
-      kan_wix_q <= {5'(dut.core.md_rob), 5'(dut.core.cf_land_rob), 5'(dut.core.a3_rob), 5'(dut.core.a2_rob),
+      kan_wv_q  <= {dut.core.md_wb, dut.core.cf_red_fire, dut.core.iss_alu3 & ~dut.core.lane_mis[2],
+                    dut.core.iss_alu2 & ~dut.core.lane_mis[1], dut.core.sq_k_take, dut.core.fp_land,
+                    dut.core.iss_alu & ~dut.core.lane_mis[0], dut.core.rob_w_valid};
+      kan_wix_q <= {5'(dut.core.md_rob), 5'(dut.core.fr_rob), 5'(dut.core.a3_rob), 5'(dut.core.a2_rob),
                     5'(dut.core.sq_kc_rob), 5'(dut.core.ft_rob), 5'(dut.core.a_rob), 5'(dut.core.rob_w_idx)};
       // 2. retire (up to three), then flush every live entry a backend redirect squashes. After
       // the issues: the ROB write-forwards a writeback to the head, so an ALU op can issue and
@@ -1023,37 +1025,27 @@ module tb;
    initial begin watch_on = $value$plusargs("watch_pc=%h", watch_pc); watch_prd_v = 1'b0; watch_prd = 16'd0; end
    always @(posedge clk) if (!reset && watch_on) begin
       if (dut.core.iss_f && dut.core.qf_pc == watch_pc) begin
-         $display("[c=%0d] watch F-issue pc=%h rob=%0d rd=x%0d rd_v=%b prd=%0d res_link=%b xf_result=%h xf_target=%h",
-                  c, dut.core.qf_pc, dut.core.j_rob, dut.core.qf_rd, dut.core.qf_rd_v, dut.core.qf_prd,
-                  dut.core.qf_res_link, dut.core.xf_result, dut.core.xf_target);
+         $display("[c=%0d] watch F-issue pc=%h rob=%0d rd=x%0d rd_v=%b prd=%0d",
+                  c, dut.core.qf_pc, dut.core.j_rob, dut.core.qf_rd, dut.core.qf_rd_v, dut.core.qf_prd);
          watch_prd <= dut.core.qf_prd;  watch_prd_v <= dut.core.qf_rd_v;
       end
-      if (dut.core.cf_valid && dut.core.cf_pc == watch_pc && dut.core.cf_link_wb) begin
-         $display("[c=%0d] watch link-wb  pc=%h cf_link=%h cf_prd=%0d cf_rob=%0d fp_wb=%b md_wr=%b we_fe=%b wa_fe=%0d wb_fe=%h head=%0d",
-                  c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_rob, dut.core.fp_wb, dut.core.md_wr,
-                  dut.core.we_fe, dut.core.wa_fe, dut.core.wb_fe, dut.core.rob_head_idx);
-         watch_prd <= dut.core.cf_prd;  watch_prd_v <= 1'b1;  watch_rob <= dut.core.cf_rob;
-      end
+      // a control-flow op resolving in its lane
+      if ((dut.core.iss_alu && dut.core.qa_pc == watch_pc) || (dut.core.iss_alu2 && dut.core.qb_pc == watch_pc)
+          || (dut.core.iss_alu3 && dut.core.qc_pc == watch_pc))
+         $display("[c=%0d] watch lane-issue lanes=%b%b%b cti=%b mis=%b fr_v=%b head=%0d", c,
+                  dut.core.iss_alu3 && dut.core.qc_pc == watch_pc, dut.core.iss_alu2 && dut.core.qb_pc == watch_pc,
+                  dut.core.iss_alu && dut.core.qa_pc == watch_pc, dut.core.lane_cti, dut.core.lane_mis,
+                  dut.core.fr_v, dut.core.rob_head_idx);
       // the watched op retires: the value the cosim REPORTS beside the physreg's REAL contents
       if (dut.core.retire && dut.core.retire_pc == watch_pc)
-         $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h hit_cf=%b cs_val[head]=%h  prf_fe[%0d]=%h",
-                  c, dut.core.retire_pc, dut.core.rob_head_idx, dut.core.cs_val_h, dut.core.cs_hit_cf,
-                  dut.core.cs_val[dut.core.rob_head_idx], watch_prd[5:0], dut.core.u_prf.mem_fe[watch_prd[5:0]]);
-      if (dut.core.cf_land && dut.core.cf_pc == watch_pc)
-         $display("[c=%0d] watch CTF-land pc=%h cf_link=%h cf_prd=%0d wrote=%b redirect=%b land_rob=%0d",
-                  c, dut.core.cf_pc, dut.core.cf_link, dut.core.cf_prd, dut.core.cf_link_wrote, dut.core.cf_redirect, dut.core.cf_land_rob);
+         $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h cs_val[head]=%h",
+                  c, dut.core.retire_pc, dut.core.rob_head_idx, dut.core.cs_val_h,
+                  dut.core.cs_val[dut.core.rob_head_idx]);
       if (watch_prd_v && dut.core.we_fe && dut.core.wa_fe == watch_prd)
-         $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b cf_link_wb=%b md_wr=%b",
-                  c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.cf_link_wb, dut.core.md_wr);
+         $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b md_wr=%b",
+                  c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.md_wr);
       if (dut.core.redirect && watch_prd_v) $display("[c=%0d] watch redirect (prd %0d still watched)", c, watch_prd);
-      // the control-flow path: issue into the CTF stage, each cycle it sits there, and retirement
-      // on any of the three commit ports
-      if (dut.core.iss_c && dut.core.qf_pc == watch_pc)
-         $display("[c=%0d] watch CTF-issue pc=%h rob=%0d", c, dut.core.qf_pc, dut.core.j_rob);
-      if (dut.core.cf_valid && dut.core.cf_pc == watch_pc)
-         $display("[c=%0d] watch CTF-stage rob=%0d done=%b redirect=%b land=%b red_fire=%b res_v=%b fr_v=%b fr_set=%b redirect_any=%b head=%0d",
-                  c, dut.core.cf_rob, dut.core.cf_done, dut.core.cf_redirect, dut.core.cf_land, dut.core.cf_red_fire,
-                  dut.core.res_v, dut.core.fr_v, dut.core.fr_set, dut.core.redirect, dut.core.rob_head_idx);
+      // retirement on any of the three commit ports
       if ((dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc) ||
           (dut.core.rob_c2_valid && dut.core.cs_pc[dut.core.rob_head2_idx] == watch_pc) ||
           (dut.core.rob_c3_valid && dut.core.cs_pc[dut.core.rob_head3_idx] == watch_pc))
@@ -1141,7 +1133,7 @@ module tb;
                ser_c[0], ser_c[1], ser_c[2], ser_c[3], ser_c[4], ser_c[5], ser_c[6], ser_c[7]);
       $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
-      $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d", tr_n, tr_ret, tr_n - tr_ret);
+      $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d dropped=%0d", tr_n, tr_ret, tr_n - tr_ret, tr_drops);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
                ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,
                ms_stmem, ms_stmem_fill, ms_stmem_park);
