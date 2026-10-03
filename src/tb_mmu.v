@@ -17,7 +17,7 @@ module tb;
    wire t_ready; wire [AW-1:0] t_paddr; wire t_fault; wire [3:0] t_cause; wire t_uncached;
    integer errs=0;
 
-   mmu #(.AW(AW)) dut
+   mmu #(.AW(AW), .GB(2)) dut   // 2-bit generations, so the bench sees one wrap
      (.clk(clk), .reset(reset), .req_valid(req_valid), .req_vaddr(req_vaddr),
       .req_access(req_access), .priv(priv), .sum(sum), .mxr(mxr), .satp(satp),
       .flush(flush), .walk_ok(1'b1), .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata),
@@ -51,6 +51,8 @@ module tb;
    initial begin
       reset=1; req_valid=0; satp=0; priv=0; sum=0; mxr=0; flush=0; req_access=1;
       ptw_rvalid=0; @(negedge clk); @(negedge clk); reset=0; @(negedge clk);
+      // reset clears the TLB over TLBN cycles; nothing hits or installs until it is done
+      repeat (16) @(negedge clk);
 
       // Sv39 on, root PPN = 0x80010
       satp = (64'd8 << 60) | 64'h80010;
@@ -89,6 +91,27 @@ module tb;
       if (t_fault || t_paddr !== 56'h80005000 || !t_uncached) begin
          $display("FAIL NC leaf: fault=%b paddr=%h unc=%b (exp 80005000,1)", t_fault, t_paddr, t_uncached); errs=errs+1; end
       else $display("  ok: VA 3000 NC leaf -> PA %h uncached=%b", t_paddr, t_uncached);
+      req_valid=0;
+
+      // 4c) generations: a flush retires the entry; after a wrap the array has been cleared,
+      // so an entry installed four generations ago (the same generation number) still misses
+      flush=1; @(negedge clk); flush=0;
+      do_req(64'h1000, 2'd1);
+      if (t_fault || t_paddr !== 56'h80003000 || waited==0) begin
+         $display("FAIL flush: fault=%b paddr=%h waited=%0d (exp a walk)", t_fault, t_paddr, waited); errs=errs+1; end
+      else $display("  ok: a flush retires the entry (walk took %0d cyc)", waited);
+      req_valid=0;
+      repeat (4) begin flush=1; @(negedge clk); flush=0; @(negedge clk); end
+      repeat (16) @(negedge clk);
+      do_req(64'h1000, 2'd1);
+      if (t_fault || t_paddr !== 56'h80003000 || waited==0) begin
+         $display("FAIL wrap: fault=%b paddr=%h waited=%0d (exp a walk)", t_fault, t_paddr, waited); errs=errs+1; end
+      else $display("  ok: after a generation wrap the entry is gone (walk took %0d cyc)", waited);
+      req_valid=0;
+      do_req(64'h1000, 2'd1);
+      if (t_fault || t_paddr !== 56'h80003000 || waited!=0) begin
+         $display("FAIL refill: fault=%b paddr=%h waited=%0d (exp a hit)", t_fault, t_paddr, waited); errs=errs+1; end
+      else $display("  ok: the refilled entry hits");
       req_valid=0;
 
       // 5) Bare mode -> identity, resolves combinationally

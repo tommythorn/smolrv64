@@ -86,6 +86,7 @@ rdn     : load queue
 tlb_tag : iTLB/dTLB
 tlb_ppn : iTLB/dTLB
 tlb_perm: iTLB/dTLB
+tlb_g   : iTLB/dTLB {installed, generation}: a flush advances the generation, so no per-entry clear
 
 # ---- the D$'s physical state: one LUTRAM per (way, colour), 64 rows, read at two rows -------
 # (32 at DC_KB=128: 2 ways x 16 colours)

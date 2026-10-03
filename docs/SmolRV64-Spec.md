@@ -1061,6 +1061,7 @@ Two independent `mmu` instances — **iTLB** in `smolrv64_core`, **dTLB** in `sm
 | Superpages | 2 MiB / 1 GiB; misaligned superpage → fault |
 | Ssvnapot | level-0 NAPOT leaves recognised |
 | PA width | 56 bits produced (`AW`), 34 significant to the caches |
+| Flush | `sfence.vma` and `satp` writes advance a 16-bit generation (`GB`); an entry hits only when it was installed in the current one (`tlb_g` = {installed, generation}, LUTRAM beside the entry). No entry is written on a flush; the array is cleared over `TLBN` cycles at reset and when the generation wraps, and nothing hits or installs while it is |
 
 **No iTLB walk past a weak branch.** The core counts the conditionals dispatched on a weak
 direction (the effective counter, the corrector's when it hit, is 01 or 10) until each leaves the

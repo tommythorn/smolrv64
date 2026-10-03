@@ -18,6 +18,7 @@ module mmu
   #(parameter AW   = 56,           // physical address width produced
     parameter TLBN = 16,           // TLB entries (direct-mapped)
     parameter TLBI = 4,            // clog2(TLBN)
+    parameter GB   = 16,           // generation bits: the array is cleared once per 2^GB flushes
     // The top of physical memory: a PA at or above it does not exist and takes an access
     // fault. Every device lies below DRAM, so everything below the top is addressable and the
     // SoC's decode owns the device hole. The default is the whole AW-bit space (unit benches).
@@ -96,7 +97,16 @@ module mmu
    wire        bare_oob = ({1'b0, req_vaddr} >= {1'b0, DRAM_TOP});
 
    // -------------------- TLB (direct-mapped on the VPN's low TLBI bits) ---------------
-   reg              tlb_v   [0:TLBN-1];
+   // AN ENTRY IS VALID WHEN IT WAS INSTALLED IN THE CURRENT GENERATION. tlb_g holds
+   // {installed, generation} beside the rest of the entry, in LUTRAM; a flush invalidates every
+   // entry by advancing the generation, with no array write. Clearing a valid bit per entry
+   // in one cycle made 2048 flops and their read muxes (9.1K LUTs, the core's largest single
+   // structure). The array is cleared only when the generation wraps, and at reset: a scan
+   // writes every entry in TLBN cycles, during which nothing hits and nothing is installed.
+   reg [GB-1:0]     cg;                   // the current generation
+   reg              scan;                 // clearing the array
+   reg [TLBI-1:0]   scan_i;
+   (* ram_style = "distributed" *) reg [GB:0] tlb_g [0:TLBN-1];   // {installed, generation}
    reg [26:0]       tlb_tag [0:TLBN-1];   // VPN[26:0] (vpn2,vpn1,vpn0)
    reg [43:0]       tlb_ppn [0:TLBN-1];   // page PPN (leaf)
    reg [1:0]        tlb_lvl [0:TLBN-1];   // leaf level (0=4K,1=2M,2=1G)
@@ -107,11 +117,14 @@ module mmu
    // tlb_n is initialized (unlike tlb_ppn/tlb_perm) because it drives a SELECT in
    // leaf_pa: an X there makes the whole PA X, where an X in tlb_ppn alone still
    // leaves the page-offset bits defined.
-   initial for (t=0;t<TLBN;t=t+1) begin tlb_v[t]=1'b0; tlb_n[t]=1'b0; end
+   initial begin
+      for (t=0;t<TLBN;t=t+1) begin tlb_g[t]={(GB+1){1'b0}}; tlb_n[t]=1'b0; end
+      cg = {GB{1'b0}};  scan = 1'b0;  scan_i = {TLBI{1'b0}};
+   end
 
    wire [26:0]     vpn_all = {vpn2, vpn1, vpn0};
    wire [TLBI-1:0] tlb_idx = vpn_all[TLBI-1:0];   // VA[12 +: TLBI], as the fill writes it
-   wire            tlb_hit = tlb_v[tlb_idx] && (tlb_tag[tlb_idx] == vpn_all);
+   wire            tlb_hit = ~scan && (tlb_g[tlb_idx] == {1'b1, cg}) && (tlb_tag[tlb_idx] == vpn_all);
 
    // assemble the translated physical address from a leaf entry by level.
    // Ssvnapot (`n`): a level-0 leaf with pte.N=1 is a 64 KiB NAPOT page, so the low
@@ -237,7 +250,7 @@ module mmu
    // ---- the second lookup: its own read of every TLB array, the same answers as a hit above ----
    wire [26:0]     s_vpn  = s_vaddr[38:12];
    wire [TLBI-1:0] s_idx  = s_vpn[TLBI-1:0];
-   wire            s_v_e  = tlb_v[s_idx];
+   wire            s_v_e  = ~scan & (tlb_g[s_idx] == {1'b1, cg});
    wire [26:0]     s_tag  = tlb_tag[s_idx];
    wire [43:0]     s_ppn  = tlb_ppn[s_idx];
    wire [1:0]      s_lvl  = tlb_lvl[s_idx];
@@ -262,14 +275,43 @@ module mmu
    wire [8:0] vpn_lvl = (lvl==2'd2) ? va_q[38:30] : (lvl==2'd1) ? va_q[29:21] : va_q[20:12];
    wire [AW-1:0] pte_addr = {walk_ppn, 12'd0} | {vpn_lvl, 3'd0};
 
-   integer fl;
+   // ONE WRITE STATEMENT for tlb_g (rule I10): the scan's clear, else the fill. A fill during a
+   // scan is not installed (it still answers its own access through w_paddr). A fill in a
+   // flush's cycle is installed in the generation the flush retires, so it never hits.
+   // The PTE the walker just read, classified once for the FSM below and for the fill.
+   wire             pte_inv  = !ptw_rdata[0] || (!ptw_rdata[1] && ptw_rdata[2]);   // invalid
+   wire             pte_leaf = ptw_rdata[1] || ptw_rdata[3];                        // R|X
+   wire             leaf_mis = ((lvl==2'd2) && (ptw_rdata[27:10]!=0)) ||
+                               ((lvl==2'd1) && (ptw_rdata[18:10]!=0));             // misaligned superpage
+   // Ssvnapot: the ONLY encoding defined for Sv39 is a level-0 leaf with ppn[3:0]==0b1000
+   // (64 KiB). N=1 on a superpage, or any other ppn[3:0], is reserved -- the spec requires a
+   // page fault rather than a guess.
+   wire             leaf_nap = ptw_rdata[63] && !napot_ok;
+   wire             leaf_prm = perm_fault(ptw_rdata, acc_q, prv_q, sum_q, mxr_q);
+   wire             leaf_oob = {{(64-AW){1'b0}}, leaf_acc} >= DRAM_TOP;                 // PA above the cap
+   wire             fill     = (st==RCV) & ptw_rvalid & req_match & ~pte_inv & pte_leaf
+                             & ~leaf_mis & ~leaf_nap & ~leaf_prm & ~leaf_oob;
+   wire             g_we    = ~reset & (scan | fill);
+   wire [TLBI-1:0]  g_wa    = scan ? scan_i : va_q[12+:TLBI];
+   wire [GB:0]      g_wd    = scan ? {(GB+1){1'b0}} : {({1'b0, leaf_last} < TOP_PPN), cg};
+   always @(posedge clk) if (g_we) tlb_g[g_wa] <= g_wd;
+
    always @(posedge clk) begin
       if (reset) begin
          st<=IDLE; ptw_read<=1'b0; w_done<=1'b0;
-         for (fl=0; fl<TLBN; fl=fl+1) tlb_v[fl]<=1'b0;
+         scan<=1'b1; scan_i<={TLBI{1'b0}};
       end else begin
          w_done<=1'b0; ptw_read<=1'b0;
-         if (flush) for (fl=0; fl<TLBN; fl=fl+1) tlb_v[fl]<=1'b0;
+         // A flush advances the generation; the one that wraps it starts a clear, so an
+         // entry from 2^GB generations ago can never match again.
+         if (flush) begin
+            cg <= cg + 1'b1;
+            if (&cg) begin scan<=1'b1; scan_i<={TLBI{1'b0}}; end
+         end
+         if (scan & ~(flush & (&cg))) begin
+            scan_i <= scan_i + 1'b1;
+            if (&scan_i) scan <= 1'b0;
+         end
          case (st)
            IDLE: if (start_walk) begin
               va_q<=req_vaddr; acc_q<=req_access; prv_q<=priv; sum_q<=sum; mxr_q<=mxr;
@@ -287,21 +329,13 @@ module mmu
               // response arrives (single-outstanding PTW port). req changed -> abort, read drained.
               if (!req_match) st<=IDLE;
               // ptw_rdata = the PTE
-              else if (!ptw_rdata[0] || (!ptw_rdata[1] && ptw_rdata[2])) begin
-                 w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;   // invalid
-              end else if (ptw_rdata[1] || ptw_rdata[3]) begin                 // leaf (R|X)
-                 if (((lvl==2'd2) && (ptw_rdata[27:10]!=0)) ||
-                     ((lvl==2'd1) && (ptw_rdata[18:10]!=0))) begin
-                    w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE; // misaligned superpage
-                 end else if (ptw_rdata[63] && !napot_ok) begin
-                    // Ssvnapot: the ONLY encoding defined for Sv39 is a level-0 leaf with
-                    // ppn[3:0]==0b1000 (64 KiB). N=1 on a superpage, or any other ppn[3:0],
-                    // is reserved -- the spec requires a page fault rather than a guess.
+              else if (pte_inv) begin
+                 w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
+              end else if (pte_leaf) begin
+                 if (leaf_mis | leaf_nap | leaf_prm) begin
                     w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
-                 end else if (perm_fault(ptw_rdata, acc_q, prv_q, sum_q, mxr_q)) begin
-                    w_fault<=1'b1; w_cause<=pf_cause_q; w_done<=1'b1; st<=IDLE;
-                 end else if ({{(64-AW){1'b0}}, leaf_acc} >= DRAM_TOP) begin
-                    w_fault<=1'b1; w_cause<=af_cause_q; w_done<=1'b1; st<=IDLE; // PA above the cap
+                 end else if (leaf_oob) begin
+                    w_fault<=1'b1; w_cause<=af_cause_q; w_done<=1'b1; st<=IDLE;
                  end else begin
                     w_paddr <= leaf_acc;
                     w_lvl  <= lvl;
@@ -311,7 +345,6 @@ module mmu
                     // is the full VPN); the N bit rides along so the hit path substitutes
                     // va[15:12] for the PTE's size-encoded ppn[3:0]. A page reaching past the
                     // cap is answered for this access only and never installed.
-                    tlb_v[va_q[12+:TLBI]]   <= ({1'b0, leaf_last} < TOP_PPN);
                     tlb_tag[va_q[12+:TLBI]] <= va_q[38:12];
                     tlb_ppn[va_q[12+:TLBI]] <= ptw_rdata[53:10];
                     tlb_lvl[va_q[12+:TLBI]] <= lvl;
