@@ -110,7 +110,10 @@ send_file() {
     send_line "Y${addr}"
     # give monitor a beat to print its "start XMODEM" prompt
     sleep 1
-    screen -S "$SESSION" -X exec '!!' sx -k "$file"
+    # An absolute path: screen runs sx in ITS working directory, which is wherever the session
+    # was started (the main checkout), not here -- from a worktree, a relative name sent the main
+    # checkout's DTB and the board booted a tree this script never built (2026-10-04).
+    screen -S "$SESSION" -X exec '!!' sx -k "$(realpath "$file")"
     wait_for_new_complete "$target_count"
     echo "[ubuntu-boot]   done ($file)"
 }
