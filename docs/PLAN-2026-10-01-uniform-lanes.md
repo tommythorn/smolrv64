@@ -218,7 +218,7 @@ timing is fought.
    the oldest mispredict wins by age into the existing early restart (`fr_*`), and predictor
    training goes through a short buffer that drops on overflow (it is a hint). The CTF stage
    leaves `u_iq_f`.
-   **5.2b in detail (design for review).** Today one CTF stage (`cf_*`, fed from `u_iq_f`)
+   **5.2b in detail (settled as prototyped on `wip/lanes`, 2026-10-04).** Before it, one CTF stage (`cf_*`, fed from `u_iq_f`)
    resolves every branch, writes jal/jalr links into SH_FE when the FPU is not landing, tracks
    the oldest pending restart (`fr_v`, `fr_seq`, `fr_rob`), trains the predictor once per CTI
    (`res_*`), and marks a mispredict done only at its squash so that the ROB head stops on it.
@@ -234,15 +234,15 @@ timing is fought.
      `fr_seq`) sets `fr_*` and drives `fe_red_tgt`, the RAS and history restore.
    - **ROB completion.** A correctly predicted CTI completes at issue on its lane's port, like
      an ALU op. A mispredict must not retire past its squash: it completes on the squash
-     (`cf_red_fire` with `fr_rob`, as today) through one shared port, and the lane's port does
-     not mark it at issue. That needs the mispredict known at issue on the lane's ROB port;
-     if that is too late for timing, the alternative is a per-entry "stop" bit the ROB's
-     multi-retire honours (retire stops before a stop entry, which then retires alone as the
-     head, in the squash cycle).
+     (`cf_red_fire` with `fr_rob`) through one shared port, and the lane's port does not mark
+     it at issue (`lane_mis` masks the port). If the mispredict is too late at issue for
+     timing, the fallback is a per-entry "stop" bit the ROB's multi-retire honours (retire
+     stops before a stop entry, which then retires alone as the head, in the squash cycle).
    - **Training.** Up to three CTIs resolve per cycle; the predictor trains one per cycle
-     through a short queue that drops on overflow (training is a hint), except the tracked
-     restart's CTI, which takes the queue's head so rule D16 (it trains before its squash)
-     holds by construction. The weak-branch count (`wk_n`) subtracts up to three per cycle.
+     through an 8-entry queue in age order that drops on overflow (training is a hint; 29
+     drops in the 60 M boot). The restart's own CTI bypasses the queue and trains in its
+     restart cycle, so rule D16 (it trains before its squash) holds by construction; queued
+     entries younger than a pending restart are discarded. The weak-branch count (`wk_n`) subtracts up to three per cycle.
    - **Dispatch.** Branches stop being class FC, so the class rule (which holds slot B behind
      a slot A of its class: 13.7% of cycles in the 60 M boot, `DISP-SIM`, loads and FC
      together) no longer separates two branches, or a branch and an FP op.
