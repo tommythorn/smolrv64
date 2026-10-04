@@ -17,7 +17,7 @@
 	compatible = "riscv-virtio";
 	model = "@MODEL@";
 	chosen {
-		bootargs = "console=ttyS0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
+		bootargs = "fbcon=font:SUN12x22 console=ttyS0 console=tty0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
