@@ -131,7 +131,17 @@ complements.
 
 ### 3.2 X stalls — `d_hold`
 
-`d_hold = d_valid & (src_pend | ~rob_ready | rn_stall)`
+The queue head forms a dispatch group of up to three instructions that may go together: every
+member plain (a serialising op, `fence.i`, a CBO, an AMO, a CSR op, a trap at dispatch or the
+interrupt pseudo-op goes alone), at most one for the ordered memory pipe (`u_iq_l`, one LQ or SQ
+allocation) and one for the FP/MD/SYS pipe (`u_iq_f`), and nothing behind a CTI that redirects
+fetch at decode (`smolrv64_gclass`, read from the queue record). The IR takes a group when it is
+empty or dispatching whole, and dispatch takes a group whole or not at all:
+
+`d_hold = d_valid & (a_room | (d2_valid & b_room) | (d3_valid & c_room))`, each member's room in
+its scheduler, the ROB and its memory queue. In the 60 M boot (`DISP-SIM`) the class rule cuts a
+group before slot B in 8.85 M cycles and before slot C in 2.66 M more; a whole group waits for
+room in 17.2 M.
 
 | cause | meaning |
 |---|---|

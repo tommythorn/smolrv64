@@ -3907,9 +3907,12 @@ module smolrv64_core
    // Back-pressure at the FRONTEND, never at issue: a full store buffer holds dispatch,
    // which costs nothing at the head of the machine and keeps unit state out of the
    // scheduler's select (docs/SmolRV64-Spec.md 15).
-   wire d_hold = d_valid & (~rob_ready | ~iq_ready | rn_stall | ser_block
-                            | (d_st_nb & ~sq_d_ready)
-                            | (d_ld_nb & ~lq_d_ready));
+   // The group dispatches whole (the queue head formed it legal: see smolrv64_frontend), so its
+   // hold is any member's: room for each in its scheduler, the ROB, its memory queue.
+   wire a_room = ~rob_ready | ~iq_ready | rn_stall | ser_block | (d_st_nb & ~sq_d_ready) | (d_ld_nb & ~lq_d_ready);
+   wire b_room = ~iq_ready_b | ~rob_ready2 | (d2_st_nb & ~sq_d_ready) | (d2_ld_nb & ~lq_d_ready);
+   wire c_room = ~iq_ready_c | ~rob_ready3 | (d3_st_nb & ~sq_d_ready) | (d3_ld_nb & ~lq_d_ready);
+   wire d_hold = d_valid & (a_room | (d2_valid & b_room) | (d3_valid & c_room));
    // NOT GATED ON THIS CYCLE'S REDIRECT (2026-09-05, gate V3 at -0.919 ns). The redirect is
    // M's completion, which a landing load can veto (ld_land), which the load queue's store
    // ordering decides: through `~redirect` here that whole chain -- the store queue's conflict
@@ -3925,22 +3928,9 @@ module smolrv64_core
    // gate had just been freed of. The registered fr_v holds dispatch from the cycle after
    // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
    wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
-   // slot B's own hold (see the rules where d2_cls is defined); d_take carries the redirect terms
-   wire d2_hold = ~d_plain | ~d2_plain | ((d_cls_l & d2_cls_l) | (d_cls_fc & d2_cls_fc)) | ~iq_ready_b | ~rob_ready2 | rn_stall
-                | (d2_st_nb & (d_st_nb | ~sq_d_ready)) | (d2_ld_nb & (d_ld_nb | ~lq_d_ready));
-   wire d2_take = d2_valid & d_take & ~d2_hold & ~dcr0;   // ~dcr0: slot 0 decode-redirects -> squash the younger slots packed after it
+   wire d2_take = d2_valid & d_take;
    assign rn_valid_b = d2_take;
-   // slot C (dispatch swizzle): reaches ANY pipe now (the 3rd ALU is gone). It is accepted per
-   // the take3 rule and swizzled -- LS->M, FC->F, ALU->ALUb if I1 is ALU else ALUa. three_wide
-   // is the master enable (0 at IW=2 -> C never dispatches -> retire-identical to the 2-wide core).
-   // take3 class-accept (spec): ALU3 ok unless I1&I2 both ALU; LS3/FC3 ok unless already used.
-   wire d3_accept = d3_cls_i
-                  | (d3_cls_l  & ~d_cls_l  & ~d2_cls_l)
-                  | (d3_cls_fc & ~d_cls_fc & ~d2_cls_fc);
-   wire d3_hold = ~three_wide | ~d3_accept | ~d_plain | ~d2_plain | ~d3_plain
-                | ~iq_ready_c | ~rob_ready3 | rn_stall
-                | (d3_st_nb & ~sq_d_ready) | (d3_ld_nb & ~lq_d_ready);
-   wire d3_take = d3_valid & d2_take & ~d3_hold & ~dcr1;  // ~dcr1 (and ~dcr0 via d2_take): squash slots after a decode-redirect CTI
+   wire d3_take = d3_valid & d_take;
    assign rn_valid_c = d3_take;
    // The oldest DISPATCHED decode-redirect CTI drives the frontend resteer (fe_red below).
    // d2_take already carries ~dcr0 and d3_take ~dcr0&~dcr1, so at most one dr* is high.

@@ -634,23 +634,20 @@ module tb;
       end
    endfunction
    always @(negedge clk) if (!reset) begin : dispsim
-      reg b_rule, c_rule;
       integer na, nb, nc, ia, ib, ic;
-      b_rule = (dut.core.d_cls_l & dut.core.d2_cls_l) | (dut.core.d_cls_fc & dut.core.d2_cls_fc)
-             | (dut.core.d2_st_nb & dut.core.d_st_nb) | (dut.core.d2_ld_nb & dut.core.d_ld_nb);
-      c_rule = ~dut.core.d3_accept;
-      if (dut.core.d_take & dut.core.d2_valid & ~dut.core.d2_take) begin
-         if (~dut.core.d_plain | ~dut.core.d2_plain) ds_b_alone = ds_b_alone + 1;
-         else if (b_rule)                            ds_b_rule  = ds_b_rule + 1;
-         else if (dut.core.dcr0)                     ds_b_sq    = ds_b_sq + 1;
-         else                                        ds_b_room  = ds_b_room + 1;
+      // where the queue head cut a group short of its available heads, and why; and the cycles a
+      // whole group waited for room
+      if (dut.core.fe.ir_load & dut.core.fe.take1 & ~dut.core.fe.take2 & dut.core.fe.q_have2 & dut.core.fe.two_wide) begin
+         if (~dut.core.fe.g0[7] | ~dut.core.fe.g1[7])                        ds_b_alone = ds_b_alone + 1;
+         else if (dut.core.fe.g0[11])                                         ds_b_sq    = ds_b_sq + 1;
+         else                                                                 ds_b_rule  = ds_b_rule + 1;
       end
-      if (dut.core.d2_take & dut.core.d3_valid & ~dut.core.d3_take) begin
-         if (~dut.core.d_plain | ~dut.core.d2_plain | ~dut.core.d3_plain) ds_c_alone = ds_c_alone + 1;
-         else if (c_rule)                                                ds_c_rule  = ds_c_rule + 1;
-         else if (dut.core.dcr1)                                         ds_c_sq    = ds_c_sq + 1;
-         else                                                            ds_c_room  = ds_c_room + 1;
+      if (dut.core.fe.ir_load & dut.core.fe.take2 & ~dut.core.fe.take3 & dut.core.fe.q_have3 & dut.core.fe.three_wide) begin
+         if (~dut.core.fe.g2[7])                                              ds_c_alone = ds_c_alone + 1;
+         else if (dut.core.fe.g1[11])                                         ds_c_sq    = ds_c_sq + 1;
+         else                                                                 ds_c_rule  = ds_c_rule + 1;
       end
+      if (dut.core.d_hold & ~dut.core.redirect_q & ~dut.core.fr_v & ~dut.core.dec_red_q) ds_b_room = ds_b_room + 1;
       na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
       nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
       nc = $countones(dut.core.u_iq_i3.rdy);  ic = dut.core.ri3_iss_v ? 1 : 0;
@@ -1125,7 +1122,7 @@ module tb;
       $display("XLATE-SIM M-hits=%0d handed-to-walker=%0d walker-answers=%0d (faults %0d) queue-traps=%0d",
                xs_hit, xs_nopa, xs_wk, xs_wkf, xs_trap);
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
-      $display("DISP-SIM slot-B held behind a dispatch: alone=%0d rule=%0d resteer=%0d room=%0d | slot-C: alone=%0d rule=%0d resteer=%0d room=%0d",
+      $display("DISP-SIM group cut before slot B: alone=%0d rule=%0d resteer=%0d | whole group held for room=%0d | before slot C: alone=%0d rule=%0d resteer=%0d (%0d)",
                ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
       $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
                al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);

@@ -40,7 +40,7 @@ module smolrv64_frontend
     // serializing op in flight). accept implies consume.
     input  wire                    accept,
     input  wire                    consume,           // slot A dispatched (leaves the IR)
-    input  wire                    consume_b,         // slot B dispatched (only ever with A)
+    input  wire                    consume_b,         // slot B dispatched (always with A: a group goes whole)
     input  wire                    consume_c,         // slot C dispatched (only ever with B) -- IW>=3
     input  wire                    two_wide,          // fill slot B at all; low = the one-IR machine
     input  wire                    three_wide,        // fill slot C at all (IW>=3); low = the two-IR machine
@@ -356,7 +356,7 @@ module smolrv64_frontend
    // One PACKED vector per slot keeps the compaction a handful of muxes instead of ~46 per
    // field. FE_IRV(P) is the field list -- the SINGLE source of truth for pack AND unpack order
    // (cur[], mh[], and the register write below all use it), so the two can never diverge.
-   `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``gc, P``mis_taken, P``mis_nt}
+   `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``mis_taken, P``mis_nt, P``gc}
    localparam integer IRW = 3*PCW + PDW + SEQW + 185;   // width of one packed IR slot
    wire [IRW-1:0] mh  [0:3];   // the bundle register's slots, decoded and packed (the queue's write data)
    wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
@@ -586,43 +586,30 @@ module smolrv64_frontend
    // interrupt is taken before the instruction that would have faulted).
    wire ld_valid = ~q_empty;      // the head is a real bundle (fault pseudo-op included)
 
-   // ------------------------------------------------------- IR registers: a width-generic
-   // COMPACTING BUFFER (Stage 3). Up to W = 1+two_wide+three_wide decoded IRs live in slots
-   // [0..W-1], slot 0 oldest. Each cycle dispatch consumes the oldest `ncons` (contiguous from
-   // slot 0), the survivors compact down, and fresh decoded heads fill from the queue up to W.
-   // At W=2 this reduces bit-for-bit to the old slot-A/slot-B shift (verified retire-identical).
-   //
-   wire [IRW-1:0] cur [0:3];   // current slot contents, packed (index 3 = 0 guard)
-   wire [IRW-1:0] qh  [0:3];   // the queue heads (the IR's fresh heads)
-   assign qh[0] = q_head;  assign qh[1] = q_head1;  assign qh[2] = q_head2;  assign qh[3] = {IRW{1'b0}};
-   assign cur[0] = `FE_IRV(d_);
-   assign cur[1] = `FE_IRV(d2_);
-   assign cur[2] = `FE_IRV(d3_);
-   assign cur[3] = {IRW{1'b0}};
-   assign mh[0]  = `FE_IRV(m0_);
-   assign mh[1]  = `FE_IRV(m1_);
-   assign mh[2]  = `FE_IRV(m2_);
-   assign mh[3]  = {IRW{1'b0}};
-   wire [1:0] cur_cnt = {1'b0, d_valid} + {1'b0, d2_valid} + {1'b0, d3_valid};   // 0..3 valid slots
-   wire [1:0] ncons   = {1'b0, consume} + {1'b0, consume_b} + {1'b0, consume_c}; // 0..3 consumed (contiguous)
-   wire [1:0] retain  = cur_cnt - ncons;                                          // survivors
-   wire [1:0] wmax    = 2'd1 + {1'b0, two_wide} + {1'b0, three_wide};             // max slots to fill
-   wire [3:0] hav     = {1'b0, q_have3, q_have2, ~q_empty};                       // head j available; [3]=0 guard
-   // per slot i: retained survivor cur[ncons+i] if i<retain, else fresh head mh[i-retain]
-   wire       fr0 = (2'd0 < retain);  wire [1:0] hj0 = 2'd0 - retain;  wire th0 = (2'd0 < wmax) & hav[hj0];
-   wire       fr1 = (2'd1 < retain);  wire [1:0] hj1 = 2'd1 - retain;  wire th1 = (2'd1 < wmax) & hav[hj1];
-   wire       fr2 = (2'd2 < retain);  wire [1:0] hj2 = 2'd2 - retain;  wire th2 = (2'd2 < wmax) & hav[hj2];
-   wire [IRW-1:0] snext0 = fr0 ? cur[ncons + 2'd0] : qh[hj0];
-   wire [IRW-1:0] snext1 = fr1 ? cur[ncons + 2'd1] : qh[hj1];
-   wire [IRW-1:0] snext2 = fr2 ? cur[ncons + 2'd2] : qh[hj2];
-   wire vnext0 = fr0 ? 1'b1 : th0;
-   wire vnext1 = fr1 ? 1'b1 : th1;
-   wire vnext2 = fr2 ? 1'b1 : th2;
-   // heads actually consumed this cycle = the new-head slots that became valid
-   assign q_pop = {1'b0, vnext0 & ~fr0} + {1'b0, vnext1 & ~fr1} + {1'b0, vnext2 & ~fr2};
-   wire e_order = ~reset & ((consume_b & ~consume) | (consume_c & ~consume_b));
+   // ------------------------------------------------------- the IR registers: one dispatch group
+   // The queue head forms the group. Up to W = 1+two_wide+three_wide heads go together when the
+   // dispatch class allows it (smolrv64_gclass, evaluated at decode): every member plain, at most
+   // one of the ordered memory pipe's class and one of the FP/MD/SYS pipe's, and nothing behind a
+   // CTI that redirects fetch at decode. The IR takes the group when it is empty or dispatching
+   // whole this cycle, and dispatch takes a group whole or not at all: there are no survivors.
+   assign mh[0] = `FE_IRV(m0_);  assign mh[1] = `FE_IRV(m1_);  assign mh[2] = `FE_IRV(m2_);   // the queue's write data
+   assign mh[3] = {IRW{1'b0}};
+   wire [IRW-1:0] qh [0:2];
+   assign qh[0] = q_head;  assign qh[1] = q_head1;  assign qh[2] = q_head2;
+   wire [11:0] g0 = q_head[11:0], g1 = q_head1[11:0], g2 = q_head2[11:0];   // gc: FE_IRV's last field
+   localparam integer G_L = 4, G_FC = 6, G_PLAIN = 7, G_DCR = 11;            // smolrv64_gclass's gc order
+   wire take1 = ~q_empty;
+   wire take2 = take1 & two_wide & q_have2 & g0[G_PLAIN] & g1[G_PLAIN] & ~g0[G_DCR]
+              & ~(g0[G_L] & g1[G_L]) & ~(g0[G_FC] & g1[G_FC]);
+   wire take3 = take2 & three_wide & q_have3 & g2[G_PLAIN] & ~g1[G_DCR]
+              & ~(g2[G_L] & (g0[G_L] | g1[G_L])) & ~(g2[G_FC] & (g0[G_FC] | g1[G_FC]));
+   wire ir_load = ~d_valid | consume;                     // the IR is empty or dispatches whole
+   assign q_pop = ir_load ? ({1'b0, take1} + {1'b0, take2} + {1'b0, take3}) : 2'd0;
+   wire e_order = ~reset & (((consume_b & ~consume) | (consume_c & ~consume_b))
+                          | (consume & ((consume_b != d2_valid) | (consume_c != d3_valid))));
    always @(posedge clk)
-      if (e_order) $fatal(1, "smolrv64_frontend: slot consumed out of order (c=%b b=%b a=%b)", consume_c, consume_b, consume);
+      if (e_order) $fatal(1, "smolrv64_frontend: a group dispatched in part (c=%b b=%b a=%b, valid %b%b%b)",
+                          consume_c, consume_b, consume, d3_valid, d2_valid, d_valid);
    reg  [1:0] fe_err_q;
    always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
    assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
@@ -780,18 +767,16 @@ module smolrv64_frontend
       .is_csr(m2_is_csr), .is_serialize(m2_is_serialize), .is_fencei(m2_is_fencei), .is_cbo(m2_is_cbo),
       .is_branch(m2_is_branch), .is_jump(m2_is_jump), .is_jalr(m2_is_jalr), .illegal(m2_illegal),
       .fault(m2_fault), .mis_taken(m2_mis_taken), .imm_neg(m2_imm[63]), .btb_hit(m2_pdet[DCR_HIT]), .gc(m2_gc));
-   // Compact + refill: always write every slot (a held slot re-loads its own value, since
-   // snext_i == cur[i] when it is a surviving slot with nothing consumed ahead of it).
    always @(posedge clk) begin
       if (reset | redirect) begin
          d_valid <= 1'b0; d2_valid <= 1'b0; d3_valid <= 1'b0;
-      end else begin
-         d_valid  <= vnext0;
-         d2_valid <= vnext1;
-         d3_valid <= vnext2;
-         `FE_IRV(d_)  <= snext0;
-         `FE_IRV(d2_) <= snext1;
-         `FE_IRV(d3_) <= snext2;
+      end else if (ir_load) begin
+         d_valid  <= take1;
+         d2_valid <= take2;
+         d3_valid <= take3;
+         `FE_IRV(d_)  <= qh[0];
+         `FE_IRV(d2_) <= qh[1];
+         `FE_IRV(d3_) <= qh[2];
       end
    end
    `undef FE_IRV
