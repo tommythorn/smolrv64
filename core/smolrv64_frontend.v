@@ -22,6 +22,8 @@ module smolrv64_frontend
     parameter RASB  = 3,             // log2 RAS entries (smolrv64_predictor)
     parameter GHL   = 11,            // the predictor's history length
     parameter PDW   = 31,            // smolrv64_predictor's predict-detail width
+    parameter integer DCR_HIT  = 2,  // the BTB-hit bit inside the predict details
+    parameter integer DCR_BACK = 1,  // a backward conditional the BTB missed redirects at decode
     // decoupling queue depth. 2 was the MINIMUM that lets fetch push every cycle (the count just
     // oscillates 1<->2), never an optimum -- which leaves no buffering at all between a
     // frontend and a backend that both cap at one instruction per cycle. FE_QUE measures
@@ -45,6 +47,7 @@ module smolrv64_frontend
 
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
+    input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire [RASB-1:0]         redirect_rsp,      // the RAS top the redirect restores
@@ -117,6 +120,7 @@ module smolrv64_frontend
     output reg                     d_is_fp, d_is_fencei,
     output reg                     d_is_cbo, d_cbo_zero, d_cbo_keep,
     output reg                     d_illegal,
+    output reg  [11:0]             d_gc,              // smolrv64_gclass, evaluated at decode
     // precomputed branch compares (payload-static -> keeps them out of X's cone)
     output reg                     d_mis_taken, d_mis_nt,
     // fetch-side fault poison
@@ -155,6 +159,7 @@ module smolrv64_frontend
     output reg                     d2_is_fp, d2_is_fencei,
     output reg                     d2_is_cbo, d2_cbo_zero, d2_cbo_keep,
     output reg                     d2_illegal,
+    output reg  [11:0]             d2_gc,
     // precomputed branch compares (payload-static -> keeps them out of X's cone)
     output reg                     d2_mis_taken, d2_mis_nt,
     // fetch-side fault poison
@@ -190,6 +195,7 @@ module smolrv64_frontend
     output reg                     d3_is_fp, d3_is_fencei,
     output reg                     d3_is_cbo, d3_cbo_zero, d3_cbo_keep,
     output reg                     d3_illegal,
+    output reg  [11:0]             d3_gc,
     output reg                     d3_mis_taken, d3_mis_nt,
     output reg                     d3_fault,
     output reg  [3:0]              d3_fault_cause,
@@ -347,6 +353,12 @@ module smolrv64_frontend
    // one mux. Same value on every bundle, including the straddle (+4 is its 32-bit
    // length) and the interrupt pseudo-op (which holds its PC).
    localparam QW = PDW + PCW + 32 + SEQW + 2 + PCW + 1 + 4 + PCW;
+   // One PACKED vector per slot keeps the compaction a handful of muxes instead of ~46 per
+   // field. FE_IRV(P) is the field list -- the SINGLE source of truth for pack AND unpack order
+   // (cur[], mh[], and the register write below all use it), so the two can never diverge.
+   `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``gc, P``mis_taken, P``mis_nt}
+   localparam integer IRW = 3*PCW + PDW + SEQW + 185;   // width of one packed IR slot
+   wire [IRW-1:0] mh  [0:3];   // the bundle register's slots, decoded and packed (the queue's write data)
    wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
    wire           pb_load  = pb_ready & (dq_valid | dq_fault);   // the register takes a bundle or the fault op
    // UP TO IW ENTRIES PER CYCLE INTO A LUTRAM (Stage 3 inc 2, generalising the old two parity
@@ -356,7 +368,7 @@ module smolrv64_frontend
    localparam integer QNB = 1 << $clog2(FW);
    localparam integer QLB = $clog2(QNB);
    localparam integer QBD = QDEPTH / QNB;
-   wire [QW-1:0] q_bank_rd [0:QNB-1];
+   wire [IRW-1:0] q_bank_rd [0:QNB-1];
    reg  [QAW-1:0] q_rp, q_wp;
    reg  [QAW:0]   q_cnt;
    wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - FW[QAW:0]);   // room for a full bundle (<=FW)
@@ -401,7 +413,7 @@ module smolrv64_frontend
          pb_two <= dq_sv[1] & dq_valid; pb_three <= dq_sv2 & dq_valid;
       end
    end
-   // The heads keep the ORIGINAL names, so decode and the IR register below are unchanged.
+   // The bundle register's slots, unpacked under the names decode reads.
    wire [PDW-1:0] q_pdet;   wire [PCW-1:0] f_pc;   wire [31:0] f_inst;
    wire [SEQW-1:0] f_seq;   wire [1:0] f_pk;  wire [PCW-1:0] f_tgt;  wire fault_op;
    wire [3:0]     q_cause;  wire [PCW-1:0] q_tval;
@@ -410,15 +422,15 @@ module smolrv64_frontend
    // ---- N-bank queue storage: one muxed write per bank, one muxed read per head ----
    genvar qgb;
    generate for (qgb = 0; qgb < QNB; qgb = qgb + 1) begin: qbank
-      reg [QW-1:0] mem [0:QBD-1];
-      integer qbi; initial for (qbi = 0; qbi < QBD; qbi = qbi + 1) mem[qbi] = {QW{1'b0}};
+      reg [IRW-1:0] mem [0:QBD-1];
+      integer qbi; initial for (qbi = 0; qbi < QBD; qbi = qbi + 1) mem[qbi] = {IRW{1'b0}};
       wire wsel0 = q_push  & (q_wp [QLB-1:0] == qgb);
       wire wsel1 = q_two   & (q_wp1[QLB-1:0] == qgb);
       wire wsel2 = q_three & (q_wp2[QLB-1:0] == qgb);   // dead at FW<3 (q_three==0)
       always @(posedge clk)
          if (wsel0 | wsel1 | wsel2)
             mem[wsel0 ? q_wp[QAW-1:QLB] : wsel1 ? q_wp1[QAW-1:QLB] : q_wp2[QAW-1:QLB]]
-               <= wsel0 ? pb_in0 : wsel1 ? pb_in1 : pb_in2;
+               <= wsel0 ? mh[0] : wsel1 ? mh[1] : mh[2];
       // read: rp / rp+1 / rp+2. At QNB=2 the rp2 arm is unreachable (rp/rp+1 cover both banks)
       // -> synth drops it, so FW=2 is bit-identical to the two-head form.
       wire rsel0 = (q_rp [QLB-1:0] == qgb);
@@ -427,18 +439,19 @@ module smolrv64_frontend
                                 : rsel1 ? q_rp1[QAW-1:QLB]
                                 :         q_rp2[QAW-1:QLB]];
    end endgenerate
-   wire [QW-1:0]  q_head  = q_bank_rd[q_rp [QLB-1:0]];
-   wire [QW-1:0]  q_head1 = q_bank_rd[q_rp1[QLB-1:0]];
-   wire [QW-1:0]  q_head2 = q_bank_rd[q_rp2[QLB-1:0]];
-   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = q_head;
+   wire [IRW-1:0] q_head  = q_bank_rd[q_rp [QLB-1:0]];   // decoded records, the IR's fresh heads
+   wire [IRW-1:0] q_head1 = q_bank_rd[q_rp1[QLB-1:0]];
+   wire [IRW-1:0] q_head2 = q_bank_rd[q_rp2[QLB-1:0]];
+   // Decode reads the bundle register's three slots; the queue stores what it decodes.
+   assign {q_pdet, f_pc, f_inst, f_seq, f_pk, f_tgt, fault_op, q_cause, q_tval} = pb_in0;
    wire [PDW-1:0] q1_pdet;  wire [PCW-1:0] f1_pc;  wire [31:0] f1_inst;
    wire [SEQW-1:0] f1_seq;  wire [1:0] f1_pk;  wire [PCW-1:0] f1_tgt;  wire fault1_op;
    wire [3:0]     q1_cause; wire [PCW-1:0] q1_tval;
-   assign {q1_pdet, f1_pc, f1_inst, f1_seq, f1_pk, f1_tgt, fault1_op, q1_cause, q1_tval} = q_head1;
+   assign {q1_pdet, f1_pc, f1_inst, f1_seq, f1_pk, f1_tgt, fault1_op, q1_cause, q1_tval} = pb_in1;
    wire [PDW-1:0] q2_pdet;  wire [PCW-1:0] f2_pc;  wire [31:0] f2_inst;
    wire [SEQW-1:0] f2_seq;  wire [1:0] f2_pk;  wire [PCW-1:0] f2_tgt;  wire fault2_op;
    wire [3:0]     q2_cause; wire [PCW-1:0] q2_tval;
-   assign {q2_pdet, f2_pc, f2_inst, f2_seq, f2_pk, f2_tgt, fault2_op, q2_cause, q2_tval} = q_head2;
+   assign {q2_pdet, f2_pc, f2_inst, f2_seq, f2_pk, f2_tgt, fault2_op, q2_cause, q2_tval} = pb_in2;
    wire [1:0]     q_pop;                       // 0..3 entries leave this cycle (see the IR)
    wire [1:0]     q_pushn = {1'b0, q_push} + {1'b0, q_two} + {1'b0, q_three};   // 0..3 pushed
 
@@ -579,13 +592,9 @@ module smolrv64_frontend
    // slot 0), the survivors compact down, and fresh decoded heads fill from the queue up to W.
    // At W=2 this reduces bit-for-bit to the old slot-A/slot-B shift (verified retire-identical).
    //
-   // One PACKED vector per slot keeps the compaction a handful of muxes instead of ~46 per
-   // field. FE_IRV(P) is the field list -- the SINGLE source of truth for pack AND unpack order
-   // (cur[], mh[], and the register write below all use it), so the two can never diverge.
-   `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``mis_taken, P``mis_nt}
-   localparam integer IRW = 3*PCW + PDW + SEQW + 173;   // width of one packed IR slot
    wire [IRW-1:0] cur [0:3];   // current slot contents, packed (index 3 = 0 guard)
-   wire [IRW-1:0] mh  [0:3];   // fresh decoded heads, packed
+   wire [IRW-1:0] qh  [0:3];   // the queue heads (the IR's fresh heads)
+   assign qh[0] = q_head;  assign qh[1] = q_head1;  assign qh[2] = q_head2;  assign qh[3] = {IRW{1'b0}};
    assign cur[0] = `FE_IRV(d_);
    assign cur[1] = `FE_IRV(d2_);
    assign cur[2] = `FE_IRV(d3_);
@@ -603,9 +612,9 @@ module smolrv64_frontend
    wire       fr0 = (2'd0 < retain);  wire [1:0] hj0 = 2'd0 - retain;  wire th0 = (2'd0 < wmax) & hav[hj0];
    wire       fr1 = (2'd1 < retain);  wire [1:0] hj1 = 2'd1 - retain;  wire th1 = (2'd1 < wmax) & hav[hj1];
    wire       fr2 = (2'd2 < retain);  wire [1:0] hj2 = 2'd2 - retain;  wire th2 = (2'd2 < wmax) & hav[hj2];
-   wire [IRW-1:0] snext0 = fr0 ? cur[ncons + 2'd0] : mh[hj0];
-   wire [IRW-1:0] snext1 = fr1 ? cur[ncons + 2'd1] : mh[hj1];
-   wire [IRW-1:0] snext2 = fr2 ? cur[ncons + 2'd2] : mh[hj2];
+   wire [IRW-1:0] snext0 = fr0 ? cur[ncons + 2'd0] : qh[hj0];
+   wire [IRW-1:0] snext1 = fr1 ? cur[ncons + 2'd1] : qh[hj1];
+   wire [IRW-1:0] snext2 = fr2 ? cur[ncons + 2'd2] : qh[hj2];
    wire vnext0 = fr0 ? 1'b1 : th0;
    wire vnext1 = fr1 ? 1'b1 : th1;
    wire vnext2 = fr2 ? 1'b1 : th2;
@@ -617,7 +626,7 @@ module smolrv64_frontend
    reg  [1:0] fe_err_q;
    always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
    assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
-   // the two heads, decoded and fault-masked, as slot contents
+   // the bundle register's slots, decoded and fault-masked
    wire [PDW-1:0] m0_pdet = q_pdet;                 wire [PDW-1:0] m1_pdet = q1_pdet;
    wire [PCW-1:0] m0_pc   = f_pc;                   wire [PCW-1:0] m1_pc   = f1_pc;
    wire [PCW-1:0] m0_fault_tval = q_tval;           wire [PCW-1:0] m1_fault_tval = q1_tval;   // faulting VA (straddle: pc+2)
@@ -701,13 +710,13 @@ module smolrv64_frontend
    wire  m1_cbo_zero = s1_cbo_zero;
    wire  m0_cbo_keep = s_cbo_keep;
    wire  m1_cbo_keep = s1_cbo_keep;
-   wire  m0_illegal = fault_op ? 1'b0   : s_illegal;
-   wire  m1_illegal = fault1_op ? 1'b0   : s1_illegal;
+   wire  m0_illegal = fault_op ? 1'b0   : s_illegal  | (m0_is_fp & fs_off);
+   wire  m1_illegal = fault1_op ? 1'b0   : s1_illegal | (m1_is_fp & fs_off);
    wire  m0_mis_taken = (s_taken_pc != f_pnpc);
    wire  m1_mis_taken = (s1_taken_pc != f1_pnpc);
    wire  m0_mis_nt = (s_ft_pc    != f_pnpc);
    wire  m1_mis_nt = (s1_ft_pc    != f1_pnpc);
-   // ---- slot 2 masked head (IW>=3); q_head2 is never valid at IW=2 so these are dead ----
+   // ---- slot 2, masked (IW>=3; pb_in2 is never pushed at IW=2, so these are dead) ----
    wire [PDW-1:0] m2_pdet = q2_pdet;
    wire [PCW-1:0] m2_pc   = f2_pc;
    wire [PCW-1:0] m2_fault_tval = q2_tval;
@@ -751,9 +760,26 @@ module smolrv64_frontend
    wire  m2_is_cbo = fault2_op ? 1'b0 : s2_is_cbo;
    wire  m2_cbo_zero = s2_cbo_zero;
    wire  m2_cbo_keep = s2_cbo_keep;
-   wire  m2_illegal = fault2_op ? 1'b0 : s2_illegal;
+   wire  m2_illegal = fault2_op ? 1'b0 : s2_illegal | (m2_is_fp & fs_off);
    wire  m2_mis_taken = (s2_taken_pc != f2_pnpc);
    wire  m2_mis_nt = (s2_ft_pc    != f2_pnpc);
+   // each slot's dispatch class, once, at decode (the queue head and dispatch both read it)
+   wire [11:0] m0_gc, m1_gc, m2_gc;
+   smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc0
+     (.insn(m0_insn), .is_mem(m0_is_mem), .is_amo(m0_is_amo), .is_mul(m0_is_mul), .is_fp(m0_is_fp),
+      .is_csr(m0_is_csr), .is_serialize(m0_is_serialize), .is_fencei(m0_is_fencei), .is_cbo(m0_is_cbo),
+      .is_branch(m0_is_branch), .is_jump(m0_is_jump), .is_jalr(m0_is_jalr), .illegal(m0_illegal),
+      .fault(m0_fault), .mis_taken(m0_mis_taken), .imm_neg(m0_imm[63]), .btb_hit(m0_pdet[DCR_HIT]), .gc(m0_gc));
+   smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc1
+     (.insn(m1_insn), .is_mem(m1_is_mem), .is_amo(m1_is_amo), .is_mul(m1_is_mul), .is_fp(m1_is_fp),
+      .is_csr(m1_is_csr), .is_serialize(m1_is_serialize), .is_fencei(m1_is_fencei), .is_cbo(m1_is_cbo),
+      .is_branch(m1_is_branch), .is_jump(m1_is_jump), .is_jalr(m1_is_jalr), .illegal(m1_illegal),
+      .fault(m1_fault), .mis_taken(m1_mis_taken), .imm_neg(m1_imm[63]), .btb_hit(m1_pdet[DCR_HIT]), .gc(m1_gc));
+   smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc2
+     (.insn(m2_insn), .is_mem(m2_is_mem), .is_amo(m2_is_amo), .is_mul(m2_is_mul), .is_fp(m2_is_fp),
+      .is_csr(m2_is_csr), .is_serialize(m2_is_serialize), .is_fencei(m2_is_fencei), .is_cbo(m2_is_cbo),
+      .is_branch(m2_is_branch), .is_jump(m2_is_jump), .is_jalr(m2_is_jalr), .illegal(m2_illegal),
+      .fault(m2_fault), .mis_taken(m2_mis_taken), .imm_neg(m2_imm[63]), .btb_hit(m2_pdet[DCR_HIT]), .gc(m2_gc));
    // Compact + refill: always write every slot (a held slot re-loads its own value, since
    // snext_i == cur[i] when it is a surviving slot with nothing consumed ahead of it).
    always @(posedge clk) begin

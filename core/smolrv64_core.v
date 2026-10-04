@@ -142,6 +142,9 @@ module smolrv64_core
    // traps from the SYSQ like any other illegal instruction. One site: every core use of
    // d*_illegal below sees it.
    wire                     d_illegal_fe, d2_illegal_fe, d3_illegal_fe;
+   wire [11:0]              d_gc, d2_gc, d3_gc;     // smolrv64_gclass, from the frontend's decode
+   localparam integer GC_F = 0, GC_C = 1, GC_M = 2, GC_S = 3, GC_L = 4, GC_I = 5, GC_FC = 6,
+                      GC_PLAIN = 7, GC_IRQOP = 8, GC_ORD = 9, GC_FPV = 10, GC_DCR = 11;
    wire [3:0]               d_fault_cause;
    wire [SEQW-1:0]          fe_cur_seq;
 
@@ -295,8 +298,8 @@ module smolrv64_core
    wire d2_cbo_zero;
    wire d2_cbo_keep;
    wire d2_illegal;
-   assign d_illegal  = d_illegal_fe  | (d_is_fp  & fs_off);
-   assign d2_illegal = d2_illegal_fe | (d2_is_fp & fs_off);
+   assign d_illegal  = d_illegal_fe;    // FS Off included, at decode (smolrv64_gclass)
+   assign d2_illegal = d2_illegal_fe;
    wire d2_mis_taken;
    wire d2_mis_nt;
    wire d2_fault;
@@ -333,12 +336,14 @@ module smolrv64_core
    wire d3_is_fp, d3_is_fencei;
    wire d3_is_cbo, d3_cbo_zero, d3_cbo_keep;
    wire d3_illegal;
-   assign d3_illegal = d3_illegal_fe | (d3_is_fp & fs_off);
+   assign d3_illegal = d3_illegal_fe;
    wire d3_mis_taken, d3_mis_nt;
    wire d3_fault;
    wire [3:0] d3_fault_cause;
    wire [PCW-1:0] d3_fault_tval;
-   smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW), .RASB(RASB),
+   localparam DCR_HIT = 2;   // BIMW-1: the BTB-hit bit inside the carried predict details
+   localparam integer DCR_BACK = 1;   // static-taken for a BACKWARD conditional branch on a BTB miss (loop back-edge bet)
+   smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW), .RASB(RASB), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK),
                   .RESET_PC(RESET_PC)) fe
      (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
       // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
@@ -349,6 +354,7 @@ module smolrv64_core
       .consume_c(rn_valid_c), .three_wide(three_wide),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal_fe), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal_fe), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
+      .fs_off(fs_off), .d_gc(d_gc), .d2_gc(d2_gc), .d3_gc(d3_gc),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -387,20 +393,15 @@ module smolrv64_core
    // is never overridden by the static-taken bet; a JAL fires on any miss/wrong-target.
    // The target (dec_red_tgt below) is d_pc+d_imm -- a registered decode-stage value, off
    // the guarded fetch array cone (docs/rtl-rules.md, smolrv64_predictor's timing note).
-   localparam DCR_HIT = 2;   // BIMW-1: the BTB-hit bit inside the carried predict details
-   localparam DCR_BACK = 1'b1;   // static-taken for a BACKWARD conditional branch on a BTB miss (loop back-edge bet)
    // Suppress the decode-redirect while an interrupt pseudo-op is being presented or is in
    // flight: fe_red would flush it out of the frontend without the irq FSM's redirect_q/fr_v
    // ever seeing it, wedging inject_inflight forever (the rv64mi-p-illegal vectored-interrupt
    // spin). The interrupt must make progress; a JAL that coincides falls back to the exec
    // redirect -- rare, and cheaper than a livelock.
    wire dcr_arm = ~irq_inject & ~inject_inflight;
-   wire dcr0 = dcr_arm & ((d_is_jump   & ~d_is_jalr  & d_mis_taken)
-             | (DCR_BACK & d_is_branch  & d_imm[63]   & d_mis_taken & ~d_pdet[DCR_HIT]));
-   wire dcr1 = dcr_arm & ((d2_is_jump  & ~d2_is_jalr & d2_mis_taken)
-             | (DCR_BACK & d2_is_branch & d2_imm[63]  & d2_mis_taken & ~d2_pdet[DCR_HIT]));
-   wire dcr2 = dcr_arm & ((d3_is_jump  & ~d3_is_jalr & d3_mis_taken)
-             | (DCR_BACK & d3_is_branch & d3_imm[63]  & d3_mis_taken & ~d3_pdet[DCR_HIT]));
+   wire dcr0 = dcr_arm & d_gc[GC_DCR];
+   wire dcr1 = dcr_arm & d2_gc[GC_DCR];
+   wire dcr2 = dcr_arm & d3_gc[GC_DCR];
 
 
    // THE PHYSICAL-ADDRESS CAP. DRAM starts at 0x8000_0000 and is 2^DRAM_LG2 bytes; a PA at or
@@ -486,19 +487,11 @@ module smolrv64_core
    localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
                       SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;   // the FP file's slices, one per slot
 
-   wire d_ord   = d_is_mem | d_is_amo | d_is_mul | d_is_fp | d_is_csr | d_is_serialize
-                | d_is_fencei | d_is_cbo | d_is_branch | d_is_jump | d_is_jalr
-                | d_illegal | d_fault | d_is_irqop;
-   wire d2_is_irqop = (d2_insn[6:2] == 5'b11100) & (d2_insn[14:12] == 3'b000)
-                    & (d2_insn[31:20] == 12'h7F0) & ~d2_illegal & ~d2_fault;
-   wire d2_ord  = d2_is_mem | d2_is_amo | d2_is_mul | d2_is_fp | d2_is_csr | d2_is_serialize
-                | d2_is_fencei | d2_is_cbo | d2_is_branch | d2_is_jump | d2_is_jalr
-                | d2_illegal | d2_fault | d2_is_irqop;
-   wire d3_is_irqop = (d3_insn[6:2] == 5'b11100) & (d3_insn[14:12] == 3'b000)
-                    & (d3_insn[31:20] == 12'h7F0) & ~d3_illegal & ~d3_fault;
-   wire d3_ord  = d3_is_mem | d3_is_amo | d3_is_mul | d3_is_fp | d3_is_csr | d3_is_serialize
-                | d3_is_fencei | d3_is_cbo | d3_is_branch | d3_is_jump | d3_is_jalr
-                | d3_illegal | d3_fault | d3_is_irqop;
+   wire d_ord   = d_gc[GC_ORD];
+   wire d2_is_irqop = d2_gc[GC_IRQOP];
+   wire d2_ord   = d2_gc[GC_ORD];
+   wire d3_is_irqop = d3_gc[GC_IRQOP];
+   wire d3_ord   = d3_gc[GC_ORD];
 
    // An f-register destination takes the FP file's slice of its slot (SH_F0/F1/F2 for A/B/C),
    // whoever writes it: the file has a bank per writer (smolrv64_prf). Every other destination
@@ -619,8 +612,7 @@ module smolrv64_core
    wire [RN_PBITS-1:0] rob_c3_prd;
    // Mirrors m_is_irqop (m_is_sys & funct3==0 & imm==0x7F0) one stage earlier; an op that
    // traps at dispatch never reaches M, so this decode is exact.
-   wire d_is_irqop = (d_insn[6:2] == 5'b11100) & (d_insn[14:12] == 3'b000)
-                   & (d_insn[31:20] == 12'h7F0) & ~d_illegal & ~d_fault;
+   wire d_is_irqop = d_gc[GC_IRQOP];
    wire [5:0]          rob_c_rd;
    wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
@@ -845,38 +837,29 @@ module smolrv64_core
    // scheduler could not issue to free M. That is fixed by removal, not by arbitration --
    // an FP arith op never enters M at all now. It cannot head-block, because it cannot
    // trap: the only FP trap is illegal, and both of its causes are settled before dispatch
-   // (a bad encoding is ~d_fp_valid, and mstatus.FS=Off is gated below).
-   //
-   // fs_off: a write to FS REDIRECTS and refetches younger ops (csr_file do_fschg), so the
-   // value read at dispatch is the one every in-flight FP op will retire under. When FS is
-   // off, FP arith routes to M as before and takes its illegal-instruction trap there --
-   // unchanged, and the reason the F stage needs no trap path.
-   wire d_fp_valid;
-   decode_fp u_dfp_disp
-     (.insn(d_insn), .fp_valid(d_fp_valid), .use_fpu(), .fp_class(),
-      .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
-      .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
+   // (a bad encoding is not FP arith, and mstatus.FS=Off makes the op illegal at decode).
+   // When FS is off, FP arith routes to the SYSQ as a trap at dispatch, the reason the F stage
+   // needs no trap path. The class is smolrv64_gclass's, carried in the instruction's record.
 
-   wire d_cls_f = d_fp_valid & ~d_is_mem & ~d_is_amo
-                & ~fs_off & ~d_illegal & ~d_fault & ~d_is_irqop;
+   wire d_cls_f = d_gc[GC_F];
    // Control flow (jal/jalr/bXX) is its OWN class now: it leaves the ordered/M pipe for the
    // FP/CTF pipe so a branch co-issues with a load (CTF-on-FP). A fetch-faulted CTI or an
    // irqop pseudo-op stays ordered (d_cls_l), so M keeps the single trap site; a real CTI
    // never traps at execute (RVC targets are 2-byte aligned, jalr clears bit 0).
-   wire d_cls_c = (d_is_branch | d_is_jump | d_is_jalr) & ~d_illegal & ~d_fault & ~d_is_irqop;
+   wire d_cls_c = d_gc[GC_C];
    // A mul/div is the F/CTF port's third drain (C1, 2026-09-17): it leaves the ordered queue,
    // where a 64-cycle divide held every younger load, and lands on SH_FE by tag like the FPU.
-   wire d_cls_m = d_is_mul & ~d_illegal & ~d_fault & ~d_is_irqop;
+   wire d_cls_m = d_gc[GC_M];
    // SYSTEM opcode (the irqop included), FENCE and FENCE.I (MISC-MEM, funct3 00x; CBO is 010),
    // and an instruction that traps at dispatch -- a fetch fault or an illegal instruction: every
    // one serialises and fires at the ROB head from the SYSQ's flops.
    function is_sysq(input [31:0] i, input ill, input flt);
       is_sysq = (i[6:2] == 5'b11100) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00)) | ill | flt;
    endfunction
-   wire d_cls_s = is_sysq(d_insn, d_illegal, d_fault);
-   wire d_cls_l = d_ord & ~d_cls_f & ~d_cls_c & ~d_cls_m & ~d_cls_s;
-   wire d_cls_i = ~d_ord | d_cls_c;   // ALU ops and control flow: the slot's lane
-   wire d_cls_fc = d_cls_f | d_cls_m | d_cls_s;   // all three share the FP/MD/SYS issue queue (u_iq_f)
+   wire d_cls_s = d_gc[GC_S];
+   wire d_cls_l = d_gc[GC_L];
+   wire d_cls_i = d_gc[GC_I];
+   wire d_cls_fc = d_gc[GC_FC];
 
    // Control flow falls to C_F here so d2_hold treats FP and CTF as one class: they share the
    // FP/CTF queue's single dispatch port, so A and B cannot both go there in a cycle.
@@ -900,19 +883,13 @@ module smolrv64_core
    //     a load in B behind a store in A captures the tag AFTER that store's, so it sees it
    //     as older (the queue's d_tag is the tail before this cycle's allocation);
    //   * room for two in the ROB, and nothing in flight is being redirected.
-   wire d2_fp_valid;
-   decode_fp u_dfp_disp2
-     (.insn(d2_insn), .fp_valid(d2_fp_valid), .use_fpu(), .fp_class(),
-      .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
-      .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
-   wire d2_cls_f = d2_fp_valid & ~d2_is_mem & ~d2_is_amo
-                 & ~fs_off & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
-   wire d2_cls_c = (d2_is_branch | d2_is_jump | d2_is_jalr) & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
-   wire d2_cls_m = d2_is_mul & ~d2_illegal & ~d2_fault & ~d2_is_irqop;
-   wire d2_cls_s = is_sysq(d2_insn, d2_illegal, d2_fault);
-   wire d2_cls_l = d2_ord & ~d2_cls_f & ~d2_cls_c & ~d2_cls_m & ~d2_cls_s;
-   wire d2_cls_i = ~d2_ord | d2_cls_c;   // ALU ops and control flow: the slot's lane
-   wire d2_cls_fc = d2_cls_f | d2_cls_m | d2_cls_s;
+   wire d2_cls_f = d2_gc[GC_F];
+   wire d2_cls_c = d2_gc[GC_C];
+   wire d2_cls_m = d2_gc[GC_M];
+   wire d2_cls_s = d2_gc[GC_S];
+   wire d2_cls_l = d2_gc[GC_L];
+   wire d2_cls_i = d2_gc[GC_I];
+   wire d2_cls_fc = d2_gc[GC_FC];
    wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // CTF falls to C_F (shares u_iq_f)
    wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
    wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
@@ -925,19 +902,13 @@ module smolrv64_core
    wire three_wide = TW3;
    // Slot C full classes: the dispatch swizzle lets slot C reach ANY pipe now (the 3rd ALU is
    // gone), so it needs the same LS/FC/ALU split as slots A and B, not just "ALU-only".
-   wire d3_fp_valid;
-   decode_fp u_d3fp_disp
-     (.insn(d3_insn), .fp_valid(d3_fp_valid), .use_fpu(), .fp_class(),
-      .op(), .op_mod(), .src_fmt(), .dst_fmt(), .int_fmt(),
-      .rnd(), .op0_sel(), .op1_sel(), .op2_sel(), .op0_int(), .wr_fp());
-   wire d3_cls_f = d3_fp_valid & ~d3_is_mem & ~d3_is_amo
-                 & ~fs_off & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
-   wire d3_cls_c = (d3_is_branch | d3_is_jump | d3_is_jalr) & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
-   wire d3_cls_m = d3_is_mul & ~d3_illegal & ~d3_fault & ~d3_is_irqop;
-   wire d3_cls_s = is_sysq(d3_insn, d3_illegal, d3_fault);
-   wire d3_cls_l = d3_ord & ~d3_cls_f & ~d3_cls_c & ~d3_cls_m & ~d3_cls_s;
-   wire d3_cls_i = ~d3_ord | d3_cls_c;   // ALU ops and control flow: the slot's lane
-   wire d3_cls_fc = d3_cls_f | d3_cls_m | d3_cls_s;
+   wire d3_cls_f = d3_gc[GC_F];
+   wire d3_cls_c = d3_gc[GC_C];
+   wire d3_cls_m = d3_gc[GC_M];
+   wire d3_cls_s = d3_gc[GC_S];
+   wire d3_cls_l = d3_gc[GC_L];
+   wire d3_cls_i = d3_gc[GC_I];
+   wire d3_cls_fc = d3_gc[GC_FC];
    // Destination shard = the UNIT that writes it (declared with its rationale above).
    // From the opcode alone, never from the trap decode: a trapping op writes nothing, so any
    // shard serves it, and the trap decode carries mstatus.FS (an FP op with FS off is illegal)
@@ -963,9 +934,9 @@ module smolrv64_core
    wire       d3_st_nb = d3_is_store & ~d3_is_amo & ~d3_is_cbo;
    wire       d3_ld_nb = d3_is_mem & ~d3_is_store & ~d3_is_amo & ~d3_is_cbo;
    wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v | d3_st_nb, pnd_r1_c | ~d3_rs1_v};
-   wire d3_plain = ~(d3_is_serialize | d3_is_fencei | d3_is_cbo | d3_is_amo | d3_is_csr | d3_illegal | d3_fault | d3_is_irqop);
-   wire d_plain  = ~(d_is_serialize  | d_is_fencei  | d_is_cbo  | d_is_amo  | d_is_csr  | d_illegal  | d_fault  | d_is_irqop);
-   wire d2_plain = ~(d2_is_serialize | d2_is_fencei | d2_is_cbo | d2_is_amo | d2_is_csr | d2_illegal | d2_fault | d2_is_irqop);
+   wire d3_plain = d3_gc[GC_PLAIN];
+   wire d_plain = d_gc[GC_PLAIN];
+   wire d2_plain = d2_gc[GC_PLAIN];
 
    wire [NWB_C-1:0]        wkv  = {we_ie3, we_ie2, we_fe, we_ld, we_ie};
    wire [NWB_C*RN_PBITS-1:0] wkp = {wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie};
