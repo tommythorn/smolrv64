@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="546" font-family="Helvetica, Arial, sans-serif" font-size="12">
 <rect width="100%" height="100%" fill="white"/>
 <text x="12" y="24" font-size="15" font-weight="bold">Geekbench 5.4.1 single-core, score per subtest</text>
-<text x="12" y="41" fill="#555">SmolRV64 on the XCKU5P at 166.67 MHz, 2026-10-03</text>
+<text x="12" y="41" fill="#555">SmolRV64 on the XCKU5P at 166.67 MHz, 2026-10-04</text>
 <text x="12" y="55" fill="#555">single-core 11: Integer 13, Crypto 1, Floating Point 8 (a geometric mean; one 0 zeroes it)</text>
 <text x="12" y="86" font-weight="bold" fill="#b5651d">Crypto</text>
 <text x="144" y="105" text-anchor="end">AES-XTS</text>
@@ -10,41 +10,41 @@
 <text x="450" y="105" fill="#666">2.50 MB/sec</text>
 <text x="12" y="128" font-weight="bold" fill="#2b6cb0">Integer</text>
 <text x="144" y="147" text-anchor="end">Text Compression</text>
-<rect x="160" y="137" width="250.7" height="12" fill="#2b6cb0"/>
-<text x="416.7" y="147" font-weight="bold">27</text>
+<rect x="160" y="137" width="260.0" height="12" fill="#2b6cb0"/>
+<text x="426.0" y="147" font-weight="bold">28</text>
 <text x="450" y="147" fill="#666">142.4 KB/sec</text>
 <text x="144" y="165" text-anchor="end">Image Compression</text>
 <rect x="160" y="155" width="92.9" height="12" fill="#2b6cb0"/>
 <text x="258.9" y="165" font-weight="bold">10</text>
-<text x="450" y="165" fill="#666">495.8 Kpixels/sec</text>
+<text x="450" y="165" fill="#666">493.1 Kpixels/sec</text>
 <text x="144" y="183" text-anchor="end">Navigation</text>
 <rect x="160" y="173" width="250.7" height="12" fill="#2b6cb0"/>
 <text x="416.7" y="183" font-weight="bold">27</text>
-<text x="450" y="183" fill="#666">74.8 KTE/sec</text>
+<text x="450" y="183" fill="#666">75.8 KTE/sec</text>
 <text x="144" y="201" text-anchor="end">HTML5</text>
 <rect x="160" y="191" width="102.1" height="12" fill="#2b6cb0"/>
 <text x="268.1" y="201" font-weight="bold">11</text>
-<text x="450" y="201" fill="#666">12.8 KElements/sec</text>
+<text x="450" y="201" fill="#666">12.9 KElements/sec</text>
 <text x="144" y="219" text-anchor="end">SQLite</text>
-<rect x="160" y="209" width="111.4" height="12" fill="#2b6cb0"/>
-<text x="277.4" y="219" font-weight="bold">12</text>
-<text x="450" y="219" fill="#666">3.80 Krows/sec</text>
+<rect x="160" y="209" width="120.7" height="12" fill="#2b6cb0"/>
+<text x="286.7" y="219" font-weight="bold">13</text>
+<text x="450" y="219" fill="#666">4.08 Krows/sec</text>
 <text x="144" y="237" text-anchor="end">PDF Rendering</text>
 <rect x="160" y="227" width="130.0" height="12" fill="#2b6cb0"/>
 <text x="296.0" y="237" font-weight="bold">14</text>
-<text x="450" y="237" fill="#666">775.4 Kpixels/sec</text>
+<text x="450" y="237" fill="#666">764.9 Kpixels/sec</text>
 <text x="144" y="255" text-anchor="end">Text Rendering</text>
-<rect x="160" y="245" width="111.4" height="12" fill="#2b6cb0"/>
-<text x="277.4" y="255" font-weight="bold">12</text>
-<text x="450" y="255" fill="#666">3.77 KB/sec</text>
+<rect x="160" y="245" width="120.7" height="12" fill="#2b6cb0"/>
+<text x="286.7" y="255" font-weight="bold">13</text>
+<text x="450" y="255" fill="#666">4.03 KB/sec</text>
 <text x="144" y="273" text-anchor="end">Clang</text>
 <rect x="160" y="263" width="139.3" height="12" fill="#2b6cb0"/>
 <text x="305.3" y="273" font-weight="bold">15</text>
-<text x="450" y="273" fill="#666">115.9 lines/sec</text>
+<text x="450" y="273" fill="#666">116.1 lines/sec</text>
 <text x="144" y="291" text-anchor="end">Camera</text>
 <rect x="160" y="281" width="46.4" height="12" fill="#2b6cb0"/>
 <text x="212.4" y="291" font-weight="bold">5</text>
-<text x="450" y="291" fill="#666">0.06 images/sec</text>
+<text x="450" y="291" fill="#666">0.05 images/sec</text>
 <text x="12" y="314" font-weight="bold" fill="#2f855a">Floating Point</text>
 <text x="144" y="333" text-anchor="end">N-Body Physics</text>
 <rect x="160" y="323" width="111.4" height="12" fill="#2f855a"/>
@@ -53,11 +53,11 @@
 <text x="144" y="351" text-anchor="end">Rigid Body Physics</text>
 <rect x="160" y="341" width="130.0" height="12" fill="#2f855a"/>
 <text x="296.0" y="351" font-weight="bold">14</text>
-<text x="450" y="351" fill="#666">89.6 FPS</text>
+<text x="450" y="351" fill="#666">89.4 FPS</text>
 <text x="144" y="369" text-anchor="end">Gaussian Blur</text>
 <rect x="160" y="359" width="18.6" height="12" fill="#2f855a"/>
 <text x="184.6" y="369" font-weight="bold">2</text>
-<text x="450" y="369" fill="#666">96.8 Kpixels/sec</text>
+<text x="450" y="369" fill="#666">98.1 Kpixels/sec</text>
 <text x="144" y="387" text-anchor="end">Face Detection</text>
 <rect x="160" y="377" width="120.7" height="12" fill="#2f855a"/>
 <text x="286.7" y="387" font-weight="bold">13</text>
@@ -65,23 +65,23 @@
 <text x="144" y="405" text-anchor="end">Horizon Detection</text>
 <rect x="160" y="395" width="111.4" height="12" fill="#2f855a"/>
 <text x="277.4" y="405" font-weight="bold">12</text>
-<text x="450" y="405" fill="#666">304.7 Kpixels/sec</text>
+<text x="450" y="405" fill="#666">302.6 Kpixels/sec</text>
 <text x="144" y="423" text-anchor="end">Image Inpainting</text>
 <rect x="160" y="413" width="111.4" height="12" fill="#2f855a"/>
 <text x="277.4" y="423" font-weight="bold">12</text>
-<text x="450" y="423" fill="#666">598.4 Kpixels/sec</text>
+<text x="450" y="423" fill="#666">598.9 Kpixels/sec</text>
 <text x="144" y="441" text-anchor="end">HDR</text>
 <rect x="160" y="431" width="176.4" height="12" fill="#2f855a"/>
 <text x="342.4" y="441" font-weight="bold">19</text>
-<text x="450" y="441" fill="#666">262.0 Kpixels/sec</text>
+<text x="450" y="441" fill="#666">260.9 Kpixels/sec</text>
 <text x="144" y="459" text-anchor="end">Ray Tracing</text>
 <rect x="160" y="449" width="139.3" height="12" fill="#2f855a"/>
 <text x="305.3" y="459" font-weight="bold">15</text>
-<text x="450" y="459" fill="#666">12.1 Kpixels/sec</text>
+<text x="450" y="459" fill="#666">12.2 Kpixels/sec</text>
 <text x="144" y="477" text-anchor="end">Structure from Motion</text>
 <rect x="160" y="467" width="37.1" height="12" fill="#2f855a"/>
 <text x="203.1" y="477" font-weight="bold">4</text>
-<text x="450" y="477" fill="#666">37.4 pixels/sec</text>
+<text x="450" y="477" fill="#666">37.9 pixels/sec</text>
 <text x="144" y="495" text-anchor="end">Speech Recognition</text>
 <rect x="160" y="485" width="167.1" height="12" fill="#2f855a"/>
 <text x="333.1" y="495" font-weight="bold">18</text>
