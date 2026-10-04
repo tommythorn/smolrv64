@@ -533,7 +533,7 @@ module smolrv64_core
 
    smolrv64_rename #(.IDXB(RN_IDXB), .IW(IW)) u_rename
      (.clk(clk), .reset(reset),
-      .r_valid(rn_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
+      .r_valid(rn_valid), .r_cand(d_valid), .r_cand_b(d2_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
       .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
       .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
       .r_sprs1(rn_sprs1), .r_sprs2(rn_sprs2), .r_sprs3(rn_sprs3),
@@ -694,9 +694,15 @@ module smolrv64_core
    assign fe_err = {fpu_err, pend_err, fe_err_f[12:0]};
    smolrv64_pending #(.PBITS(RN_PBITS), .NWB(NWB_C)) u_pend
      (.clk(clk), .reset(reset),
-      .a_v(rn_valid & d_rd_v), .a_preg(rn_prd),
-      .a_v2(rn_valid_b & d2_rd_v), .a_preg2(rn_prd_b),
-      .a_v3(rn_valid_c & d3_rd_v), .a_preg3(rn_prd_c),
+      // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT: the set enable is the slot's own
+      // valid and destination and the registered rename stall, never the dispatch take, whose
+      // late terms (mstatus.FS through the illegal decode, the queues' room, the redirect) fanned
+      // into all 1,024 pending flops (~1,000 endpoints at -0.45 ns in every build). A candidate
+      // is the head of its free list (the stall keeps all three inside the free set), so an
+      // untaken one is a free register no source names, and it is set again when it is taken.
+      .a_v(d_valid & d_rd_v & ~rn_stall), .a_preg(rn_prd),
+      .a_v2(d2_valid & d2_rd_v & ~rn_stall), .a_preg2(rn_prd_b),
+      .a_v3(d3_valid & d3_rd_v & ~rn_stall), .a_preg3(rn_prd_c),
       .q10(rn_sprs1_b), .q11(rn_sprs2_b), .q12(rn_sprs3_b), .r10(pnd_s1_b), .r11(pnd_s2_b), .r12(pnd_s3_b),
       .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
       .q20(rn_sprs1_c), .q21(rn_sprs2_c), .q22(rn_sprs3_c), .r20(pnd_s1_c), .r21(pnd_s2_c), .r22(pnd_s3_c),

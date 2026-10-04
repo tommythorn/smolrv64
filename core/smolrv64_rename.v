@@ -47,6 +47,11 @@ module smolrv64_rename
 
     // ---- rename port (one instruction per cycle) ----
     input  wire             r_valid,      // an instruction is renaming this cycle
+    // the slot holds an instruction, taken or not: what the free-list read addresses count, so
+    // a candidate register never waits for the dispatch decision (a slot is taken only behind
+    // the slots before it, so for every taken slot the count is the same)
+    input  wire             r_cand,
+    input  wire             r_cand_b,
     input  wire [5:0]       r_rs1,
     input  wire [5:0]       r_rs2,
     input  wire [5:0]       r_rs3,
@@ -163,8 +168,9 @@ module smolrv64_rename
    assign r_prs3 = r_lv3 ? r_sprs3 : r_mprs3;
    // Port B reads the same pre-rename map, then A's destination is bypassed in: B is younger,
    // so a source equal to A's rd names A's NEW register, which is speculative and not ready.
-   wire a_writes = r_valid   & r_rd_v   & ~stall;
-   wire b_writes = r_valid_b & r_rd_v_b & ~stall;
+   // (candidates, not takes: B is renamed only behind A, C only behind B)
+   wire a_writes = r_cand   & r_rd_v   & ~stall;
+   wire b_writes = r_cand_b & r_rd_v_b & ~stall;
    assign r_byp1_b = a_writes & (r_rs1_b == r_rd);
    assign r_byp2_b = a_writes & (r_rs2_b == r_rd);
    assign r_byp3_b = a_writes & (r_rs3_b == r_rd);
@@ -275,10 +281,10 @@ module smolrv64_rename
    end
 
    // THE FREE-LIST READ ADDRESSES DO NOT SEE THE STALL (ar_* address; a_* advance).
-   wire alloc_r   = r_valid   & r_rd_v;
-   wire alloc_r_b = r_valid_b & r_rd_v_b;
-   wire alloc   = alloc_r   & ~stall;
-   wire alloc_b = alloc_r_b & ~stall;
+   wire alloc_r   = r_cand   & r_rd_v;
+   wire alloc_r_b = r_cand_b & r_rd_v_b;
+   wire alloc   = r_valid   & r_rd_v   & ~stall;
+   wire alloc_b = r_valid_b & r_rd_v_b & ~stall;
    wire alloc_c = r_valid_c & r_rd_v_c & ~stall;
 
    wire [IDXB-1:0] rd_a [0:NSH-1];   // each list's register for slot A, B and C
@@ -494,6 +500,8 @@ module smolrv64_rename
          $fatal(1, "smolrv64_rename: renamed x0 (B)");
       if (r_valid_b && !r_valid)
          $fatal(1, "smolrv64_rename: port B without port A");
+      if ((r_valid & ~r_cand) | (r_valid_b & ~r_cand_b))
+         $fatal(1, "smolrv64_rename: a slot renamed that was not a candidate");
       // f-registers and FP slices go together, and each slot owns one slice.
       if (alloc   && (r_rd[5]   != (r_shard   >= SH_F0) || (r_shard   >= SH_F0 && r_shard   != SH_F0)))
          $fatal(1, "smolrv64_rename: slot A renames r%0d into shard %0d", r_rd, r_shard);

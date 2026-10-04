@@ -124,23 +124,23 @@ module smolrv64_pending
       for (iz = 0; iz < NWB; iz = iz + 1)
          if (w_v[iz] & ~pend[w_preg[iz*PBITS +: PBITS]] & ~flush) e_zombie = 1'b1;
    end
-   wire e_realloc = ((a_v  & pend[a_preg]) |
-                     (a_v2 & (pend[a_preg2] | (a_v & (a_preg == a_preg2)))) |
-                     (a_v3 & (pend[a_preg3] | (a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))))) & ~flush;
+   // The set is every candidate's (smolrv64_core), so a register may be set again while set:
+   // an untaken candidate is a free register. What must never happen is two slots naming one
+   // register in a cycle.
+   wire e_realloc = ((a_v2 & a_v & (a_preg == a_preg2)) |
+                     (a_v3 & ((a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))))) & ~flush;
    always @(posedge clk) err <= reset ? 2'b00 : {e_realloc, e_zombie};
    always @(posedge clk) if (!reset) begin
       if (a_v & (a_preg == {PBITS{1'b0}}))
          $fatal(1, "smolrv64_pending: physical register 0 allocated");
-      if (a_v & pend[a_preg] & ~flush)
-         $fatal(1, "smolrv64_pending: p%0d allocated while already pending", a_preg);
       if (a_v2 & (a_preg2 == {PBITS{1'b0}}))
          $fatal(1, "smolrv64_pending: physical register 0 allocated (B)");
-      if (a_v2 & (pend[a_preg2] | (a_v & (a_preg == a_preg2))) & ~flush)
-         $fatal(1, "smolrv64_pending: p%0d allocated (B) while already pending", a_preg2);
+      if (a_v2 & a_v & (a_preg == a_preg2) & ~flush)
+         $fatal(1, "smolrv64_pending: slots A and B both set p%0d", a_preg2);
       if (a_v3 & (a_preg3 == {PBITS{1'b0}}))
          $fatal(1, "smolrv64_pending: physical register 0 allocated (C)");
-      if (a_v3 & (pend[a_preg3] | (a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))) & ~flush)
-         $fatal(1, "smolrv64_pending: p%0d allocated (C) while already pending", a_preg3);
+      if (a_v3 & ((a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))) & ~flush)
+         $fatal(1, "smolrv64_pending: slot C sets p%0d with an older slot", a_preg3);
       for (i = 0; i < NWB; i = i + 1)
          if (w_v[i] & ~pend[w_preg[i*PBITS +: PBITS]] & ~flush)
             $fatal(1, "smolrv64_pending: writeback to p%0d, which was not pending",
