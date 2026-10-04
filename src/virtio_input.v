@@ -230,20 +230,21 @@ module virtio_input #(
    // sequence_key: simmerv's term_keys::sequence_key -- {valid, keycode, mods}. p1v says a
    // second parameter was given; its value is xterm's 1 + modifiers.
    function [10:0] sequence_key(input [15:0] p0, input p1v, input [15:0] p1, input [7:0] fin);
-      reg [2:0] m;  reg [6:0] k;  reg ok;
+      reg [2:0] m;  reg [6:0] k;  reg ok;  reg [15:0] p1m, f, n;   // no SV casts: Vivado reads .v as Verilog-2001
       begin
-         m  = !p1v || p1 == 16'd0 ? 3'd0 : 3'(p1 - 16'd1);
+         p1m = p1 - 16'd1;  f = {8'd0, fin} - "P";
+         m  = !p1v || p1 == 16'd0 ? 3'd0 : p1m[2:0];
          ok = 1'b1;  k = 7'd0;
          case (fin)
             "A": k = 7'd103;  "B": k = 7'd108;  "C": k = 7'd106;  "D": k = 7'd105;
             "H": k = 7'd102;  "F": k = 7'd107;
-            "P", "Q", "R", "S": k = 7'd59 + 7'(fin - "P");
+            "P", "Q", "R", "S": k = 7'd59 + f[6:0];
             "Z": begin k = K_TAB;  m = M_SHIFT; end          // Shift-Tab, whatever the modifiers
             "~": case (p0)
                     16'd1, 16'd7: k = 7'd102;  16'd2: k = 7'd110;  16'd3: k = 7'd111;
                     16'd4, 16'd8: k = 7'd107;  16'd5: k = 7'd104;  16'd6: k = 7'd109;
-                    16'd11, 16'd12, 16'd13, 16'd14, 16'd15: k = 7'd59 + 7'(p0 - 16'd11);
-                    16'd17, 16'd18, 16'd19, 16'd20, 16'd21: k = 7'd64 + 7'(p0 - 16'd17);
+                    16'd11, 16'd12, 16'd13, 16'd14, 16'd15: begin n = p0 - 16'd11;  k = 7'd59 + n[6:0]; end
+                    16'd17, 16'd18, 16'd19, 16'd20, 16'd21: begin n = p0 - 16'd17;  k = 7'd64 + n[6:0]; end
                     16'd23: k = 7'd87;  16'd24: k = 7'd88;
                     default: ok = 1'b0;
                  endcase
@@ -324,7 +325,7 @@ module virtio_input #(
    wire [2:0] t = st_step[3:1];
    reg  [6:0] t_code;  reg t_down;
    always @* begin : expand
-      reg [6:0] mods_l [0:2];  reg [1:0] n;
+      reg [6:0] mods_l [0:2];  reg [1:0] n;  reg [2:0] ri;
       n = 2'd0;  mods_l[0] = 7'd0;  mods_l[1] = 7'd0;  mods_l[2] = 7'd0;
       if (st_mods[2]) begin mods_l[n] = K_LCTRL;  n = n + 2'd1; end
       if (st_mods[0]) begin mods_l[n] = K_LSHIFT; n = n + 2'd1; end
@@ -332,7 +333,7 @@ module virtio_input #(
       if (t < {1'b0, n})                    begin t_code = mods_l[t[1:0]];                  t_down = 1'b1; end
       else if (t == {1'b0, n})              begin t_code = st_key;                          t_down = 1'b1; end
       else if (t == {1'b0, n} + 3'd1)       begin t_code = st_key;                          t_down = 1'b0; end
-      else                                  begin t_code = mods_l[2'(3'd2 * {1'b0, n} + 3'd1 - t)]; t_down = 1'b0; end
+      else begin ri = 3'd2 * {1'b0, n} + 3'd1 - t;  t_code = mods_l[ri[1:0]];  t_down = 1'b0; end
    end
    wire        ev_v = st_v;
    wire [63:0] ev   = st_step[0] ? 64'd0                                           // SYN_REPORT
