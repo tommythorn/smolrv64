@@ -2324,7 +2324,9 @@ module smolrv64_core
    wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi);  // trap, xret, illegal CSR, fence.i: a redirect
    wire sy_trap    = sy_fire & (csr_redir_trap | sy_xt);  // ...that is an exception: kill, no result
    wire sy_done    = sy_fire & ~sy_trap;                 // completes through M's ROB port
-   wire sy_wr      = sy_done & sy_rd_v & ~csr_illegal;   // the CSR read's value onto SH_LD
+   // the CSR read's value onto SH_LD. A CSR op that csr_file traps writes its register too: the
+   // trap flushes every reader, and the write and its wake stay clear of csr_file's decision.
+   wire sy_wr      = sy_fire & sy_rd_v & ~sy_xt;
    assign sy_advance = ~sy_v | sy_fire;
    always @(posedge clk) begin
       sy_head_q <= ~reset & sy_at_head & ~sy_fire;
