@@ -5,7 +5,8 @@
     tools/vga-try.py 45.25 960 992 1088 1216 600 603 609 624 -hsync +vsync   # the same, unquoted
     tools/vga-try.py --cvt 960x600          # whatever `cvt 960 600 60` says
     tools/vga-try.py --cvt-r 960x600@60     # cvt's reduced-blanking mode
-    tools/vga-try.py --pattern bars ...     # card (default), bars, grid, checker, white, black
+    tools/vga-try.py --pattern palette ...  # card (default), palette (all 64 RGB222 colours),
+                                            # bars, grid, checker, white, black
     tools/vga-try.py --dry-run ...          # print what would be sent; touch nothing
     tools/vga-try.py --off                  # scanout off
 
@@ -111,7 +112,24 @@ def pattern(kind, w, h):
         if 0 <= x < w and 0 <= y < h:
             px[y * w + x] = c
 
-    if kind == 'white':
+    if kind == 'palette':
+        # All 64 RGB222 colours, 8x8: square (row i, column j) is colour c = 8i + j, with
+        # R = c >> 4, G = (c >> 2) & 3, B = c & 3, each in RGB565's top two bits per channel, as
+        # the hardware takes them. So red steps every two rows, green every four columns, blue
+        # every column: a stuck pin shows as two squares the same, a swapped pair as squares out
+        # of order.
+        for y in range(h):
+            for x in range(w):
+                i, j = min(7, y * 8 // h), min(7, x * 8 // w)
+                c = i * 8 + j
+                px[y * w + x] = (c >> 4) << 14 | (c >> 2 & 3) << 9 | (c & 3) << 3
+        for y in range(h):                   # thin black lines between the squares
+            for k in range(1, 8):
+                px[y * w + k * w // 8] = BLACK
+        for x in range(w):
+            for k in range(1, 8):
+                px[(k * h // 8) * w + x] = BLACK
+    elif kind == 'white':
         px = [WHITE] * (w * h)
     elif kind == 'bars':
         for y in range(h):
@@ -246,7 +264,7 @@ def main():
     ap.add_argument('modeline', nargs='*')
     ap.add_argument('--cvt', metavar='WxH[@Hz]')
     ap.add_argument('--cvt-r', metavar='WxH[@Hz]')
-    ap.add_argument('--pattern', default='card', choices=['card', 'bars', 'grid', 'checker', 'white', 'black'])
+    ap.add_argument('--pattern', default='card', choices=['card', 'palette', 'bars', 'grid', 'checker', 'white', 'black'])
     ap.add_argument('--off', action='store_true')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--save-pattern', metavar='FILE', help='also write the pattern (raw RGB565) here')
