@@ -72,6 +72,9 @@ module smolrv64_rob
     // reintroduce exactly the serialisation dynamic issue exists to remove.
     input  wire [NW-1:0]           w_v,
     input  wire [NW*IDXB-1:0]      w_ix,
+    // the completions that may also commit in their own cycle (a subset of w_v); the others
+    // set `done` and commit from it next cycle, which keeps their cones out of retire
+    input  wire [NW-1:0]           w_fv,
 
     // ---- commit: the head, in order, straight into smolrv64_rename's commit port ----
         input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
@@ -196,19 +199,16 @@ module smolrv64_rob
    wire [EW-1:0] he2 = bank_brd[h2idx[LB-1:0]];
    wire [EW-1:0] he3 = bank_brd[h3idx[LB-1:0]];
 
-   // Write-forward on the head's done bit. An op that completes IN the cycle its entry is at
-   // the head must commit that same cycle, or every completion costs an extra cycle -- and
-   // at this milestone that would make the shadow's commit stream one cycle late and no
-   // longer bit-identical to the M-stage commit it is checked against.
-   // Write-forward across every port: an op completing IN the cycle its entry reaches the
-   // head must commit that same cycle, or every completion costs an extra cycle.
+   // Write-forward on the head's done bit for the w_fv completions: they commit in the cycle
+   // they complete. A mispredict completing at its squash and M's redirecting op must (the
+   // flush follows the commit); the rest is a cycle of retire latency against a deep cone.
    function automatic w_hits;
       input [IDXB-1:0] ix;
       integer q;
       begin
          w_hits = 1'b0;
          for (q = 0; q < NW; q = q + 1)
-            if (w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
+            if (w_fv[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
       end
    endfunction
    wire head_done = v[hidx] & (done[hidx] | w_hits(hidx));
@@ -314,6 +314,8 @@ module smolrv64_rob
    always @(posedge clk) if (!reset) begin
       if (d_valid & ~d_ready)
          $fatal(1, "smolrv64_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
+      if (|(w_fv & ~w_v))
+         $fatal(1, "smolrv64_rob: a forwarded completion (w_fv %b) without its completion (w_v %b)", w_fv, w_v);
       for (ri = 0; ri < NW; ri = ri + 1) if (w_v[ri]) begin
          if (~v[w_ix[ri*IDXB +: IDXB]])
             $fatal(1, "smolrv64_rob: completion for slot %0d, which holds no live entry",

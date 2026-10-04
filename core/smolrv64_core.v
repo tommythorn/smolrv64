@@ -646,6 +646,7 @@ module smolrv64_core
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;
+   wire rob_w_fwd   = (m_valid & m_done_wb & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;    // M's done without the dTLB compare
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : sy_done ? sy_rob : m_rob_idx;   // sy_done: M is empty (asserted)
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
@@ -1918,6 +1919,10 @@ module smolrv64_core
       .w_v({md_wb, cf_red_fire, iss_alu3 & ~lane_mis[2], iss_alu2 & ~lane_mis[1], sq_k_take, fp_land,
             iss_alu & ~lane_mis[0], rob_w_valid}),
       .w_ix({md_rob, fr_rob, a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
+      // a lane's CTI and M's live memory completion commit a cycle after they complete: the
+      // branch compare and the dTLB stay out of retire and the free lists
+      .w_fv({md_wb, cf_red_fire, iss_alu3 & ~lane_cti[2], iss_alu2 & ~lane_cti[1], sq_k_take, fp_land,
+             iss_alu & ~lane_cti[0], rob_w_fwd}),
       .c_kill((m_valid & m_done & m_trap) | sy_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
@@ -3218,19 +3223,19 @@ module smolrv64_core
    // it resolves on operands that path computed, and it trains nothing. (Wrong-path CTIs that
    // resolve before the older mispredict does still train: control flow resolves out of order.)
    // Up to three CTIs resolve in a cycle and the predictor trains one. The restart's own CTI
-   // trains in its restart cycle (rule D16: before its squash); the others queue in age order
-   // (TQN entries, one trains per cycle) unless the queue is full, when they are dropped:
-   // training is a hint (tr_drop counts them). A queued CTI younger than a pending restart is
-   // on the path the restart left and trains nothing; the queue empties on a squash.
+   // trains in its restart cycle (rule D16: before its squash). Every resolving CTI queues in
+   // age order (TQN entries, one trains per cycle) unless the queue is full, when it is
+   // dropped: training is a hint (tr_drop counts them). The enqueue reads registers only. At
+   // the head, the pending restart's own CTI (it trained when it restarted) and anything
+   // younger (the path the restart left) train nothing; the queue empties on a squash.
    localparam integer TQN = 8, TQB = 3;
    wire [2:0] tr_ok = lr_v & (lr_br | lr_jmp)
                     & ~{fr_v & older(fr_seq, lr_seq[2]), fr_v & older(fr_seq, lr_seq[1]),
                         fr_v & older(fr_seq, lr_seq[0])};
-   wire [2:0] tr_en = tr_ok & ~({3{fr_set}} & lw);           // the restart's own CTI trains directly
    // each enqueuing lane's rank among this cycle's: the number of older ones
-   wire [1:0] rk0 = {1'b0, tr_en[1] & older(lr_seq[1], lr_seq[0])} + {1'b0, tr_en[2] & older(lr_seq[2], lr_seq[0])};
-   wire [1:0] rk1 = {1'b0, tr_en[0] & older(lr_seq[0], lr_seq[1])} + {1'b0, tr_en[2] & older(lr_seq[2], lr_seq[1])};
-   wire [1:0] rk2 = {1'b0, tr_en[0] & older(lr_seq[0], lr_seq[2])} + {1'b0, tr_en[1] & older(lr_seq[1], lr_seq[2])};
+   wire [1:0] rk0 = {1'b0, tr_ok[1] & older(lr_seq[1], lr_seq[0])} + {1'b0, tr_ok[2] & older(lr_seq[2], lr_seq[0])};
+   wire [1:0] rk1 = {1'b0, tr_ok[0] & older(lr_seq[0], lr_seq[1])} + {1'b0, tr_ok[2] & older(lr_seq[2], lr_seq[1])};
+   wire [1:0] rk2 = {1'b0, tr_ok[0] & older(lr_seq[0], lr_seq[2])} + {1'b0, tr_ok[1] & older(lr_seq[1], lr_seq[2])};
    reg  [TQB-1:0] tq_h, tq_t;
    reg  [TQB:0]   tq_n;
    reg  [PCW-1:0] tq_pc [0:TQN-1];
@@ -3241,9 +3246,9 @@ module smolrv64_core
    reg  [TQN-1:0] tq_rvc, tq_cbr, tq_call, tq_ret, tq_taken;
    initial begin tq_h = 0; tq_t = 0; tq_n = 0; end
    wire [TQB:0] tq_free = TQN[TQB:0] - tq_n;
-   wire [2:0]   tq_w = tr_en & {({2'b00, rk2} < tq_free), ({2'b00, rk1} < tq_free), ({2'b00, rk0} < tq_free)};
+   wire [2:0]   tq_w = tr_ok & {({2'b00, rk2} < tq_free), ({2'b00, rk1} < tq_free), ({2'b00, rk0} < tq_free)};
    wire         tq_out = ~fr_set & (tq_n != 0);               // the head trains (or is discarded) this cycle
-   wire         tq_dead = fr_v & older(fr_seq, tq_seq[tq_h]);  // ...discarded: past a pending restart
+   wire         tq_dead = fr_v & ~older(tq_seq[tq_h], fr_seq); // ...discarded: the pending restart or past it
    // each lane's CTI is a call (writes x1/x5) or a return (a jalr reading x1/x5, writing neither)
    wire [2:0] l_lrd = lr_rdv & {(lr_rd[2] == 6'd1) | (lr_rd[2] == 6'd5), (lr_rd[1] == 6'd1) | (lr_rd[1] == 6'd5),
                                 (lr_rd[0] == 6'd1) | (lr_rd[0] == 6'd5)};
@@ -3268,7 +3273,7 @@ module smolrv64_core
          tq_n <= tq_n + {2'b00, tq_w[0]} + {2'b00, tq_w[1]} + {2'b00, tq_w[2]} - {{TQB{1'b0}}, tq_out};
       end
    end
-   wire [1:0] tr_drop = {1'b0, tr_en[0] & ~tq_w[0]} + {1'b0, tr_en[1] & ~tq_w[1]} + {1'b0, tr_en[2] & ~tq_w[2]};
+   wire [1:0] tr_drop = {1'b0, tr_ok[0] & ~tq_w[0]} + {1'b0, tr_ok[1] & ~tq_w[1]} + {1'b0, tr_ok[2] & ~tq_w[2]};
    assign tr_seq = fr_set ? lr_seq[wl] : tq_seq[tq_h];
    wire [ROB_IDXB-1:0] tr_rob = fr_set ? lr_rob[wl] : tq_rob[tq_h];   // (the bench marks the trained CTI by it)
    assign res_v     = fr_set ? (lr_br[wl] | lr_jmp[wl]) : (tq_out & ~tq_dead);

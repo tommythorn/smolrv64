@@ -355,9 +355,10 @@ order on its own pipe, and a wrong-path call or return resolves before its squas
 
 **Training.** Every CTI trains the predictor once, mispredicted or not, from its lane's resolve
 register (`lr_*`). Up to three resolve per cycle and the predictor trains one: the tracked
-restart's own CTI trains in its restart cycle, before its squash (rule D16); the others wait in
-an 8-entry queue in age order and are dropped only when it is full (29 of 7.9 M in the 60 M
-boot). A CTI younger than a pending restart trains nothing, and a squash empties the queue. A mispredicting
+restart's own CTI trains in its restart cycle, before its squash (rule D16). Every resolving CTI
+enters an 8-entry queue in age order, from the resolve registers alone, and is dropped only when
+the queue is full (34 of 7.9 M in the 60 M boot); at the head, the pending restart's own CTI
+(already trained) and any CTI younger than it train nothing. A squash empties the queue. A mispredicting
 conditional branch's early restart restores its own history snapshot plus its outcome. The key
 is the CTI's last halfword (its PC and length). Dhrystone (`workloads/rvbench`, 5,000 runs, IW=3): 1.06
 redirects per iteration, the strcmp loop exit; 3 102 919 cycles. The Linux lockstep (IW=3)
@@ -471,8 +472,13 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 | `shard` | `prd[PBITS-1:IDXB]` | a physical register's shard is the top bits of its number and never changes |
 | `pold` | `rmap[c_rd]`, read at commit | `rmap` holds committed state, so in the cycle an entry commits its architectural register still maps to what that entry displaced; the commit write is what replaces it |
 - Completion is by **slot index**, allocated at rename and carried with the op.
-- Write-forward on the head's `done` bit, so an op completing in the cycle its entry reaches
-  the head commits that same cycle.
+- Write-forward on the head's `done` bit (`w_fv`), so an op completing in the cycle its entry
+  reaches the head commits that same cycle -- except a lane's CTI and an M completion that
+  needs the dTLB compare, which commit from `done` a cycle later. Their cones (the branch
+  compare, `m_addr -> dTLB -> lsu_done`) would otherwise run through retire into the free
+  lists and the rename stall: on the lanes build that forward put the whole design at
+  -0.768 ns (10,991 failing endpoints), and without it at -0.155 (1,109), for -0.35% in the
+  60 M boot (-0.14% the CTIs, the rest the TLB-checked M ops).
 - Squash is **pointer-only**; there is nothing to walk.
 - `noret` exists because an injected `OP_IRQ` can commit with its trap not firing, and
   `minstret` must not count an instruction that architecturally does not exist.
@@ -533,7 +539,7 @@ independent of NF:
   `hpm_ev_q` fix registered the event bus and closed one route out of `lsu_done`; it left
   the other alive by explicitly exempting `retire_cnt` as "architectural". That is true of
   `minstret` and false of `mhpmcounterN`. `retire` is `rob_c_valid`, and `smolrv64_rob`'s
-  `head_done` write-forwards across every writeback port, so:
+  `head_done` write-forwarded across every writeback port, so:
 
       m_addr -> lsu_done -> rob w_hits -> retire -> retire_cnt
              -> hpm_inc's INSTRET arm -> 13 event muxes -> 13x 64-bit carry chain
