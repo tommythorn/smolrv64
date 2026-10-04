@@ -748,6 +748,8 @@ module rk_xcku5p(
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
+   reg  [ 6:0] rd_sel_q = 7'd0;   reg rd_dbg_q = 1'b0;
+   reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_bid_q;
 
    always @(posedge ui_clk) begin
       if (ui_cpu_reset) begin
@@ -764,28 +766,29 @@ module rk_xcku5p(
          mmio_read_d2 <= mmio_read_d1;
          if (ui_mmio_write && spi_speed_sel)
             spi_fast_half <= ui_mmio_writedata[15:0];
+         // Two stages, using the cycle the response already waits (readdatavalid = d2): the
+         // read cycle registers the page's select and that device's data; the next cycle muxes
+         // the registered words. A one-stage priority chain from every device's register file
+         // to mmio_readdata_q was the design's worst path at 333 MHz (-0.097 ns, from
+         // virtio_net's queue_sel) once the keyboard and video pages joined it.
          if (ui_mmio_read) begin
-            if (spi_speed_sel)
-               mmio_readdata_q <= {16'd0, spi_fast_half};
-            else if (sd_cd_gpio_sel)
-               mmio_readdata_q <= sd_cd_gpio_readdata;
-            else if (virtio_blk_sel && ui_mmio_address[11:8] == 4'hf)
-               mmio_readdata_q <= virtio_blk_debug_word;  // 0x10002f00: cap/state
-            else if (virtio_blk_sel)
-               mmio_readdata_q <= virtio_blk_readdata;
-            else if (virtio_net_sel && ui_mmio_address[11:8] == 4'hf)
-               mmio_readdata_q <= virtio_net_debug_word;  // 0x10003f00+ overlay
-            else if (virtio_net_sel)
-               mmio_readdata_q <= virtio_net_readdata;
-            else if (vga_sel)
-               mmio_readdata_q <= vga_mmio_rdata;
-            else if (kbd_sel)
-               mmio_readdata_q <= kbd_mmio_rdata;
-            else if (build_id_sel)
-               mmio_readdata_q <= build_id_readdata;
-            else
-               mmio_readdata_q <= 32'd0;
+            rd_sel_q <= {build_id_sel, kbd_sel, vga_sel, virtio_net_sel, virtio_blk_sel,
+                         sd_cd_gpio_sel, spi_speed_sel};
+            rd_dbg_q <= ui_mmio_address[11:8] == 4'hf;
+            rd_spi_q <= {16'd0, spi_fast_half};       rd_cd_q    <= sd_cd_gpio_readdata;
+            rd_blk_q <= virtio_blk_readdata;          rd_blkdb_q <= virtio_blk_debug_word;
+            rd_net_q <= virtio_net_readdata;          rd_netdb_q <= virtio_net_debug_word;
+            rd_vga_q <= vga_mmio_rdata;               rd_kbd_q   <= kbd_mmio_rdata;
+            rd_bid_q <= build_id_readdata;
          end
+         if (mmio_read_d1)
+            mmio_readdata_q <= ({32{rd_sel_q[0]}} & rd_spi_q)
+                             | ({32{rd_sel_q[1]}} & rd_cd_q)
+                             | ({32{rd_sel_q[2]}} & (rd_dbg_q ? rd_blkdb_q : rd_blk_q))
+                             | ({32{rd_sel_q[3]}} & (rd_dbg_q ? rd_netdb_q : rd_net_q))
+                             | ({32{rd_sel_q[4]}} & rd_vga_q)
+                             | ({32{rd_sel_q[5]}} & rd_kbd_q)
+                             | ({32{rd_sel_q[6]}} & rd_bid_q);
       end
    end
 
