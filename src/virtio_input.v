@@ -388,22 +388,34 @@ module virtio_input #(
    reg        notified0;
    reg [15:0] head;
    reg [63:0] buf_addr;
-   wire [63:0] q_desc   = eq ? q1_desc   : q0_desc;
-   wire [63:0] q_driver = eq ? q1_driver : q0_driver;
-   wire [63:0] q_device = eq ? q1_device : q0_device;
-   wire [15:0] q_mask   = (eq ? q1_num[15:0] : q0_num[15:0]) - 16'd1;
+   reg [30:0] buf_axi;
+   // The queue being served, latched as the engine picks it, in AXI address bits: q_ok has
+   // shown the upper halves zero, and every ring lives in DRAM, so the arithmetic is mod 2^31
+   // (what axi_a would have truncated to anyway). Muxing the two queues and adding in 64 bits on
+   // the way to dma_cmd_addr was 16 logic levels, a failing ui_clk path (2026-10-04).
+   reg  [30:0] q_desc, q_driver, q_device;
+   reg  [15:0] q_mask;
    wire [15:0] last     = eq ? last1 : last0;
    wire [15:0] used     = eq ? used1 : used0;
-   wire [15:0] avail    = eq ? avail1 : avail0;
-   wire [63:0] ring_a   = q_driver + 64'd4 + {47'd0, last & q_mask, 1'b0};
-   wire [63:0] used_a   = q_device + 64'd4 + {45'd0, used & q_mask, 3'd0};
-   wire [63:0] uidx_a   = q_device + 64'd2;
+   wire [30:0] ring_a   = q_driver + 31'd4 + {14'd0, last & q_mask, 1'b0};
+   wire [30:0] used_a   = q_device + 31'd4 + {12'd0, used & q_mask, 3'd0};
+   wire [30:0] uidx_a   = q_device + 31'd2;
+   wire [30:0] desc_a   = q_desc + {11'd0, head & q_mask, 4'd0};
    function [15:0] get16(input [63:0] d, input [2:0] off);
       get16 = d[{off, 3'd0} +: 16];
    endfunction
    function [30:0] axi_a(input [63:0] a);       // DRAM physical address -> AXI, as virtio_blk
       axi_a = a[63:31] <= 33'd1 ? a[30:0] : 31'd0;
    endfunction
+   task pick(input which);                       // serve queue `which` from the next state on
+      begin
+         eq       <= which;
+         q_desc   <= axi_a(which ? q1_desc   : q0_desc);
+         q_driver <= axi_a(which ? q1_driver : q0_driver);
+         q_device <= axi_a(which ? q1_device : q0_device);
+         q_mask   <= (which ? q1_num[15:0] : q0_num[15:0]) - 16'd1;
+      end
+   endtask
    assign ev_pop = es == E_EVENT && issued && dma_rsp_valid;
 
    always @(posedge clock) begin
@@ -422,14 +434,14 @@ module virtio_input #(
             E_IDLE: begin
                issued <= 1'b0;
                if (status_pending && q1_ok) begin
-                  eq <= 1'b1;  status_pending <= 1'b0;  es <= E_AVAIL;
+                  pick(1'b1);  status_pending <= 1'b0;  es <= E_AVAIL;
                end else if (ev_v && q0_ok && !need_notify0) begin
-                  eq <= 1'b0;  es <= last0 != avail0 ? E_RING : E_AVAIL;
+                  pick(1'b0);  es <= last0 != avail0 ? E_RING : E_AVAIL;
                end
             end
             E_AVAIL: if (!issued) begin                 // re-read avail.idx
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;  dma_cmd_addr <= axi_a(q_driver);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;  dma_cmd_addr <= q_driver;
                            issued <= 1'b1;  notified0 <= 1'b0;
                         end
                      end else if (dma_rsp_valid) begin : got_avail
@@ -446,7 +458,7 @@ module virtio_input #(
                      end
             E_RING:  if (!issued) begin
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;  dma_cmd_addr <= axi_a(ring_a);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;  dma_cmd_addr <= ring_a;
                            issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin
@@ -457,16 +469,16 @@ module virtio_input #(
             E_DADDR: if (!issued) begin
                         if (dma_cmd_ready) begin
                            dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;
-                           dma_cmd_addr <= axi_a(q_desc + {44'd0, head & q_mask, 4'd0});
+                           dma_cmd_addr <= desc_a;
                            issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin
-                        issued <= 1'b0;  buf_addr <= dma_rsp_rdata;  es <= E_DINFO;
+                        issued <= 1'b0;  buf_addr <= dma_rsp_rdata;  buf_axi <= axi_a(dma_rsp_rdata);  es <= E_DINFO;
                      end
             E_DINFO: if (!issued) begin
                         if (dma_cmd_ready) begin
                            dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b0;
-                           dma_cmd_addr <= axi_a(q_desc + {44'd0, head & q_mask, 4'd8});
+                           dma_cmd_addr <= desc_a + 31'd8;
                            issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin
@@ -478,7 +490,7 @@ module virtio_input #(
                      end
             E_EVENT: if (!issued) begin
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= axi_a(buf_addr);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= buf_axi;
                            dma_cmd_wdata <= ev;  dma_cmd_wstrb <= 8'hff;
                            issued <= 1'b1;
                         end
@@ -487,21 +499,21 @@ module virtio_input #(
                      end
             E_USED_ID: if (!issued) begin              // used elem: id (head), then len
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= axi_a(used_a);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= used_a;
                            dma_cmd_wdata <= {2{16'd0, head}};  dma_cmd_wstrb <= 8'h0f << used_a[2:0];
                            issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin issued <= 1'b0;  es <= E_USED_LEN; end
             E_USED_LEN: if (!issued) begin
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= axi_a(used_a + 64'd4);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= used_a + 31'd4;
                            dma_cmd_wdata <= {2{eq ? 32'd0 : 32'd8}};  dma_cmd_wstrb <= 8'h0f << used_a[2:0] ^ 8'hff;
                            issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin issued <= 1'b0;  es <= E_USED_IDX; end
             E_USED_IDX: if (!issued) begin
                         if (dma_cmd_ready) begin
-                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= axi_a(uidx_a);
+                           dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= uidx_a;
                            dma_cmd_wdata <= {4{used + 16'd1}};  dma_cmd_wstrb <= 8'h03 << uidx_a[2:0];
                            issued <= 1'b1;
                         end

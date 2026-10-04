@@ -121,8 +121,12 @@ module virtio_mmio #(
    always @(posedge clock)
       if (!reset && write && address[11:8] == 4'h0 && !(&byteenable))
          $fatal(1, "virtio_mmio: %0d-byte-enable write to common register %h", byteenable, address);
-   wire       queue0_selected = queue_sel == 32'd0 && QUEUE_COUNT >= 32'd1;
-   wire       queue1_selected = queue_sel == 32'd1 && QUEUE_COUNT >= 32'd2;
+   // Which queue QueueSel names, decoded when it is written: a 32-bit compare of queue_sel sat
+   // at the head of every register read's mux, the board's worst ui_clk path (virtio_net, then
+   // the keyboard, 2026-10-04).
+   reg        queue0_sel_q, queue1_sel_q;
+   wire       queue0_selected = queue0_sel_q;
+   wire       queue1_selected = queue1_sel_q;
    wire       active_queue_selected = queue0_selected || queue1_selected;
 
    assign irq = interrupt_status != 2'd0;
@@ -187,6 +191,8 @@ module virtio_mmio #(
          driver_features_0 <= 32'd0;
          driver_features_1 <= 32'd0;
          queue_sel <= 32'd0;
+         queue0_sel_q <= QUEUE_COUNT >= 32'd1;
+         queue1_sel_q <= 1'b0;
          queue0_num_q <= 32'd0;
          queue0_ready_q <= 1'b0;
          queue0_desc_q <= 64'd0;
@@ -218,7 +224,11 @@ module virtio_mmio #(
                  else if (driver_features_sel == 32'd1)
                     driver_features_1 <= wr_data_q;
               end
-              REG_QUEUE_SEL: queue_sel <= wr_data_q;
+              REG_QUEUE_SEL: begin
+                 queue_sel    <= wr_data_q;
+                 queue0_sel_q <= wr_data_q == 32'd0 && QUEUE_COUNT >= 32'd1;
+                 queue1_sel_q <= wr_data_q == 32'd1 && QUEUE_COUNT >= 32'd2;
+              end
               REG_QUEUE_NUM: begin
                  if (queue0_selected)
                     queue0_num_q <= wr_data_q;
@@ -242,6 +252,8 @@ module virtio_mmio #(
                     driver_features_0 <= 32'd0;
                     driver_features_1 <= 32'd0;
                     queue_sel <= 32'd0;
+                    queue0_sel_q <= QUEUE_COUNT >= 32'd1;
+                    queue1_sel_q <= 1'b0;
                     queue0_num_q <= 32'd0;
                     queue0_ready_q <= 1'b0;
                     queue0_desc_q <= 64'd0;
