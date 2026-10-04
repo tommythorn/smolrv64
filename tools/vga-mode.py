@@ -19,8 +19,8 @@ DRP layout (CLKOUT0, XAPP888's MMCME3/MMCME4 tables -- CHECK ON THE BOARD, untes
   0x08 ClkReg1: [15:13] phase mux  [12] reserved  [11:6] high time  [5:0] low time
   0x09 ClkReg2: [15] reserved  [14:12] frac  [11] frac_en  [10] frac_wf_r  [9:8] mx
                 [7] edge  [6] no_count  [5:0] delay time
-XAPP888 read-modify-writes these, keeping the reserved bits; this writes them as zero, which
-is their value in the bitstream's integer-divide configuration.
+XAPP888 read-modify-writes these, keeping the reserved bits; this writes them as the board
+reads them back (ClkReg1 bit 12 set), and tools/vga-try.py does the read-modify-write.
 """
 import argparse
 import sys
@@ -46,9 +46,12 @@ def divider(mhz):
 
 def clkout0_regs(d):
     if d == 1:
-        return 0x0041, 0x0040                       # high = low = 1, no_count
+        return 0x1041, 0x0040                       # high = low = 1, no_count
     high, low = d // 2, d - d // 2
-    return (high << 6) | low, (d & 1) << 7          # edge for an odd divider
+    # Bit 12 of ClkReg1 is reserved and reads back SET in this bitstream's MMCM (0x130d at /25,
+    # read over DRP on the board, 2026-10-04): written blind, it must stay set. tools/vga-try.py
+    # read-modify-writes instead.
+    return 0x1000 | (high << 6) | low, (d & 1) << 7  # edge for an odd divider
 
 
 def placement(w, h):
