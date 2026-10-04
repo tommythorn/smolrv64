@@ -7,6 +7,7 @@
 #   REPLAY=<byte> tools/board-gate.sh <resultdir>       # judge an old boot from that console offset, no board
 #   STRESS_S=900 ...                                  # seconds of post-login userspace stress (0 = skip)
 #   STRESS_ONLY=1 tools/board-gate.sh <resultdir>        # no program/boot: run the stress on the board as it is
+#   VGA=0 ...                                         # boot without the graphics console (default VGA=1)
 #
 # PASS = `login:` reached with ZERO faults, AND (since 2026-09-17) a bounded USERSPACE STRESS
 # over ssh (Geekbench 5 for STRESS_S seconds) that produces no fault in dmesg or on the console:
@@ -31,6 +32,9 @@ REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
 CON=$UB/screenlog.0
 [ -f "$CON" ] || CON=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu/screenlog.0
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
+# The board boots with the graphics console scanning out (ubuntu-boot.sh VGA): its memory
+# traffic is part of the machine every bitstream is judged on.
+export VGA=${VGA:-1}
 BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG|nfs: server .* not responding'
 MARK='riscv: base ISA extensions'
 
