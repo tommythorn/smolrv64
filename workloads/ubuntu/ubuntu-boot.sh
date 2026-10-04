@@ -24,9 +24,11 @@ cd "$(dirname "$0")"
 DTB=${DTB:-ubuntu-nfs.dtb}
 FW=${FW:-fw_payload.bin}
 INITRD=${INITRD:-tiny128.cpio}
-DTB_ADDR=${DTB_ADDR:-fffff000}
+# The DTB and initrd sit below the framebuffer at the top of DRAM (ubuntu-nfs.dts.in): 2 MiB
+# down, room for a framebuffer up to 1024x768.
+DTB_ADDR=${DTB_ADDR:-ffdff000}
 FW_ADDR=${FW_ADDR:-80000000}
-INITRD_ADDR=${INITRD_ADDR:-ff62b000}
+INITRD_ADDR=${INITRD_ADDR:-ff42b000}
 LOG=${LOG:-screenlog.0}
 TIMEOUT=${TIMEOUT:-900}   # seconds per xmodem transfer
 CHAR_DELAY=${CHAR_DELAY:-0.02}
@@ -136,6 +138,22 @@ n=2
 if [[ -n "${INITRD:-}" && -f "$INITRD" ]]; then
     n=3
     send_file "$INITRD_ADDR" "$INITRD" $((base + 3))
+fi
+# VGA=1 starts the scanout in vga_scanout's reset mode, 800x600@60 at 0xFFF0_0000 -- the DTB's
+# framebuffer. VGA=<mode> (tools/vga-mode.py --list) programs another mode first; the DTB's
+# framebuffer node must then be the one the tool prints. Opt-in: the scanout reads DRAM
+# continuously.
+if [[ "${VGA:-0}" == 1 ]]; then
+    send_line "WW10005000 7"
+elif [[ "${VGA:-0}" != 0 ]]; then
+    want=$(../../tools/vga-mode.py "$VGA" | sed -n 's/^\t\twidth = <\([0-9]*\)>;/\1/p')
+    have=$(dtc -I dtb -O dts "$DTB" 2>/dev/null | sed -n '/simple-framebuffer/,/};/s/.*width = <\(0x[0-9a-f]*\|[0-9]*\)>;.*/\1/p')
+    if [[ -z "$have" || $((have)) != "$want" ]]; then
+        echo "ERROR: VGA=$VGA but $DTB's framebuffer is ${have:-missing}, not $want wide;" \
+             "put tools/vga-mode.py $VGA's DTS lines in ubuntu-nfs.dts.in" >&2
+        exit 1
+    fi
+    while read -r cmd; do send_line "$cmd"; done < <(../../tools/vga-mode.py "$VGA" | grep '^WW')
 fi
 send_line "X${FW_ADDR} 0 ${DTB_ADDR}"
 echo "[ubuntu-boot] done"

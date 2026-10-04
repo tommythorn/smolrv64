@@ -1,4 +1,10 @@
 /dts-v1/;
+
+/* The framebuffer, as simmerv's `--graphics 800x600` lays it out: 800*600*2 bytes rounded up to
+ * a power of two, at the top of DRAM aligned to that size. It stays inside the memory node --
+ * ordinary RAM in Linux's linear map -- and this keeps the page allocator off it. vga_scanout
+ * reads it (docs/PLAN-2026-10-03-graphics-console.md); the DTB and initrd load below it. */
+/memreserve/ 0xfff00000 0x100000;
 /* @GENERATED@
  * Clock variants are GENERATED from this template: the timebase must equal the rate
  * the RTL's CLINT really ticks at, so it is computed from PROBE_CLK_DIV8 by the same
@@ -158,6 +164,17 @@
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0 0x80000000 0 0x7ffff000>; // 2 GiB MiB
+		reg = <0 0x80000000 0 0x80000000>; // 2 GiB, the framebuffer included
+	};
+
+	/* simplefb and fbcon draw here; identical to simmerv's node (src/fdt.rs embed_framebuffer).
+	 * simplefb warns "cannot reserve video memory": the region is System RAM, as intended. */
+	framebuffer@fff00000 {
+		compatible = "simple-framebuffer";
+		reg = <0 0xfff00000 0 0x100000>;
+		width = <800>;
+		height = <600>;
+		stride = <1600>;
+		format = "r5g6b5";
 	};
 };

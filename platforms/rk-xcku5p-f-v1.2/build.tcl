@@ -93,6 +93,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir axi_two_master_arbiter.v] Verilog
     add_source_if_missing $fileset [file join $src_dir axi_single_beat_master.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_mmio.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir vga_scanout.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_net.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_blk.v] Verilog
     add_source_if_missing $fileset [file join $src_dir sd_spi_host.v] Verilog

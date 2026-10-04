@@ -83,6 +83,13 @@ module rk_xcku5p(
     output wire [3:0] eth_txd,
     output wire       eth_tx_ctl,
 
+    // TinyVGA adapter on the 40-pin header, IO14..IO17: RGB222 and the syncs (vga_scanout).
+    output wire       vga_hs,
+    output wire       vga_vs,
+    output wire [1:0] vga_r,
+    output wire [1:0] vga_g,
+    output wire [1:0] vga_b,
+
     // DDR4 physical ports
     output wire        c0_ddr4_act_n,
     output wire [16:0] c0_ddr4_adr,
@@ -416,6 +423,8 @@ module rk_xcku5p(
    wire        virtio_blk_sel = ui_mmio_address[19:12] == 8'h02;
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
+   wire        vga_sel        = ui_mmio_address[19:12] == 8'h05;
+   wire [31:0] vga_mmio_rdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
    wire [31:0] virtio_net_readdata;
@@ -545,6 +554,158 @@ module rk_xcku5p(
    wire        virtio_blk_axi_rvalid;
    wire        virtio_blk_axi_rready;
 
+   wire [ 2:0] devab_axi_awid;
+   wire [30:0] devab_axi_awaddr;
+   wire [ 7:0] devab_axi_awlen;
+   wire [ 2:0] devab_axi_awsize;
+   wire [ 1:0] devab_axi_awburst;
+   wire        devab_axi_awlock;
+   wire [ 3:0] devab_axi_awcache;
+   wire [ 2:0] devab_axi_awprot;
+   wire [ 3:0] devab_axi_awqos;
+   wire        devab_axi_awvalid;
+   wire        devab_axi_awready;
+   wire [63:0] devab_axi_wdata;
+   wire [ 7:0] devab_axi_wstrb;
+   wire        devab_axi_wlast;
+   wire        devab_axi_wvalid;
+   wire        devab_axi_wready;
+   wire [ 2:0] devab_axi_bid;
+   wire [ 1:0] devab_axi_bresp;
+   wire        devab_axi_bvalid;
+   wire        devab_axi_bready;
+   wire [ 2:0] devab_axi_arid;
+   wire [30:0] devab_axi_araddr;
+   wire [ 7:0] devab_axi_arlen;
+   wire [ 2:0] devab_axi_arsize;
+   wire [ 1:0] devab_axi_arburst;
+   wire        devab_axi_arlock;
+   wire [ 3:0] devab_axi_arcache;
+   wire [ 2:0] devab_axi_arprot;
+   wire [ 3:0] devab_axi_arqos;
+   wire        devab_axi_arvalid;
+   wire        devab_axi_arready;
+   wire [ 2:0] devab_axi_rid;
+   wire [63:0] devab_axi_rdata;
+   wire [ 1:0] devab_axi_rresp;
+   wire        devab_axi_rlast;
+   wire        devab_axi_rvalid;
+   wire        devab_axi_rready;
+
+   wire [ 2:0] vga_axi_awid;
+   wire [30:0] vga_axi_awaddr;
+   wire [ 7:0] vga_axi_awlen;
+   wire [ 2:0] vga_axi_awsize;
+   wire [ 1:0] vga_axi_awburst;
+   wire        vga_axi_awlock;
+   wire [ 3:0] vga_axi_awcache;
+   wire [ 2:0] vga_axi_awprot;
+   wire [ 3:0] vga_axi_awqos;
+   wire        vga_axi_awvalid;
+   wire        vga_axi_awready;
+   wire [63:0] vga_axi_wdata;
+   wire [ 7:0] vga_axi_wstrb;
+   wire        vga_axi_wlast;
+   wire        vga_axi_wvalid;
+   wire        vga_axi_wready;
+   wire [ 2:0] vga_axi_bid;
+   wire [ 1:0] vga_axi_bresp;
+   wire        vga_axi_bvalid;
+   wire        vga_axi_bready;
+   wire [ 2:0] vga_axi_arid;
+   wire [30:0] vga_axi_araddr;
+   wire [ 7:0] vga_axi_arlen;
+   wire [ 2:0] vga_axi_arsize;
+   wire [ 1:0] vga_axi_arburst;
+   wire        vga_axi_arlock;
+   wire [ 3:0] vga_axi_arcache;
+   wire [ 2:0] vga_axi_arprot;
+   wire [ 3:0] vga_axi_arqos;
+   wire        vga_axi_arvalid;
+   wire        vga_axi_arready;
+   wire [ 2:0] vga_axi_rid;
+   wire [63:0] vga_axi_rdata;
+   wire [ 1:0] vga_axi_rresp;
+   wire        vga_axi_rlast;
+   wire        vga_axi_rvalid;
+   wire        vga_axi_rready;
+
+   wire [ 2:0] kbd_axi_awid;
+   wire [30:0] kbd_axi_awaddr;
+   wire [ 7:0] kbd_axi_awlen;
+   wire [ 2:0] kbd_axi_awsize;
+   wire [ 1:0] kbd_axi_awburst;
+   wire        kbd_axi_awlock;
+   wire [ 3:0] kbd_axi_awcache;
+   wire [ 2:0] kbd_axi_awprot;
+   wire [ 3:0] kbd_axi_awqos;
+   wire        kbd_axi_awvalid;
+   wire        kbd_axi_awready;
+   wire [63:0] kbd_axi_wdata;
+   wire [ 7:0] kbd_axi_wstrb;
+   wire        kbd_axi_wlast;
+   wire        kbd_axi_wvalid;
+   wire        kbd_axi_wready;
+   wire [ 2:0] kbd_axi_bid;
+   wire [ 1:0] kbd_axi_bresp;
+   wire        kbd_axi_bvalid;
+   wire        kbd_axi_bready;
+   wire [ 2:0] kbd_axi_arid;
+   wire [30:0] kbd_axi_araddr;
+   wire [ 7:0] kbd_axi_arlen;
+   wire [ 2:0] kbd_axi_arsize;
+   wire [ 1:0] kbd_axi_arburst;
+   wire        kbd_axi_arlock;
+   wire [ 3:0] kbd_axi_arcache;
+   wire [ 2:0] kbd_axi_arprot;
+   wire [ 3:0] kbd_axi_arqos;
+   wire        kbd_axi_arvalid;
+   wire        kbd_axi_arready;
+   wire [ 2:0] kbd_axi_rid;
+   wire [63:0] kbd_axi_rdata;
+   wire [ 1:0] kbd_axi_rresp;
+   wire        kbd_axi_rlast;
+   wire        kbd_axi_rvalid;
+   wire        kbd_axi_rready;
+
+   wire [ 2:0] periph_axi_awid;
+   wire [30:0] periph_axi_awaddr;
+   wire [ 7:0] periph_axi_awlen;
+   wire [ 2:0] periph_axi_awsize;
+   wire [ 1:0] periph_axi_awburst;
+   wire        periph_axi_awlock;
+   wire [ 3:0] periph_axi_awcache;
+   wire [ 2:0] periph_axi_awprot;
+   wire [ 3:0] periph_axi_awqos;
+   wire        periph_axi_awvalid;
+   wire        periph_axi_awready;
+   wire [63:0] periph_axi_wdata;
+   wire [ 7:0] periph_axi_wstrb;
+   wire        periph_axi_wlast;
+   wire        periph_axi_wvalid;
+   wire        periph_axi_wready;
+   wire [ 2:0] periph_axi_bid;
+   wire [ 1:0] periph_axi_bresp;
+   wire        periph_axi_bvalid;
+   wire        periph_axi_bready;
+   wire [ 2:0] periph_axi_arid;
+   wire [30:0] periph_axi_araddr;
+   wire [ 7:0] periph_axi_arlen;
+   wire [ 2:0] periph_axi_arsize;
+   wire [ 1:0] periph_axi_arburst;
+   wire        periph_axi_arlock;
+   wire [ 3:0] periph_axi_arcache;
+   wire [ 2:0] periph_axi_arprot;
+   wire [ 3:0] periph_axi_arqos;
+   wire        periph_axi_arvalid;
+   wire        periph_axi_arready;
+   wire [ 2:0] periph_axi_rid;
+   wire [63:0] periph_axi_rdata;
+   wire [ 1:0] periph_axi_rresp;
+   wire        periph_axi_rlast;
+   wire        periph_axi_rvalid;
+   wire        periph_axi_rready;
+
    wire [ 2:0] device_axi_awid;
    wire [30:0] device_axi_awaddr;
    wire [ 7:0] device_axi_awlen;
@@ -614,6 +775,8 @@ module rk_xcku5p(
                mmio_readdata_q <= virtio_net_debug_word;  // 0x10003f00+ overlay
             else if (virtio_net_sel)
                mmio_readdata_q <= virtio_net_readdata;
+            else if (vga_sel)
+               mmio_readdata_q <= vga_mmio_rdata;
             else if (build_id_sel)
                mmio_readdata_q <= build_id_readdata;
             else
@@ -1182,13 +1345,109 @@ module rk_xcku5p(
    assign virtio_net_axi_rready  = 1'b1;
 `endif
 
+   // ===== VGA scanout (simmerv's --graphics framebuffer on a TinyVGA adapter) =====
+   // vga_scanout reads the RGB565 framebuffer that Linux's simplefb draws into and drives the
+   // header pins RGB222. Its registers are page 0x05 (0x1000_5000), written by the ROM monitor
+   // before Linux starts (workloads/ubuntu/ubuntu-boot.sh); Linux never touches them.
+   //
+   // The pixel clock: an MMCM fed from ui_clk, VCO 1000 MHz (333.33 / 2 * 6), CLKOUT0 / 25 =
+   // 40 MHz -- VESA 800x600@60, vga_scanout's reset mode. Software changes the mode by
+   // rewriting CLKOUT0's divider over DRP (tools/vga-mode.py): the VCO never moves, so the
+   // MMCM's lock and filter settings, which depend only on M, stay valid. DCLK is ui_clk / 2
+   // (DRP's limit is below ui_clk), from a BUFGCE_DIV, so ui_clk <-> DCLK is synchronous.
+   wire        vga_pixclk_rst, vga_pixclk_locked;
+   wire        vga_drp_req, vga_drp_we;   wire [6:0] vga_drp_addr;   wire [15:0] vga_drp_di;
+   wire        vga_mmcm_fb, vga_pix_unbuf, vga_pix_clk, vga_drp_clk;
+   wire        vga_drp_drdy;   wire [15:0] vga_drp_do;
+   reg         vga_drp_ack = 1'b0, vga_drp_started = 1'b0, vga_drp_den = 1'b0;
+   reg  [15:0] vga_drp_do_q = 16'd0;
+
+   BUFGCE_DIV #(.BUFGCE_DIVIDE(2)) vga_drp_bufg (
+      .I(ui_clk), .CE(1'b1), .CLR(1'b0), .O(vga_drp_clk));
+
+   MMCME4_ADV #(
+      .BANDWIDTH          ("OPTIMIZED"),
+      .COMPENSATION       ("INTERNAL"),
+      .CLKIN1_PERIOD      (3.000),
+      .DIVCLK_DIVIDE      (2),
+      .CLKFBOUT_MULT_F    (6.000),
+      .CLKOUT0_DIVIDE_F   (25.000),
+      .CLKOUT0_DUTY_CYCLE (0.5),
+      .CLKOUT0_PHASE      (0.0)
+   ) vga_mmcm_inst (
+      .CLKIN1(ui_clk), .CLKIN2(1'b0), .CLKINSEL(1'b1),
+      .CLKFBIN(vga_mmcm_fb), .CLKFBOUT(vga_mmcm_fb), .CLKFBOUTB(),
+      .CLKOUT0(vga_pix_unbuf), .CLKOUT0B(), .CLKOUT1(), .CLKOUT1B(), .CLKOUT2(), .CLKOUT2B(),
+      .CLKOUT3(), .CLKOUT3B(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6(),
+      .DCLK(vga_drp_clk), .DEN(vga_drp_den), .DWE(vga_drp_we), .DADDR(vga_drp_addr),
+      .DI(vga_drp_di), .DO(vga_drp_do), .DRDY(vga_drp_drdy),
+      .PSCLK(1'b0), .PSEN(1'b0), .PSINCDEC(1'b0), .PSDONE(),
+      .CDDCREQ(1'b0), .CDDCDONE(),
+      .LOCKED(vga_pixclk_locked), .CLKINSTOPPED(), .CLKFBSTOPPED(),
+      .PWRDWN(1'b0), .RST(vga_pixclk_rst | ui_cpu_reset));
+   BUFG vga_pix_bufg (.I(vga_pix_unbuf), .O(vga_pix_clk));
+
+   // DRP: one access per four-phase handshake with vga_scanout (see its header). DEN is a
+   // one-cycle pulse; the address, data and DWE are vga_scanout's registers, held while
+   // drp_req is high, and drp_do_q is captured before drp_ack rises.
+   (* async_reg = "true" *) reg [1:0] vga_drp_req_s = 2'b00;
+   always @(posedge vga_drp_clk) begin
+      vga_drp_req_s <= {vga_drp_req_s[0], vga_drp_req};
+      vga_drp_den   <= 1'b0;
+      if (vga_drp_req_s[1] && !vga_drp_ack && !vga_drp_started) begin
+         vga_drp_den <= 1'b1;  vga_drp_started <= 1'b1;
+      end
+      if (vga_drp_drdy) begin vga_drp_do_q <= vga_drp_do;  vga_drp_ack <= 1'b1; end
+      if (!vga_drp_req_s[1]) begin vga_drp_ack <= 1'b0;  vga_drp_started <= 1'b0; end
+   end
+
+   (* async_reg = "true" *) reg [1:0] vga_pix_rst_s = 2'b11;
+   always @(posedge vga_pix_clk) vga_pix_rst_s <= {vga_pix_rst_s[0], ~vga_pixclk_locked};
+
+   vga_scanout vga_scanout_inst (
+      .clk(ui_clk), .reset(ui_cpu_reset),
+      .mmio_addr(ui_mmio_address[7:0]), .mmio_write(ui_mmio_write && vga_sel),
+      .mmio_wdata(ui_mmio_writedata), .mmio_be(ui_mmio_byteenable), .mmio_rdata(vga_mmio_rdata),
+      .m_axi_arid(vga_axi_arid), .m_axi_araddr(vga_axi_araddr), .m_axi_arlen(vga_axi_arlen),
+      .m_axi_arsize(vga_axi_arsize), .m_axi_arburst(vga_axi_arburst), .m_axi_arlock(vga_axi_arlock),
+      .m_axi_arcache(vga_axi_arcache), .m_axi_arprot(vga_axi_arprot), .m_axi_arqos(vga_axi_arqos),
+      .m_axi_arvalid(vga_axi_arvalid), .m_axi_arready(vga_axi_arready),
+      .m_axi_rid(vga_axi_rid), .m_axi_rdata(vga_axi_rdata), .m_axi_rresp(vga_axi_rresp),
+      .m_axi_rlast(vga_axi_rlast), .m_axi_rvalid(vga_axi_rvalid), .m_axi_rready(vga_axi_rready),
+      .pixclk_rst(vga_pixclk_rst), .pixclk_locked(vga_pixclk_locked),
+      .drp_req(vga_drp_req), .drp_we(vga_drp_we), .drp_addr(vga_drp_addr), .drp_di(vga_drp_di),
+      .drp_ack(vga_drp_ack), .drp_do(vga_drp_do_q),
+      .pix_clk(vga_pix_clk), .pix_rst(vga_pix_rst_s[1]),
+      .vga_hs(vga_hs), .vga_vs(vga_vs), .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b));
+   // The scanout only reads: its write channel is idle.
+   assign vga_axi_awid = 3'd0;    assign vga_axi_awaddr = 31'd0;  assign vga_axi_awlen = 8'd0;
+   assign vga_axi_awsize = 3'd0;  assign vga_axi_awburst = 2'd0;  assign vga_axi_awlock = 1'b0;
+   assign vga_axi_awcache = 4'd0; assign vga_axi_awprot = 3'd0;   assign vga_axi_awqos = 4'd0;
+   assign vga_axi_awvalid = 1'b0; assign vga_axi_wdata = 64'd0;   assign vga_axi_wstrb = 8'd0;
+   assign vga_axi_wlast = 1'b0;   assign vga_axi_wvalid = 1'b0;   assign vga_axi_bready = 1'b1;
+
+   // The virtio keyboard's DMA master (phase 4 of the plan) -- idle until it exists.
+   assign kbd_axi_awid = 3'd0;    assign kbd_axi_awaddr = 31'd0;  assign kbd_axi_awlen = 8'd0;
+   assign kbd_axi_awsize = 3'd0;  assign kbd_axi_awburst = 2'd0;  assign kbd_axi_awlock = 1'b0;
+   assign kbd_axi_awcache = 4'd0; assign kbd_axi_awprot = 3'd0;   assign kbd_axi_awqos = 4'd0;
+   assign kbd_axi_awvalid = 1'b0; assign kbd_axi_wdata = 64'd0;   assign kbd_axi_wstrb = 8'd0;
+   assign kbd_axi_wlast = 1'b0;   assign kbd_axi_wvalid = 1'b0;   assign kbd_axi_bready = 1'b1;
+   assign kbd_axi_arid = 3'd0;    assign kbd_axi_araddr = 31'd0;  assign kbd_axi_arlen = 8'd0;
+   assign kbd_axi_arsize = 3'd0;  assign kbd_axi_arburst = 2'd0;  assign kbd_axi_arlock = 1'b0;
+   assign kbd_axi_arcache = 4'd0; assign kbd_axi_arprot = 3'd0;   assign kbd_axi_arqos = 4'd0;
+   assign kbd_axi_arvalid = 1'b0; assign kbd_axi_rready = 1'b1;
+
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter
-   // Device-side arbiter: merge virtio-net (s0) and virtio-blk (s1) into one
-   // master before the core-vs-device arbiter below. Reusing the proven
-   // 2-master arbiter twice keeps each arbiter 2-input (timing-friendly) instead
-   // of growing a 3-master mux on the DDR path.
-   axi_two_master_arbiter #(.STAMP(1)) device_arbiter_inst(
+   // Device-side arbiters, a balanced tree under the core-vs-device arbiter below:
+   //    device_arbiter_inst  virtio-net (s0) + virtio-blk (s1)      stamps ID bit 0
+   //    periph_arbiter_inst  VGA scanout (s0) + virtio keyboard (s1)  stamps ID bit 0
+   //    device_top_inst      the two above                          stamps ID bit 1
+   //    ddr4_arbiter_inst    core + devices                          stamps ID bit 2
+   // Every device master therefore uses ID 0 (the IDs are 3 bits; three stamping levels over a
+   // master with its own ID bit would need a fourth). Reusing the proven 2-master arbiter keeps
+   // each one 2-input (timing-friendly) instead of growing a wider mux on the DDR path.
+   axi_two_master_arbiter #(.STAMP(0)) device_arbiter_inst(
       .clock          (ui_clk),
       .reset          (ui_cpu_reset),
 
@@ -1267,6 +1526,246 @@ module rk_xcku5p(
       .s1_axi_rlast   (virtio_blk_axi_rlast),
       .s1_axi_rvalid  (virtio_blk_axi_rvalid),
       .s1_axi_rready  (virtio_blk_axi_rready),
+
+      .m_axi_awid     (devab_axi_awid),
+      .m_axi_awaddr   (devab_axi_awaddr),
+      .m_axi_awlen    (devab_axi_awlen),
+      .m_axi_awsize   (devab_axi_awsize),
+      .m_axi_awburst  (devab_axi_awburst),
+      .m_axi_awlock   (devab_axi_awlock),
+      .m_axi_awcache  (devab_axi_awcache),
+      .m_axi_awprot   (devab_axi_awprot),
+      .m_axi_awqos    (devab_axi_awqos),
+      .m_axi_awvalid  (devab_axi_awvalid),
+      .m_axi_awready  (devab_axi_awready),
+      .m_axi_wdata    (devab_axi_wdata),
+      .m_axi_wstrb    (devab_axi_wstrb),
+      .m_axi_wlast    (devab_axi_wlast),
+      .m_axi_wvalid   (devab_axi_wvalid),
+      .m_axi_wready   (devab_axi_wready),
+      .m_axi_bid      (devab_axi_bid),
+      .m_axi_bresp    (devab_axi_bresp),
+      .m_axi_bvalid   (devab_axi_bvalid),
+      .m_axi_bready   (devab_axi_bready),
+      .m_axi_arid     (devab_axi_arid),
+      .m_axi_araddr   (devab_axi_araddr),
+      .m_axi_arlen    (devab_axi_arlen),
+      .m_axi_arsize   (devab_axi_arsize),
+      .m_axi_arburst  (devab_axi_arburst),
+      .m_axi_arlock   (devab_axi_arlock),
+      .m_axi_arcache  (devab_axi_arcache),
+      .m_axi_arprot   (devab_axi_arprot),
+      .m_axi_arqos    (devab_axi_arqos),
+      .m_axi_arvalid  (devab_axi_arvalid),
+      .m_axi_arready  (devab_axi_arready),
+      .m_axi_rid      (devab_axi_rid),
+      .m_axi_rdata    (devab_axi_rdata),
+      .m_axi_rresp    (devab_axi_rresp),
+      .m_axi_rlast    (devab_axi_rlast),
+      .m_axi_rvalid   (devab_axi_rvalid),
+      .m_axi_rready   (devab_axi_rready)
+   );
+
+
+   axi_two_master_arbiter #(.STAMP(0)) periph_arbiter_inst(
+      .clock          (ui_clk),
+      .reset          (ui_cpu_reset),
+
+      .s0_axi_awid     (vga_axi_awid),
+      .s0_axi_awaddr   (vga_axi_awaddr),
+      .s0_axi_awlen    (vga_axi_awlen),
+      .s0_axi_awsize   (vga_axi_awsize),
+      .s0_axi_awburst  (vga_axi_awburst),
+      .s0_axi_awlock   (vga_axi_awlock),
+      .s0_axi_awcache  (vga_axi_awcache),
+      .s0_axi_awprot   (vga_axi_awprot),
+      .s0_axi_awqos    (vga_axi_awqos),
+      .s0_axi_awvalid  (vga_axi_awvalid),
+      .s0_axi_awready  (vga_axi_awready),
+      .s0_axi_wdata    (vga_axi_wdata),
+      .s0_axi_wstrb    (vga_axi_wstrb),
+      .s0_axi_wlast    (vga_axi_wlast),
+      .s0_axi_wvalid   (vga_axi_wvalid),
+      .s0_axi_wready   (vga_axi_wready),
+      .s0_axi_bid      (vga_axi_bid),
+      .s0_axi_bresp    (vga_axi_bresp),
+      .s0_axi_bvalid   (vga_axi_bvalid),
+      .s0_axi_bready   (vga_axi_bready),
+      .s0_axi_arid     (vga_axi_arid),
+      .s0_axi_araddr   (vga_axi_araddr),
+      .s0_axi_arlen    (vga_axi_arlen),
+      .s0_axi_arsize   (vga_axi_arsize),
+      .s0_axi_arburst  (vga_axi_arburst),
+      .s0_axi_arlock   (vga_axi_arlock),
+      .s0_axi_arcache  (vga_axi_arcache),
+      .s0_axi_arprot   (vga_axi_arprot),
+      .s0_axi_arqos    (vga_axi_arqos),
+      .s0_axi_arvalid  (vga_axi_arvalid),
+      .s0_axi_arready  (vga_axi_arready),
+      .s0_axi_rid      (vga_axi_rid),
+      .s0_axi_rdata    (vga_axi_rdata),
+      .s0_axi_rresp    (vga_axi_rresp),
+      .s0_axi_rlast    (vga_axi_rlast),
+      .s0_axi_rvalid   (vga_axi_rvalid),
+      .s0_axi_rready   (vga_axi_rready),
+
+      .s1_axi_awid     (kbd_axi_awid),
+      .s1_axi_awaddr   (kbd_axi_awaddr),
+      .s1_axi_awlen    (kbd_axi_awlen),
+      .s1_axi_awsize   (kbd_axi_awsize),
+      .s1_axi_awburst  (kbd_axi_awburst),
+      .s1_axi_awlock   (kbd_axi_awlock),
+      .s1_axi_awcache  (kbd_axi_awcache),
+      .s1_axi_awprot   (kbd_axi_awprot),
+      .s1_axi_awqos    (kbd_axi_awqos),
+      .s1_axi_awvalid  (kbd_axi_awvalid),
+      .s1_axi_awready  (kbd_axi_awready),
+      .s1_axi_wdata    (kbd_axi_wdata),
+      .s1_axi_wstrb    (kbd_axi_wstrb),
+      .s1_axi_wlast    (kbd_axi_wlast),
+      .s1_axi_wvalid   (kbd_axi_wvalid),
+      .s1_axi_wready   (kbd_axi_wready),
+      .s1_axi_bid      (kbd_axi_bid),
+      .s1_axi_bresp    (kbd_axi_bresp),
+      .s1_axi_bvalid   (kbd_axi_bvalid),
+      .s1_axi_bready   (kbd_axi_bready),
+      .s1_axi_arid     (kbd_axi_arid),
+      .s1_axi_araddr   (kbd_axi_araddr),
+      .s1_axi_arlen    (kbd_axi_arlen),
+      .s1_axi_arsize   (kbd_axi_arsize),
+      .s1_axi_arburst  (kbd_axi_arburst),
+      .s1_axi_arlock   (kbd_axi_arlock),
+      .s1_axi_arcache  (kbd_axi_arcache),
+      .s1_axi_arprot   (kbd_axi_arprot),
+      .s1_axi_arqos    (kbd_axi_arqos),
+      .s1_axi_arvalid  (kbd_axi_arvalid),
+      .s1_axi_arready  (kbd_axi_arready),
+      .s1_axi_rid      (kbd_axi_rid),
+      .s1_axi_rdata    (kbd_axi_rdata),
+      .s1_axi_rresp    (kbd_axi_rresp),
+      .s1_axi_rlast    (kbd_axi_rlast),
+      .s1_axi_rvalid   (kbd_axi_rvalid),
+      .s1_axi_rready   (kbd_axi_rready),
+
+      .m_axi_awid     (periph_axi_awid),
+      .m_axi_awaddr   (periph_axi_awaddr),
+      .m_axi_awlen    (periph_axi_awlen),
+      .m_axi_awsize   (periph_axi_awsize),
+      .m_axi_awburst  (periph_axi_awburst),
+      .m_axi_awlock   (periph_axi_awlock),
+      .m_axi_awcache  (periph_axi_awcache),
+      .m_axi_awprot   (periph_axi_awprot),
+      .m_axi_awqos    (periph_axi_awqos),
+      .m_axi_awvalid  (periph_axi_awvalid),
+      .m_axi_awready  (periph_axi_awready),
+      .m_axi_wdata    (periph_axi_wdata),
+      .m_axi_wstrb    (periph_axi_wstrb),
+      .m_axi_wlast    (periph_axi_wlast),
+      .m_axi_wvalid   (periph_axi_wvalid),
+      .m_axi_wready   (periph_axi_wready),
+      .m_axi_bid      (periph_axi_bid),
+      .m_axi_bresp    (periph_axi_bresp),
+      .m_axi_bvalid   (periph_axi_bvalid),
+      .m_axi_bready   (periph_axi_bready),
+      .m_axi_arid     (periph_axi_arid),
+      .m_axi_araddr   (periph_axi_araddr),
+      .m_axi_arlen    (periph_axi_arlen),
+      .m_axi_arsize   (periph_axi_arsize),
+      .m_axi_arburst  (periph_axi_arburst),
+      .m_axi_arlock   (periph_axi_arlock),
+      .m_axi_arcache  (periph_axi_arcache),
+      .m_axi_arprot   (periph_axi_arprot),
+      .m_axi_arqos    (periph_axi_arqos),
+      .m_axi_arvalid  (periph_axi_arvalid),
+      .m_axi_arready  (periph_axi_arready),
+      .m_axi_rid      (periph_axi_rid),
+      .m_axi_rdata    (periph_axi_rdata),
+      .m_axi_rresp    (periph_axi_rresp),
+      .m_axi_rlast    (periph_axi_rlast),
+      .m_axi_rvalid   (periph_axi_rvalid),
+      .m_axi_rready   (periph_axi_rready)
+   );
+
+
+   axi_two_master_arbiter #(.STAMP(1)) device_top_inst(
+      .clock          (ui_clk),
+      .reset          (ui_cpu_reset),
+
+      .s0_axi_awid     (devab_axi_awid),
+      .s0_axi_awaddr   (devab_axi_awaddr),
+      .s0_axi_awlen    (devab_axi_awlen),
+      .s0_axi_awsize   (devab_axi_awsize),
+      .s0_axi_awburst  (devab_axi_awburst),
+      .s0_axi_awlock   (devab_axi_awlock),
+      .s0_axi_awcache  (devab_axi_awcache),
+      .s0_axi_awprot   (devab_axi_awprot),
+      .s0_axi_awqos    (devab_axi_awqos),
+      .s0_axi_awvalid  (devab_axi_awvalid),
+      .s0_axi_awready  (devab_axi_awready),
+      .s0_axi_wdata    (devab_axi_wdata),
+      .s0_axi_wstrb    (devab_axi_wstrb),
+      .s0_axi_wlast    (devab_axi_wlast),
+      .s0_axi_wvalid   (devab_axi_wvalid),
+      .s0_axi_wready   (devab_axi_wready),
+      .s0_axi_bid      (devab_axi_bid),
+      .s0_axi_bresp    (devab_axi_bresp),
+      .s0_axi_bvalid   (devab_axi_bvalid),
+      .s0_axi_bready   (devab_axi_bready),
+      .s0_axi_arid     (devab_axi_arid),
+      .s0_axi_araddr   (devab_axi_araddr),
+      .s0_axi_arlen    (devab_axi_arlen),
+      .s0_axi_arsize   (devab_axi_arsize),
+      .s0_axi_arburst  (devab_axi_arburst),
+      .s0_axi_arlock   (devab_axi_arlock),
+      .s0_axi_arcache  (devab_axi_arcache),
+      .s0_axi_arprot   (devab_axi_arprot),
+      .s0_axi_arqos    (devab_axi_arqos),
+      .s0_axi_arvalid  (devab_axi_arvalid),
+      .s0_axi_arready  (devab_axi_arready),
+      .s0_axi_rid      (devab_axi_rid),
+      .s0_axi_rdata    (devab_axi_rdata),
+      .s0_axi_rresp    (devab_axi_rresp),
+      .s0_axi_rlast    (devab_axi_rlast),
+      .s0_axi_rvalid   (devab_axi_rvalid),
+      .s0_axi_rready   (devab_axi_rready),
+
+      .s1_axi_awid     (periph_axi_awid),
+      .s1_axi_awaddr   (periph_axi_awaddr),
+      .s1_axi_awlen    (periph_axi_awlen),
+      .s1_axi_awsize   (periph_axi_awsize),
+      .s1_axi_awburst  (periph_axi_awburst),
+      .s1_axi_awlock   (periph_axi_awlock),
+      .s1_axi_awcache  (periph_axi_awcache),
+      .s1_axi_awprot   (periph_axi_awprot),
+      .s1_axi_awqos    (periph_axi_awqos),
+      .s1_axi_awvalid  (periph_axi_awvalid),
+      .s1_axi_awready  (periph_axi_awready),
+      .s1_axi_wdata    (periph_axi_wdata),
+      .s1_axi_wstrb    (periph_axi_wstrb),
+      .s1_axi_wlast    (periph_axi_wlast),
+      .s1_axi_wvalid   (periph_axi_wvalid),
+      .s1_axi_wready   (periph_axi_wready),
+      .s1_axi_bid      (periph_axi_bid),
+      .s1_axi_bresp    (periph_axi_bresp),
+      .s1_axi_bvalid   (periph_axi_bvalid),
+      .s1_axi_bready   (periph_axi_bready),
+      .s1_axi_arid     (periph_axi_arid),
+      .s1_axi_araddr   (periph_axi_araddr),
+      .s1_axi_arlen    (periph_axi_arlen),
+      .s1_axi_arsize   (periph_axi_arsize),
+      .s1_axi_arburst  (periph_axi_arburst),
+      .s1_axi_arlock   (periph_axi_arlock),
+      .s1_axi_arcache  (periph_axi_arcache),
+      .s1_axi_arprot   (periph_axi_arprot),
+      .s1_axi_arqos    (periph_axi_arqos),
+      .s1_axi_arvalid  (periph_axi_arvalid),
+      .s1_axi_arready  (periph_axi_arready),
+      .s1_axi_rid      (periph_axi_rid),
+      .s1_axi_rdata    (periph_axi_rdata),
+      .s1_axi_rresp    (periph_axi_rresp),
+      .s1_axi_rlast    (periph_axi_rlast),
+      .s1_axi_rvalid   (periph_axi_rvalid),
+      .s1_axi_rready   (periph_axi_rready),
 
       .m_axi_awid     (device_axi_awid),
       .m_axi_awaddr   (device_axi_awaddr),
@@ -1518,7 +2017,7 @@ module rk_xcku5p(
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
-   wire [12:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // bit12: blk(0)/net(1)
+   wire [14:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // [14:12]: the device page
    wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
    // virtio IRQs (ui_clk) synchronized into probe_clk for rv_soc_top's internal PLIC.
    // blk -> src 11, net -> src 12 (both match the DTB `interrupts` properties).
@@ -1564,7 +2063,7 @@ module rk_xcku5p(
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .dma_wr(p_dma_wr), .core_dbg(probe_core_dbg));
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(1'b0), .dma_wr(p_dma_wr), .core_dbg(probe_core_dbg));
 
 `ifdef ILA_IRQ
    // Debug (ILA_IRQ=1): capture the virtio_blk interrupt lifecycle on probe_clk. probe_irq_dbg =
@@ -1697,11 +2196,11 @@ module rk_xcku5p(
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
-   // Drive the MMIO bridge core side from rv_soc_top's virtio passthrough. rv_soc_top emits
-   // the 13-bit offset within its 0x1000_2000 virtio region (8 KiB); addr[12] selects the device
-   // (0 -> blk page 0x02, 1 -> net page 0x03) so ui_mmio_address[19:12] routes it to virtio_blk_inst
-   // (0x02) or virtio_net_inst (0x03). virtio_net_irq is already wired to PLIC src 12 (ext_irq[11]).
-   assign core_mmio_address    = {p_virtio_addr[12] ? 8'h03 : 8'h02, p_virtio_addr[11:0]};
+   // Drive the MMIO bridge core side from rv_soc_top's device window. rv_soc_top emits the
+   // offset from 0x1000_0000, and its page, [14:12], is the page here as is: 0x02 virtio_blk_inst,
+   // 0x03 virtio_net_inst, 0x05 vga_scanout_inst (0x04 is the keyboard's). virtio_net_irq is
+   // wired to PLIC src 12 (ext_irq[11]).
+   assign core_mmio_address    = {5'd0, p_virtio_addr};
    assign core_mmio_read       = p_virtio_read;
    assign core_mmio_write      = p_virtio_write;
    assign core_mmio_writedata  = p_virtio_wdata;

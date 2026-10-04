@@ -82,7 +82,7 @@ module tb;
       .uart_tx_valid(uart_tx_v), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .dma_wr(tb_dma_wr), .irq_dbg());
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0), .dma_wr(tb_dma_wr), .irq_dbg());
 
    // THE DDR MODEL IS THE MEASURED ONE BY DEFAULT. Until 2026-09-04 the default was a flat
    // 4-cycle line latency, which is not this machine: the D$ admitted two requests under a
@@ -241,13 +241,14 @@ module tb;
    // same bytes the DUT's cache does not. Without +disk the region answers as a device with no
    // media and the default DTB never touches it. +disk_ro keeps the image's writes in RAM.
    //
-   // soc's window is 8 KiB: addr[12] selects blk(+0)/net(+0x1000). The sim has no net backend:
-   // net-window reads return 0 (magic 0 -> the kernel skips the node cleanly); truncating bit 12
-   // instead aliased net onto blk = a ghost vdb probe (seen in the retired tb_virtio).
-   wire [12:0] virtio_addr;  wire virtio_read, virtio_write;
+   // soc's device window is pages 2..7 of 0x1000_0000: virtio_addr[14:12] is the page, 2 = blk.
+   // The sim has only blk: every other page reads 0 (magic 0 -> the kernel skips the node
+   // cleanly); decoding fewer bits instead aliased net onto blk = a ghost vdb probe (seen in
+   // the retired tb_virtio).
+   wire [14:0] virtio_addr;  wire virtio_read, virtio_write;
    wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [31:0] virtio_rdata_comb; wire virtio_irq;
-   wire        vio_net = virtio_addr[12];
+   wire        vio_net = virtio_addr[14:12] != 3'd2;   // anything but blk
    wire [31:0] vio_rdata = vio_net ? 32'd0 : virtio_rdata_comb;
    reg vio_trace = 1'b0;
    // FPGA-CDC-shaped latency: the response (reads AND writes) lands 3 cycles after the request

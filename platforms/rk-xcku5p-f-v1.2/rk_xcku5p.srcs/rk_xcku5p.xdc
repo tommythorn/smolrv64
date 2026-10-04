@@ -241,3 +241,37 @@ set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter 
 # without this exception Vivado times the crossing, and an off-integer period ratio collapses
 # the requirement -- that is what limited the design to the N x 3.000 ns ladder before.
 set_false_path -to [get_pins -hier -filter {NAME =~ *fbdiag_rst_sync_reg[0]/D}]
+
+# ---- TinyVGA adapter on the 40-pin header (vga_scanout) ------------------------------------
+# Header names from the board's pin table (doc/RK-XCKU5P-F V1.2管脚定义.xls, sheet "40 PIN"),
+# all bank 87. The outputs are vga_scanout's own registers, so they pack into the IOBs.
+set_property PACKAGE_PIN F12 [get_ports {vga_r[1]}]   ;# IO14_N
+set_property PACKAGE_PIN G12 [get_ports {vga_r[0]}]   ;# IO14_P
+set_property PACKAGE_PIN G14 [get_ports {vga_g[1]}]   ;# IO15_N
+set_property PACKAGE_PIN H14 [get_ports {vga_g[0]}]   ;# IO15_P
+set_property PACKAGE_PIN J14 [get_ports {vga_b[1]}]   ;# IO16_N
+set_property PACKAGE_PIN J15 [get_ports {vga_b[0]}]   ;# IO16_P
+set_property PACKAGE_PIN H13 [get_ports vga_vs]       ;# IO17_N
+set_property PACKAGE_PIN J13 [get_ports vga_hs]       ;# IO17_P
+set_property IOSTANDARD LVCMOS33 [get_ports {vga_hs vga_vs vga_r[*] vga_g[*] vga_b[*]}]
+set_property SLEW SLOW [get_ports {vga_hs vga_vs vga_r[*] vga_g[*] vga_b[*]}]
+set_property IOB TRUE [get_ports {vga_hs vga_vs vga_r[*] vga_g[*] vga_b[*]}]
+
+# The pixel clock is an MMCM output fed from ui_clk, so Vivado would time ui_clk <-> pixel clock
+# as RELATED clocks at an off-integer ratio (and DRP retunes it at run time anyway). Every
+# crossing is designed as asynchronous (vga_scanout's header):
+#   ui_clk -> pixel: CTRL.enable through a 2-FF synchronizer; the mode registers quasi-static.
+#   pixel -> ui_clk: the line-request toggle through a synchronizer; its line number is written
+#     with the toggle and held for a whole line, so it only has to settle before the toggle
+#     clears the synchronizer -- one ui_clk period bounds it.
+#   LOCKED -> both domains: an asynchronous status.
+# Objects, not literal clock names (see the CDC note above: a lookup that matches nothing
+# fails silently).
+set vga_ui_clk  [get_clocks -of_objects [get_nets ui_clk]]
+set vga_pix_clk [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *vga_mmcm_inst/CLKOUT0}]]
+set_false_path -from $vga_ui_clk -to $vga_pix_clk
+set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/tog_s_reg[0]/D}]
+set_max_delay -datapath_only 3.000 \
+    -from [get_cells -hier -filter {NAME =~ *vga_scanout_inst/req_line_reg[*]}] -to $vga_ui_clk
+set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/locked_s_reg[0]/D}]
+set_false_path -to [get_pins -hier -filter {NAME =~ *vga_pix_rst_s_reg[0]/D}]

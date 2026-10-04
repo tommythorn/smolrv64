@@ -11,7 +11,7 @@ module tb;
    wire [63:0] ddr_q_wmask; wire [511:0] ddr_q_wdata;
    reg d_busy = 0, d_we = 0, ddr_r_valid = 0, ddr_w_valid = 0; reg [4:0] d_id = 0; reg [1:0] d_beat = 0;
    wire uart_rx_ready, uart_tx_valid; wire [7:0] uart_tx_data;
-   wire fbdiag_reset_req; wire [12:0] virtio_addr; wire virtio_read, virtio_write; wire [31:0] virtio_wdata; wire [3:0] virtio_be;
+   wire fbdiag_reset_req; wire [14:0] virtio_addr; wire virtio_read, virtio_write; wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [17:0] irq_dbg; wire [1:0] cache_par_err; wire [63:0] cache_par_dbg;
    rv_soc_top `ifdef RTL_RUN #(.RESET_PC(64'h70000000)) `endif dut
      (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2),
@@ -24,7 +24,7 @@ module tb;
       .uart_tx_valid(uart_tx_valid), .uart_tx_data(uart_tx_data), .uart_tx_ready(1'b1),
       .fbdiag_reset_req(fbdiag_reset_req),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write), .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0),
+      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0),
       .irq_dbg(irq_dbg), .cache_par_err(cache_par_err), .cache_par_dbg(cache_par_dbg));
    // DDR answers zeros, one transaction at a time: a read's four beats, or a write's done
    always @(posedge clk) begin

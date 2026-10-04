@@ -98,7 +98,7 @@ module rv_soc_top #(
    // comes back 32b. virtio_irq raises PLIC source 1. The FPGA build leaves these
    // unconnected (virtio_rdata/irq read 0) -- the region is never touched without a DTB node.
    output wire             fbdiag_reset_req,  // one-shot: fetch-buffer invariant fired, reset to the monitor
-   output wire [12:0]      virtio_addr,   // 13-bit: bit12 selects blk(0)/net(0x1000) within the 8 KiB region
+   output wire [14:0]      virtio_addr,   // offset from 0x1000_0000; [14:12] is the page: 2 blk, 3 net, 4 keyboard, 5 video
    output wire             virtio_read,
    output wire             virtio_write,
    output wire [31:0]      virtio_wdata,
@@ -108,6 +108,7 @@ module rv_soc_top #(
    input  wire             virtio_irq,
    input  wire             virtio_net_irq,   // PLIC source 12 (ubuntu-nfs.dts virtio@10003000)
    input  wire             dma_wr,           // a device wrote memory (a pulse, in this clock): fence.i clears the I$
+   input  wire             virtio_kbd_irq,   // PLIC source 4 (virtio_mmio@10004000, as in simmerv)
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
    // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; tied to 0
    // otherwise). cache_par_err is the ILA_PARITY TRIGGER: it pulses in the cycle a cache
@@ -182,7 +183,11 @@ module rv_soc_top #(
    // DDR latency HPM window (read-only counters; any write clears). NOT in the DTB -- read it
    // from a bare-metal tool / the monitor; the kernel never touches it.
    localparam [63:0] HPM_BASE   = 64'h1800_0000;
-   localparam [63:0] VIRTIO_BASE = 64'h1000_2000;                 // virtio-mmio, 8 KiB: blk @+0x0000, net @+0x1000
+   // The board's ui_clk device pages, 24 KiB: virtio-blk 0x1000_2000, virtio-net 0x1000_3000,
+   // virtio keyboard 0x1000_4000, VGA scanout 0x1000_5000 (pages 6 and 7 read 0). Everything
+   // behind the probe_clk<->ui_clk bridge, so one window, one req/rsp path. The page number is
+   // passed through as is (virtio_addr[14:12]), so the board's page select is the identity.
+   localparam [63:0] VIRTIO_BASE = 64'h1000_0000;
    localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
    // Integrity log, 256 B read-only -- the design's own invariants, latched so software can
    // read them (see the INTEGRITY LOG block below).  Like HPM_BASE it is deliberately NOT in
@@ -214,7 +219,7 @@ module rv_soc_top #(
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
    wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
-   wire is_virtio_r = (dmem_raddr & ~64'h1fff)    == VIRTIO_BASE;   // 8 KiB: blk(+0) + net(+0x1000)
+   wire is_virtio_r = (dmem_raddr & ~64'h7fff)    == VIRTIO_BASE && dmem_raddr[14:13] != 2'b00;
    wire is_buildid_r = (dmem_raddr & ~64'hff)     == BUILDID_BASE;  // 256 B window (read-only)
    wire is_fbdiag_r  = (dmem_raddr & ~64'hff)     == FBDIAG_BASE;   // 256 B window (read-only)
    wire [63:0] fbdiag_rdata;   // driven by the capture block down by the fetch buffer
@@ -223,14 +228,14 @@ module rv_soc_top #(
    wire is_uart_w  = (dmem_wabase & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_wabase & ~64'h3ff_ffff) == PLIC_BASE;
    wire is_hpm_w   = (dmem_wabase & ~64'hff)        == HPM_BASE;
-   wire is_virtio_w = (dmem_wabase & ~64'h1fff)    == VIRTIO_BASE;
+   wire is_virtio_w = (dmem_wabase & ~64'h7fff)    == VIRTIO_BASE && dmem_wabase[14:13] != 2'b00;
    wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
    // virtio-mmio register access: 32-bit. The probe LSU bus is byte-addressed and
    // RIGHT-ALIGNED -- it presents/consumes "8 bytes @ mem_*addr" with the addressed
    // bytes in the LOW lane and the byte mask low-aligned (store drain: sb_data=raw,
    // dr_mask=low-nbytes). So a 32b reg always sits in [31:0] regardless of its offset;
    // do NOT pick a lane by addr[2] (that picks the empty high lane for 0x014/0x038/...).
-   assign virtio_addr  = dev_addr[12:0];
+   assign virtio_addr  = dev_addr[14:0];
    // virtio read AND write are BOTH REQ/RSP: the FPGA wrapper routes them through a probe_clk<->
    // ui_clk CDC bridge with multi-cycle latency (the sim models it, writes included, via virtio_rvalid
    // a few cycles later). A write MUST block until the bridge DELIVERS it: a fire-and-forget write
@@ -287,7 +292,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wen & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 10'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.

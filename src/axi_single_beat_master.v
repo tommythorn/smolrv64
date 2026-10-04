@@ -137,7 +137,7 @@ module axi_single_beat_master(
    assign m_axi_arlen   = 8'd0;
    assign m_axi_arsize  = 3'b011;
    assign m_axi_arburst = 2'b01;
-   assign m_axi_arid    = 3'b001;
+   assign m_axi_arid    = 3'b000;   // 0: the platform's arbiter tree stamps the bits above (rk_xcku5p.v)
    assign m_axi_arlock  = 1'b0;
    assign m_axi_arcache = 4'b0011;
    assign m_axi_arprot  = 3'b000;
@@ -149,7 +149,7 @@ module axi_single_beat_master(
    assign m_axi_awlen   = 8'd0;
    assign m_axi_awsize  = 3'b011;
    assign m_axi_awburst = 2'b01;
-   assign m_axi_awid    = 3'b001;
+   assign m_axi_awid    = 3'b000;
    assign m_axi_awlock  = 1'b0;
    assign m_axi_awcache = 4'b0011;
    assign m_axi_awprot  = 3'b000;
