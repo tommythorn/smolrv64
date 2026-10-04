@@ -2067,7 +2067,9 @@ module rk_xcku5p(
    end
    // Keyboard bytes cross to ui_clk, where virtio_input lives. At 3 Mbps a byte every 3.3 us and
    // the reader takes one a cycle, so this never fills.
-   smolrv64_async_fifo #(.WIDTH(8), .ADDR_BITS(4)) kbd_byte_fifo (
+   // Block RAM, as mmio_cmd_fifo/mmio_rsp_fifo: in LUT-RAM this crossing's read path missed
+   // 333 MHz on clock-root skew (-0.0006 ns, build 68b4997b), the failure those two document.
+   smolrv64_async_fifo #(.WIDTH(8), .ADDR_BITS(4), .MEMORY_TYPE("block")) kbd_byte_fifo (
       .wr_clock(probe_clk), .rd_clock(ui_clk), .reset(probe_reset),
       .wr_valid(prx_valid && kbd_route), .wr_ready(),
       .wr_data(prx_data),
