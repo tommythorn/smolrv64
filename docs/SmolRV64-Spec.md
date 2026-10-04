@@ -472,19 +472,23 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 | `shard` | `prd[PBITS-1:IDXB]` | a physical register's shard is the top bits of its number and never changes |
 | `pold` | `rmap[c_rd]`, read at commit | `rmap` holds committed state, so in the cycle an entry commits its architectural register still maps to what that entry displaced; the commit write is what replaces it |
 - Completion is by **slot index**, allocated at rename and carried with the op.
-- Write-forward on the head's `done` bit (`w_fv`), so an op completing in the cycle its entry
-  reaches the head commits that same cycle -- except a lane's CTI and an M completion that
-  needs the dTLB compare, which commit from `done` a cycle later. Their cones (the branch
-  compare, `m_addr -> dTLB -> lsu_done`) would otherwise run through retire into the free
-  lists and the rename stall: on the lanes build that forward put the whole design at
-  -0.768 ns (10,991 failing endpoints), and without it at -0.155 (1,109), for -0.35% in the
-  60 M boot (-0.14% the CTIs, the rest the TLB-checked M ops).
+- Commit reads `done`, a register: an op completes in one cycle and commits in a later one.
+  The one exception is the head completing in a flush cycle (`h_fin`: a mispredict at its
+  squash, M's or the SYSQ's redirecting op), which commits in that cycle, before the flush.
+  No completion cone (the lanes' branch compare, `m_addr -> dTLB -> lsu_done`, `csr_file`)
+  reaches retire, the free lists or the rename stall. With a same-cycle forward from every
+  port the lanes build stood at -0.768 ns over 10,991 endpoints, -0.155 with the deepest
+  ports cut. The cost is ROB and SQ occupancy: -1.48% in the 60 M boot (ROB 64 recovers
+  0.24 points and moves the stalls into the SQ, whose 8 entries are the next bound).
+- The irrevocable pointer reads the store queue's completion port (`IRR_FWD`) in its own
+  cycle as well as `done`: without it a store leaves the SQ a cycle later, and the boot loses
+  another 2.8% to `be:sq-full`.
 - Squash is **pointer-only**; there is nothing to walk.
 - `noret` exists because an injected `OP_IRQ` can commit with its trap not firing, and
   `minstret` must not count an instruction that architecturally does not exist.
 
 **The irrevocable pointer (`irr`, 2026-09-04).** A second pointer walks forward from the
-head, one entry per cycle, over entries that are done (with the head's write-forward) and
+head, one entry per cycle, over entries that are done (or completing on the SQ's port) and
 stops at the first that is not. In this core every op that can restart the machine -- a
 mispredicted branch, a trap, a system op, `fence.i`, the interrupt pseudo-op -- waits in M
 for the ROB head and is done only once it has completed there, so an entry that is done can

@@ -27,7 +27,10 @@ module smolrv64_rob
     parameter IDXB  = 4,              // $clog2(DEPTH)
     parameter PBITS = 9,
     parameter IW    = 2,              // pipeline width -> NBANKS = next_pow2(IW)
-    parameter NW    = 3)              // simultaneous completion ports
+    parameter NW    = 3,              // simultaneous completion ports
+    // the completion ports the irrevocable pointer reads in their own cycle (the store
+    // queue's): a store passes `irr` the cycle it completes and leaves the queue a cycle sooner
+    parameter [NW-1:0] IRR_FWD = {NW{1'b0}})
    (input  wire             clk,
     input  wire             reset,
 
@@ -72,9 +75,10 @@ module smolrv64_rob
     // reintroduce exactly the serialisation dynamic issue exists to remove.
     input  wire [NW-1:0]           w_v,
     input  wire [NW*IDXB-1:0]      w_ix,
-    // the completions that may also commit in their own cycle (a subset of w_v); the others
-    // set `done` and commit from it next cycle, which keeps their cones out of retire
-    input  wire [NW-1:0]           w_fv,
+    // the head completes in a flush cycle (a mispredict at its squash, a redirecting system
+    // op): it commits in that cycle, before the flush. Every other completion commits from
+    // `done` a cycle later, which keeps the completion cones out of retire.
+    input  wire                    h_fin,
 
     // ---- commit: the head, in order, straight into smolrv64_rename's commit port ----
         input  wire             c_kill,       // head is trapping/squashed: retire it, free nothing
@@ -199,25 +203,30 @@ module smolrv64_rob
    wire [EW-1:0] he2 = bank_brd[h2idx[LB-1:0]];
    wire [EW-1:0] he3 = bank_brd[h3idx[LB-1:0]];
 
-   // Write-forward on the head's done bit for the w_fv completions: they commit in the cycle
-   // they complete. A mispredict completing at its squash and M's redirecting op must (the
-   // flush follows the commit); the rest is a cycle of retire latency against a deep cone.
-   function automatic w_hits;
+   function automatic w_hits;          // (the h_fin assertion's)
       input [IDXB-1:0] ix;
       integer q;
       begin
          w_hits = 1'b0;
          for (q = 0; q < NW; q = q + 1)
-            if (w_fv[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
+            if (w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
       end
    endfunction
-   wire head_done = v[hidx] & (done[hidx] | w_hits(hidx));
+   wire head_done = v[hidx] & (done[hidx] | h_fin);
    wire [IDXB-1:0] iidx = irr[IDXB-1:0];
    assign irr_idx = iidx;
    assign irr_v   = (irr != tail);
-   // one entry per cycle, with the same write-forward the head uses: the commit that sets a
-   // store's `done` this cycle moves the pointer past it next cycle
-   wire irr_done  = (irr != tail) & v[iidx] & (done[iidx] | w_hits(iidx));
+   // one entry per cycle, over entries already done or completing on an IRR_FWD port
+   function automatic irr_hits;
+      input [IDXB-1:0] ix;
+      integer q;
+      begin
+         irr_hits = 1'b0;
+         for (q = 0; q < NW; q = q + 1)
+            if (IRR_FWD[q] && w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) irr_hits = 1'b1;
+      end
+   endfunction
+   wire irr_done  = (irr != tail) & v[iidx] & (done[iidx] | irr_hits(iidx));
 
    // c_kill: the head is trapping. It must NOT commit -- a trap does not write rd -- and the
    // redirect that follows flushes it, which returns its allocation through the free list's
@@ -228,7 +237,7 @@ module smolrv64_rob
    assign c_rd    = he[PBITS +: 6];
    assign c_noret = he[PBITS+6];
       assign c_rd_v  = |c_prd;
-   wire            head2_done = v[h2idx] & (done[h2idx] | w_hits(h2idx));
+   wire            head2_done = v[h2idx] & done[h2idx];
       // ...and never in a flush cycle: a mispredicted branch COMMITS and redirects in the same
    // cycle, and the entry behind it is the wrong path (rv64ui-v-add retired the fall-through
    // of a taken loop branch, 2026-09-05).
@@ -237,7 +246,7 @@ module smolrv64_rob
    assign c2_rd    = he2[PBITS +: 6];
    assign c2_noret = he2[PBITS+6];
    assign c2_rd_v  = |c2_prd;
-   wire            head3_done = v[h3idx] & (done[h3idx] | w_hits(h3idx));
+   wire            head3_done = v[h3idx] & done[h3idx];
    // IW>=3 gate: v[h3idx] can be set by ordinary two-wide allocations, so without this gate
    // a two-wide build would wrongly retire three per cycle. Constant-folds to 0 at IW=2.
    assign c3_valid = GE3 & c2_valid & head3_done & ~c3_kill & ~flush;
@@ -314,8 +323,8 @@ module smolrv64_rob
    always @(posedge clk) if (!reset) begin
       if (d_valid & ~d_ready)
          $fatal(1, "smolrv64_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
-      if (|(w_fv & ~w_v))
-         $fatal(1, "smolrv64_rob: a forwarded completion (w_fv %b) without its completion (w_v %b)", w_fv, w_v);
+      if (h_fin & ~w_hits(hidx))
+         $fatal(1, "smolrv64_rob: h_fin without a completion of the head (slot %0d)", hidx);
       for (ri = 0; ri < NW; ri = ri + 1) if (w_v[ri]) begin
          if (~v[w_ix[ri*IDXB +: IDXB]])
             $fatal(1, "smolrv64_rob: completion for slot %0d, which holds no live entry",

@@ -646,7 +646,6 @@ module smolrv64_core
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;
-   wire rob_w_fwd   = (m_valid & m_done_wb & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;    // M's done without the dTLB compare
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : sy_done ? sy_rob : m_rob_idx;   // sy_done: M is empty (asserted)
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
@@ -1904,7 +1903,7 @@ module smolrv64_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
-   smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(8)) u_rob
+   smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(8), .IRR_FWD(8'b0000_1000)) u_rob   // w_v[3]: sq_k_take
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
@@ -1919,10 +1918,7 @@ module smolrv64_core
       .w_v({md_wb, cf_red_fire, iss_alu3 & ~lane_mis[2], iss_alu2 & ~lane_mis[1], sq_k_take, fp_land,
             iss_alu & ~lane_mis[0], rob_w_valid}),
       .w_ix({md_rob, fr_rob, a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
-      // a lane's CTI and M's live memory completion commit a cycle after they complete: the
-      // branch compare and the dTLB stay out of retire and the free lists
-      .w_fv({md_wb, cf_red_fire, iss_alu3 & ~lane_cti[2], iss_alu2 & ~lane_cti[1], sq_k_take, fp_land,
-             iss_alu & ~lane_cti[0], rob_w_fwd}),
+      .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
       .c_kill((m_valid & m_done & m_trap) | sy_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
