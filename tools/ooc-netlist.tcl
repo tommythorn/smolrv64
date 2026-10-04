@@ -12,12 +12,28 @@ foreach {m p} [regexp -all -inline {File Path="\$PPRDIR/\.\./\.\./([^"]+)"} $txt
    set seen($f) 1
    if {[string match *.sv $f]} { lappend svfiles $f } elseif {[string match *.v $f]} { lappend vfiles $f }
 }
-puts "sources: [llength $vfiles] .v, [llength $svfiles] .sv from $xpr"
+# The core's own files, as build.tcl's configure_smolrv64_sources adds them at build time: every
+# core/*.v but the benches. The committed .xpr is only rewritten by a build, so a module new to
+# core/ (smolrv64_fring.v, rv_dcache.v, rv_icache.v) is missing from it in a clean checkout, and
+# this synthesis died on it ("module 'smolrv64_fring' not found") before the build had a chance.
+foreach f [lsort [glob -nocomplain [file join $root core *.v]]] {
+   set f [file normalize $f]
+   if {[regexp {^tb_} [file tail $f]] || [info exists seen($f)]} continue
+   set seen($f) 1; lappend vfiles $f
+}
+puts "sources: [llength $vfiles] .v, [llength $svfiles] .sv from $xpr and core/"
 set incdirs {}
 foreach d [list [file join $root core] [file join $root src] [file join $root src generated]] { if {[file isdirectory $d]} { lappend incdirs $d } }
 set mf [open [file join $root src cvfpu_sources.f] r]
+# The manifest's files too, as build.tcl's configure_cvfpu_sources reads them: the .xpr has the
+# same staleness for the FPU as for core/ (vendor/cvw/fma/fmalza.sv was missing from it).
 while {[gets $mf line] >= 0} { set line [string trim $line]
-   if {[string match "+incdir+*" $line]} { lappend incdirs [file normalize [file join $root src [string range $line 8 end]]] } }
+   if {$line eq "" || [string match "#*" $line]} continue
+   if {[string match "+incdir+*" $line]} { lappend incdirs [file normalize [file join $root src [string range $line 8 end]]]; continue }
+   set f [file normalize [file join $root src $line]]
+   if {[info exists seen($f)]} continue
+   set seen($f) 1
+   if {[string match *.sv $f]} { lappend svfiles $f } elseif {[string match *.v $f]} { lappend vfiles $f } }
 close $mf
 read_verilog -quiet $vfiles
 read_verilog -quiet -sv $svfiles
