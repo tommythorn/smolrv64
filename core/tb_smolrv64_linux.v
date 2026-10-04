@@ -517,12 +517,12 @@ module tb;
       n_sqocc <= n_sqocc + {61'd0, dut.core.sq_occ};
       if (~dut.core.sq_d_ready)    n_sqfull  <= n_sqfull  + 1;
       if (dut.core.m_valid & ~dut.core.m_done)      n_stm     <= n_stm + 1;
-      if (dut.core.d_hold)                          n_hold    <= n_hold + 1;
+      if (dut.core.hd_wait)                         n_hold    <= n_hold + 1;
       if (dut.core.u_lsu.st_go & ~dut.core.u_lsu.st_fin) n_stdoor  <= n_stdoor + 1;
       if (dut.core.u_lsu.idle & dut.core.sq_c_v & ~dut.core.u_lsu.pt_start) n_sqidle <= n_sqidle + 1;
       if ((dut.core.sq_occ != 0) & ~dut.core.sq_c_v)  n_sqwait  <= n_sqwait + 1;
       if (dut.core.iq_blk_v & dut.core.d_valid)     n_srcpend <= n_srcpend + 1;
-      if (~dut.core.rob_ready & dut.core.d_valid)   n_robfull <= n_robfull + 1;
+      if (dut.core.st_rob)                          n_robfull <= n_robfull + 1;
       if (dut.core.head_block)                      n_headblk <= n_headblk + 1;
       if (~dut.core.m_valid)                        n_mempty  <= n_mempty + 1;
       if (dut.core.ld_land)                         n_ldland  <= n_ldland + 1;
@@ -635,19 +635,19 @@ module tb;
    endfunction
    always @(negedge clk) if (!reset) begin : dispsim
       integer na, nb, nc, ia, ib, ic;
-      // where the queue head cut a group short of its available heads, and why; and the cycles a
-      // whole group waited for room
-      if (dut.core.fe.ir_load & dut.core.fe.take1 & ~dut.core.fe.take2 & dut.core.fe.q_have2 & dut.core.fe.two_wide) begin
+      // where the rules cut a group short of the available heads, and why; and the cycles the head
+      // had an instruction but no credit for it (outside a freeze, a low shard or a serialisation)
+      if (dut.core.fe.rule1 & ~dut.core.fe.rule2 & dut.core.fe.q_have2 & dut.core.fe.two_wide) begin
          if (~dut.core.fe.g0[7] | ~dut.core.fe.g1[7])                        ds_b_alone = ds_b_alone + 1;
          else if (dut.core.fe.g0[11])                                         ds_b_sq    = ds_b_sq + 1;
          else                                                                 ds_b_rule  = ds_b_rule + 1;
       end
-      if (dut.core.fe.ir_load & dut.core.fe.take2 & ~dut.core.fe.take3 & dut.core.fe.q_have3 & dut.core.fe.three_wide) begin
+      if (dut.core.fe.rule2 & ~dut.core.fe.rule3 & dut.core.fe.q_have3 & dut.core.fe.three_wide) begin
          if (~dut.core.fe.g2[7])                                              ds_c_alone = ds_c_alone + 1;
          else if (dut.core.fe.g1[11])                                         ds_c_sq    = ds_c_sq + 1;
          else                                                                 ds_c_rule  = ds_c_rule + 1;
       end
-      if (dut.core.d_hold & ~dut.core.redirect_q & ~dut.core.fr_v & ~dut.core.dec_red_q) ds_b_room = ds_b_room + 1;
+      if (dut.core.fe.rule1 & ~dut.core.fe.take1 & dut.core.fe.crd[10]) ds_b_room = ds_b_room + 1;   // the head waits for a credit
       na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
       nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
       nc = $countones(dut.core.u_iq_i3.rdy);  ic = dut.core.ri3_iss_v ? 1 : 0;
@@ -1122,7 +1122,7 @@ module tb;
       $display("XLATE-SIM M-hits=%0d handed-to-walker=%0d walker-answers=%0d (faults %0d) queue-traps=%0d",
                xs_hit, xs_nopa, xs_wk, xs_wkf, xs_trap);
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
-      $display("DISP-SIM group cut before slot B: alone=%0d rule=%0d resteer=%0d | whole group held for room=%0d | before slot C: alone=%0d rule=%0d resteer=%0d (%0d)",
+      $display("DISP-SIM group cut before slot B: alone=%0d rule=%0d resteer=%0d | head waits for a credit=%0d | before slot C: alone=%0d rule=%0d resteer=%0d (%0d)",
                ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
       $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
                al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);

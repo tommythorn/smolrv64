@@ -129,27 +129,35 @@ complements.
 | had an instruction, decoupling queue empty | `FE_QUE` r0314 | backend drained the queue |
 | X idle for any other reason | `FE_BUB` r0310 | catch-all frontend bubble |
 
-### 3.2 X stalls — `d_hold`
+### 3.2 X stalls — the queue head without a credit
 
-The queue head forms a dispatch group of up to three instructions that may go together: every
-member plain (a serialising op, `fence.i`, a CBO, an AMO, a CSR op, a trap at dispatch or the
-interrupt pseudo-op goes alone), at most one for the ordered memory pipe (`u_iq_l`, one LQ or SQ
-allocation) and one for the FP/MD/SYS pipe (`u_iq_f`), and nothing behind a CTI that redirects
-fetch at decode (`smolrv64_gclass`, read from the queue record). The IR takes a group when it is
-empty or dispatching whole, and dispatch takes a group whole or not at all:
+Nothing after the decoupling queue holds. The queue head forms a dispatch group of up to three
+instructions that may go together: every member plain (a serialising op, `fence.i`, a CBO, an
+AMO, a CSR op, a trap at dispatch or the interrupt pseudo-op goes alone), at most one for the
+ordered memory pipe (`u_iq_l`, one LQ or SQ allocation) and one for the FP/MD/SYS pipe
+(`u_iq_f`), and nothing behind a CTI that redirects fetch at decode (`smolrv64_gclass`, read
+from the queue record). A member pops only with a **credit** for everything it allocates, from
+flops, counted against what is already between the head and there: the ROB against the IR
+group, the LQ and SQ against the IR's load or store, each scheduler against its dispatch-stage
+register and the IR's op (`crd`, `CR_*`; this cycle's frees are not credited). The IR loads
+every cycle and dispatches the next, and a dispatch-stage register never waits for its
+scheduler; both are always-on assertions. The head also pops nothing while dispatch is frozen
+(`redirect_q`, `fr_v`, `dec_red_q`: what the IR holds then is the wrong path and is dropped),
+while a rename shard is below `LOWAT` (4 covers two groups, each allocating at most one
+register per shard), or while a serialising op is in the IR or in flight.
 
-`d_hold = d_valid & (a_room | (d2_valid & b_room) | (d3_valid & c_room))`, each member's room in
-its scheduler, the ROB and its memory queue. In the 60 M boot (`DISP-SIM`) the class rule cuts a
-group before slot B in 8.85 M cycles and before slot C in 2.66 M more; a whole group waits for
-room in 17.2 M.
+A dispatch stall is `hd_wait`, the head holding an instruction it has no credit for. In the
+60 M boot (`DISP-SIM`, 5.3c) it waits in 14.8 M cycles; the rules cut a group before slot B in
+18.9 M cycles and before slot C in 4.8 M more. The credits cost 0.68% against 5.3b, whose IR
+held a group until its room appeared and dispatched it in that cycle.
 
 | cause | meaning |
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
-| `~rob_ready` | ROB full (32 entries) |
-| `~iq_ready` | the scheduler this op belongs to is full — integer 10, in-order 12, FP 5 (8 from 2026-08-28 to gate V4 on 2026-09-05; the two-wide core closed at exactly 0.000 ns and did not boot, and FP gives first) (§6.1) |
-| `rn_stall` | any rename shard below `LOWAT`=4 free registers |
-| `ser_block` | a serializing op -- a fence, `fence.i`, an AMO, an xret, `ecall`/`ebreak`/`wfi`/`sfence.vma`, a trap from dispatch -- is **alone in flight**: it does not dispatch until the ROB AND the store queue have drained (`drained`, rule C5), and nothing dispatches behind it until it commits. A CSR op does not drain: it waits only for the CSR op before it (`csr_infl`) |
+| `~cr_rob1..3` | no ROB room (32 entries) beyond the IR group (`st_rob`) |
+| `~cr_ia/ib/ic/l/f` | the member's scheduler has no entry beyond its dispatch-stage register and the IR's op — integer 10 each, in-order 12, FP 8 (§6.1); `~cr_ld`/`~cr_st`, no LQ or SQ entry beyond the IR's (`st_iq`, `st_lq`, `st_sq`) |
+| `rn_stall` | any rename shard below `LOWAT`=4 free registers (`st_rn`) |
+| `cr_ser`, `cr_csr` | a serializing op -- a fence, `fence.i`, an AMO, an xret, `ecall`/`ebreak`/`wfi`/`sfence.vma`, a trap from dispatch -- is **alone in flight**: it pops only when the ROB AND the store queue have drained (`drained`, rule C5) and the IR is empty, and nothing pops behind it until it commits. A CSR op does not drain: it waits only for the CSR op before it (`csr_infl`, or one in the IR) (`st_srz`) |
 
 ### 3.3 M stalls — `m_done` low
 

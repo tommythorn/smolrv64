@@ -48,6 +48,7 @@ module smolrv64_sq
     input  wire [VAW-1:0]        d_pc,        // the store's PC and seq, for a trap from its translation
     input  wire [SEQW-1:0]       d_seq,
     output wire                  d_ready,
+    output wire                  d_ready2,    // room for two (the dispatch credit's)
     output wire [IDXB-1:0]       d_idx,
     // An entry with an ADDRESS is a store older than whatever M holds: M translates in
     // program order, and an entry is allocated at dispatch, so the queue can also hold
@@ -203,6 +204,7 @@ module smolrv64_sq
                  cnt = {(IDXB+1){1'b0}}; end
 
    assign d_ready   = (cnt != NENT[IDXB:0]);
+   assign d_ready2  = (cnt <= NENT[IDXB:0] - 2);
    assign d_idx     = tail;
    assign d_tag     = tailc;
    assign av_any    = |(v & av);

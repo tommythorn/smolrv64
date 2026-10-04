@@ -15,13 +15,13 @@
 module smolrv64_gclass
   #(parameter integer DCR_BACK = 1)            // a backward conditional the BTB missed redirects at decode
    (input  wire [31:0] insn,                   // the expanded instruction (0 for a fetch fault)
-    input  wire        is_mem, is_amo, is_mul, is_fp, is_csr, is_serialize,
+    input  wire        is_mem, is_store, is_amo, is_mul, is_fp, is_csr, is_serialize,
     input  wire        is_fencei, is_cbo, is_branch, is_jump, is_jalr,
     input  wire        illegal, fault,
     input  wire        mis_taken,              // taken would leave the predicted path
     input  wire        imm_neg,                // the branch offset is negative (a back-edge)
     input  wire        btb_hit,                // the BTB named this instruction's fetch block
-    output wire [11:0] gc);                    // see the GC_* indices in smolrv64_core.v
+    output wire [15:0] gc);                    // see the GC_* indices in smolrv64_core.v
 
    wire fp_valid;
    decode_fp u_dfp
@@ -51,7 +51,15 @@ module smolrv64_gclass
    wire dcr   = (is_jump & ~is_jalr & mis_taken)
               | ((DCR_BACK != 0) & is_branch & imm_neg & mis_taken & ~btb_hit);
 
-   assign gc = {dcr, fp_valid, ord, irqop, plain, cls_fc, cls_i, cls_l, cls_s, cls_m, cls_c, cls_f};
+   // the memory queue it allocates in (rule C1: a plain load or store, not an AMO or a CBO), and
+   // how it serialises: a CSR op waits only for the CSR op before it; a trap at dispatch or any
+   // other serialising op drains the machine first and is alone in flight
+   wire ld_nb  = is_mem & ~is_store & ~is_amo & ~is_cbo;
+   wire st_nb  = is_store & ~is_amo & ~is_cbo;
+   wire csr_op = is_csr & ~illegal & ~fault;
+   wire ser    = (is_serialize & ~csr_op) | illegal | fault;
+
+   assign gc = {ser, csr_op, st_nb, ld_nb, dcr, fp_valid, ord, irqop, plain, cls_fc, cls_i, cls_l, cls_s, cls_m, cls_c, cls_f};
 endmodule
 
 `default_nettype wire

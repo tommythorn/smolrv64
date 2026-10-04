@@ -69,6 +69,7 @@ module smolrv64_lq
     input  wire [VAW-1:0]        d_pc,        // the load's PC and seq, for a trap from its translation
     input  wire [SEQW-1:0]       d_seq,
     output wire                  d_ready,
+    output wire                  d_ready2,    // room for two (the dispatch credit's)
     output wire [IDXB-1:0]       d_idx,
 
     // ---- fill: the address is translated; M lets go here ----
@@ -208,6 +209,8 @@ module smolrv64_lq
    // "an entry that was never sent" (2026-09-04). Waiting on that one slot is head-of-line
    // blocking at a miss; at NENT=4 the pointer ring is the right size for it.
    assign d_ready   = (cnt != NENT[IDXB:0]) & ~v[tail];
+   wire [IDXB-1:0] tail1 = tail + 1'b1;
+   assign d_ready2  = (cnt <= NENT[IDXB:0] - 2) & ~v[tail] & ~v[tail1];
    assign d_idx     = tail;
    assign occupancy = cnt;
    assign av_any    = |(v & av);

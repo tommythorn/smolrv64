@@ -48,6 +48,10 @@ module smolrv64_frontend
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
     input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
+    input  wire [12:0]             crd,               // the dispatch credits (smolrv64_core CR_*)
+    output wire                    hd_v,              // the queue head has an instruction...
+    output wire                    hd_take,           // ...and pops it this cycle
+    output wire [15:0]             hd_gc,             // its dispatch class (the stall accounting's)
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire [RASB-1:0]         redirect_rsp,      // the RAS top the redirect restores
@@ -120,7 +124,7 @@ module smolrv64_frontend
     output reg                     d_is_fp, d_is_fencei,
     output reg                     d_is_cbo, d_cbo_zero, d_cbo_keep,
     output reg                     d_illegal,
-    output reg  [11:0]             d_gc,              // smolrv64_gclass, evaluated at decode
+    output reg  [15:0]             d_gc,              // smolrv64_gclass, evaluated at decode
     // precomputed branch compares (payload-static -> keeps them out of X's cone)
     output reg                     d_mis_taken, d_mis_nt,
     // fetch-side fault poison
@@ -159,7 +163,7 @@ module smolrv64_frontend
     output reg                     d2_is_fp, d2_is_fencei,
     output reg                     d2_is_cbo, d2_cbo_zero, d2_cbo_keep,
     output reg                     d2_illegal,
-    output reg  [11:0]             d2_gc,
+    output reg  [15:0]             d2_gc,
     // precomputed branch compares (payload-static -> keeps them out of X's cone)
     output reg                     d2_mis_taken, d2_mis_nt,
     // fetch-side fault poison
@@ -195,7 +199,7 @@ module smolrv64_frontend
     output reg                     d3_is_fp, d3_is_fencei,
     output reg                     d3_is_cbo, d3_cbo_zero, d3_cbo_keep,
     output reg                     d3_illegal,
-    output reg  [11:0]             d3_gc,
+    output reg  [15:0]             d3_gc,
     output reg                     d3_mis_taken, d3_mis_nt,
     output reg                     d3_fault,
     output reg  [3:0]              d3_fault_cause,
@@ -357,7 +361,7 @@ module smolrv64_frontend
    // field. FE_IRV(P) is the field list -- the SINGLE source of truth for pack AND unpack order
    // (cur[], mh[], and the register write below all use it), so the two can never diverge.
    `define FE_IRV(P) {P``pdet, P``pc, P``fault_tval, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``mis_taken, P``mis_nt, P``gc}
-   localparam integer IRW = 3*PCW + PDW + SEQW + 185;   // width of one packed IR slot
+   localparam integer IRW = 3*PCW + PDW + SEQW + 189;   // width of one packed IR slot
    wire [IRW-1:0] mh  [0:3];   // the bundle register's slots, decoded and packed (the queue's write data)
    wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
    wire           pb_load  = pb_ready & (dq_valid | dq_fault);   // the register takes a bundle or the fault op
@@ -596,15 +600,31 @@ module smolrv64_frontend
    assign mh[3] = {IRW{1'b0}};
    wire [IRW-1:0] qh [0:2];
    assign qh[0] = q_head;  assign qh[1] = q_head1;  assign qh[2] = q_head2;
-   wire [11:0] g0 = q_head[11:0], g1 = q_head1[11:0], g2 = q_head2[11:0];   // gc: FE_IRV's last field
-   localparam integer G_L = 4, G_FC = 6, G_PLAIN = 7, G_DCR = 11;            // smolrv64_gclass's gc order
-   wire take1 = ~q_empty;
-   wire take2 = take1 & two_wide & q_have2 & g0[G_PLAIN] & g1[G_PLAIN] & ~g0[G_DCR]
+   wire [15:0] g0 = q_head[15:0], g1 = q_head1[15:0], g2 = q_head2[15:0];   // gc: FE_IRV's last field
+   localparam integer G_L = 4, G_I = 5, G_FC = 6, G_PLAIN = 7, G_DCR = 11,   // smolrv64_gclass's gc order
+                      G_LD = 12, G_ST = 13, G_CSR = 14, G_SER = 15;
+   // the rules: which heads may go together
+   wire rule1 = ~q_empty;
+   wire rule2 = rule1 & two_wide & q_have2 & g0[G_PLAIN] & g1[G_PLAIN] & ~g0[G_DCR]
               & ~(g0[G_L] & g1[G_L]) & ~(g0[G_FC] & g1[G_FC]);
-   wire take3 = take2 & three_wide & q_have3 & g2[G_PLAIN] & ~g1[G_DCR]
+   wire rule3 = rule2 & three_wide & q_have3 & g2[G_PLAIN] & ~g1[G_DCR]
               & ~(g2[G_L] & (g0[G_L] | g1[G_L])) & ~(g2[G_FC] & (g0[G_FC] | g1[G_FC]));
-   wire ir_load = ~d_valid | consume;                     // the IR is empty or dispatches whole
-   assign q_pop = ir_load ? ({1'b0, take1} + {1'b0, take2} + {1'b0, take3}) : 2'd0;
+   // the credits: a member pops only with room for it in everything it allocates, counted
+   // against what is already between here and there (smolrv64_core computes crd from flops)
+   localparam integer CR_IA = 0, CR_IB = 1, CR_IC = 2, CR_L = 3, CR_F = 4, CR_LD = 5, CR_ST = 6,
+                      CR_ROB1 = 7, CR_ROB2 = 8, CR_ROB3 = 9, CR_POP = 10, CR_SER = 11, CR_CSR = 12;
+   function automatic room(input [15:0] g, input lane, input l, input ld, input st, input f);
+      room = (~g[G_I] | lane) & (~g[G_L] | (l & (~g[G_LD] | ld) & (~g[G_ST] | st))) & (~g[G_FC] | f);
+   endfunction
+   wire head_go = g0[G_SER] ? crd[CR_SER] : g0[G_CSR] ? crd[CR_CSR] : 1'b1;
+   wire take1 = rule1 & crd[CR_POP] & head_go & crd[CR_ROB1]
+              & room(g0, crd[CR_IA], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F]);
+   wire take2 = rule2 & take1 & crd[CR_ROB2] & room(g1, crd[CR_IB], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F]);
+   wire take3 = rule3 & take2 & crd[CR_ROB3] & room(g2, crd[CR_IC], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F]);
+   // The IR loads every cycle: what it holds dispatches the next, or is dropped by a freeze
+   // (a redirect, an early restart, a decode resteer), in which case it is the wrong path.
+   assign q_pop = {1'b0, take1} + {1'b0, take2} + {1'b0, take3};
+   assign hd_v = rule1;  assign hd_take = take1;  assign hd_gc = g0;
    wire e_order = ~reset & (((consume_b & ~consume) | (consume_c & ~consume_b))
                           | (consume & ((consume_b != d2_valid) | (consume_c != d3_valid))));
    always @(posedge clk)
@@ -751,26 +771,26 @@ module smolrv64_frontend
    wire  m2_mis_taken = (s2_taken_pc != f2_pnpc);
    wire  m2_mis_nt = (s2_ft_pc    != f2_pnpc);
    // each slot's dispatch class, once, at decode (the queue head and dispatch both read it)
-   wire [11:0] m0_gc, m1_gc, m2_gc;
+   wire [15:0] m0_gc, m1_gc, m2_gc;
    smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc0
-     (.insn(m0_insn), .is_mem(m0_is_mem), .is_amo(m0_is_amo), .is_mul(m0_is_mul), .is_fp(m0_is_fp),
+     (.insn(m0_insn), .is_mem(m0_is_mem), .is_store(m0_is_store), .is_amo(m0_is_amo), .is_mul(m0_is_mul), .is_fp(m0_is_fp),
       .is_csr(m0_is_csr), .is_serialize(m0_is_serialize), .is_fencei(m0_is_fencei), .is_cbo(m0_is_cbo),
       .is_branch(m0_is_branch), .is_jump(m0_is_jump), .is_jalr(m0_is_jalr), .illegal(m0_illegal),
       .fault(m0_fault), .mis_taken(m0_mis_taken), .imm_neg(m0_imm[63]), .btb_hit(m0_pdet[DCR_HIT]), .gc(m0_gc));
    smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc1
-     (.insn(m1_insn), .is_mem(m1_is_mem), .is_amo(m1_is_amo), .is_mul(m1_is_mul), .is_fp(m1_is_fp),
+     (.insn(m1_insn), .is_mem(m1_is_mem), .is_store(m1_is_store), .is_amo(m1_is_amo), .is_mul(m1_is_mul), .is_fp(m1_is_fp),
       .is_csr(m1_is_csr), .is_serialize(m1_is_serialize), .is_fencei(m1_is_fencei), .is_cbo(m1_is_cbo),
       .is_branch(m1_is_branch), .is_jump(m1_is_jump), .is_jalr(m1_is_jalr), .illegal(m1_illegal),
       .fault(m1_fault), .mis_taken(m1_mis_taken), .imm_neg(m1_imm[63]), .btb_hit(m1_pdet[DCR_HIT]), .gc(m1_gc));
    smolrv64_gclass #(.DCR_BACK(DCR_BACK)) u_gc2
-     (.insn(m2_insn), .is_mem(m2_is_mem), .is_amo(m2_is_amo), .is_mul(m2_is_mul), .is_fp(m2_is_fp),
+     (.insn(m2_insn), .is_mem(m2_is_mem), .is_store(m2_is_store), .is_amo(m2_is_amo), .is_mul(m2_is_mul), .is_fp(m2_is_fp),
       .is_csr(m2_is_csr), .is_serialize(m2_is_serialize), .is_fencei(m2_is_fencei), .is_cbo(m2_is_cbo),
       .is_branch(m2_is_branch), .is_jump(m2_is_jump), .is_jalr(m2_is_jalr), .illegal(m2_illegal),
       .fault(m2_fault), .mis_taken(m2_mis_taken), .imm_neg(m2_imm[63]), .btb_hit(m2_pdet[DCR_HIT]), .gc(m2_gc));
    always @(posedge clk) begin
       if (reset | redirect) begin
          d_valid <= 1'b0; d2_valid <= 1'b0; d3_valid <= 1'b0;
-      end else if (ir_load) begin
+      end else begin
          d_valid  <= take1;
          d2_valid <= take2;
          d3_valid <= take3;

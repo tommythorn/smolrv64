@@ -79,7 +79,8 @@ module smolrv64_iq
     output wire [PBITS-1:0]      blk_pr,
 
     input  wire                  flush,
-    output wire [IDXB:0]         occupancy);
+    output wire [IDXB:0]         occupancy,
+    output wire [IDXB:0]         free_n);    // entries free now (not valid, not held): the dispatch credit
 
    reg [NENT-1:0]        v;
    reg [ROBB-1:0]        e_rob [0:NENT-1];
@@ -115,6 +116,7 @@ module smolrv64_iq
       nfree = {(IDXB+1){1'b0}};
       for (k = 0; k < NENT; k = k + 1) nfree = nfree + {{IDXB{1'b0}}, freem[k]};
    end
+   assign free_n = nfree;
    reg d_ready_q;  initial d_ready_q = 1'b0;
    always @(posedge clk) d_ready_q <= ~reset & (nfree >= 2);
    assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail])

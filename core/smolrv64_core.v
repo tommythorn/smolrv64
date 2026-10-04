@@ -142,9 +142,10 @@ module smolrv64_core
    // traps from the SYSQ like any other illegal instruction. One site: every core use of
    // d*_illegal below sees it.
    wire                     d_illegal_fe, d2_illegal_fe, d3_illegal_fe;
-   wire [11:0]              d_gc, d2_gc, d3_gc;     // smolrv64_gclass, from the frontend's decode
+   wire [15:0]              d_gc, d2_gc, d3_gc;     // smolrv64_gclass, from the frontend's decode
    localparam integer GC_F = 0, GC_C = 1, GC_M = 2, GC_S = 3, GC_L = 4, GC_I = 5, GC_FC = 6,
-                      GC_PLAIN = 7, GC_IRQOP = 8, GC_ORD = 9, GC_FPV = 10, GC_DCR = 11;
+                      GC_PLAIN = 7, GC_IRQOP = 8, GC_ORD = 9, GC_FPV = 10, GC_DCR = 11,
+                      GC_LD = 12, GC_ST = 13, GC_CSR = 14, GC_SER = 15;
    wire [3:0]               d_fault_cause;
    wire [SEQW-1:0]          fe_cur_seq;
 
@@ -354,7 +355,8 @@ module smolrv64_core
       .consume_c(rn_valid_c), .three_wide(three_wide),
       .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal_fe), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
       .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal_fe), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
-      .fs_off(fs_off), .d_gc(d_gc), .d2_gc(d2_gc), .d3_gc(d3_gc),
+      .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc),
+      .d_gc(d_gc), .d2_gc(d2_gc), .d3_gc(d3_gc),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -594,6 +596,14 @@ module smolrv64_core
    localparam integer ROB_DEPTH = 32, ROB_IDXB = 5;
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
+   wire [ROB_IDXB:0]   rob_occ;
+   wire                lq_d_ready2, sq_d_ready2;
+   wire [IBI:0]        ri_free, ri2_free, ri3_free;
+   wire [IBL:0]        rl_free;
+   wire [IBF:0]        rf_free;
+   wire [12:0]         crd;               // the dispatch credits (smolrv64_frontend CR_*)
+   wire                fe_hd_v, fe_hd_take;   // the queue head: an instruction, and whether it pops
+   wire [15:0]         fe_hd_gc;
    // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
    // redirect may only fire when it is: the trapping instruction is YOUNGER than an
    // outstanding load, and `flush` would otherwise kill that older entry and lose its
@@ -870,7 +880,7 @@ module smolrv64_core
    // of its store-buffer entry, which watches for it independently (smolrv64_sq's snoop). So the
    // scheduler must not wait on it, and this is the whole of that change: one term, no
    // per-entry state, nothing added to select. The store issues on its address alone.
-   wire       d_st_nb = d_is_store & ~d_is_amo & ~d_is_cbo;   // "buffered store" -- rule C1
+   wire       d_st_nb = d_gc[GC_ST];   // "buffered store" -- rule C1
    wire [2:0] d_srdy = {pnd_r3 | ~d_rs3_v, pnd_r2 | ~d_rs2_v | d_st_nb, pnd_r1 | ~d_rs1_v};
 
    // ---- SLOT B (item 10b, 2026-09-05): a second instruction dispatches beside A when ----
@@ -892,8 +902,8 @@ module smolrv64_core
    wire d2_cls_fc = d2_gc[GC_FC];
    wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // CTF falls to C_F (shares u_iq_f)
    wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
-   wire       d2_st_nb = d2_is_store & ~d2_is_amo & ~d2_is_cbo;
-   wire       d2_ld_nb = d2_is_mem & ~d2_is_store & ~d2_is_amo & ~d2_is_cbo;
+   wire       d2_st_nb = d2_gc[GC_ST];
+   wire       d2_ld_nb = d2_gc[GC_LD];
    wire [2:0] d2_srdy = {pnd_r3_b | ~d2_rs3_v, pnd_r2_b | ~d2_rs2_v | d2_st_nb, pnd_r1_b | ~d2_rs1_v};
    // slot C dispatch (Stage 3). three_wide (= IW>=3) is the master enable; at IW=2 it is 0,
    // so the frontend never presents slot C and d3_take/rn_valid_c stay 0 -- retire-identical.
@@ -931,8 +941,8 @@ module smolrv64_core
    wire pnd_r1_c = ~rn_byp1_c & (rn_lv1_c ? pnd_s1_c : pnd_m1_c);
    wire pnd_r2_c = ~rn_byp2_c & (rn_lv2_c ? pnd_s2_c : pnd_m2_c);
    wire pnd_r3_c = ~rn_byp3_c & (rn_lv3_c ? pnd_s3_c : pnd_m3_c);
-   wire       d3_st_nb = d3_is_store & ~d3_is_amo & ~d3_is_cbo;
-   wire       d3_ld_nb = d3_is_mem & ~d3_is_store & ~d3_is_amo & ~d3_is_cbo;
+   wire       d3_st_nb = d3_gc[GC_ST];
+   wire       d3_ld_nb = d3_gc[GC_LD];
    wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v | d3_st_nb, pnd_r1_c | ~d3_rs1_v};
    wire d3_plain = d3_gc[GC_PLAIN];
    wire d_plain = d_gc[GC_PLAIN];
@@ -1017,7 +1027,7 @@ module smolrv64_core
    wire mv_f  = stg_v_f  & rf_ready;
 
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(1),.INORDER(0),.REGRDY(1)) u_iq_i
+             .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
       .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
       .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_ent(ri_d_ent),
@@ -1025,10 +1035,10 @@ module smolrv64_core
       .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
       .hold_v(a_v),.hold_ent(a_ent),
-      .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ));
+      .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ),.free_n(ri_free));
    // THE SECOND INTEGER SCHEDULER (item 10d-ii): slot B's ALU ops, into the second ALU.
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(1),.INORDER(0),.REGRDY(1)) u_iq_i2
+             .FIXEDL(1),.INORDER(0)) u_iq_i2
      (.clk(clk),.reset(reset),
       .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
       .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_ent(ri2_d_ent),
@@ -1036,7 +1046,7 @@ module smolrv64_core
       .unit_busy(1'b0),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
      .iss_take(ri2_take),
       .hold_v(a2_v),.hold_ent(a2_ent),
-      .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ));
+      .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ),.free_n(ri2_free));
    // THE THIRD INTEGER SCHEDULER (Stage 3): slot C's ALU ops, into the third ALU. Dead at
    // IW=2 (rn_valid_c=0); the C4 dispatch step gives it the real slot-C route.
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
@@ -1048,7 +1058,7 @@ module smolrv64_core
       .unit_busy(1'b0),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
      .iss_take(ri3_take),
       .hold_v(a3_v),.hold_ent(a3_ent),
-      .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ));
+      .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ),.free_n(ri3_free));
 
    smolrv64_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(0),.INORDER(1)) u_iq_l
@@ -1062,7 +1072,7 @@ module smolrv64_core
       .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
      .iss_take(rl_take),
       .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),
-      .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ));
+      .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ),.free_n(rl_free));
 
    // INORDER(0): FP arith may reorder freely. It has no memory ordering to respect and
    // cannot trap, and reordering is the entire point -- the Gaussian Blur loop
@@ -1082,7 +1092,7 @@ module smolrv64_core
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
      .iss_take(rf_take),
       .hold_v(j_v),.hold_ent(j_ent),
-      .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ));
+      .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ),.free_n(rf_free));
 
    // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
    // Stage-aware: a slot may dispatch iff its target pipe's dispatch stage is empty OR drains
@@ -1724,7 +1734,7 @@ module smolrv64_core
      (.clk(clk), .reset(reset),
       .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2),
       .d_pc(st_c ? d3_pc[38:0] : st_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(st_c ? d3_seq : st_b ? d2_seq : d_seq),
-      .d_ready(sq_d_ready), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
+      .d_ready(sq_d_ready), .d_ready2(sq_d_ready2), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
@@ -1766,7 +1776,7 @@ module smolrv64_core
    wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;  wire lq_av_any;
    wire                lq_x_devwait;        // counters: a device load waiting for the head
-   wire d_ld_nb    = d_is_mem & ~d_is_store & ~d_is_amo & ~d_is_cbo;  // plain load, rule C1
+   wire d_ld_nb    = d_gc[GC_LD];  // plain load, rule C1
    wire ld_a = rn_valid   & d_ld_nb;
    wire ld_b = rn_valid_b & d2_ld_nb;
    wire ld_c = rn_valid_c & d3_ld_nb;                 // slot C load (swizzle)
@@ -1780,7 +1790,7 @@ module smolrv64_core
       .d_alloc(d_ld_alloc), .d_rob(ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_c ? d3_prd_g : ld_b ? d2_prd_g : d_prd_g),
       .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
       .d_pc(ld_c ? d3_pc[38:0] : ld_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(ld_c ? d3_seq : ld_b ? d2_seq : d_seq),
-      .d_ready(lq_d_ready), .d_idx(lq_d_idx),
+      .d_ready(lq_d_ready), .d_ready2(lq_d_ready2), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem),
@@ -1897,7 +1907,7 @@ module smolrv64_core
       .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
       .c3_kill(1'b0),
       .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd), .c3_noret(rob_c3_noret),
-      .flush(redirect), .empty(rob_empty), .head_idx(rob_head_idx),
+      .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
@@ -2684,14 +2694,20 @@ module smolrv64_core
    // was the schedulers filling up behind integer chains, the store and load queues, the
    // rename free lists. Each cause has its own event now, in d_hold's order so they are
    // disjoint and sum to ST_DSP, the bucket kept whole for the 13-counter `cpi` set.
-   wire st_dsp    = m_advance & ~accept & ~dep_ld & ~dep_fp & ~st_rob;
-   wire st_iq     = st_dsp & ~iq_ready;                              // the class's scheduler is full
-   wire st_rn     = st_dsp &  iq_ready & rn_stall;                   // rename: a free list is empty
-   wire st_sq     = st_dsp &  iq_ready & ~rn_stall & (d_st_nb & ~sq_d_ready);
-   wire st_lq     = st_dsp &  iq_ready & ~rn_stall & ~(d_st_nb & ~sq_d_ready) & (d_ld_nb & ~lq_d_ready);
-   wire st_srz    = st_dsp &  iq_ready & ~rn_stall & ~(d_st_nb & ~sq_d_ready) & ~(d_ld_nb & ~lq_d_ready);
+   // A dispatch stall is the queue head holding an instruction it has no credit for, outside a
+   // freeze (the credits, smolrv64_frontend): nothing after the head waits.
+   wire hd_wait   = fe_hd_v & ~fe_hd_take & ~redirect_q & ~fr_v & ~dec_red_q;
+   wire hd_sched  = (~fe_hd_gc[GC_I] | cr_ia) & (~fe_hd_gc[GC_L] | cr_l) & (~fe_hd_gc[GC_FC] | cr_f);
+   wire hd_sq     = fe_hd_gc[GC_ST] & ~cr_st;
+   wire hd_lq     = fe_hd_gc[GC_LD] & ~cr_ld;
+   wire st_dsp    = m_advance & hd_wait & ~dep_ld & ~dep_fp & ~st_rob;
+   wire st_iq     = st_dsp & ~hd_sched;                              // the class's scheduler is full
+   wire st_rn     = st_dsp &  hd_sched & rn_stall;                   // rename: a free list is low
+   wire st_sq     = st_dsp &  hd_sched & ~rn_stall & hd_sq;
+   wire st_lq     = st_dsp &  hd_sched & ~rn_stall & ~hd_sq & hd_lq;
+   wire st_srz    = st_dsp &  hd_sched & ~rn_stall & ~hd_sq & ~hd_lq;
    wire st_ser    = st_dsp;                                          // the bus's bit 11, as before
-   wire fe_bub    = ~st_m & ~d_valid & ~redirect;   // X starved, M not already stalled
+   wire fe_bub    = ~st_m & ~d_valid & ~hd_wait & ~redirect;   // X starved, M not already stalled
    wire fe_mmu    = fe_bub & ~immu_ready;           // ...iMMU walking
    wire fe_ic     = fe_bub &  immu_ready & (imem_avail_g == {$clog2(HW+2){1'b0}});
 
@@ -2725,7 +2741,7 @@ module smolrv64_core
    // blocks RETIREMENT rather than issue, so it never appears as a dependency stall and
    // ST_FPU correctly reads 0%. Without this bit that workload's real limiter is invisible
    // in the CPI stack.
-   wire st_rob = d_valid & ~rob_ready;
+   wire st_rob = hd_wait & ~cr_rob1;
    // The mispredict DRAIN (plan item 5, 2026-09-05): a redirect resolved in M waits for the
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
@@ -2753,7 +2769,7 @@ module smolrv64_core
    //   16 rename  17 SQ full  18 LQ full  19 serializing  20 held otherwise
    wire       td_bs  = redirect | rd_wait;
    wire       td_fe  = ~td_bs & fe_bub;
-   wire       td_be  = ~td_bs & (st_m | (d_valid & ~d_take));
+   wire       td_be  = ~td_bs & (st_m | hd_wait | (d_valid & ~d_take));   // M held, the queue head without credit, or a frozen IR
    wire [1:0] td_nd  = {1'b0, d_take} + {1'b0, d2_take} + {1'b0, d3_take};
    reg  [4:0] td_k;
    always @* begin
@@ -3866,8 +3882,8 @@ module smolrv64_core
    // kernel's irq save and restore) changes nothing a younger op computed. One CSR op is in
    // flight at a time (csr_infl): the SYSQ holds one, and the F/CTF/MD/SYS queue reorders, so a
    // second could take the SYSQ before an older one and never reach the head.
-   wire d_csr_op = d_is_csr & ~d_illegal & ~d_fault;
-   wire d_ser = (d_is_serialize & ~d_csr_op) | d_illegal | d_fault;
+   wire d_csr_op = d_gc[GC_CSR];
+   wire d_ser    = d_gc[GC_SER];
    always @(posedge clk)
       if (reset | redirect)      ser_inflight <= 1'b0;
       else if (rn_valid & d_ser) ser_inflight <= 1'b1;
@@ -3907,12 +3923,50 @@ module smolrv64_core
    // Back-pressure at the FRONTEND, never at issue: a full store buffer holds dispatch,
    // which costs nothing at the head of the machine and keeps unit state out of the
    // scheduler's select (docs/SmolRV64-Spec.md 15).
-   // The group dispatches whole (the queue head formed it legal: see smolrv64_frontend), so its
-   // hold is any member's: room for each in its scheduler, the ROB, its memory queue.
-   wire a_room = ~rob_ready | ~iq_ready | rn_stall | ser_block | (d_st_nb & ~sq_d_ready) | (d_ld_nb & ~lq_d_ready);
+   // THE CREDITS (lanes step 5.3c). Nothing after the decoupling queue holds: the queue head pops
+   // an instruction only when everything it allocates has room for it, counted against what is
+   // already between the head and there -- the IR group (it dispatches this cycle) and, for a
+   // scheduler, its dispatch-stage register. Every input is a flop or a sum over flops; this
+   // cycle's frees are not credited. Each group allocates at most one entry in each scheduler,
+   // the LQ, the SQ and each rename shard, which is what the per-resource checks rely on (and
+   // LOWAT=4 covers two groups per shard, so `low` is the rename credit as it stands).
+   wire       ir_ia = d_valid  & d_cls_i;
+   wire       ir_ib = d2_valid & d2_cls_i;
+   wire       ir_ic = d3_valid & d3_cls_i;
+   wire       ir_l  = (d_valid & d_cls_l)  | (d2_valid & d2_cls_l)  | (d3_valid & d3_cls_l);
+   wire       ir_f  = (d_valid & d_cls_fc) | (d2_valid & d2_cls_fc) | (d3_valid & d3_cls_fc);
+   wire       ir_ld = (d_valid & d_ld_nb)  | (d2_valid & d2_ld_nb)  | (d3_valid & d3_ld_nb);
+   wire       ir_st = (d_valid & d_st_nb)  | (d2_valid & d2_st_nb)  | (d3_valid & d3_st_nb);
+   wire [1:0] ir_n  = {1'b0, d_valid} + {1'b0, d2_valid} + {1'b0, d3_valid};
+   wire [ROB_IDXB+1:0] rob_inflt = {1'b0, rob_occ} + {{ROB_IDXB{1'b0}}, ir_n};
+   wire cr_ia = {1'b0, ri_free}  > ({1'b0, stg_v_ia} + {1'b0, ir_ia});
+   wire cr_ib = {1'b0, ri2_free} > ({1'b0, stg_v_ib} + {1'b0, ir_ib});
+   wire cr_ic = {1'b0, ri3_free} > ({1'b0, stg_v_ic} + {1'b0, ir_ic});
+   wire cr_l  = {1'b0, rl_free}  > ({1'b0, stg_v_l}  + {1'b0, ir_l});
+   wire cr_f  = {1'b0, rf_free}  > ({1'b0, stg_v_f}  + {1'b0, ir_f});
+   wire cr_ld = ir_ld ? lq_d_ready2 : lq_d_ready;
+   wire cr_st = ir_st ? sq_d_ready2 : sq_d_ready;
+   wire cr_rob1 = rob_inflt + 1 <= ROB_DEPTH;
+   wire cr_rob2 = rob_inflt + 2 <= ROB_DEPTH;
+   wire cr_rob3 = rob_inflt + 3 <= ROB_DEPTH;
+   // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
+   // is dropped), while a rename shard is low, or while a serialising op is in flight or in the IR
+   wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser);
+   wire cr_ser = drained & ~d_valid & ~csr_infl;            // a serialising op drains first, alone
+   wire cr_csr = ~csr_infl & ~(d_valid & d_csr_op);         // a CSR op waits for the one before it
+   assign crd = {cr_csr, cr_ser, cr_pop, cr_rob3, cr_rob2, cr_rob1, cr_st, cr_ld, cr_f, cr_l, cr_ic, cr_ib, cr_ia};
+   // what the credits guarantee, checked where it is used
+   wire a_room = ~rob_ready | ~iq_ready | ser_block | (d_st_nb & ~sq_d_ready) | (d_ld_nb & ~lq_d_ready);
    wire b_room = ~iq_ready_b | ~rob_ready2 | (d2_st_nb & ~sq_d_ready) | (d2_ld_nb & ~lq_d_ready);
    wire c_room = ~iq_ready_c | ~rob_ready3 | (d3_st_nb & ~sq_d_ready) | (d3_ld_nb & ~lq_d_ready);
-   wire d_hold = d_valid & (a_room | (d2_valid & b_room) | (d3_valid & c_room));
+   always @(posedge clk) if (!reset) begin
+      if (d_take & (a_room | (d2_take & b_room) | (d3_take & c_room)))
+         $fatal(1, "smolrv64_core: a group dispatches without room (a %b b %b c %b): the credits are wrong",
+                a_room, d2_take & b_room, d3_take & c_room);
+      if ((stg_v_ia & ~ri_ready) | (stg_v_ib & ~ri2_ready) | (stg_v_ic & ~ri3_ready)
+          | (stg_v_l & ~rl_ready) | (stg_v_f & ~rf_ready))
+         $fatal(1, "smolrv64_core: a dispatch-stage register waits for its scheduler: the credits are wrong");
+   end
    // NOT GATED ON THIS CYCLE'S REDIRECT (2026-09-05, gate V3 at -0.919 ns). The redirect is
    // M's completion, which a landing load can veto (ld_land), which the load queue's store
    // ordering decides: through `~redirect` here that whole chain -- the store queue's conflict
@@ -3927,7 +3981,7 @@ module smolrv64_core
    // queue's drain), and through fr_active it re-imported the whole completion cone this
    // gate had just been freed of. The registered fr_v holds dispatch from the cycle after
    // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
-   wire d_take = d_valid & ~d_hold & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
+   wire d_take = d_valid & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
    wire d2_take = d2_valid & d_take;
    assign rn_valid_b = d2_take;
    wire d3_take = d3_valid & d_take;

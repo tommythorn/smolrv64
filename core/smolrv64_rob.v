@@ -113,6 +113,7 @@ module smolrv64_rob
     // rollback: there is nothing to walk because rename never wrote the free-list array.
     input  wire             flush,
     output wire             empty,
+    output wire [IDXB:0]    occ_n,        // entries allocated now: the dispatch credit
     // Which slot is oldest. An instruction that does anything beyond writing its own
     // register -- trap, redirect -- may act only when it IS this slot, or it would squash an
     // older op still in flight ahead of it.
@@ -160,6 +161,7 @@ module smolrv64_rob
    assign empty   = (head == tail);
    wire   full    = (head[IDXB-1:0] == tail[IDXB-1:0]) && (head[IDXB] != tail[IDXB]);
    assign d_ready = ~full;
+   assign occ_n   = occ;
    wire [IDXB:0] occ = tail - head;
    assign d_ready2 = (occ <= DEPTH_S - 2);
    assign head_idx = hidx;
