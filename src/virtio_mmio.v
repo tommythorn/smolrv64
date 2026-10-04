@@ -19,7 +19,15 @@ module virtio_mmio #(
     input  wire [31:0] write_data,
     input  wire [ 3:0] byteenable,
 
-    input  wire [31:0] config_capacity_sectors, /* virtio-blk config: 512B sectors */
+    // Device config space (offset 0x100 up). Reads return config_read_data: the device's config
+    // bytes at `address`, right-aligned (the LSU bus's convention). Writes, of any width, come
+    // out one cycle later as config_write with the offset from 0x100 -- virtio-input selects
+    // its config page with byte writes, which the common registers do not take.
+    input  wire [31:0] config_read_data,
+    output reg         config_write,
+    output reg  [ 7:0] config_offset,
+    output reg  [31:0] config_write_data,
+    output reg  [ 3:0] config_byteenable,
 
     output wire        irq,
     output reg         queue_notify_pulse,
@@ -73,11 +81,6 @@ module virtio_mmio #(
    localparam [11:0] REG_QUEUE_USED_LOW   = 12'h0a0;
    localparam [11:0] REG_QUEUE_USED_HIGH  = 12'h0a4;
    localparam [11:0] REG_CONFIG_GEN       = 12'h0fc;
-   /* Device config space (offset 0x100). virtio-blk: capacity is a 64-bit LE
-    * field of 512-byte sectors at config offset 0. Other devices leave
-    * CONFIG_CAPACITY_SECTORS = 0 and never read config (no F_MAC/F_STATUS/etc). */
-   localparam [11:0] REG_CONFIG_CAP_LOW   = 12'h100;
-   localparam [11:0] REG_CONFIG_CAP_HIGH  = 12'h104;
 
    reg [31:0] device_features_sel;
    reg [31:0] driver_features_sel;
@@ -107,8 +110,17 @@ module virtio_mmio #(
    always @(posedge clock) begin
       wr_addr_q <= address & 12'hffc;
       wr_data_q <= write_data;
-      wr_word_q <= write && (&byteenable) && !reset;
+      wr_word_q <= write && (&byteenable) && address[11:8] == 4'h0 && !reset;
+      config_write      <= write && address[11:8] != 4'h0 && !reset;
+      config_offset     <= address[7:0];
+      config_write_data <= write_data;
+      config_byteenable <= byteenable;
    end
+   // The common registers are 32-bit (virtio-mmio 4.2.2): a narrower write there is a driver bug
+   // this block would otherwise drop without a trace.
+   always @(posedge clock)
+      if (!reset && write && address[11:8] == 4'h0 && !(&byteenable))
+         $fatal(1, "virtio_mmio: %0d-byte-enable write to common register %h", byteenable, address);
    wire       queue0_selected = queue_sel == 32'd0 && QUEUE_COUNT >= 32'd1;
    wire       queue1_selected = queue_sel == 32'd1 && QUEUE_COUNT >= 32'd2;
    wire       active_queue_selected = queue0_selected || queue1_selected;
@@ -163,9 +175,7 @@ module virtio_mmio #(
            REG_QUEUE_USED_LOW:   read_data = queue_device[31:0];
            REG_QUEUE_USED_HIGH:  read_data = queue_device[63:32];
            REG_CONFIG_GEN:       read_data = 32'd0;
-           REG_CONFIG_CAP_LOW:   read_data = config_capacity_sectors;
-           REG_CONFIG_CAP_HIGH:  read_data = 32'd0;
-           default:              read_data = 32'd0;
+           default:              read_data = address[11:8] != 4'h0 ? config_read_data : 32'd0;
          endcase
       end
    end

@@ -152,6 +152,17 @@
 			status = "okay";
 		};
 
+		/* The keyboard of the graphics console, simmerv's virtio-input device at its address
+		 * and interrupt. Fed from the serial line when key[3] selects it (virtio_input.v). */
+		virtio_kbd: virtio@10004000 {
+			compatible = "virtio,mmio";
+			reg = <0 0x10004000 0 0x1000>;
+			interrupts = <4>;
+			interrupt-parent = <&plic>;
+			dma-noncoherent;
+			status = "okay";
+		};
+
 		virtio_net: virtio@10003000 {
 			compatible = "virtio,mmio";
 			reg = <0 0x10003000 0 0x1000>;

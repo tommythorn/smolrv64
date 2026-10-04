@@ -1,0 +1,318 @@
+# Keyboard translation vectors from simmerv's own sim/src/term_keys.rs (translate(), and the
+# EV_KEY bitmap its virtio-input device advertises). Regenerate with the program in the header of
+# tb_virtio_input.v. B <byte> <keycode> <mods> | B <byte> none ; S <input hex> <code:mods,...> | -
+B 00 57 4
+B 01 30 4
+B 02 48 4
+B 03 46 4
+B 04 32 4
+B 05 18 4
+B 06 33 4
+B 07 34 4
+B 08 14 0
+B 09 15 0
+B 0a 28 0
+B 0b 37 4
+B 0c 38 4
+B 0d 28 0
+B 0e 49 4
+B 0f 24 4
+B 10 25 4
+B 11 16 4
+B 12 19 4
+B 13 31 4
+B 14 20 4
+B 15 22 4
+B 16 47 4
+B 17 17 4
+B 18 45 4
+B 19 21 4
+B 1a 44 4
+B 1c 43 4
+B 1d 27 4
+B 1e 7 5
+B 1f 12 5
+B 20 57 0
+B 21 2 1
+B 22 40 1
+B 23 4 1
+B 24 5 1
+B 25 6 1
+B 26 8 1
+B 27 40 0
+B 28 10 1
+B 29 11 1
+B 2a 9 1
+B 2b 13 1
+B 2c 51 0
+B 2d 12 0
+B 2e 52 0
+B 2f 53 0
+B 30 11 0
+B 31 2 0
+B 32 3 0
+B 33 4 0
+B 34 5 0
+B 35 6 0
+B 36 7 0
+B 37 8 0
+B 38 9 0
+B 39 10 0
+B 3a 39 1
+B 3b 39 0
+B 3c 51 1
+B 3d 13 0
+B 3e 52 1
+B 3f 53 1
+B 40 3 1
+B 41 30 1
+B 42 48 1
+B 43 46 1
+B 44 32 1
+B 45 18 1
+B 46 33 1
+B 47 34 1
+B 48 35 1
+B 49 23 1
+B 4a 36 1
+B 4b 37 1
+B 4c 38 1
+B 4d 50 1
+B 4e 49 1
+B 4f 24 1
+B 50 25 1
+B 51 16 1
+B 52 19 1
+B 53 31 1
+B 54 20 1
+B 55 22 1
+B 56 47 1
+B 57 17 1
+B 58 45 1
+B 59 21 1
+B 5a 44 1
+B 5b 26 0
+B 5c 43 0
+B 5d 27 0
+B 5e 7 1
+B 5f 12 1
+B 60 41 0
+B 61 30 0
+B 62 48 0
+B 63 46 0
+B 64 32 0
+B 65 18 0
+B 66 33 0
+B 67 34 0
+B 68 35 0
+B 69 23 0
+B 6a 36 0
+B 6b 37 0
+B 6c 38 0
+B 6d 50 0
+B 6e 49 0
+B 6f 24 0
+B 70 25 0
+B 71 16 0
+B 72 19 0
+B 73 31 0
+B 74 20 0
+B 75 22 0
+B 76 47 0
+B 77 17 0
+B 78 45 0
+B 79 21 0
+B 7a 44 0
+B 7b 26 1
+B 7c 43 1
+B 7d 27 1
+B 7e 41 1
+B 7f 14 0
+B 80 none
+B 81 none
+B 82 none
+B 83 none
+B 84 none
+B 85 none
+B 86 none
+B 87 none
+B 88 none
+B 89 none
+B 8a none
+B 8b none
+B 8c none
+B 8d none
+B 8e none
+B 8f none
+B 90 none
+B 91 none
+B 92 none
+B 93 none
+B 94 none
+B 95 none
+B 96 none
+B 97 none
+B 98 none
+B 99 none
+B 9a none
+B 9b none
+B 9c none
+B 9d none
+B 9e none
+B 9f none
+B a0 none
+B a1 none
+B a2 none
+B a3 none
+B a4 none
+B a5 none
+B a6 none
+B a7 none
+B a8 none
+B a9 none
+B aa none
+B ab none
+B ac none
+B ad none
+B ae none
+B af none
+B b0 none
+B b1 none
+B b2 none
+B b3 none
+B b4 none
+B b5 none
+B b6 none
+B b7 none
+B b8 none
+B b9 none
+B ba none
+B bb none
+B bc none
+B bd none
+B be none
+B bf none
+B c0 none
+B c1 none
+B c2 none
+B c3 none
+B c4 none
+B c5 none
+B c6 none
+B c7 none
+B c8 none
+B c9 none
+B ca none
+B cb none
+B cc none
+B cd none
+B ce none
+B cf none
+B d0 none
+B d1 none
+B d2 none
+B d3 none
+B d4 none
+B d5 none
+B d6 none
+B d7 none
+B d8 none
+B d9 none
+B da none
+B db none
+B dc none
+B dd none
+B de none
+B df none
+B e0 none
+B e1 none
+B e2 none
+B e3 none
+B e4 none
+B e5 none
+B e6 none
+B e7 none
+B e8 none
+B e9 none
+B ea none
+B eb none
+B ec none
+B ed none
+B ee none
+B ef none
+B f0 none
+B f1 none
+B f2 none
+B f3 none
+B f4 none
+B f5 none
+B f6 none
+B f7 none
+B f8 none
+B f9 none
+B fa none
+B fb none
+B fc none
+B fd none
+B fe none
+B ff none
+S 1b 1:0
+S 1b5b41 103:0
+S 1b5b42 108:0
+S 1b5b43 106:0
+S 1b5b44 105:0
+S 1b5b48 102:0
+S 1b5b46 107:0
+S 1b4f41 103:0
+S 1b4f44 105:0
+S 1b4f50 59:0
+S 1b4f51 60:0
+S 1b4f52 61:0
+S 1b4f53 62:0
+S 1b5b5a 15:1
+S 1b5b317e 102:0
+S 1b5b327e 110:0
+S 1b5b337e 111:0
+S 1b5b347e 107:0
+S 1b5b357e 104:0
+S 1b5b367e 109:0
+S 1b5b377e 102:0
+S 1b5b387e 107:0
+S 1b5b397e -
+S 1b5b31317e 59:0
+S 1b5b31357e 63:0
+S 1b5b31377e 64:0
+S 1b5b32317e 68:0
+S 1b5b32327e -
+S 1b5b32337e 87:0
+S 1b5b32347e 88:0
+S 1b5b32357e -
+S 1b5b313b3541 103:4
+S 1b5b313b3244 105:1
+S 1b5b313b3343 106:2
+S 1b5b313b3842 108:7
+S 1b5b333b357e 111:4
+S 1b5b31353b327e 63:1
+S 1b78 45:2
+S 1b58 45:3
+S 1b1b 1:2
+S 1b0d 28:2
+S 1b01 30:6
+S 1b5b -
+S 1b5b313b -
+S 1b5b313b35 -
+S 1b5b3178 -
+S 1b5b313b354178 103:4,45:0
+S 1b5b411b5b42 103:0,108:0
+S 61621b5b4163 30:0,48:0,103:0,46:0
+S 1b5b3939397e -
+S 1b5b363535333541 103:0
+S 1b5b313b363535333541 103:6
+S 1b5b313b323b3341 103:1
+S 1b5b3b3541 103:4
+S 1b4f3550 59:0
+S 1b5b313b3141 103:0
+S 1b5b313b3041 103:0
+S 1b5b313b3941 103:0
+S 1b5b313b313741 103:0
+S 68656c6c6f2c20576f726c64210d 35:0,18:0,38:0,38:0,24:0,51:0,57:0,17:1,24:0,19:0,38:0,32:0,2:1,28:0

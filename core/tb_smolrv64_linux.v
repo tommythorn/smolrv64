@@ -272,7 +272,8 @@ module tb;
      (.clock(clk), .reset(reset),
       .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
       .write(virtio_write && !vio_net), .write_data(virtio_wdata), .byteenable(virtio_be),
-      .config_capacity_sectors(v_capacity),
+      .config_read_data(virtio_addr[11:2] == 10'h040 ? v_capacity : 32'd0),   // capacity, sectors
+      .config_write(), .config_offset(), .config_write_data(), .config_byteenable(),
       .irq(virtio_irq),
       .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
       .used_buffer_interrupt(v_used_irq), .config_change_interrupt(1'b0),

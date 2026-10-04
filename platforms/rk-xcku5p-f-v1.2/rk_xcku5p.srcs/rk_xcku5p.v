@@ -424,6 +424,8 @@ module rk_xcku5p(
    wire        virtio_net_sel = ui_mmio_address[19:12] == 8'h03;
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
    wire        vga_sel        = ui_mmio_address[19:12] == 8'h05;
+   wire        kbd_sel        = ui_mmio_address[19:12] == 8'h04;
+   wire [31:0] kbd_mmio_rdata;
    wire [31:0] vga_mmio_rdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
    wire [31:0] virtio_blk_readdata;
@@ -777,6 +779,8 @@ module rk_xcku5p(
                mmio_readdata_q <= virtio_net_readdata;
             else if (vga_sel)
                mmio_readdata_q <= vga_mmio_rdata;
+            else if (kbd_sel)
+               mmio_readdata_q <= kbd_mmio_rdata;
             else if (build_id_sel)
                mmio_readdata_q <= build_id_readdata;
             else
@@ -846,7 +850,12 @@ module rk_xcku5p(
       .DEVICE_ID(32'd2), /* virtio-blk, native-SD backend below. */
       .QUEUE_NUM_MAX(32'd8)
    ) virtio_blk_inst(
-      .config_capacity_sectors (virtio_blk_capacity),
+      // virtio-blk config: capacity, a 64-bit count of 512-byte sectors, at offset 0.
+      .config_read_data        (ui_mmio_address[11:2] == 10'h040 ? virtio_blk_capacity : 32'd0),
+      .config_write            (),
+      .config_offset           (),
+      .config_write_data       (),
+      .config_byteenable       (),
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .address                 (ui_mmio_address[11:0]),
@@ -987,7 +996,11 @@ module rk_xcku5p(
       .QUEUE_NUM_MAX(32'd256), /* virtio-net needs > MAX_SKB_FRAGS+2 (=19) TX slots */
       .QUEUE_COUNT(32'd2)
    ) virtio_net_inst(
-      .config_capacity_sectors (32'd0),
+      .config_read_data        (32'd0),
+      .config_write            (),
+      .config_offset           (),
+      .config_write_data       (),
+      .config_byteenable       (),
       .clock                   (ui_clk),
       .reset                   (ui_cpu_reset),
       .address                 (ui_mmio_address[11:0]),
@@ -1426,16 +1439,31 @@ module rk_xcku5p(
    assign vga_axi_awvalid = 1'b0; assign vga_axi_wdata = 64'd0;   assign vga_axi_wstrb = 8'd0;
    assign vga_axi_wlast = 1'b0;   assign vga_axi_wvalid = 1'b0;   assign vga_axi_bready = 1'b1;
 
-   // The virtio keyboard's DMA master (phase 4 of the plan) -- idle until it exists.
-   assign kbd_axi_awid = 3'd0;    assign kbd_axi_awaddr = 31'd0;  assign kbd_axi_awlen = 8'd0;
-   assign kbd_axi_awsize = 3'd0;  assign kbd_axi_awburst = 2'd0;  assign kbd_axi_awlock = 1'b0;
-   assign kbd_axi_awcache = 4'd0; assign kbd_axi_awprot = 3'd0;   assign kbd_axi_awqos = 4'd0;
-   assign kbd_axi_awvalid = 1'b0; assign kbd_axi_wdata = 64'd0;   assign kbd_axi_wstrb = 8'd0;
-   assign kbd_axi_wlast = 1'b0;   assign kbd_axi_wvalid = 1'b0;   assign kbd_axi_bready = 1'b1;
-   assign kbd_axi_arid = 3'd0;    assign kbd_axi_araddr = 31'd0;  assign kbd_axi_arlen = 8'd0;
-   assign kbd_axi_arsize = 3'd0;  assign kbd_axi_arburst = 2'd0;  assign kbd_axi_arlock = 1'b0;
-   assign kbd_axi_arcache = 4'd0; assign kbd_axi_arprot = 3'd0;   assign kbd_axi_arqos = 4'd0;
-   assign kbd_axi_arvalid = 1'b0; assign kbd_axi_rready = 1'b1;
+   // ===== The virtio keyboard (simmerv's --graphics keyboard), fed from the serial line =====
+   // key[3] steers UART RX: each press toggles it between the console (the 16550, as always)
+   // and this keyboard, whose bytes are translated into key presses (virtio_input's header).
+   // It starts on the console at every reset, so loading over the UART is never affected.
+   wire        kbd_irq;
+   wire        kbd_byte_valid;   wire [7:0] kbd_byte;
+   virtio_input kbd_inst (
+      .clock(ui_clk), .reset(ui_cpu_reset),
+      .address(ui_mmio_address[11:0]), .read(ui_mmio_read && kbd_sel), .read_data(kbd_mmio_rdata),
+      .write(ui_mmio_write && kbd_sel), .write_data(ui_mmio_writedata), .byteenable(ui_mmio_byteenable),
+      .irq(kbd_irq), .key_valid(kbd_byte_valid), .key_byte(kbd_byte),
+      .m_axi_awid(kbd_axi_awid), .m_axi_awaddr(kbd_axi_awaddr), .m_axi_awlen(kbd_axi_awlen),
+      .m_axi_awsize(kbd_axi_awsize), .m_axi_awburst(kbd_axi_awburst), .m_axi_awlock(kbd_axi_awlock),
+      .m_axi_awcache(kbd_axi_awcache), .m_axi_awprot(kbd_axi_awprot), .m_axi_awqos(kbd_axi_awqos),
+      .m_axi_awvalid(kbd_axi_awvalid), .m_axi_awready(kbd_axi_awready),
+      .m_axi_wdata(kbd_axi_wdata), .m_axi_wstrb(kbd_axi_wstrb), .m_axi_wlast(kbd_axi_wlast),
+      .m_axi_wvalid(kbd_axi_wvalid), .m_axi_wready(kbd_axi_wready),
+      .m_axi_bid(kbd_axi_bid), .m_axi_bresp(kbd_axi_bresp), .m_axi_bvalid(kbd_axi_bvalid),
+      .m_axi_bready(kbd_axi_bready),
+      .m_axi_arid(kbd_axi_arid), .m_axi_araddr(kbd_axi_araddr), .m_axi_arlen(kbd_axi_arlen),
+      .m_axi_arsize(kbd_axi_arsize), .m_axi_arburst(kbd_axi_arburst), .m_axi_arlock(kbd_axi_arlock),
+      .m_axi_arcache(kbd_axi_arcache), .m_axi_arprot(kbd_axi_arprot), .m_axi_arqos(kbd_axi_arqos),
+      .m_axi_arvalid(kbd_axi_arvalid), .m_axi_arready(kbd_axi_arready),
+      .m_axi_rid(kbd_axi_rid), .m_axi_rdata(kbd_axi_rdata), .m_axi_rresp(kbd_axi_rresp),
+      .m_axi_rlast(kbd_axi_rlast), .m_axi_rvalid(kbd_axi_rvalid), .m_axi_rready(kbd_axi_rready));
 
    generate
    if (USE_DDR_ARB) begin : gen_ddr_arbiter
@@ -2017,6 +2045,31 @@ module rk_xcku5p(
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
+   // key[3] (active low) toggles kbd_route: UART RX to the console (0) or to the keyboard (1).
+   // Two flops of synchronizer, then a debounce: the level must hold for 2^17 probe_clk cycles
+   // (~0.8 ms at 166 MHz) before it counts, so contact bounce gives one toggle per press.
+   (* async_reg = "true" *) reg [1:0] key3_s = 2'b11;
+   reg        key3_db = 1'b1;
+   reg [16:0] key3_cnt = 17'd0;
+   reg        kbd_route = 1'b0;
+   always @(posedge probe_clk) begin
+      key3_s <= {key3_s[0], key[3]};
+      if (key3_s[1] == key3_db) key3_cnt <= 17'd0;
+      else key3_cnt <= key3_cnt + 17'd1;
+      if (&key3_cnt) begin
+         key3_db <= key3_s[1];
+         if (!key3_s[1]) kbd_route <= ~kbd_route;   // a press
+      end
+      if (probe_reset) kbd_route <= 1'b0;
+   end
+   // Keyboard bytes cross to ui_clk, where virtio_input lives. At 3 Mbps a byte every 3.3 us and
+   // the reader takes one a cycle, so this never fills.
+   smolrv64_async_fifo #(.WIDTH(8), .ADDR_BITS(4)) kbd_byte_fifo (
+      .wr_clock(probe_clk), .rd_clock(ui_clk), .reset(probe_reset),
+      .wr_valid(prx_valid && kbd_route), .wr_ready(),
+      .wr_data(prx_data),
+      .rd_valid(kbd_byte_valid), .rd_ready(1'b1), .rd_data(kbd_byte));
+
    wire [14:0] p_virtio_addr;  wire p_virtio_read, p_virtio_write;   // [14:12]: the device page
    wire [31:0] p_virtio_wdata; wire [3:0] p_virtio_be;
    // virtio IRQs (ui_clk) synchronized into probe_clk for rv_soc_top's internal PLIC.
@@ -2029,6 +2082,9 @@ module rk_xcku5p(
    // sufficient -- no pulse to lose.
    (* async_reg = "true" *) reg p_virtio_irq_meta = 1'b0, p_virtio_irq = 1'b0;
    (* async_reg = "true" *) reg p_virtio_net_irq_meta = 1'b0, p_virtio_net_irq = 1'b0;
+   (* async_reg = "true" *) reg p_kbd_irq_meta = 1'b0, p_kbd_irq = 1'b0;    // the keyboard: src 4
+   always @(posedge probe_clk) p_kbd_irq_meta <= kbd_irq;
+   always @(posedge probe_clk) p_kbd_irq <= p_kbd_irq_meta;
    always @(posedge probe_clk) begin
       p_virtio_irq_meta     <= virtio_blk_irq;  p_virtio_irq     <= p_virtio_irq_meta;
       p_virtio_net_irq_meta <= virtio_net_irq;  p_virtio_net_irq <= p_virtio_net_irq_meta;
@@ -2056,14 +2112,14 @@ module rk_xcku5p(
       .ddr_r_valid(pr_valid), .ddr_r_ready(pr_ready), .ddr_r_id(pr_id), .ddr_r_beat(pr_beat),
       .ddr_r_last(pr_last), .ddr_r_data(pr_data),
       .ddr_w_valid(pw_valid), .ddr_w_ready(pw_ready), .ddr_w_id(pw_id),
-      .uart_rx_we(prx_valid), .uart_rx_data(prx_data), .uart_rx_ready(),
+      .uart_rx_we(prx_valid && !kbd_route), .uart_rx_data(prx_data), .uart_rx_ready(),
       .uart_tx_valid(ptx_valid), .uart_tx_data(ptx_data), .uart_tx_ready(ptx_ready),
       .irq_dbg(probe_irq_dbg),
       .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
       .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
-      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(1'b0), .dma_wr(p_dma_wr), .core_dbg(probe_core_dbg));
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(p_kbd_irq), .dma_wr(p_dma_wr), .core_dbg(probe_core_dbg));
 
 `ifdef ILA_IRQ
    // Debug (ILA_IRQ=1): capture the virtio_blk interrupt lifecycle on probe_clk. probe_irq_dbg =
