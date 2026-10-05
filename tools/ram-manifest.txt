@@ -19,12 +19,10 @@
 plmem_i : issue payload, slot A's integer scheduler; read at the selected entry, one indexed read
 plmem_i2: issue payload, slot B's integer scheduler
 plmem_i3: issue payload, slot C's integer scheduler
-plmem_l : issue payload, the in-order scheduler
 plmem_f : issue payload, the FP scheduler
 psmem_i : source tags; added 3b518832 after e_ps was demoted by the wakeup broadcast
 psmem_i2: source tags, slot B's integer scheduler
 psmem_i3: source tags, slot C's integer scheduler
-psmem_l : source tags, the in-order scheduler
 psmem_f : source tags, the FP scheduler
 e_rob   : issue-queue ROB index, read only at [sel]
 
