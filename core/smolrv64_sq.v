@@ -45,6 +45,7 @@ module smolrv64_sq
     input  wire                  d_alloc,
     input  wire [ROBB-1:0]       d_rob,       // rides with the store; commit is at the head
     input  wire [PBITS-1:0]      d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
+    input  wire                  d_rdy,       // ...and its value is already in a register file: no writeback is coming
     input  wire [VAW-1:0]        d_pc,        // the store's PC and seq, for a trap from its translation
     input  wire [SEQW-1:0]       d_seq,
     output wire                  d_ready,
@@ -73,8 +74,6 @@ module smolrv64_sq
     input  wire [3:0]            a_fc,
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
     input  wire                  a_unc,      // uncached, decided at translate time
-    input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
-    input  wire [63:0]           a_data,     //   (ignored once the snoop has the value)
 
     // ---- snoop the writeback ports for the data operand ----
     input  wire [NWB-1:0]        wb_v,
@@ -97,6 +96,10 @@ module smolrv64_sq
     // first uncommitted entry. For a younger load nothing changes: an entry in the queue,
     // committed or not, is a store whose bytes are not in the cache yet.
     output wire                  kc_v,        // the first uncommitted entry exists and has address + data
+    // ---- the data read: an entry whose value was in a register file at allocation ----
+    output wire                  r_v,         // REGISTERED: read r_preg this cycle...
+    output wire [PBITS-1:0]      r_preg,
+    input  wire [63:0]           r_data,      // ...and its value, read this cycle
     output wire [ROBB-1:0]       kc_rob,
     output wire [PAW-1:0]        kc_addr,     // ...its PA, for the cosim's retire record
     output wire [63:0]           kc_data,     // ...its value and size, for the cosim's store-data check
@@ -167,6 +170,7 @@ module smolrv64_sq
    reg [1:0]             sz   [0:NENT-1];
    reg [NENT-1:0]        unc;
    reg [PBITS-1:0]       dpr  [0:NENT-1];
+   reg [NENT-1:0]        rd;                 // the data is in a register file: the read port fetches it
    reg [ROBB-1:0]        rob  [0:NENT-1];
    reg [NENT-1:0]        cmt;                // committed (released by the ROB), draining
    reg [IDXB:0]          kcc;                // the first uncommitted entry; head <= kc <= tail
@@ -204,7 +208,7 @@ module smolrv64_sq
    initial begin ld_v = {NENT{1'b0}}; for (li2 = 0; li2 < NENT; li2 = li2 + 1) ld_w[li2] = 3'd0; end
    initial if (NWB > 8) $fatal(1, "smolrv64_sq: ld_w holds a port index of at most 3 bits");
 
-   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}}; cmt = {NENT{1'b0}};
+   initial begin v = {NENT{1'b0}}; av = {NENT{1'b0}}; dv = {NENT{1'b0}}; rd = {NENT{1'b0}}; cmt = {NENT{1'b0}};
                  headc = {(IDXB+1){1'b0}}; tailc = {(IDXB+1){1'b0}}; kcc = {(IDXB+1){1'b0}};
                  cnt = {(IDXB+1){1'b0}}; end
 
@@ -214,6 +218,21 @@ module smolrv64_sq
    assign d_tag     = tailc;
    assign av_any    = |(v & av);
    assign uf_any    = |(v & ~av);
+   // the data read's pick, from flops: the oldest entry with its address whose value is in a
+   // register file and not yet read (every committed entry has its data, so it is at or after
+   // the first uncommitted; the data is needed only to commit, which the address precedes)
+   reg [IDXB-1:0] rp_i;  integer ri;  reg rp_f;
+   always @* begin
+      rp_i = kc;  rp_f = 1'b0;
+      for (ri = NENT - 1; ri >= 0; ri = ri - 1)
+         if (v[kc + ri[IDXB-1:0]] & av[kc + ri[IDXB-1:0]] & rd[kc + ri[IDXB-1:0]]) begin rp_i = kc + ri[IDXB-1:0]; rp_f = 1'b1; end
+   end
+   wire           rp_v = rp_f;
+   wire [IDXB-1:0] rp_idx = rp_i;
+   reg            rq_v;  reg [IDXB-1:0] rq_idx;  reg [PBITS-1:0] rq_preg;
+   initial rq_v = 1'b0;
+   assign r_v    = rq_v;
+   assign r_preg = rq_preg;
    // a committed entry has its address, so the oldest unfilled entry is the first one at or
    // after the first uncommitted
    reg [IDXB-1:0] uf_i;  integer ui;
@@ -410,6 +429,7 @@ module smolrv64_sq
          if (d_alloc & d_ready) begin
             v[tail] <= 1'b1; av[tail] <= 1'b0; dv[tail] <= 1'b0; cmt[tail] <= 1'b0;
             rob[tail] <= d_rob;  dpr[tail] <= d_dpreg;  pc[tail] <= d_pc;  sqn[tail] <= d_seq;
+            rd[tail] <= d_rdy;
             tailc <= tailc + 1'b1;
          end
          if ((d_alloc & d_ready) & ~(c_v & c_take)) cnt <= cnt + 1'b1;
@@ -427,12 +447,16 @@ module smolrv64_sq
             for (li = 0; li < LQN; li = li + 1) conf[li] <= {NENT{1'b0}};
          end
 
-         // address only. The data operand is NOT captured here -- see the snoop.
+         // address only. The data comes from the snoop or the data read.
          if (a_v) begin
             addr[a_idx] <= a_addr;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
             unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
-            if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
          end
+         // the data read: the pick is a register, the value lands the cycle it is read
+         if (rq_v & v[rq_idx]) begin data[rq_idx] <= r_data; dv[rq_idx] <= 1'b1; end
+         rq_v <= rp_v;  rq_idx <= rp_idx;  rq_preg <= dpr[rp_idx];
+         if (rp_v) rd[rp_idx] <= 1'b0;
+         if (flush) rq_v <= 1'b0;                      // flush last (rule I11)
          // the walker's answer: the PA and NC bit, or the fault the store traps with at the head
          if (w_v) begin
             addr[w_idx] <= w_pa;  unc[w_idx] <= w_unc;  flt[w_idx] <= w_flt;  fc[w_idx] <= w_fc;
@@ -453,9 +477,9 @@ module smolrv64_sq
          // the cycle it exists. The `d_alloc` cycle itself is covered by taking the live
          // d_dpreg, because dpr[tail] is written on that same edge.
          //
-         // The already-produced case is not the snoop's job: if rs2 was ready when the store
-         // read the PRF, `a_data_v` supplies it and no writeback is coming. The two paths are
-         // disjoint by construction and `~dv` keeps them so if they ever overlap.
+         // The already-produced case is not the snoop's job: a value in a register file at
+         // allocation (`d_rdy`) has no writeback coming, and the data read fetches it. The two
+         // paths are disjoint by construction, and asserted so.
          // The match sets dv NOW and notes the port; the bytes land NEXT cycle from wb_q
          // (below, outside this arm). A flush clears the note with the entry: the slot may
          // be reallocated the cycle after, and a stale landing would overwrite the new
@@ -490,8 +514,11 @@ module smolrv64_sq
       // assertion rather than a comment. dpreg 0 is LEGAL (rs2 = x0, or any value already in
       // the PRF): it means no writeback is coming, which is only a bug if a_data_v did not
       // supply the value either.
-      if (a_v & ~a_data_v & ~dv[a_idx] & (dpr[a_idx] == {PBITS{1'b0}}))
-         $fatal(1, "smolrv64_sq: entry %0d has no data and no producer -- it can never commit", a_idx);
+      if (d_alloc & d_ready & ~d_rdy & (d_dpreg == {PBITS{1'b0}}))
+         $fatal(1, "smolrv64_sq: a store allocated with no data and no producer -- it can never commit");
+      for (li = 0; li < NENT; li = li + 1)
+         if (ld_v[li] & (rd[li] | (rq_v & (rq_idx == li[IDXB-1:0]))))
+            $fatal(1, "smolrv64_sq: entry %0d snooped a writeback for a value already in a register file", li);
       if (c_take & ~c_v)
          $fatal(1, "smolrv64_sq: drain taken with no committed, ready head");
       if (k_take & ~kc_v)
@@ -515,12 +542,6 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: load entry %0d at offset %h crosses a page", l_fill_ix, l_fill_off);
       if (c_take & ~tv[head])
          $fatal(1, "smolrv64_sq: a store drained without a translation");
-      // The landing bypass is exact only if nothing else writes the entry's data in the one
-      // cycle the bytes are in flight: the address-time capture is guarded by ~dv, and dv
-      // rose with the note, so a collision here is a second producer for one physreg.
-      for (li = 0; li < NENT; li = li + 1)
-         if (ld_v[li] & a_v & a_data_v & ~dv[li] & (a_idx == li[IDXB-1:0]))
-            $fatal(1, "smolrv64_sq: entry %0d landing and captured in the same cycle", li);
    end
 endmodule
 `default_nettype wire

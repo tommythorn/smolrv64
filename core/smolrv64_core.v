@@ -575,7 +575,7 @@ module smolrv64_core
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
       // ra3 is tied off: M reads two operands.
-      .ra1(i_ps1), .ra2(i_ps2), .ra3({RN_PBITS{1'b0}}),
+      .ra1(i_ps1), .ra2(sq_r_v ? sq_r_preg : i_ps2), .ra3({RN_PBITS{1'b0}}),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
       .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
@@ -749,10 +749,8 @@ module smolrv64_core
       if (q_rs1_v & ~pnd_i1)
          $fatal(1, "core: executed with rs1 p%0d still pending (rob=%0d pc=%h insn=%h ord=%b)",
                 i_ps1, i_rob, q_pc, q_insn, q_ord);
-      // ...except a plain store, whose rs2 is deliberately not waited on: smolrv64_sq captures
-      // it by snooping. m_rs2_rdy records whether the PRF read was valid, and the buffer's
-      // own assertion catches an entry that can never be woken. A lane's store likewise.
-      if (q_rs2_v & ~pnd_i2 & ~(q_is_store & ~q_is_amo & ~q_is_cbo))
+      // (a plain store's rs2 is never waited on, but a plain store issues in a lane, below)
+      if (q_rs2_v & ~pnd_i2)
          $fatal(1, "core: executed with rs2 p%0d still pending (rob=%0d)", i_ps2, i_rob);
       if (q_rs3_v & ~pnd_i3)
          $fatal(1, "core: executed with rs3 p%0d still pending (rob=%0d)", i_ps3, i_rob);
@@ -760,13 +758,13 @@ module smolrv64_core
    always @(posedge clk) if (!reset & iss_alu) begin
       if (qa_rs1_v & ~pnd_a1)
          $fatal(1, "core: ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a_ps1, a_rob, qa_pc);
-      if (qa_rs2_v & ~pnd_a2 & ~(qa_is_store & is_lmem(qa_insn)))   // a store's rs2: as M's, below
+      if (qa_rs2_v & ~pnd_a2 & ~(qa_is_store & is_lmem(qa_insn)))   // a store's rs2: the store queue's
          $fatal(1, "core: ALU port executed with rs2 p%0d still pending (rob=%0d)", a_ps2, a_rob);
    end
    always @(posedge clk) if (!reset & iss_alu2) begin
       if (qb_rs1_v & ~pnd_b1)
          $fatal(1, "core: second ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a2_ps1, a2_rob, qb_pc);
-      if (qb_rs2_v & ~pnd_b2 & ~(qb_is_store & is_lmem(qb_insn)))   // a store's rs2: as M's, below
+      if (qb_rs2_v & ~pnd_b2 & ~(qb_is_store & is_lmem(qb_insn)))   // a store's rs2: the store queue's
          $fatal(1, "core: second ALU port executed with rs2 p%0d still pending (rob=%0d)", a2_ps2, a2_rob);
    end
 
@@ -1040,8 +1038,8 @@ module smolrv64_core
    function automatic is_mulop(input [31:0] i);     // MUL, MULH*, MULW: OP or OP-32, M, funct3 < 4
       is_mulop = ((i[6:2] == 5'b01100) | (i[6:2] == 5'b01110)) & (i[31:25] == 7'b0000001) & ~i[14];
    endfunction
-   function automatic is_lmem(input [31:0] i);      // LOAD, LOAD-FP or STORE: a lane generates its address
-      is_lmem = (i[6:3] == 4'b0000) | (i[6:2] == 5'b01000);
+   function automatic is_lmem(input [31:0] i);      // a plain load or store: a lane generates its address
+      is_lmem = (i[6:3] == 4'b0000) | (i[6:3] == 4'b0100);   // LOAD/LOAD-FP, STORE/STORE-FP
    endfunction
    // a lane op that does not complete in its execute cycle: no write, wake or ROB completion there
    function automatic lane_late(input [31:0] i);
@@ -1413,11 +1411,13 @@ module smolrv64_core
    always @(posedge clk) begin
       if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
       else begin
-         // Lane k's stage takes slot k's ALU op.
+         // Lane k's stage takes slot k's ALU op. A store names no rs2 there: the lane generates
+         // its address only, and the store queue fetches its data (an FP store's rs2 is an FP
+         // register, which the lane's integer read ports do not read).
          if (rn_valid & d_cls_i) begin
             stg_v_ia   <= 1'b1;
             stg_rob_ia <= rob_d_idx;
-            stg_ps_ia  <= ps_in;
+            stg_ps_ia  <= d_st_nb ? {rn_prs3, {RN_PBITS{1'b0}}, rn_prs1} : ps_in;
             stg_r_ia   <= srdy_hit0[1:0];
             stg_prd_ia <= d_prd_g;
             stg_pl_ia  <= pl_in;
@@ -1426,7 +1426,7 @@ module smolrv64_core
          if (b_to_i2) begin
             stg_v_ib   <= 1'b1;
             stg_rob_ib <= rob_d_idx2;
-            stg_ps_ib  <= ps_in_b;
+            stg_ps_ib  <= d2_st_nb ? {rn_prs3_b, {RN_PBITS{1'b0}}, rn_prs1_b} : ps_in_b;
             stg_r_ib   <= srdy_hit1[1:0];
             stg_prd_ib <= d2_prd_g;
             stg_pl_ib  <= pl_in_b;
@@ -1435,7 +1435,7 @@ module smolrv64_core
          if (c_to_ic) begin
             stg_v_ic   <= 1'b1;
             stg_rob_ic <= rob_d_idx3;
-            stg_ps_ic  <= ps_in_c;
+            stg_ps_ic  <= d3_st_nb ? {rn_prs3_c, {RN_PBITS{1'b0}}, rn_prs1_c} : ps_in_c;
             stg_r_ic   <= srdy_hit2[1:0];
             stg_prd_ic <= d3_prd_g;
             stg_pl_ic  <= pl_in_c;
@@ -1689,6 +1689,8 @@ module smolrv64_core
    wire [SQ_IB:0]      sq_occ;
    wire [LQ_N-1:0]     sq_l_block_unk_q;   // counters: the candidate's block is an UNKNOWN older address
    wire                sq_av_any, sq_uf_any;
+   wire                sq_r_v;                 // the store queue reads a store's data...
+   wire [RN_PBITS-1:0] sq_r_preg;              // ...from this register, on M's port
    wire [SQ_IB-1:0]    sq_uf_idx;  wire [SEQW-1:0] sq_uf_seq;
    wire [SQ_IB-1:0]    sq_d_idx;
    wire [SQ_TB-1:0]    sq_d_tag;
@@ -1757,13 +1759,13 @@ module smolrv64_core
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW)) u_sq
      (.clk(clk), .reset(reset),
-      .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2),
+      .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2), .d_rdy(rdy_st),
       .d_pc(st_c ? d3_pc[38:0] : st_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(st_c ? d3_seq : st_b ? d2_seq : d_seq),
       .d_ready(sq_d_ready), .d_ready2(sq_d_ready2), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .uf_idx(sq_uf_idx), .uf_seq(sq_uf_seq),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
       .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
-      .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
+      .a_unc(lsu_xo_unc), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_rs2),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
@@ -1963,15 +1965,11 @@ module smolrv64_core
    reg              m_is_mul, m_is_csr, m_is_serialize, m_is_fp, m_is_fencei;
    reg  [2:0]       m_csr_func;
    reg              m_is_cbo, m_cbo_zero, m_cbo_keep;
-   // Store-buffer slot, and whether the issue-cycle PRF read of rs2 was valid. A plain
-   // store may now issue with rs2 still pending, so m_st_data is meaningful only when
-   // m_rs2_rdy -- otherwise smolrv64_sq's snoop supplies the value instead.
-   // ONE field serves both roles, because a buffered store's own slot IS the tail it
+   // Store-buffer slot. ONE field serves both roles, because a buffered store's own slot IS the tail it
    // captured at dispatch: for a store it names the entry to fill. (A load's store-seqno
    // goes straight into smolrv64_lq at dispatch and is one bit wider -- SQ_TB.)
    reg  [SQ_IB-1:0] m_sq_tag;
    reg  [LQ_IB-1:0] m_lq_idx;
-   reg              m_rs2_rdy;
    initial begin m_valid = 1'b0; end
 
    // the M-stage writeback value, and the bypass source (which is NOT the same thing --
@@ -2230,23 +2228,22 @@ module smolrv64_core
    // in program order: it takes the oldest load or store whose address has not arrived, once it
    // has, so an op M holds (a fault waits for the ROB head) never has an older one behind it. The
    // rest of the op rides in a record written at dispatch.
-   localparam integer SPW = 1 + ROB_IDXB + PLW;    // {rs2 ready at dispatch, ROB slot, payload}
+   localparam integer SPW = ROB_IDXB + PLW;        // {ROB slot, payload}
    reg  [SPW-1:0] spl_ld [0:LQ_N-1];
    reg  [SPW-1:0] spl_st [0:SQ_N-1];
-   // rs2 ready at dispatch: the lane's read of it is the value. Otherwise the store queue's snoop,
+   // rs2 already in a register file at dispatch: the store queue reads it. Otherwise its snoop,
    // armed at allocation, takes it from the writeback, so the two never overlap.
    wire rdy_st = st_c ? (pnd_r2_c | ~d3_rs2_v) : st_b ? (pnd_r2_b | ~d2_rs2_v) : (pnd_r2 | ~d_rs2_v);
    always @(posedge clk) begin
-      if (d_ld_alloc) spl_ld[lq_d_idx] <= {1'b0, ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx,
+      if (d_ld_alloc) spl_ld[lq_d_idx] <= {ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx,
                                            ld_c ? pl_in_c : ld_b ? pl_in_b : pl_in};
-      if (d_st_alloc) spl_st[sq_d_idx] <= {rdy_st, st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx,
+      if (d_st_alloc) spl_st[sq_d_idx] <= {st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx,
                                            st_c ? pl_in_c : st_b ? pl_in_b : pl_in};
    end
    reg  [LQ_N-1:0] la_v;                           // a load's VA has arrived and M has not taken it
    reg  [SQ_N-1:0] sa_v;                           // ...a store's
    reg  [63:0]     la_va [0:LQ_N-1];
    reg  [63:0]     sa_va [0:SQ_N-1];
-   reg  [63:0]     sa_dat [0:SQ_N-1];
    initial begin la_v = {LQ_N{1'b0}}; sa_v = {SQ_N{1'b0}}; end
    wire lmA = a_v & is_lmem(qa_insn), lmB = a2_v & is_lmem(qb_insn), lmC = a3_v & is_lmem(qc_insn);
    // the oldest unfilled op: a load or a store (an AMO or CBO in i_* has none older, see cbo_any)
@@ -2262,21 +2259,19 @@ module smolrv64_core
    wire              byC = by(lmC, qc_is_store, qc_lq_idx, qc_sq_tag);
    wire              s_byp = byA | byB | byC;
    assign s_win = s_byp | (u_ld ? la_v[lq_uf_idx] : (sq_uf_any & sa_v[sq_uf_idx]));
-   // i_*'s op goes when it is that oldest op (an FP store), or when nothing is unfilled
-   assign            i_ok = i_needs_m & (~(lq_uf_any | sq_uf_any)
-                                         | (~u_ld & (q_is_store & ~q_is_amo & ~q_is_cbo) & (q_sq_tag == sq_uf_idx)));
+   // i_*'s op (an AMO, LR/SC or CBO) goes when nothing is unfilled, which is always (cbo_any)
+   assign            i_ok = i_needs_m & ~(lq_uf_any | sq_uf_any);
    wire              s_go = s_win & m_advance & ~redirect;
    wire [SPW-1:0]    s_rec = u_ld ? spl_ld[lq_uf_idx] : spl_st[sq_uf_idx];
    wire [PLW-1:0]    pl_m  = s_win ? s_rec[PLW-1:0] : pl_out;   // the op M takes
    wire [63:0]       s_va  = byA ? xa_addr : byB ? xb_addr : byC ? xc_addr : u_ld ? la_va[lq_uf_idx] : sa_va[sq_uf_idx];
-   wire [63:0]       s_dat = byA ? xa_rs2 : byB ? xb_rs2 : byC ? xc_rs2 : sa_dat[sq_uf_idx];
    always @(posedge clk) begin
       if (lmA & ~qa_is_store) begin la_v[qa_lq_idx] <= 1'b1; la_va[qa_lq_idx] <= xa_addr; end
       if (lmB & ~qb_is_store) begin la_v[qb_lq_idx] <= 1'b1; la_va[qb_lq_idx] <= xb_addr; end
       if (lmC & ~qc_is_store) begin la_v[qc_lq_idx] <= 1'b1; la_va[qc_lq_idx] <= xc_addr; end
-      if (lmA &  qa_is_store) begin sa_v[qa_sq_tag] <= 1'b1; sa_va[qa_sq_tag] <= xa_addr; sa_dat[qa_sq_tag] <= xa_rs2; end
-      if (lmB &  qb_is_store) begin sa_v[qb_sq_tag] <= 1'b1; sa_va[qb_sq_tag] <= xb_addr; sa_dat[qb_sq_tag] <= xb_rs2; end
-      if (lmC &  qc_is_store) begin sa_v[qc_sq_tag] <= 1'b1; sa_va[qc_sq_tag] <= xc_addr; sa_dat[qc_sq_tag] <= xc_rs2; end
+      if (lmA &  qa_is_store) begin sa_v[qa_sq_tag] <= 1'b1; sa_va[qa_sq_tag] <= xa_addr; end
+      if (lmB &  qb_is_store) begin sa_v[qb_sq_tag] <= 1'b1; sa_va[qb_sq_tag] <= xb_addr; end
+      if (lmC &  qc_is_store) begin sa_v[qc_sq_tag] <= 1'b1; sa_va[qc_sq_tag] <= xc_addr; end
       if (s_go &  u_ld) la_v[lq_uf_idx] <= 1'b0;   // after the arrival: a bypassed one is not left set
       if (s_go & ~u_ld) sa_v[sq_uf_idx] <= 1'b0;
       if (reset | redirect) begin la_v <= {LQ_N{1'b0}}; sa_v <= {SQ_N{1'b0}}; end   // flush last (rule I11)
@@ -2298,11 +2293,14 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: M holds a faulting plain load or store (pc %h)", m_pc);
       if (s_go & ~(is_lmem(qm_insn) & (qm_is_store == s_st) & (s_st ? (qm_sq_tag == sq_uf_idx) : (qm_lq_idx == lq_uf_idx))))
          $fatal(1, "smolrv64_core: M takes a queue entry's arrival whose record is another op's (pc %h)", qm_pc);
-      // a load is always a lane's; an AMO or CBO waits in i_* with nothing older unfilled
-      if (i_needs_m & ~q_is_store & ~q_is_amo & ~q_is_cbo & q_is_mem)
-         $fatal(1, "smolrv64_core: a plain load is on the ordered pipe (pc %h)", q_pc);
-      if (i_needs_m & (q_is_amo | q_is_cbo) & (lq_uf_any | sq_uf_any) & ~i_ok)
-         $fatal(1, "smolrv64_core: an AMO or CBO waits in i_* behind an unfilled load or store (pc %h)", q_pc);
+      // a plain load or store is always a lane's; an AMO or CBO waits in i_* with no load or
+      // store unfilled, and reads rs2 with no store queue read in flight (it runs drained)
+      if (i_needs_m & q_is_mem & ~q_is_amo & ~q_is_cbo)
+         $fatal(1, "smolrv64_core: a plain load or store is on the ordered pipe (pc %h)", q_pc);
+      if (i_needs_m & (lq_uf_any | sq_uf_any))
+         $fatal(1, "smolrv64_core: an AMO or CBO waits in i_* beside an unfilled load or store (pc %h)", q_pc);
+      if (iss_m & q_rs2_v & sq_r_v)
+         $fatal(1, "smolrv64_core: an AMO reads rs2 in a store queue read's cycle (pc %h)", q_pc);
    end
    // the same unpack for the op M takes
    wire [PCW-1:0]      qm_pc, qm_pred_npc, qm_fault_tval;
@@ -4348,15 +4346,7 @@ module smolrv64_core
             m_imm         <= qm_imm;
             m_result      <= x_result;
             m_addr        <= s_win ? s_va : x_addr;
-            m_st_data     <= s_win ? s_dat : x_rs2;
-            // "x_rs2 is valid this cycle": the pending register says ready, OR a writeback
-            // is naming it right now and the PRF's write-through returns it anyway. This is
-            // exactly the condition the shadow check above asserts for every other operand.
-            m_rs2_rdy     <= s_win ? s_rec[SPW-1]
-                           : pnd_i2
-                           | (wkv[0] & (wkp[0*RN_PBITS +: RN_PBITS] == i_ps2))
-                           | (wkv[1] & (wkp[1*RN_PBITS +: RN_PBITS] == i_ps2))
-                           | (wkv[2] & (wkp[2*RN_PBITS +: RN_PBITS] == i_ps2));
+            m_st_data     <= x_rs2;          // an AMO's or SC's: the store queue reads its own
             m_sq_tag      <= qm_sq_tag;
             m_lq_idx      <= qm_lq_idx;
             m_rs1_val     <= x_rs1;

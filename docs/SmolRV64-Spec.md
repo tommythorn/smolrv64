@@ -22,7 +22,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
-| Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); plain loads and integer stores generate their address in their slot's lane and reach M through their LQ/SQ entry (§8); FP stores, AMOs and CBOs issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); plain loads and stores generate their address in their slot's lane and reach M through their LQ/SQ entry (§8); AMOs, LR/SC and CBOs issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to `IW`/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
@@ -68,9 +68,9 @@ and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2`/`u_iq_i3` and `u_
 respectively. **Slot k's ALU op goes to lane k** (lanes plan step 5.2a): three integer
 schedulers, each with its own ALU and shard, and no steering. An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
 
-Everything else carries an `ord` bit; of those, FP stores, AMOs and CBOs keep program order
-in `u_iq_l`, while FP, divides and system ops are pulled out into the F/MD queue, and
-branches, jumps, multiplies, plain loads and integer stores run in the lanes (§7, §8). Memory
+Everything else carries an `ord` bit; of those, AMOs, LR/SC and CBOs keep program order in
+`u_iq_l`, while FP, divides and system ops are pulled out into the F/MD queue, and branches,
+jumps, multiplies, plain loads and plain stores run in the lanes (§7, §8). Memory
 ordering lives in the LQ and SQ, not in issue order.
 
 That split is what makes the rest unnecessary rather than merely deferred:
@@ -874,20 +874,24 @@ set in the stage register.
 
 ## 8. Load/store unit and MMU
 
-- **Address generation in the lanes; M is the fill stage (lanes 5.2d-a).** A plain load
-  (integer or FP) or an integer store is class I: it issues in its slot's lane when its address
-  operand is ready (a store's rs2 is not waited on), and the lane's adder generates the VA. The
-  lane writes no register, wakes nothing and completes nothing for it (`lane_late`, which also
-  keeps it out of the wake-at-select matrix). The VA, and a store's rs2 as the lane read it,
-  land in arrival registers indexed by the op's own LQ or SQ entry (`la_*`, `sa_*`); the rest of
-  the op is a record written at dispatch (`spl_ld`, `spl_st`: the payload, the ROB slot, and for
-  a store whether rs2 was ready at dispatch -- then the lane's read is the value, otherwise the
-  store queue's snoop, armed at allocation, takes it from the writeback). **M fills in program
-  order**: it takes the oldest load or store whose address has not arrived (`uf_idx`/`uf_seq`
-  from each queue, a sequence compare between the two) once its VA is in, or `i_*`'s op when
-  that is the oldest (an FP store) or nothing is unfilled (an AMO or CBO). Everything M did for
-  a load or store it still does: the dTLB lookup, the LQ/SQ fill, a load's early start. FP
-  stores, AMOs, LR/SC and CBOs stay in `u_iq_l`.
+- **Address generation in the lanes; M is the fill stage (lanes 5.2d-a).** A plain load or
+  store (integer or FP) is class I: it issues in its slot's lane when its address operand is
+  ready (a store names no rs2 there), and the lane's adder generates the VA. The lane writes no
+  register, wakes nothing and completes nothing for it (`lane_late`, which also keeps it out of
+  the wake-at-select matrix). The VA lands in arrival registers indexed by the op's own LQ or SQ
+  entry (`la_*`, `sa_*`), or goes straight into M from the lane's adder when M takes it that
+  cycle; the rest of the op is a record written at dispatch (`spl_ld`, `spl_st`: the payload and
+  the ROB slot). **M fills in program order**: it takes the oldest load or store whose address
+  has not arrived (`uf_idx`/`uf_seq` from each queue, a sequence compare between the two) once
+  its VA is in, or `i_*`'s op (an AMO, LR/SC or CBO) when nothing is unfilled, which the CBO
+  credit makes always. Everything M did for a load or store it still does: the dTLB lookup, the
+  LQ/SQ fill, a load's early start.
+- **A store's data comes from the store queue (5.2d-b step 2).** A value already in a register
+  file at allocation (`d_rdy`) is fetched by the SQ's data read: it registers its oldest entry
+  with an address still waiting for one, and reads that preg on M's port `ra2` (which reads the
+  integer and FP files) the next cycle. A value produced later comes from the snoop, armed at
+  allocation; the two never meet (asserted). `i_*` reads rs2 only for an AMO or SC, which run
+  with the SQ empty (asserted).
 - **A load's or store's address-only fault rides in its entry** (5.2d-b step 1). A page
   crossing, a non-canonical VA or an address beyond the top under Bare fills the entry as
   faulted (`xo_flt`, `xo_fc` into `a_flt`, `a_fc`), exactly as the walker's page fault does, and
@@ -1349,9 +1353,9 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | `irr` | `smolrv64_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
 | `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
-| `u_iq_l` entry | `smolrv64_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1): FP stores, AMOs, LR/SC, CBOs |
-| `spl_ld`, `spl_st` | `smolrv64_core` | 8 each | 1+5+413 = 419 | 6 704 | LUTRAM | a lane load's or store's record by LQ/SQ entry: 1W dispatch, 1R at the oldest unfilled entry (§8) |
-| `la_va`, `sa_va`, `sa_dat`, `la_v`, `sa_v` | `smolrv64_core` | 8 each | 64/64/64/1/1 | 1 552 | flops | the lanes' arrivals: 3W (one per lane), read at the oldest unfilled entry (§8) |
+| `u_iq_l` entry | `smolrv64_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1): AMOs, LR/SC, CBOs |
+| `spl_ld`, `spl_st` | `smolrv64_core` | 8 each | 5+413 = 418 | 6 688 | LUTRAM | a lane load's or store's record by LQ/SQ entry: 1W dispatch, 1R at the oldest unfilled entry (§8) |
+| `la_va`, `sa_va`, `la_v`, `sa_v` | `smolrv64_core` | 8 each | 64/64/1/1 | 1 040 | flops | the lanes' arrivals: 3W (one per lane), read at the oldest unfilled entry (§8) |
 | `u_iq_f` entry | `smolrv64_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `smolrv64_core` | 37 (10+10+12+5) | 413 | 15 281 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
 | `pend` | `smolrv64_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |

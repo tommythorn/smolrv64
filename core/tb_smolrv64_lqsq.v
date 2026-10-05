@@ -55,9 +55,14 @@ module tb;
    wire [NENT-1:0]  e_older;   // the registered per-load copy of ld_older (what smolrv64_core reads)
    wire [NENT-1:0]  l_block_q;  // the registered block copy (what smolrv64_lq reads in the core)
    // ---- store queue ports ----
-   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
+   reg              sq_d_alloc=0, sq_a_v=0, sq_d_rdy=1, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
+   // the register file the store queue's data read answers from; a test that dispatches a store
+   // whose data a writeback brings later clears sq_d_rdy for it
+   reg  [63:0]      rfv [0:(1<<PBITS)-1];
+   reg  [PBITS-1:0] dp_of [0:NENT-1];
+   wire             sq_r_v;  wire [PBITS-1:0] sq_r_preg;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
-   reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
+   reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
    wire             sq_av_any, lq_av_any;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
@@ -85,9 +90,9 @@ module tb;
    // fills the load queue -- exactly smolrv64_core's m_lq_fill wiring
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
-      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.uf_idx(sq_uf_idx),.uf_seq(sq_uf_seq),
+      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_rdy(sq_d_rdy),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.uf_idx(sq_uf_idx),.uf_seq(sq_uf_seq),
       .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(sq_a_size),.a_unc(sq_a_unc),
-      .a_data_v(sq_a_data_v),.a_data(sq_a_data),
+      .r_v(sq_r_v),.r_preg(sq_r_preg),.r_data(rfv[sq_r_preg]),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
@@ -106,13 +111,19 @@ module tb;
    // program-order dispatch helpers: a load captures the store-seqno the queue hands out NOW
    reg [IDXB-1:0] L0, L1, S0, S1, S2, S3;
    task disp_store(input [PBITS-1:0] dp, input [ROBB-1:0] rob, output [IDXB-1:0] ix);
-      begin sq_d_dpreg=dp; sq_d_rob=rob; sq_d_alloc=1; ix=sq_d_idx; step; sq_d_alloc=0; #1; end
+      begin sq_d_dpreg=dp; sq_d_rob=rob; sq_d_alloc=1; ix=sq_d_idx; dp_of[ix]=dp; step; sq_d_alloc=0; #1; end
    endtask
    task disp_load(input [PBITS-1:0] prd, input [ROBB-1:0] rob, output [IDXB-1:0] ix);
       begin lq_d_prd=prd; lq_d_rob=rob; lq_d_sqtag=sq_d_tag; lq_d_alloc=1; ix=lq_d_idx; step; lq_d_alloc=0; #1; end
    endtask
+   // dv: the store's data was in the register file at dispatch; the queue reads it once the
+   // address is in (the pick a cycle later, the value the cycle after)
    task store_addr(input [IDXB-1:0] ix, input [PAW-1:0] a, input [1:0] sz, input dv, input [63:0] d);
-      begin sq_a_v=1; sq_a_idx=ix; sq_a_addr=a; sq_a_size=sz; sq_a_data_v=dv; sq_a_data=d; step; sq_a_v=0; sq_a_data_v=0; #1; end
+      begin
+         if (dv) rfv[dp_of[ix]] = d;
+         sq_a_v=1; sq_a_idx=ix; sq_a_addr=a; sq_a_size=sz; step; sq_a_v=0; #1;
+         if (dv) begin step; step; end
+      end
    endtask
    task load_addr(input [IDXB-1:0] ix, input [PAW-1:0] a, input [1:0] sz);
       begin lq_a_v=1; lq_a_idx=ix; lq_a_pa=a; lq_a_size=sz; step; lq_a_v=0; #1; end
@@ -221,7 +232,7 @@ module tb;
       chk("6 nothing offered, nothing older", !lq_x_v && !ld_older, 1'b1);
 
       // ---- 7. the store queue's data path ----
-      disp_store(9'd7, 4'd3, S0);
+      sq_d_rdy=0; disp_store(9'd7, 4'd3, S0); sq_d_rdy=1;
       store_addr(S0, 56'h2000, 2, 1'b0, 64'h0);      // address, data pending on p7
       chk("7 no commit without data", sq_kc_v, 1'b0);
       // the writeback lands on port 1 at this edge...
@@ -235,7 +246,7 @@ module tb;
       chk("7 address", sq_c_addr==56'h2000, 1'b1);
       commit; chk("7 drained", sq_occ==0, 1'b1);
       // in-order commit: allocate two, fill the SECOND first
-      disp_store(9'd0, 4'd4, S0); disp_store(9'd0, 4'd5, S1);
+      disp_store(9'd30, 4'd4, S0); disp_store(9'd31, 4'd5, S1);
       store_addr(S1, 56'h4000, 2, 1'b1, 64'h22);
       chk("7 head not ready -> no commit", sq_kc_v, 1'b0);
       store_addr(S0, 56'h3000, 2, 1'b1, 64'h11);
@@ -243,16 +254,16 @@ module tb;
       commit; chk("7 then the second", sq_kc_v && sq_c_data==64'h22, 1'b1);
       commit; chk("7 drained", sq_occ==0, 1'b1);
       // the early writeback: data BEFORE the address (rule A5 regression)
-      disp_store(9'd5, 4'd6, S0);
+      sq_d_rdy=0; disp_store(9'd5, 4'd6, S0); sq_d_rdy=1;
       wb_v=3'b001; wb_preg[0 +: PBITS]=9'd5; wb_data[0 +: 64]=64'hFEED_FACE; step; wb_v=0; #1;
       chk("7 no commit without an address", sq_kc_v, 1'b0);
       store_addr(S0, 56'h8000, 3, 1'b0, 64'h0);
       chk("7 early writeback captured", sq_kc_v && sq_c_data==64'hFEED_FACE, 1'b1);
       commit;
       // ...and in the ALLOCATE cycle itself
-      sq_d_dpreg=9'd6; sq_d_rob=4'd7; sq_d_alloc=1; S0=sq_d_idx;
+      sq_d_dpreg=9'd6; sq_d_rob=4'd7; sq_d_alloc=1; sq_d_rdy=0; S0=sq_d_idx;
       wb_v=3'b100; wb_preg[2*PBITS +: PBITS]=9'd6; wb_data[2*64 +: 64]=64'hC0FFEE; step;
-      sq_d_alloc=0; wb_v=0; #1;
+      sq_d_alloc=0; sq_d_rdy=1; wb_v=0; #1;
       store_addr(S0, 56'h9000, 3, 1'b0, 64'h0);
       chk("7 same-cycle writeback captured", sq_kc_v && sq_c_data==64'hC0FFEE, 1'b1);
       commit;

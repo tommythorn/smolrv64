@@ -58,9 +58,11 @@ module tb;
       $fatal(1, "FAIL: a walker or trap request from translated fills (lk %b sk %b lf %b sf %b)", lk_v, sk_v, lf_v, sf_v);  wire [NENT*2-1:0] e_size;  wire [NENT*(IDXB+1)-1:0] e_tag;
    wire [NENT-1:0]  e_av, e_block;
    // ---- store queue ports ----
-   reg              sq_d_alloc=0, sq_a_v=0, sq_a_data_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
+   reg              sq_d_alloc=0, sq_a_v=0, sq_a_unc=0, sq_c_take=0, sq_k_take=0;
+   reg  [63:0]      rfv [0:(1<<PBITS)-1];      // the register file the store queue's data read answers from
+   wire             sq_r_v;  wire [PBITS-1:0] sq_r_preg;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
-   reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;  reg [63:0] sq_a_data=0;
+   reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v, sq_av_any, lq_av_any;
    wire [NENT-1:0]  l_older;   // the registered per-load copy of ld_older (smolrv64_core reads this one)
@@ -87,9 +89,9 @@ module tb;
 
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
-      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.uf_idx(sq_uf_idx),.uf_seq(sq_uf_seq),
+      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_rdy(1'b1),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.uf_idx(sq_uf_idx),.uf_seq(sq_uf_seq),
       .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(sq_a_size),.a_unc(sq_a_unc),
-      .a_data_v(sq_a_data_v),.a_data(sq_a_data),
+      .r_v(sq_r_v),.r_preg(sq_r_preg),.r_data(rfv[sq_r_preg]),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
@@ -173,7 +175,7 @@ module tb;
          n_cyc = n_cyc + 1;
          act = rnd(0) % 8;
          lq_d_alloc = 0; lq_a_v = 0; lq_a_sent = 0; lq_x_take = 0; lq_l_v = 0;
-         sq_d_alloc = 0; sq_a_v = 0; sq_a_data_v = 0; sq_c_take = 0; sq_k_take = 0; flush = 0;
+         sq_d_alloc = 0; sq_a_v = 0; sq_c_take = 0; sq_k_take = 0; flush = 0;
          if (verbose && n_cyc >= vfrom && n_cyc < vto)
             $display("  c=%0d act=%0d p_disp=%0d p_addr=%0d lq_occ=%0d sq_occ=%0d x_v=%b x_idx=%0d(op %0d) c_v=%b",
                      n_cyc, act, p_disp, p_addr, lq_occ, sq_occ, lq_x_v, lq_x_idx, lq_op[lq_x_idx], sq_c_v);
@@ -182,7 +184,8 @@ module tb;
               if (p_disp < nops) begin
                  op = p_disp;
                  if (is_st[op] && sq_d_ready) begin
-                    sq_d_alloc = 1; sq_d_rob = op; sq_d_dpreg = 9'd7; qix[op] = sq_d_idx;
+                    sq_d_alloc = 1; sq_d_rob = op; sq_d_dpreg = 9'd1 + op[8:0]; qix[op] = sq_d_idx;
+                    rfv[9'd1 + op[8:0]] = {32'hDA7A, op[31:0]};   // its data, in the register file
                     p_disp = p_disp + 1;
                  end else if (!is_st[op] && lq_d_ready) begin
                     lq_d_alloc = 1; lq_d_rob = op; lq_d_prd = 9'd40 + op % 100; lq_d_sqtag = sq_d_tag;
@@ -197,7 +200,7 @@ module tb;
                  op = p_addr;
                  if (is_st[op]) begin
                     sq_a_v = 1; sq_a_idx = qix[op]; sq_a_addr = addr[op]; sq_a_size = sz[op];
-                    sq_a_unc = unc[op]; sq_a_data_v = 1; sq_a_data = {32'hDA7A, op[31:0]};
+                    sq_a_unc = unc[op];
                     st[op] = 1; p_addr = p_addr + 1;
                  end else begin
                     lq_b_idx = qix[op]; #1;
