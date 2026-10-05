@@ -3458,15 +3458,19 @@ module smolrv64_core
    // muxed address: IE by the ALUs, LD by M, a landing load or the SYSQ, FE by the F stage's
    // landing, the CTF link or the MD stage. m_done is forced low on ld_land/fp_land, so no
    // shard sees two writers in a cycle; the one-writer-per-cycle property is asserted below.
-   wire alu_wb = iss_alu & qa_rd_v & ~mA_go;   // a multiply writes in its reserved slot
-   wire alu2_wb = iss_alu2 & qb_rd_v & ~mB_go;   // a multiply writes in its reserved slot
+   // A lane's wake and write-register enables do not read the live redirect (rule I11): a redirect
+   // fires at the ROB head, so the op executing in a lane then is younger and flushed everywhere
+   // (each flush arm is ordered last); its write lands at T+1 in a register the rollback frees,
+   // before any new producer of it can dispatch. A multiply writes in its reserved slot.
+   wire alu_wb = a_v & qa_rd_v & ~is_mulop(qa_insn);
+   wire alu2_wb = a2_v & qb_rd_v & ~is_mulop(qb_insn);
    wire we_ie2 = alu2_wb | mB_wr;
    wire [RN_PBITS-1:0] wa_ie2 = mB_2 ? mB_prd2 : qb_prd;
    always @(posedge clk) begin
       alu2_q_v <= ~reset & we_ie2;
       if (we_ie2) begin alu2_q_prd <= wa_ie2; alu2_q_val <= mB_2 ? mB_res : xb_result; end
    end
-   wire alu3_wb = iss_alu3 & qc_rd_v & ~mC_go;   // a multiply writes in its reserved slot                    // the third ALU (Stage 3)
+   wire alu3_wb = a3_v & qc_rd_v & ~is_mulop(qc_insn);
    wire we_ie3 = alu3_wb | mC_wr;
    wire [RN_PBITS-1:0] wa_ie3 = mC_2 ? mC_prd2 : qc_prd;
    always @(posedge clk) begin
