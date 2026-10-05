@@ -1822,20 +1822,16 @@ module smolrv64_core
 
    // M-stage registers (declared here: the bypass reads them)
    reg              m_valid, m_rvc, m_rd_v;
-   reg  [PCW-1:0]   m_pc, m_pred_npc, m_target, m_taken_tgt;
+   reg  [PCW-1:0]   m_pc;
    reg  [31:0]      m_insn;
    reg  [SEQW-1:0]  m_seq;
-   reg  [PDW-1:0]   m_pdet;   // this op's predict details, carried F->X->M
-   reg  [5:0]       m_rd, m_rs1;
    reg  [RN_PBITS-1:0] m_prd;           // rename result, carried X->M
    reg  [2:0]       m_shard;
-   reg  [63:0]      m_imm, m_result, m_addr, m_st_data;
+   reg  [63:0]      m_addr, m_st_data;
    reg  [1:0]       m_mem_size;
    reg              m_mem_signed, m_is_mem, m_is_store, m_is_amo;
    reg  [4:0]       m_amo_func;
-   reg              m_is_branch, m_is_jump, m_is_jalr, m_redirect, m_taken;
-   reg              m_is_mul, m_is_csr, m_is_serialize, m_is_fp, m_is_fencei;
-   reg  [2:0]       m_csr_func;
+   reg              m_is_serialize, m_is_fp;
    reg              m_is_cbo, m_cbo_zero, m_cbo_keep;
    // Store-buffer slot. ONE field serves both roles, because a buffered store's own slot IS the tail it
    // captured at dispatch: for a store it names the entry to fill. (A load's store-seqno
@@ -2334,7 +2330,7 @@ module smolrv64_core
       if (iss_md & md_v & ~md_wb)        $fatal(1, "smolrv64_core: a mul/div issued into a busy MD stage");
       if (iss_md & div_busy)             $fatal(1, "smolrv64_core: a divide started into a busy divider (the start would be ignored)");
       if (iss_md & ~md_f3_2)             $fatal(1, "smolrv64_core: a multiply reached the MD stage, not its lane");
-      if (m_valid & m_is_mul)            $fatal(1, "smolrv64_core: a mul/div reached M");
+      if (m_valid & ~(m_is_mem | m_is_amo)) $fatal(1, "smolrv64_core: M holds an op that is not a load, store or head op (pc %h)", m_pc);
       if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage wrote SH_FE together with the FPU");
    end
 
@@ -2638,8 +2634,6 @@ module smolrv64_core
       // stop being serializing -- an obvious future optimisation, since serialising every
       // CSR read to make frm safe is heavy-handed. Assert the property directly so it
       // cannot be lost silently.
-      if (m_valid & m_is_csr)
-         $fatal(1, "smolrv64_core: a CSR op is in M (they issue through the SYSQ since C3 step 3)");
    end
 
    // THE ONE YIELD GATE: every completion that shares M's ROB port (a landing load, the FPU)
@@ -3052,7 +3046,7 @@ module smolrv64_core
    reg        m_unit_flt_q;
    reg [3:0]  m_unit_fc_q;
    initial begin m_unit_done_q = 1'b0; m_unit_flt_q = 1'b0; end
-   wire [63:0] m_unit_res = (m_is_mem | m_is_amo) ? lsu_rd_val : m_result;
+   wire [63:0] m_unit_res = lsu_rd_val;
    always @(posedge clk)
       if (reset | m_advance)  m_unit_done_q <= 1'b0;
       else if (m_unit_ok) begin
@@ -3087,7 +3081,7 @@ module smolrv64_core
    reg  fr_br, fr_jalr;      // the tracked restart's kind, for the redirect counters
    reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
    reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
-   wire m_needs_head = m_redirect | m_is_fencei | (m_mem_op & m_lsu_flt);
+   wire m_needs_head = m_mem_op & m_lsu_flt;
    // A HEAD-GATED OP COMPLETES IN ITS SECOND CYCLE AT HEAD, not its first. Nothing retires
    // while it waits (retire is in order and it is the head), so by its second cycle every
    // older retirement is two edges old -- which is what lets minstret take the same delayed
@@ -3203,8 +3197,8 @@ module smolrv64_core
    // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
    // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
    // now; the branch squash comes from the CTF pipe (cf_red_fire).
-   wire m_red_fire = m_valid & m_done_red & (csr_red | m_is_fencei);
-   wire m_red_ref  = m_valid & m_done     & (csr_red | m_is_fencei);
+   wire m_red_fire = m_valid & m_done_red & csr_red;
+   wire m_red_ref  = m_valid & m_done     & csr_red;
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
    wire cf_red_fire = fr_v & (rob_head_idx == fr_rob);
@@ -3427,9 +3421,7 @@ module smolrv64_core
    // makes the delayed minstret read exact: it is sampled in the completion cycle.
    assign wb_ld = ld_wb                     ? lsu_rd_val
                 : sy_wr                     ? csr_rdata    // before M's arms: M does not complete while
-                : (m_is_mem | m_is_amo)     ? lsu_rd_val   // the SYSQ's op is the head (m_done), so M's m_is_* are not a result
-                : m_unit_done_q             ? m_unit_res_q
-                :                             m_result;
+                :                             lsu_rd_val;   // the SYSQ's op is the head (m_done), so M's is not a result
    // SH_FE's writers: the F stage's landing, the CTF link (when the F stage isn't landing) and
    // the MD stage (when neither is).
    assign wb_fe = fp_wb         ? fp_wval
@@ -4202,15 +4194,9 @@ module smolrv64_core
             m_insn        <= qm_insn;
             m_rvc         <= qm_rvc;
             m_seq         <= qm_seq;
-            m_pdet        <= qm_pdet;
-            m_pred_npc    <= qm_pred_npc;
-            m_rd          <= qm_rd;
             m_rd_v        <= qm_rd_v;
             m_prd         <= qm_prd;
             m_shard       <= qm_shard;
-            m_rs1         <= qm_rs1;
-            m_imm         <= qm_imm;
-            m_result      <= 64'd0;
             m_addr        <= s_win ? s_va : ho_va;
             m_st_data     <= ho_dat;         // an AMO's or SC's: the store queue reads its own
             m_sq_tag      <= qm_sq_tag;
@@ -4221,19 +4207,8 @@ module smolrv64_core
             m_is_store    <= qm_is_store;
             m_is_amo      <= qm_is_amo;
             m_amo_func    <= qm_amo_func;
-            m_is_branch   <= qm_is_branch;
-            m_is_jump     <= qm_is_jump;
-            m_is_jalr     <= qm_is_jalr;
-            m_redirect    <= 1'b0;
-            m_target      <= {PCW{1'b0}};
-            m_taken       <= 1'b0;
-            m_taken_tgt   <= {PCW{1'b0}};
-            m_is_mul      <= qm_is_mul;
-            m_is_csr      <= qm_is_csr;
-            m_csr_func    <= qm_csr_func;
             m_is_serialize<= qm_is_serialize;
             m_is_fp       <= qm_is_fp;
-            m_is_fencei   <= qm_is_fencei;
             m_is_cbo      <= qm_is_cbo;
             m_cbo_zero    <= qm_cbo_zero;
             m_cbo_keep    <= qm_cbo_keep;

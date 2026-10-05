@@ -897,7 +897,8 @@ set in the stage register.
   and M runs it at the ROB head as before. One head op is in flight at a time (`ho_inf`, the
   credit `CR_L`), a CBO dispatches only once every older load and store has its address
   (`CR_CBO`), and no load or store dispatches while a head op is in flight. There is no `u_iq_l`,
-  issue register or M-side execute unit.
+  issue register or M-side execute unit, and M holds only a load, a store or a head op
+  (asserted): its result is the LSU's, and it redirects only to trap.
 - **A load's or store's address-only fault rides in its entry** (5.2d-b step 1). A page
   crossing, a non-canonical VA or an address beyond the top under Bare fills the entry as
   faulted (`xo_flt`, `xo_fc` into `a_flt`, `a_fc`), exactly as the walker's page fault does, and
