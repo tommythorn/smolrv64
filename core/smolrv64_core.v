@@ -1801,7 +1801,7 @@ module smolrv64_core
       .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
       .w_v(rob_wv), .w_ix(rob_wix),
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
-      .c_kill((m_valid & m_done & m_trap) | sy_trap),
+      .c_kill((m_valid & m_done_red & m_trap) | sy_trap),   // a trap's done is latched: no live dTLB here
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
       .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
       .c_prd(rob_c_prd), .c_noret(rob_c_noret),
@@ -3183,6 +3183,10 @@ module smolrv64_core
 
    // ---- trap / redirect ----
    wire m_trap = xtrap_v;                 // a system op's trap is the SYSQ's (sy_trap), since C3 step 3
+   // the ROB's commit-kill reads M's done without the LSU's live arm: with a trap the fault is
+   // latched, so the two are one value; m_done carries the dTLB lookup into retirement
+   always @(posedge clk) if (!reset && m_valid && m_trap && (m_done != m_done_red))
+      $fatal(1, "smolrv64_core: a trapping op's done differs without the LSU's live arm (pc %h)", m_pc);
    wire csr_red = xtrap_v;
    // THE REDIRECT DOES NOT CARRY THE LSU'S LIVE COMPLETION. A memory op redirects only as a
    // trap, and a trap is taken from the latched copy (m_unit_done_q); a branch, a system op
