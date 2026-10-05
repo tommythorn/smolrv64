@@ -1136,24 +1136,26 @@ module smolrv64_core
          .iss_take(iss_v),
          .hold_v(v),.hold_ent(ent),
          .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.occupancy(occ),.free_n(free));
-      reg  [3*RN_PBITS-1:0] psmem [0:NI-1];
+      // the tags, and whether the op completes later than its issue (lane_late), read at the pick
+      reg  [3*RN_PBITS:0]   psmem [0:NI-1];
       reg  [PLW-1:0]        plmem [0:NI-1];
       // written as the stage's op moves into the scheduler (T+1), at the entry it allocates
-      always @(posedge clk) if (mv) psmem[d_ent] <= stg_ps;
+      always @(posedge clk) if (mv) psmem[d_ent] <= {lane_late(stg_pl[PL_INSN +: 32]), stg_ps};
       always @(posedge clk) if (mv) plmem[d_ent] <= stg_pl;
-      wire [3*RN_PBITS-1:0] ps_out = psmem[iss_ent];
+      wire [3*RN_PBITS:0]   ps_out = psmem[iss_ent];
       // ---- the select register: the picked op, executing the next cycle ----
       reg [ROB_IDXB-1:0]   rob;
       reg [RN_PBITS-1:0]   ps1, ps2;
+      reg                  late;            // the op completes later than its issue (lane_late)
       reg [PLW-1:0]        pl;
-      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; end
+      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
       always @(posedge clk) begin
          if (reset | redirect) v <= 1'b0;
          else begin
             v <= iss_v;
             if (iss_v) begin
                ent <= iss_ent;  rob <= iss_rob;
-               ps1 <= ps_out[0 +: RN_PBITS];  ps2 <= ps_out[RN_PBITS +: RN_PBITS];
+               ps1 <= ps_out[0 +: RN_PBITS];  ps2 <= ps_out[RN_PBITS +: RN_PBITS];  late <= ps_out[3*RN_PBITS];
             end
          end
       end
@@ -1181,7 +1183,6 @@ module smolrv64_core
          .pred_npc(q_pred_npc), .mis_taken(q_mis_taken), .mis_nt(q_mis_nt),
          .result(result), .addr(addr), .redirect(red), .target(target),
          .taken(taken), .taken_tgt(taken_tgt));
-      wire late = lane_late(q_insn);
       // THE ISSUE CHECK: nothing executes with a source still pending (the scheduler enforces it
       // structurally -- an entry is not selectable until every source is ready); a store's rs2
       // is the store queue's
@@ -1910,9 +1911,9 @@ module smolrv64_core
    assign dmem_idle = lsu_idle & (sq_occ == 0);
 
    // ---- the MD stage: mul/div off the ordered pipe (C1, 2026-09-17) ----
-   // The F port's third drain. One divide at a time (the divider is single-occupancy), started
-   // from the port's forwarded reads in the issue cycle exactly as the F stage captures them,
-   // and landing by its own tag like the FPU: rob and prd ride in the stage.
+   // The F port's third drain. One divide at a time (the divider is single-occupancy), its
+   // operands captured from the port's forwarded reads in the issue cycle exactly as the F stage
+   // captures them, and landing by its own tag like the FPU: rob and prd ride in the stage.
    reg                md_v, md_div, md_rd_v, md_pend;
    reg [ROB_IDXB-1:0] md_rob;
    reg [RN_PBITS-1:0] md_prd;
@@ -1927,9 +1928,20 @@ module smolrv64_core
    wire        md_wb   = md_pend & (~md_rd_v | ~fp_wb);   // the op completes (ROB)
    wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes its register
    assign      md_advance = ~md_v | md_wb;
+   // The divider starts a cycle after the issue, from registered operands: its start-cycle
+   // operand preparation (sign, magnitude, the special cases) stays off the port's forwarded reads.
+   reg         dv_go;
+   reg  [63:0] dv_a, dv_b;
+   reg  [2:0]  dv_f3;
+   reg         dv_w;
+   initial dv_go = 1'b0;
+   always @(posedge clk) begin
+      dv_go <= ~reset & ~redirect & iss_md & md_f3_2;
+      dv_a <= xf_rs1;  dv_b <= xf_rs2;  dv_f3 <= qf_insn[14:12];  dv_w <= qf_insn[6:2] == 5'b01110;
+   end
    divider u_div
-     (.clk(clk), .reset(reset), .start(iss_md & md_f3_2), .abort(redirect),
-      .rs1(xf_rs1), .rs2(xf_rs2), .f3(qf_insn[14:12]), .is_w(qf_insn[6:2] == 5'b01110),
+     (.clk(clk), .reset(reset), .start(dv_go), .abort(redirect),
+      .rs1(dv_a), .rs2(dv_b), .f3(dv_f3), .is_w(dv_w),
       .busy(div_busy), .done(div_done), .result(div_result));
    always @(posedge clk) begin
       // The writeback's clear comes FIRST: an issue in the same cycle (md_advance = md_wb admits
@@ -1947,7 +1959,7 @@ module smolrv64_core
    always @(posedge clk) if (!reset) begin
       if (iss_md & (qf_shard >= SH_F0))  $fatal(1, "smolrv64_core: a divide issued with an FP shard %0d", qf_shard);
       if (iss_md & md_v & ~md_wb)        $fatal(1, "smolrv64_core: a mul/div issued into a busy MD stage");
-      if (iss_md & div_busy)             $fatal(1, "smolrv64_core: a divide started into a busy divider (the start would be ignored)");
+      if (dv_go & div_busy)              $fatal(1, "smolrv64_core: a divide started into a busy divider (the start would be ignored)");
       if (iss_md & ~md_f3_2)             $fatal(1, "smolrv64_core: a multiply reached the MD stage, not its lane");
       if (m_valid & ~(m_is_mem | m_is_amo)) $fatal(1, "smolrv64_core: M holds an op that is not a load, store or head op (pc %h)", m_pc);
       if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage and the FPU wrote in one cycle");
@@ -2558,13 +2570,16 @@ module smolrv64_core
    // event landed on -- so it takes the delayed copy and minstret keeps the live one.
    // Registering it here rather than in csr_file also keeps the src/ OoO core, which
    // shares that module, bit-identical: it passes its live count to both ports.
-   reg [43:0] hpm_ev_q;
+   // Two stages: the first has no reset or initial value, so synthesis retiming may pull it back
+   // into the attribution cone (the top-down events read M's done, the redirect and the door).
+   reg [43:0] hpm_ev_p, hpm_ev_q;
    reg [1:0]  hpm_disp_q;                 // instructions dispatched this cycle (DPATCH)
    reg [5:0]  hpm_lqocc_q, hpm_sqocc_q;   // queue occupancies, per cycle (MEM_LQOCC / MEM_SQOCC)
    reg [5:0]  hpm_ret_q;
    initial begin hpm_ev_q = 44'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; hpm_disp_q = 2'd0; end
    always @(posedge clk) begin
-      hpm_ev_q  <= reset ? 44'd0 : hpm_ev;
+      hpm_ev_p  <= hpm_ev;
+      hpm_ev_q  <= reset ? 44'd0 : hpm_ev_p;
       hpm_disp_q <= reset ? 2'd0 : td_nd;
       hpm_lqocc_q <= reset ? 6'd0 : {{(6-LQ_IB-1){1'b0}}, lq_occ};
       hpm_sqocc_q <= reset ? 6'd0 : {{(6-SQ_IB-1){1'b0}}, sq_occ};
@@ -3159,9 +3174,12 @@ module smolrv64_core
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
    // each lane drains, in order, its oldest waiting entry, the SYSQ's, a landing load's, the FE's
    wire [NL-1:0] lb_drain = lb_free & (lb_any | pl | p1 | p2);
-   wire [NL-1:0] by0 = lb_drain & ~lb_any & ~p1 & pl;      // a stream's goes straight through...
-   wire [NL-1:0] by2 = lb_drain & ~lb_any & ~p1 & ~pl & p2;
-   wire [NL-1:0] en0 = p0 & ~by0;                          // ...or waits
+   // A stream's goes straight through when the lane is free, nothing waits and lane A is not held
+   // for a system op at the ROB head (the SYSQ's fire is not in the streams' wake); else it waits.
+   wire [NL-1:0] rsv = {{(NL-1){1'b0}}, sy_at_head};
+   wire [NL-1:0] by0 = lb_drain & ~lb_any & ~rsv & pl;
+   wire [NL-1:0] by2 = lb_drain & ~lb_any & ~rsv & ~pl & p2;
+   wire [NL-1:0] en0 = p0 & ~by0;
    wire [NL-1:0] en2 = p2 & ~by2;
    // the drained entry of each lane, {wr, cmp, prd, dat, rob} (a wire per lane: rule F4)
    wire [2+RN_PBITS+64+ROB_IDXB-1:0] lp [0:NL-1];

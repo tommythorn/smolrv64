@@ -904,8 +904,10 @@ set in the stage register.
 - **A result lands in its lane's write slot (5.2d-c).** An integer load's, AMO's or CSR read's
   destination is in its slot's lane shard; SH_LD has no writer and no bank. The value takes the
   lane's write register in a cycle the lane leaves it free (nothing executing that completes at
-  issue, no multiply in its slot). A landing load goes straight through when the lane is free,
-  so its latency is unchanged: it broadcasts (wake, pending clear, the store queue's snoop) and
+  issue, no multiply in its slot; the lane's "completes later" bit is read with its tags at the
+  pick, so this is a function of flops). A landing load goes straight through when the lane is
+  free and nothing waits there (and, for lane A, no system op is the ROB head: the SYSQ's fire
+  stays out of the streams' wake), so its latency is unchanged: it broadcasts (wake, pending clear, the store queue's snoop) and
   completes on its stream's own port, and only its value enters the lane's write register.
   Otherwise -- and always for M's own result (an AMO, LR or SC: the LSU's live completion) -- it
   waits in the lane's 4-entry landing buffer, which holds the lane's select (`unit_busy`) until
@@ -1508,7 +1510,7 @@ until software clears OF. LCOFI is delegable (`mideleg[13]`), `sie`/`sip` show b
 ranks last, after STI. `scountovf` (0xDA0) reads the OF bits; below M a bit reads 0 unless
 `mcounteren` grants that counter. Linux's SBI PMU driver samples on it, so `perf record -g`
 works (the kernel keeps frame pointers). The privilege filter compares the current privilege
-with the event bus, which runs a cycle late, so an event in the cycle of a privilege change
+with the event bus, which runs two cycles late, so an event in the cycle of a privilege change
 may count on either side of it. A read of `mhpmeventN` or `mhpmcounterN` (`csrr`) writes
 nothing, so it cannot swallow that cycle's increment or overflow. `core/directed/sscofpmf.S`
 checks overflow, OF's silence, the INH bits in M and S, LCOFI's priority and delegation, and
