@@ -2,30 +2,23 @@
 
 // Per-physical-register readiness. docs/Area-Efficient-Scalar-OoO.md 5, "Values and
 // readiness": `pending[NPHYS]`, set at rename, cleared at writeback, bulk-cleared on flush.
-//
-// This is what the scheduler needs and what the current interlock is a degenerate case of.
-// smolrv64_core today compares a source against ONE outstanding load tag and ONE outstanding FP
-// tag, which is exactly enough while at most one op of each kind can be in flight. Dynamic
-// issue makes "how many results are outstanding" unbounded by construction, so readiness
-// has to be state per register rather than a comparison against the units.
+// Dynamic issue makes "how many results are outstanding" unbounded, so readiness is state per
+// register rather than a comparison against the units.
 //
 // Indexed by the FULL physical register number, so the array is 2**PBITS deep and the
-// shard bits in the top of the number simply select a region of it. 512 bits at PBITS=9,
-// against 320 architecturally reachable registers -- the waste is 192 flops and buys a
-// decode-free index.
+// shard bits in the top of the number simply select a region of it: a decode-free index for
+// some unreachable flops.
 module smolrv64_pending
   #(parameter PBITS = 9,
-    parameter NWB   = 3)                  // writeback ports, one per PRF shard
+    parameter NS    = 3,                  // allocations a cycle: one per rename slot
+    parameter NWB   = 3,                  // writeback broadcasts
+    parameter NQ    = 1)                  // readiness queries
    (input  wire                  clk,
     input  wire                  reset,
 
-    // ---- allocate: rename gives the destination a pending bit ----
-    input  wire                  a_v,
-    input  wire [PBITS-1:0]      a_preg,
-    input  wire                  a_v2,       // slot B's destination (item 10b), the same cycle
-    input  wire [PBITS-1:0]      a_preg2,
-    input  wire                  a_v3,       // slot C's destination (Stage 3), the same cycle
-    input  wire [PBITS-1:0]      a_preg3,
+    // ---- allocate: rename gives slot k's destination a pending bit, the same cycle ----
+    input  wire [NS-1:0]         a_v,
+    input  wire [NS*PBITS-1:0]   a_preg,
 
     // ---- writeback: the value has landed ----
     input  wire [NWB-1:0]        w_v,
@@ -34,27 +27,13 @@ module smolrv64_pending
     // register that is not pending -- a squashed op's result landing after its register died}
     output reg  [1:0]            err,
 
-    // ---- read: two sets of three. Dispatch asks "is this source ready?" to seed the
-    // scheduler entry; issue asks the same to check what the scheduler selected. Read ports
-    // are the one thing duplication genuinely buys.
-    input  wire [PBITS-1:0]      q1, q2, q3,
-    output wire                  r1, r2, r3,
-    input  wire [PBITS-1:0]      q4, q5, q6,
-    // q7..q9 are the COMMITTED-map partners of q1..q3. The rename side queries the
-    // speculative and committed tag for each source and lets `lv` pick the RESULT, instead
-    // of picking the tag and then looking it up -- see smolrv64_core. Readiness is a pure
-    // function of `pend`, so pnd(lv ? s : m) == (lv ? pnd(s) : pnd(m)) exactly.
-    input  wire [PBITS-1:0]      q7, q8, q9,
-    output wire                  r4, r5, r6,
-    output wire                  r7, r8, r9,
-    input  wire [PBITS-1:0]      q10, q11, q12, q13, q14, q15,   // slot B's six candidates
-        output wire                  r10, r11, r12, r13, r14, r15,
-    input  wire [PBITS-1:0]      q16, q17,        // the ALU port's two operands (item 10d-i)
-    output wire                  r16, r17,
-    input  wire [PBITS-1:0]      q18, q19,        // the second ALU port's operands (item 10d-ii)
-    output wire                  r18, r19,
-    input  wire [PBITS-1:0]      q20, q21, q22, q23, q24, q25,   // slot C's six candidates (Stage 3)
-    output wire                  r20, r21, r22, r23, r24, r25,
+    // ---- read: "is this register ready?" Readiness is a pure function of `pend` (no
+    // same-cycle write-forward: the schedulers cover a producer writing back in the cycle its
+    // consumer is written, and a forward here would close a loop through readiness), so a
+    // query of either map candidate and a late pick of the RESULT is the same as a query of
+    // the picked candidate. Read ports are the one thing duplication genuinely buys.
+    input  wire [NQ*PBITS-1:0]   q,
+    output wire [NQ-1:0]         r,
 
     // ---- recovery ----
     input  wire                  flush);
@@ -62,38 +41,16 @@ module smolrv64_pending
    localparam integer NP = 1 << PBITS;
 
    reg [NP-1:0] pend;
-   integer      i;
+   integer      i, j;
    initial      pend = {NP{1'b0}};
 
    // Physical register 0 is architectural x0 and is never allocated, so it is always
    // ready; folding that in here keeps every reader from special-casing it.
-   function automatic rdy_of;
-      input [PBITS-1:0] q;
-      begin rdy_of = (q == {PBITS{1'b0}}) ? 1'b1 : ~pend[q]; end
-   endfunction
-
-   // NO same-cycle write-forward here, deliberately. It used to be needed so an instruction
-   // renamed in the very cycle its producer wrote back did not wait for a broadcast that had
-   // already happened -- but the scheduler now covers exactly that case on its own dispatch
-   // path (hit()/shit() when the entry is written). Keeping it here made these outputs
-   // combinational in the writeback ADDRESS, and one of those addresses depends on which
-   // entry the scheduler selected, which closed a loop through readiness. Reads are now a
-   // pure function of the pending register.
-   assign r1 = rdy_of(q1);
-   assign r2 = rdy_of(q2);
-   assign r3 = rdy_of(q3);
-   assign r4 = rdy_of(q4);
-   assign r5 = rdy_of(q5);
-   assign r6 = rdy_of(q6);
-   assign r7 = rdy_of(q7);
-   assign r8 = rdy_of(q8);
-   assign r9 = rdy_of(q9);
-   assign r10 = rdy_of(q10); assign r11 = rdy_of(q11); assign r12 = rdy_of(q12);
-   assign r13 = rdy_of(q13); assign r14 = rdy_of(q14); assign r15 = rdy_of(q15);
-   assign r16 = rdy_of(q16); assign r17 = rdy_of(q17);
-   assign r18 = rdy_of(q18); assign r19 = rdy_of(q19);
-   assign r20 = rdy_of(q20); assign r21 = rdy_of(q21); assign r22 = rdy_of(q22);
-   assign r23 = rdy_of(q23); assign r24 = rdy_of(q24); assign r25 = rdy_of(q25);
+   genvar gq;
+   generate for (gq = 0; gq < NQ; gq = gq + 1) begin: rq
+      wire [PBITS-1:0] x = q[gq*PBITS +: PBITS];
+      assign r[gq] = (x == {PBITS{1'b0}}) ? 1'b1 : ~pend[x];
+   end endgenerate
 
    always @(posedge clk) begin
       if (reset) begin
@@ -104,43 +61,41 @@ module smolrv64_pending
          // Ordered after the writebacks: an allocation in the same cycle as a writeback to
          // the SAME register means the register was just freed and re-allocated, and the
          // new producer owns it.
-         if (a_v)  pend[a_preg]  <= 1'b1;
-         if (a_v2) pend[a_preg2] <= 1'b1;
-         if (a_v3) pend[a_preg3] <= 1'b1;
+         for (i = 0; i < NS; i = i + 1)
+            if (a_v[i]) pend[a_preg[i*PBITS +: PBITS]] <= 1'b1;
          // Total recovery, ordered LAST so it wins over an allocation made in the flush
-         // cycle (dispatch is no longer gated on the redirect, gate V3 2026-09-05).
-         // Everything uncommitted dies, and every COMMITTED register's value is by
-         // definition already in the PRF, so no live pending bit survives a flush.
-         // doc 1, property 4.
+         // cycle (dispatch is not gated on the redirect). Everything uncommitted dies, and
+         // every COMMITTED register's value is by definition already in the PRF, so no live
+         // pending bit survives a flush. doc 1, property 4.
          if (flush) pend <= {NP{1'b0}};
       end
    end
 
    // ---- invariants (always on: docs/rtl-rules.md A1) ---------------------------------
-   reg e_zombie;
-   integer iz;
+   reg e_zombie, e_realloc;
+   integer iz, jz;
    always @* begin
       e_zombie = 1'b0;
       for (iz = 0; iz < NWB; iz = iz + 1)
          if (w_v[iz] & ~pend[w_preg[iz*PBITS +: PBITS]] & ~flush) e_zombie = 1'b1;
+      // The set is every candidate's (smolrv64_core), so a register may be set again while set:
+      // an untaken candidate is a free register. What must never happen is two slots naming one
+      // register in a cycle.
+      e_realloc = 1'b0;
+      for (iz = 0; iz < NS; iz = iz + 1)
+         for (jz = iz + 1; jz < NS; jz = jz + 1)
+            if (a_v[iz] & a_v[jz] & (a_preg[iz*PBITS +: PBITS] == a_preg[jz*PBITS +: PBITS]) & ~flush)
+               e_realloc = 1'b1;
    end
-   // The set is every candidate's (smolrv64_core), so a register may be set again while set:
-   // an untaken candidate is a free register. What must never happen is two slots naming one
-   // register in a cycle.
-   wire e_realloc = ((a_v2 & a_v & (a_preg == a_preg2)) |
-                     (a_v3 & ((a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))))) & ~flush;
    always @(posedge clk) err <= reset ? 2'b00 : {e_realloc, e_zombie};
    always @(posedge clk) if (!reset) begin
-      if (a_v & (a_preg == {PBITS{1'b0}}))
-         $fatal(1, "smolrv64_pending: physical register 0 allocated");
-      if (a_v2 & (a_preg2 == {PBITS{1'b0}}))
-         $fatal(1, "smolrv64_pending: physical register 0 allocated (B)");
-      if (a_v2 & a_v & (a_preg == a_preg2) & ~flush)
-         $fatal(1, "smolrv64_pending: slots A and B both set p%0d", a_preg2);
-      if (a_v3 & (a_preg3 == {PBITS{1'b0}}))
-         $fatal(1, "smolrv64_pending: physical register 0 allocated (C)");
-      if (a_v3 & ((a_v & (a_preg == a_preg3)) | (a_v2 & (a_preg2 == a_preg3))) & ~flush)
-         $fatal(1, "smolrv64_pending: slot C sets p%0d with an older slot", a_preg3);
+      for (i = 0; i < NS; i = i + 1) begin
+         if (a_v[i] & (a_preg[i*PBITS +: PBITS] == {PBITS{1'b0}}))
+            $fatal(1, "smolrv64_pending: physical register 0 allocated (slot %0d)", i);
+         for (j = i + 1; j < NS; j = j + 1)
+            if (a_v[i] & a_v[j] & (a_preg[i*PBITS +: PBITS] == a_preg[j*PBITS +: PBITS]) & ~flush)
+               $fatal(1, "smolrv64_pending: slots %0d and %0d both set p%0d", i, j, a_preg[j*PBITS +: PBITS]);
+      end
       for (i = 0; i < NWB; i = i + 1)
          if (w_v[i] & ~pend[w_preg[i*PBITS +: PBITS]] & ~flush)
             $fatal(1, "smolrv64_pending: writeback to p%0d, which was not pending",

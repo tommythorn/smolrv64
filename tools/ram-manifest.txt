@@ -23,9 +23,7 @@ psmem_f : source tags, the FP scheduler
 e_rob   : issue-queue ROB index, read only at [sel]
 
 # ---- the physical register file: the largest array in the design ------------------------
-mem_ie  : PRF integer shard; sharded by WRITER so each has ONE write port
-mem_ie2 : PRF lane B's integer shard, written by lane B's ALU alone
-mem_ie3 : PRF lane C's integer shard, written by lane C's ALU alone
+ish[*].mem x3 : PRF integer shards, one per lane; sharded by WRITER so each has ONE write port
 fp[*].mem_l x3 : PRF FP file, each slice's bank written by the load port
 fp[*].mem_f x3 : PRF FP file, each slice's bank written by the F stage
 
@@ -42,10 +40,8 @@ fl[2].u.bank[*].mem x4 : free list, lane C's shard, 4 banks at IW=3
 fl[4].u.bank[*].mem x4 : free list, FP slice 0, 4 banks at IW=3
 fl[5].u.bank[*].mem x4 : free list, FP slice 1, 4 banks at IW=3
 fl[6].u.bank[*].mem x4 : free list, FP slice 2, 4 banks at IW=3
-rmap_a  : committed map, copy A; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
-rmap_b  : committed map, copy B (the second commit port's write; `rnewer` picks)
-smap_a  : speculative map, copy A; flush clears `lv`, so no wholesale copy is ever needed
-smap_b  : speculative map, copy B (rename port B's write; `newer` picks)
+cp[*].rmap x3 : committed map, one copy per commit port; read at the sources + c_rd, written at one index (`rnewer` picks)
+cp[*].smap x3 : speculative map, one copy per rename port; flush clears `lv`, so no wholesale copy is needed (`newer` picks)
 
 # ---- reorder buffer, frontend, predictor, MMU -------------------------------------------
 rob     : ROB status

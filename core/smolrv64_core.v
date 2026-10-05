@@ -526,6 +526,7 @@ module smolrv64_core
    wire [RN_PBITS-1:0] rn_sprs1, rn_sprs2, rn_sprs3;   // the two map candidates, and
    wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
    wire                rn_lv1, rn_lv2, rn_lv3;
+   wire                rn_byp1, rn_byp2, rn_byp3;      // (slot A's: there is no earlier slot)
    wire                rn_stall;
    wire [7:0]          rn_shard_low;   // per shard
    // Rename exactly when the instruction is dispatched (d_take: structural room, no fault
@@ -537,59 +538,42 @@ module smolrv64_core
 
    smolrv64_rename #(.IDXB(RN_IDXB), .IW(IW)) u_rename
      (.clk(clk), .reset(reset),
-      .r_valid(rn_valid), .r_cand(d_valid), .r_cand_b(d2_valid), .r_rs1(d_rs1), .r_rs2(d_rs2), .r_rs3(d_rs3),
-      .r_rd(d_rd), .r_rd_v(d_rd_v), .r_shard(d_shard),
-      .r_prs1(rn_prs1), .r_prs2(rn_prs2), .r_prs3(rn_prs3),
-      .r_sprs1(rn_sprs1), .r_sprs2(rn_sprs2), .r_sprs3(rn_sprs3),
-      .r_mprs1(rn_mprs1), .r_mprs2(rn_mprs2), .r_mprs3(rn_mprs3),
-      .r_lv1(rn_lv1), .r_lv2(rn_lv2), .r_lv3(rn_lv3),
-      .r_prd(rn_prd),
-      // port B (item 10b): slot B, younger than A in the same cycle
-      .r_valid_b(rn_valid_b), .r_rs1_b(d2_rs1), .r_rs2_b(d2_rs2), .r_rs3_b(d2_rs3), .r_rd_b(d2_rd), .r_rd_v_b(d2_rd_v),
-      .r_shard_b(d2_shard), .r_prs1_b(rn_prs1_b), .r_prs2_b(rn_prs2_b), .r_prs3_b(rn_prs3_b),
-      .r_sprs1_b(rn_sprs1_b), .r_sprs2_b(rn_sprs2_b), .r_sprs3_b(rn_sprs3_b),
-      .r_mprs1_b(rn_mprs1_b), .r_mprs2_b(rn_mprs2_b), .r_mprs3_b(rn_mprs3_b),
-      .r_lv1_b(rn_lv1_b), .r_lv2_b(rn_lv2_b), .r_lv3_b(rn_lv3_b),
-      .r_byp1_b(rn_byp1_b), .r_byp2_b(rn_byp2_b), .r_byp3_b(rn_byp3_b), .r_prd_b(rn_prd_b),
-      // port C (IW>=3): dead at IW=2 (r_valid_c tied 0); the dispatch-widening step connects
-      // it to the third dispatched uop. Outputs go to the slot-C invariant below until then.
-      .r_valid_c(rn_valid_c), .r_rs1_c(d3_rs1), .r_rs2_c(d3_rs2), .r_rs3_c(d3_rs3), .r_rd_c(d3_rd), .r_rd_v_c(d3_rd_v),
-      .r_shard_c(d3_shard), .r_prs1_c(rn_prs1_c), .r_prs2_c(rn_prs2_c), .r_prs3_c(rn_prs3_c),
-      .r_sprs1_c(rn_sprs1_c), .r_sprs2_c(rn_sprs2_c), .r_sprs3_c(rn_sprs3_c),
-      .r_mprs1_c(rn_mprs1_c), .r_mprs2_c(rn_mprs2_c), .r_mprs3_c(rn_mprs3_c),
-      .r_lv1_c(rn_lv1_c), .r_lv2_c(rn_lv2_c), .r_lv3_c(rn_lv3_c),
-      .r_byp1_c(rn_byp1_c), .r_byp2_c(rn_byp2_c), .r_byp3_c(rn_byp3_c), .r_prd_c(rn_prd_c),
-      // COMMIT NOW COMES FROM THE ROB HEAD, not from the M stage. One line, against a
-      // structure the previous commit proved bit-identical over 9.17e6 commits -- the same
-      // way rename itself was switched over once its shadow had earned it.
-      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v), .c_prd(rob_c_prd),
-      .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd),
-      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd),
+      .r_valid({rn_valid_c, rn_valid_b, rn_valid}), .r_cand({d3_valid, d2_valid, d_valid}),
+      .r_rs1({d3_rs1, d2_rs1, d_rs1}), .r_rs2({d3_rs2, d2_rs2, d_rs2}), .r_rs3({d3_rs3, d2_rs3, d_rs3}),
+      .r_rd({d3_rd, d2_rd, d_rd}), .r_rd_v({d3_rd_v, d2_rd_v, d_rd_v}), .r_shard({d3_shard, d2_shard, d_shard}),
+      .r_prs1({rn_prs1_c, rn_prs1_b, rn_prs1}), .r_prs2({rn_prs2_c, rn_prs2_b, rn_prs2}),
+      .r_prs3({rn_prs3_c, rn_prs3_b, rn_prs3}),
+      .r_sprs1({rn_sprs1_c, rn_sprs1_b, rn_sprs1}), .r_sprs2({rn_sprs2_c, rn_sprs2_b, rn_sprs2}),
+      .r_sprs3({rn_sprs3_c, rn_sprs3_b, rn_sprs3}),
+      .r_mprs1({rn_mprs1_c, rn_mprs1_b, rn_mprs1}), .r_mprs2({rn_mprs2_c, rn_mprs2_b, rn_mprs2}),
+      .r_mprs3({rn_mprs3_c, rn_mprs3_b, rn_mprs3}),
+      .r_lv1({rn_lv1_c, rn_lv1_b, rn_lv1}), .r_lv2({rn_lv2_c, rn_lv2_b, rn_lv2}), .r_lv3({rn_lv3_c, rn_lv3_b, rn_lv3}),
+      .r_byp1({rn_byp1_c, rn_byp1_b, rn_byp1}), .r_byp2({rn_byp2_c, rn_byp2_b, rn_byp2}),
+      .r_byp3({rn_byp3_c, rn_byp3_b, rn_byp3}),
+      .r_prd({rn_prd_c, rn_prd_b, rn_prd}),
+      // commit comes from the ROB head and the entries behind it
+      .c_valid({rob_c3_valid, rob_c2_valid, rob_c_valid}), .c_rd({rob_c3_rd, rob_c2_rd, rob_c_rd}),
+      .c_rd_v({rob_c3_rd_v, rob_c2_rd_v, rob_c_rd_v}), .c_prd({rob_c3_prd, rob_c2_prd, rob_c_prd}),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
-   wire [63:0] prf_rs1, prf_rs2, prf_rs3;
-   wire [63:0] prf_f1, prf_f2, prf_f3;                 // the independent F/CTF port's reads
-   wire [63:0] prf_a1, prf_a2;                         // the ALU port's operands
-   wire [63:0] prf_a21, prf_a22;                       // the second ALU port's (10d-ii)
-   wire [63:0] prf_a31, prf_a32;                       // the third ALU port's (Stage 3)
-   smolrv64_prf #(.IDXB(RN_IDXB)) u_prf
+   wire [63:0]            prf_sq;                     // the store queue's data read
+   wire [63:0]            prf_f1, prf_f2, prf_f3;     // the F/CTF port's
+   wire [NL-1:0]          l_qvv;                      // the lanes' write registers, packed
+   wire [NL*RN_PBITS-1:0] l_qprdv;
+   wire [NL*64-1:0]       l_qvalv;
+   wire [2*NL*RN_PBITS-1:0] l_psv;                    // the lanes' operand tags, packed...
+   wire [2*NL*64-1:0]     l_opv;                      // ...and their values
+   // Operands are read AT ISSUE, addressed by the entry the scheduler selected -- doc 1's
+   // "values live in one place".
+   smolrv64_prf #(.IDXB(RN_IDXB), .NL(NL)) u_prf
      (.clk(clk),
-      .we_ie(alu_q_v), .we_ld(we_ld), .we_fe(we_fe),       // int-exec: from the writeback register
-      .wa_ie(alu_q_prd), .wa_ld(wa_ld), .wa_fe(wa_fe),
-      .wd_ie(alu_q_val), .wd_ld(wb_ld), .wd_fe(wb_fe),
-      .we_ie2(alu2_q_v), .wa_ie2(alu2_q_prd), .wd_ie2(alu2_q_val),   // the second ALU (10d-ii)
-      .we_ie3(alu3_q_v), .wa_ie3(alu3_q_prd), .wd_ie3(alu3_q_val),   // lane C's ALU
-      // Operands are read AT ISSUE, addressed by the entry the scheduler selected --
-      // doc 1's "values live in one place". Reading them at dispatch and carrying them into
-      // M is the second copy that property exists to avoid.
-      // ra3 is tied off: M reads two operands.
-      .ra1({RN_PBITS{1'b0}}), .ra2(sq_r_preg), .ra3({RN_PBITS{1'b0}}),
-      .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
-      .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
-      .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
-      .ra8(a3_ps1), .ra9(a3_ps2), .rd8(prf_a31), .rd9(prf_a32),       // lane C's operands
-      .ra10(j_ps1), .ra11(j_ps2), .ra12(j_ps3), .rd10(prf_f1), .rd11(prf_f2), .rd12(prf_f3));
+      .we_l(l_qvv), .wa_l(l_qprdv), .wd_l(l_qvalv),
+      .we_ld(we_ld), .wa_ld(wa_ld), .wd_ld(wb_ld),
+      .we_fe(we_fe), .wa_fe(wa_fe), .wd_fe(wb_fe),
+      .ra_l(l_psv), .rd_l(l_opv),
+      .ra_sq(sq_r_preg), .rd_sq(prf_sq),
+      .ra_f({j_ps3, j_ps2, j_ps1}), .rd_f({prf_f3, prf_f2, prf_f1}));
 
    // ---- reorder buffer, running as a SHADOW ------------------------------------------
    // The step from "M is the commit point" to "the ROB head is the commit point" -- the
@@ -701,9 +685,6 @@ module smolrv64_core
    wire pnd_r1 = rn_lv1 ? pnd_s1 : pnd_m1;
    wire pnd_r2 = rn_lv2 ? pnd_s2 : pnd_m2;
    wire pnd_r3 = rn_lv3 ? pnd_s3 : pnd_m3;
-   wire pnd_i1, pnd_i2, pnd_i3;
-   wire pnd_a1, pnd_a2;                                // the ALU port's operands (10d-i)
-   wire pnd_b1, pnd_b2;                                // the second ALU port's (10d-ii)
    // slot B: the same two-candidate query; a source that IS A's destination is not ready
    wire pnd_s1_b, pnd_s2_b, pnd_s3_b, pnd_m1_b, pnd_m2_b, pnd_m3_b;
    wire pnd_r1_b = ~rn_byp1_b & (rn_lv1_b ? pnd_s1_b : pnd_m1_b);
@@ -716,30 +697,29 @@ module smolrv64_core
    wire        fpu_err;
    wire [15:0] fe_err_f;
    assign fe_err = {fpu_err, pend_err, fe_err_f[12:0]};
-   smolrv64_pending #(.PBITS(RN_PBITS), .NWB(NWB_C)) u_pend
+   // the queries: each slot's six map candidates (rs1..rs3 speculative, then committed), then
+   // each lane's two operands (the issue check below)
+   localparam integer NQ = 6*IW + 2*NL;
+   wire [NQ-1:0] pnd_q;
+   assign {pnd_m3_c, pnd_m2_c, pnd_m1_c, pnd_s3_c, pnd_s2_c, pnd_s1_c,
+           pnd_m3_b, pnd_m2_b, pnd_m1_b, pnd_s3_b, pnd_s2_b, pnd_s1_b,
+           pnd_m3, pnd_m2, pnd_m1, pnd_s3, pnd_s2, pnd_s1} = pnd_q[6*IW-1:0];
+   smolrv64_pending #(.PBITS(RN_PBITS), .NS(IW), .NWB(NWB_C), .NQ(NQ)) u_pend
      (.clk(clk), .reset(reset),
       // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT: the set enable is the slot's own
       // valid and destination and the registered rename stall, never the dispatch take, whose
       // late terms (mstatus.FS through the illegal decode, the queues' room, the redirect) fanned
-      // into all 1,024 pending flops (~1,000 endpoints at -0.45 ns in every build). A candidate
-      // is the head of its free list (the stall keeps all three inside the free set), so an
-      // untaken one is a free register no source names, and it is set again when it is taken.
-      .a_v(d_valid & d_rd_v & ~rn_stall), .a_preg(rn_prd),
-      .a_v2(d2_valid & d2_rd_v & ~rn_stall), .a_preg2(rn_prd_b),
-      .a_v3(d3_valid & d3_rd_v & ~rn_stall), .a_preg3(rn_prd_c),
-      .q10(rn_sprs1_b), .q11(rn_sprs2_b), .q12(rn_sprs3_b), .r10(pnd_s1_b), .r11(pnd_s2_b), .r12(pnd_s3_b),
-      .q13(rn_mprs1_b), .q14(rn_mprs2_b), .q15(rn_mprs3_b), .r13(pnd_m1_b), .r14(pnd_m2_b), .r15(pnd_m3_b),
-      .q20(rn_sprs1_c), .q21(rn_sprs2_c), .q22(rn_sprs3_c), .r20(pnd_s1_c), .r21(pnd_s2_c), .r22(pnd_s3_c),
-      .q23(rn_mprs1_c), .q24(rn_mprs2_c), .q25(rn_mprs3_c), .r23(pnd_m1_c), .r24(pnd_m2_c), .r25(pnd_m3_c),
-      .q16(a_ps1), .q17(a_ps2), .r16(pnd_a1), .r17(pnd_a2),
-      .q18(a2_ps1), .q19(a2_ps2), .r18(pnd_b1), .r19(pnd_b2),
+      // into all 1,024 pending flops. A candidate is the head of its free list (the stall keeps
+      // the group inside the free set), so an untaken one is a free register no source names,
+      // and it is set again when it is taken.
+      .a_v({d3_valid & d3_rd_v & ~rn_stall, d2_valid & d2_rd_v & ~rn_stall, d_valid & d_rd_v & ~rn_stall}),
+      .a_preg({rn_prd_c, rn_prd_b, rn_prd}),
       .w_v(wkv), .w_preg(wkp), .err(pend_err),
-      .q1(rn_sprs1), .q2(rn_sprs2), .q3(rn_sprs3),
-      .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
-      .q7(rn_mprs1), .q8(rn_mprs2), .q9(rn_mprs3),
-      .r7(pnd_m1), .r8(pnd_m2), .r9(pnd_m3),
-      .q4({RN_PBITS{1'b0}}), .q5({RN_PBITS{1'b0}}), .q6({RN_PBITS{1'b0}}),
-      .r4(pnd_i1), .r5(pnd_i2), .r6(pnd_i3),
+      .q({l_psv,
+          rn_mprs3_c, rn_mprs2_c, rn_mprs1_c, rn_sprs3_c, rn_sprs2_c, rn_sprs1_c,
+          rn_mprs3_b, rn_mprs2_b, rn_mprs1_b, rn_sprs3_b, rn_sprs2_b, rn_sprs1_b,
+          rn_mprs3, rn_mprs2, rn_mprs1, rn_sprs3, rn_sprs2, rn_sprs1}),
+      .r(pnd_q),
       .flush(redirect));
 
    // THE SHADOW CHECK. At the cycle an instruction is actually consumed out of X, every
@@ -755,18 +735,6 @@ module smolrv64_core
    // instruction to M. Consumption has moved to ISSUE and the scheduler enforces the same
    // property structurally -- an entry is not selectable until every source is ready -- so
    // the check moves with it: nothing may issue with a source still pending and no forward.
-   always @(posedge clk) if (!reset & iss_alu) begin
-      if (qa_rs1_v & ~pnd_a1)
-         $fatal(1, "core: ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a_ps1, a_rob, qa_pc);
-      if (qa_rs2_v & ~pnd_a2 & ~(qa_is_store & is_lmem(qa_insn)))   // a store's rs2: the store queue's
-         $fatal(1, "core: ALU port executed with rs2 p%0d still pending (rob=%0d)", a_ps2, a_rob);
-   end
-   always @(posedge clk) if (!reset & iss_alu2) begin
-      if (qb_rs1_v & ~pnd_b1)
-         $fatal(1, "core: second ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a2_ps1, a2_rob, qb_pc);
-      if (qb_rs2_v & ~pnd_b2 & ~(qb_is_store & is_lmem(qb_insn)))   // a store's rs2: the store queue's
-         $fatal(1, "core: second ALU port executed with rs2 p%0d still pending (rob=%0d)", a2_ps2, a2_rob);
-   end
 
    // ---- scheduler + execute payload (WIRED, NOT YET STEERING) -------------------------
    // Dispatch fills the scheduler and the payload alongside the existing in-order path;
@@ -1276,9 +1244,6 @@ module smolrv64_core
    assign sl_prd[2] = d3_prd_g;  assign sl_pl[2] = pl_in_c;
    // each lane's PRF reads (smolrv64_prf's ports ra4..ra9)
    wire [63:0]           l_rd1  [0:NL-1], l_rd2 [0:NL-1];
-   assign l_rd1[0] = prf_a1;   assign l_rd2[0] = prf_a2;
-   assign l_rd1[1] = prf_a21;  assign l_rd2[1] = prf_a22;
-   assign l_rd1[2] = prf_a31;  assign l_rd2[2] = prf_a32;
    // what each lane exports
    wire                  l_v [0:NL-1], l_iss [0:NL-1], l_late [0:NL-1], l_m1 [0:NL-1], l_m2 [0:NL-1];
    wire [ROB_IDXB-1:0]   l_rob [0:NL-1], l_mrob2 [0:NL-1], l_wix [0:NL-1];
@@ -1388,6 +1353,15 @@ module smolrv64_core
          .result(result), .addr(addr), .redirect(red), .target(target),
          .taken(taken), .taken_tgt(taken_tgt));
       wire late = lane_late(q_insn);
+      // THE ISSUE CHECK: nothing executes with a source still pending (the scheduler enforces it
+      // structurally -- an entry is not selectable until every source is ready); a store's rs2
+      // is the store queue's
+      always @(posedge clk) if (!reset & iss) begin
+         if (q_rs1_v & ~pnd_q[6*IW + 2*gl])
+            $fatal(1, "core: lane %0d executed with rs1 p%0d still pending (rob=%0d pc=%h)", gl, ps1, rob, q_pc);
+         if (q_rs2_v & ~pnd_q[6*IW + 2*gl + 1] & ~(q_is_store & is_lmem(q_insn)))
+            $fatal(1, "core: lane %0d executed with rs2 p%0d still pending (rob=%0d)", gl, ps2, rob);
+      end
       wire cti  = iss & (q_is_branch | q_is_jump | q_is_jalr);
       wire mis  = cti & red;
       // ---- the multiplier (lanes step 5.2c) ----
@@ -1458,6 +1432,9 @@ module smolrv64_core
       assign l_blk_pr[gl] = blk_pr;  assign l_free[gl] = free;  assign l_pick[gl] = iss_v;
       assign l_addr[gl] = addr;    assign l_tgt[gl] = target;   assign l_ttgt[gl] = taken_tgt;
       assign l_red[gl] = red;      assign l_taken[gl] = taken;
+      assign l_qvv[gl] = qv;  assign l_qprdv[gl*RN_PBITS +: RN_PBITS] = qprd;  assign l_qvalv[gl*64 +: 64] = qval;
+      assign l_psv[(2*gl)*RN_PBITS +: RN_PBITS] = ps1;  assign l_psv[(2*gl+1)*RN_PBITS +: RN_PBITS] = ps2;
+      assign l_rd1[gl] = l_opv[(2*gl)*64 +: 64];  assign l_rd2[gl] = l_opv[(2*gl+1)*64 +: 64];
       assign l_lm[gl] = v & is_lmem(q_insn);  assign l_st[gl] = q_is_store;
       assign l_br[gl] = q_is_branch;  assign l_jmp[gl] = q_is_jump;  assign l_jalr[gl] = q_is_jalr;
       assign l_rvc[gl] = q_rvc;  assign l_rdv[gl] = q_rd_v;  assign l_seq[gl] = q_seq;  assign l_pc[gl] = q_pc;
@@ -1465,18 +1442,6 @@ module smolrv64_core
       assign l_lqi[gl] = q_lq_idx;  assign l_sqt[gl] = q_sq_tag;
       assign wkv_l[gl] = we;  assign wkp_l[gl*RN_PBITS +: RN_PBITS] = wa;  assign l_wbv[gl*64 +: 64] = wb;
    end endgenerate
-   // ---- the lanes by name, for the PRF's and the pending table's per-lane ports ----
-   wire iss_alu = l_iss[0], iss_alu2 = l_iss[1];
-   wire [ROB_IDXB-1:0] a_rob = l_rob[0], a2_rob = l_rob[1];
-   wire [RN_PBITS-1:0] a_ps1 = l_ps1[0], a_ps2 = l_ps2[0], a2_ps1 = l_ps1[1], a2_ps2 = l_ps2[1],
-                       a3_ps1 = l_ps1[2], a3_ps2 = l_ps2[2];
-   `PL_DECL(qa_)
-   assign `PL_REC(qa_) = l_pl[0];
-   `PL_DECL(qb_)
-   assign `PL_REC(qb_) = l_pl[1];
-   wire alu_q_v = l_qv[0], alu2_q_v = l_qv[1], alu3_q_v = l_qv[2];
-   wire [RN_PBITS-1:0] alu_q_prd = l_qprd[0], alu2_q_prd = l_qprd[1], alu3_q_prd = l_qprd[2];
-   wire [63:0] alu_q_val = l_qval[0], alu2_q_val = l_qval[1], alu3_q_val = l_qval[2];
    wire ri_ready = l_ready[0], ri2_ready = l_ready[1], ri3_ready = l_ready[2];
    wire stg_v_ia = l_stg_v[0], stg_v_ib = l_stg_v[1], stg_v_ic = l_stg_v[2];
    wire ri_blk_v = l_blk_v[0];
@@ -1604,7 +1569,7 @@ module smolrv64_core
       .uf_any(sq_uf_any), .uf_idx(sq_uf_idx), .uf_seq(sq_uf_seq),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
       .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
-      .a_unc(lsu_xo_unc), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_rs2),
+      .a_unc(lsu_xo_unc), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_take(sq_c_take),
@@ -1759,23 +1724,17 @@ module smolrv64_core
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
-      .d_valid(rn_valid), .d_rd(d_rd),
-      .d_prd(d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), .d_noret(d_is_irqop),
-      .d_ready(rob_ready), .d_idx(rob_d_idx),
-      .d_valid2(rn_valid_b), .d_rd2(d2_rd), .d_prd2(d2_prd_g), .d_noret2(1'b0), .d_ready2(rob_ready2), .d_idx2(rob_d_idx2),
-      // third alloc port: dead at IW<3 (no third dispatched uop yet); the dispatch-widening
-      // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
-      // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
-      .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
+      .d_valid({rn_valid_c, rn_valid_b, rn_valid}), .d_rd({d3_rd, d2_rd, d_rd}),
+      .d_prd({d3_prd_g, d2_prd_g, d_rd_v ? rn_prd : {RN_PBITS{1'b0}}}), .d_noret({1'b0, 1'b0, d_is_irqop}),
+      .d_ready({rob_ready3, rob_ready2, rob_ready}), .d_idx({rob_d_idx3, rob_d_idx2, rob_d_idx}),
       .w_v(rob_wv), .w_ix(rob_wix),
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
-      .c_kill((m_valid & m_done_red & m_trap) | sy_trap),   // a trap's done is latched: no live dTLB here
-      .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
-      .c_valid(rob_c_valid), .c_rd(rob_c_rd), .c_rd_v(rob_c_rd_v),
-      .c_prd(rob_c_prd), .c_noret(rob_c_noret),
-      .c2_valid(rob_c2_valid), .c2_rd(rob_c2_rd), .c2_rd_v(rob_c2_rd_v), .c2_prd(rob_c2_prd), .c2_noret(rob_c2_noret),
-      .c3_kill(1'b0),
-      .c3_valid(rob_c3_valid), .c3_rd(rob_c3_rd), .c3_rd_v(rob_c3_rd_v), .c3_prd(rob_c3_prd), .c3_noret(rob_c3_noret),
+      // the head's: a trap's done is latched (no live dTLB here); behind it, M's op retires only
+      // from the head
+      .c_kill({1'b0, m_valid & (m_rob_idx == rob_head2_idx), (m_valid & m_done_red & m_trap) | sy_trap}),
+      .c_valid({rob_c3_valid, rob_c2_valid, rob_c_valid}), .c_rd({rob_c3_rd, rob_c2_rd, rob_c_rd}),
+      .c_rd_v({rob_c3_rd_v, rob_c2_rd_v, rob_c_rd_v}), .c_prd({rob_c3_prd, rob_c2_prd, rob_c_prd}),
+      .c_noret({rob_c3_noret, rob_c2_noret, rob_c_noret}),
       .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 

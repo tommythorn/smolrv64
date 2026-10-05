@@ -56,13 +56,11 @@ module tb;
    // Per-cycle probe of the rename, PRF, ALU and ROB ports (the same names the netlist keeps
    // when synthesized with -flatten_hierarchy none), cycles 30..130.
    always @(posedge clk) if (cyc >= 30 && cyc <= 130)
-      $display("[%0d] P rn=%0d,%0d,%0d,%0d,%0h,%0h,%0h rnb=%0d,%0d,%0h prf=%0h,%0h,%0h,%0h,%0d,%0h,%0h,%0d,%0h,%0h alu=%0h,%0h,%0h,%0h,%0h rob=%0d,%0d,%0d,%0d", cyc,
+      $display("[%0d] P rn=%0h,%0h,%0h,%0h,%0h,%0h,%0h prf=%0h,%0h,%0h,%0h,%0h,%0h,%0h,%0h,%0h rob=%0h,%0h,%0h", cyc,
          dut.core.u_rename.r_valid, dut.core.u_rename.r_rd, dut.core.u_rename.r_rs1, dut.core.u_rename.r_rs2,
          dut.core.u_rename.r_prd, dut.core.u_rename.r_sprs1, dut.core.u_rename.r_sprs2,
-         dut.core.u_rename.r_valid_b, dut.core.u_rename.r_rd_b, dut.core.u_rename.r_prd_b,
-         dut.core.u_prf.ra1, dut.core.u_prf.ra2, dut.core.u_prf.rd1, dut.core.u_prf.rd2,
-         dut.core.u_prf.we_ie, dut.core.u_prf.wa_ie, dut.core.u_prf.wd_ie, dut.core.u_prf.we_ld, dut.core.u_prf.wa_ld, dut.core.u_prf.wd_ld,
-         dut.core.u_x.u_alu.rs1_val, dut.core.u_x.u_alu.rs2_val, dut.core.u_x.u_alu.imm, dut.core.u_x.u_alu.pc, dut.core.u_x.u_alu.result,
-         dut.core.u_rob.d_valid, dut.core.u_rob.d_idx, dut.core.u_rob.c_valid, dut.core.u_rob.d_valid2);
+         dut.core.u_prf.ra_sq, dut.core.u_prf.rd_sq, dut.core.u_prf.ra_l, dut.core.u_prf.we_l, dut.core.u_prf.wa_l,
+         dut.core.u_prf.wd_l, dut.core.u_prf.we_ld, dut.core.u_prf.wa_ld, dut.core.u_prf.wd_ld,
+         dut.core.u_rob.d_valid, dut.core.u_rob.d_idx, dut.core.u_rob.c_valid);
 `endif
 endmodule

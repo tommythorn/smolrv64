@@ -1371,13 +1371,12 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 
 | array | module | shape | width | bits | storage | ports |
 |---|---|---|---|---|---|---|
-| `mem_ie` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared (3 for the M/F port, 2 per ALU port), 1W |
+| `ish[0..IW-1].mem` | `smolrv64_prf` | 64 each | 64 | 12 288 | LUTRAM | lane k's integer shard: 1W (lane k's write register), 10R at IW=3 (2 per lane, the store queue's, the F port's 3) |
 | `lb_prd`, `lb_dat`, `lb_rob`, `lb_fe` | `smolrv64_core` | 3×4 | 10/64/5/1 | 960 | flops | the lanes' landing buffers (§8) |
-| `fp[0..2].mem_l`, `fp[0..2].mem_f` | `smolrv64_prf` | 64 each | 64 | 24 576 | LUTRAM | 4R (`ra2`, `ra10-12`), 1W each: the FP file's load and F-stage banks |
-| `fp[0..2].lvt` | `smolrv64_prf` | 64 each | 1 | 192 | flops | which bank holds each FP register |
-| `mem_ie2` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W (item 10d-ii) |
-| `smap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 3R, 1W + bulk |
-| `rmap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 4R, 1W |
+| `fp[0..IW-1].mem_l`, `fp[0..IW-1].mem_f` | `smolrv64_prf` | 64 each | 64 | 24 576 | LUTRAM | 4R (the store queue's, the F port's 3), 1W each: the FP file's load and F-stage banks |
+| `fp[0..IW-1].lvt` | `smolrv64_prf` | 64 each | 1 | 192 | flops | which bank holds each FP register |
+| `cp[0..IW-1].smap` | `smolrv64_rename` | 64 each | 10 | 1 920 | LUTRAM | one copy per rename slot (1W each, `newer` picks), 3*IW reads |
+| `cp[0..IW-1].rmap` | `smolrv64_rename` | 64 each | 10 | 1 920 | LUTRAM | one copy per commit port (1W each, `rnewer` picks), 4*IW reads |
 | `lv` | `smolrv64_rename` | 64 | 1 | 64 | flops | bulk-cleared on flush |
 | `fl[*].u.bank[*].mem` | `smolrv64_rename` | 64 per shard | 7 | 448 per shard | LUTRAM | one free list per shard in use (lanes 0..IW-1, FP slices 4..4+IW-1), `next_pow2(IW)` banks each |
 | `ent0`, `ent1` | `smolrv64_rob` | 8 each | 16 | 256 | LUTRAM | entry parity: 1W dispatch each, read at head and head+1 |
