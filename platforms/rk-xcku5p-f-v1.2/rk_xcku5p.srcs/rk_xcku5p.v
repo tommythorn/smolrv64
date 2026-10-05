@@ -2107,7 +2107,8 @@ module rk_xcku5p(
    wire [1:0]  probe_par_err;   // cache data-array parity error pulses {I$,D$} (-DCACHE_PARITY)
    wire [63:0] probe_par_dbg;   // ...sticky/bank/addr snapshot of the first failure
    wire [17:0] probe_irq_dbg;   // interrupt-path debug (probe_clk) for ILA_IRQ
-   wire        core_commit;     // retire pulse (probe_clk) for ILA_CORE
+   wire [`SMOLRV64_IW-1:0] core_retire;   // the commit ports that retired (probe_clk)
+   wire        core_commit = |core_retire;   // retire pulse for ILA_CORE
    wire [199:0] probe_core_dbg;  // the core's wait state (rv_soc_top core_dbg) for ILA_MEM
    // A DEVICE WROTE MEMORY, to the core's clock. Device writes do not probe the I$, so the next
    // fence.i clears it after one (rv_soc_top dma_wr). Each write burst's address handshake is held
@@ -2120,7 +2121,7 @@ module rk_xcku5p(
    wire p_dma_wr = dma_sy[1];
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
-      .retire(core_commit), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
+      .retire(core_retire), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
       .ddr_q_valid(pq_valid), .ddr_q_ready(pq_ready), .ddr_q_id(pq_id), .ddr_q_we(pq_we),
       .ddr_q_addr(pq_addr), .ddr_q_wmask(pq_wmask), .ddr_q_wdata(pq_wdata),
       .ddr_r_valid(pr_valid), .ddr_r_ready(pr_ready), .ddr_r_id(pr_id), .ddr_r_beat(pr_beat),

@@ -124,14 +124,9 @@ module smolrv64_core
     input  wire [63:0]             dptw_rdata,
     input  wire                    dptw_rvalid,
     // ---- observation ----
-    output wire                    retire,             // an instruction retired this cycle
-    output wire [PCW-1:0]          retire_pc,
-    output wire [31:0]             retire_insn,
-    output wire                    retire2,            // ...and a second one behind it (item 10c)
-    output wire                    retire3,            // ...and a third (IW>=3; hard 0 below): a testbench that
-                                                       // sums retire+retire2 undercounts a 3-wide core (2026-09-17)
-    output wire [PCW-1:0]          retire2_pc,
-    output wire [31:0]             retire2_insn,
+    output wire [IW-1:0]           retire,             // commit port k retired an instruction (k = 0: the ROB head)
+    output wire [IW*PCW-1:0]       retire_pc,
+    output wire [IW*32-1:0]        retire_insn,
     output wire                    redirect,
     output wire [PCW-1:0]          redirect_target,
     // The LSU's invariants, on their way to the SoC's integrity log (rv_errlog). Pure
@@ -162,7 +157,7 @@ module smolrv64_core
    // record's illegal bit, smolrv64_dslot). FS changes only by a CSR write, which serialises, so
    // at dispatch it already reflects every older instruction; the op then traps from the SYSQ
    // like any other illegal instruction.
-   wire [15:0]              d_gc, d2_gc, d3_gc;     // smolrv64_gclass, from the frontend's decode
+   wire [15:0]              d_gc;                   // smolrv64_gclass, from the frontend's decode
    localparam integer GC_F = 0, GC_C = 1, GC_M = 2, GC_S = 3, GC_L = 4, GC_I = 5, GC_FC = 6,
                       GC_PLAIN = 7, GC_IRQOP = 8, GC_ORD = 9, GC_FPV = 10, GC_DCR = 11,
                       GC_LD = 12, GC_ST = 13, GC_CSR = 14, GC_SER = 15;
@@ -209,7 +204,7 @@ module smolrv64_core
    wire [PCW-1:0]           fe_red_tgt;
    wire [SEQW-1:0]          fe_red_seq;
    // decode-stage direct-CTI redirect (static JAL / backward-branch resteer): assigned
-   // after the dispatch steering; detection wires dcr0/1/2 are just after the frontend.
+   // after the dispatch steering; each slot's detection (s_dcr) is in the slot block.
    wire                     dec_red;
    wire [PCW-1:0]           dec_red_tgt;
    wire [SEQW-1:0]          dec_red_seq;
@@ -276,89 +271,6 @@ module smolrv64_core
       dec_red_q    <= reset ? 1'b0 : dec_red;
    end
 
-   // ---- slot B, the second IR (item 10b) ----
-   wire d2_valid;
-   wire [PCW-1:0] d2_pc;
-   wire [31:0] d2_insn;
-   wire d2_rvc;
-   wire [SEQW-1:0] d2_seq;
-   wire [PDW-1:0] d2_pdet;
-   wire [PCW-1:0] d2_pred_npc;
-   wire [5:0] d2_rd;
-   wire [5:0] d2_rs1;
-   wire [5:0] d2_rs2;
-   wire [5:0] d2_rs3;
-   wire d2_rd_v;
-   wire d2_rs1_v;
-   wire d2_rs2_v;
-   wire d2_rs3_v;
-   wire [63:0] d2_imm;
-   wire [5:0] d2_alu_op;
-   wire d2_alu_w;
-   wire d2_alu_uw;
-   wire [1:0] d2_op1_sel;
-   wire d2_op2_imm;
-   wire d2_res_link;
-   wire d2_is_mem;
-   wire d2_is_store;
-   wire [1:0] d2_mem_size;
-   wire d2_mem_signed;
-   wire d2_is_branch;
-   wire [2:0] d2_br_func;
-   wire d2_is_jump;
-   wire d2_is_jalr;
-   wire d2_is_mul;
-   wire d2_is_csr;
-   wire [2:0] d2_csr_func;
-   wire d2_is_serialize;
-   wire d2_is_amo;
-   wire [4:0] d2_amo_func;
-   wire d2_is_fp;
-   wire d2_is_fencei;
-   wire d2_is_cbo;
-   wire d2_cbo_zero;
-   wire d2_cbo_keep;
-   wire d2_illegal;
-   wire d2_mis_taken;
-   wire d2_mis_nt;
-   wire d2_fault;
-   wire [3:0] d2_fault_cause;
-   wire [PCW-1:0] d2_fault_tval;
-   wire rn_valid_b;
-   wire rn_valid_c;   // slot C dispatched (Stage 3); driven by d3_take in the steering below
-   // ---- slot C IR (IW>=3): the frontend's third decoded slot. Dead at IW=2 ----
-   wire d3_valid;
-   wire [PCW-1:0] d3_pc;
-   wire [31:0] d3_insn;
-   wire d3_rvc;
-   wire [SEQW-1:0] d3_seq;
-   wire [PDW-1:0] d3_pdet;
-   wire [PCW-1:0] d3_pred_npc;
-   wire [5:0] d3_rd, d3_rs1, d3_rs2, d3_rs3;
-   wire d3_rd_v, d3_rs1_v, d3_rs2_v, d3_rs3_v;
-   wire [63:0] d3_imm;
-   wire [5:0] d3_alu_op;
-   wire d3_alu_w, d3_alu_uw;
-   wire [1:0] d3_op1_sel;
-   wire d3_op2_imm, d3_res_link;
-   wire d3_is_mem, d3_is_store;
-   wire [1:0] d3_mem_size;
-   wire d3_mem_signed;
-   wire d3_is_branch;
-   wire [2:0] d3_br_func;
-   wire d3_is_jump, d3_is_jalr;
-   wire d3_is_mul, d3_is_csr;
-   wire [2:0] d3_csr_func;
-   wire d3_is_serialize;
-   wire d3_is_amo;
-   wire [4:0] d3_amo_func;
-   wire d3_is_fp, d3_is_fencei;
-   wire d3_is_cbo, d3_cbo_zero, d3_cbo_keep;
-   wire d3_illegal;
-   wire d3_mis_taken, d3_mis_nt;
-   wire d3_fault;
-   wire [3:0] d3_fault_cause;
-   wire [PCW-1:0] d3_fault_tval;
    localparam DCR_HIT = 2;   // BIMW-1: the BTB-hit bit inside the carried predict details
    localparam integer DCR_BACK = 1;   // static-taken for a BACKWARD conditional branch on a BTB miss (loop back-edge bet)
    smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW), .RASB(RASB), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK),
@@ -384,15 +296,8 @@ module smolrv64_core
    wire [IW-1:0]     fe_dv;
    wire [IW*IRW-1:0] fe_rec;
    wire [IW-1:0]     fe_consume;
-   assign d_valid = fe_dv[0];  assign `IR_REC(d_) = fe_rec[0 +: IRW];
-   assign d2_valid = fe_dv[1];  assign `IR_REC(d2_) = fe_rec[IRW +: IRW];
-   generate if (IW >= 3) begin: g_s3
-      assign d3_valid = fe_dv[2];  assign `IR_REC(d3_) = fe_rec[2*IRW +: IRW];
-      assign fe_consume = {rn_valid_c, rn_valid_b, rn_valid};
-   end else begin: g_s2
-      assign d3_valid = 1'b0;  assign `IR_REC(d3_) = {IRW{1'b0}};
-      assign fe_consume = {rn_valid_b, rn_valid};
-   end endgenerate
+   assign d_valid = fe_dv[0];  assign `IR_REC(d_) = fe_rec[0 +: IRW];   // slot A by name
+   assign fe_consume = s_takev;
 
    // ---- decode-stage direct-CTI redirect (static) -------------------------------------
    // Take a control transfer the predictor called fall-through AT DISPATCH, instead of
@@ -410,9 +315,6 @@ module smolrv64_core
    // spin). The interrupt must make progress; a JAL that coincides falls back to the exec
    // redirect -- rare, and cheaper than a livelock.
    wire dcr_arm = ~irq_inject & ~inject_inflight;
-   wire dcr0 = dcr_arm & d_gc[GC_DCR];
-   wire dcr1 = dcr_arm & d2_gc[GC_DCR];
-   wire dcr2 = dcr_arm & d3_gc[GC_DCR];
 
 
    // THE PHYSICAL-ADDRESS CAP. DRAM starts at 0x8000_0000 and is 2^DRAM_LG2 bytes; a PA at or
@@ -473,34 +375,12 @@ module smolrv64_core
    assign imem_priv_q   = ipriv_q;
 
    // =========================================================== stage X
-   wire [63:0] rf_rs1, rf_rs2, rf_rs3;
-   wire        rf_we, rf_we2;
-   wire [5:0]  rf_wa2;  wire [63:0] rf_wd2;
-   wire [5:0]  rf_wa;
-   wire [63:0] rf_wd;
+   // the architectural writes of commit port k, for tb_smolrv64_riscv's trace
+   wire [IW-1:0]    rf_we;
+   wire [IW*6-1:0]  rf_wa;
+   wire [IW*64-1:0] rf_wd;
 
-   // rv_regfile is now a SIMULATION-ONLY REFERENCE, not the operand source.  It costs
-   // nothing in hardware (`ifndef SYNTHESIS`) and keeps the every-cycle cross-check that
-   // found four rename bugs and the missing a1 seed.  Delete it only when the cosim has
-   // run the switched design as long as the shadow one did -- a checker that has already
-   // caught five defects is worth more than the lines it occupies.
-`ifndef SYNTHESIS
-   rv_regfile u_rf
-     (.clk(clk), .rs1(d_rs1), .rs1_val(rf_rs1), .rs2(d_rs2), .rs2_val(rf_rs2),
-      .rs3(d_rs3), .rs3_val(rf_rs3), .we(rf_we), .wa(rf_wa), .wd(rf_wd),
-      .we2(rf_we2), .wa2(rf_wa2), .wd2(rf_wd2));
-`else
-   assign rf_rs1 = 64'd0;  assign rf_rs2 = 64'd0;  assign rf_rs3 = 64'd0;
-`endif
-
-   // ---- renaming and the sharded PRF, running as a SHADOW ---------------------------
-   // Issue and commit are still in order and rv_regfile is still the operand source, so
-   // this changes no architectural behaviour.  The point is that rename and smolrv64_prf are
-   // driven by the real instruction stream and CHECKED against the known-good register
-   // file every cycle (see the assertion below), so the 240-test suite and the 13.5e9
-   // retirement cosim validate them before anything depends on them.  Switching the
-   // operand source and deleting rv_regfile is then a one-line change against a proven
-   // structure rather than a big-bang swap of the core's most load-bearing datapath.
+   // ---- renaming and the sharded PRF ----------------------------------------------
    localparam integer RN_IDXB  = 7;
    localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
 `include "smolrv64_shards.vh"
@@ -513,11 +393,6 @@ module smolrv64_core
       sh_used = ({1'b0, sh[1:0]} < IW[2:0]);
    endfunction
 
-   wire d_ord   = d_gc[GC_ORD];
-   wire d2_is_irqop = d2_gc[GC_IRQOP];
-   wire d2_ord   = d2_gc[GC_ORD];
-   wire d3_is_irqop = d3_gc[GC_IRQOP];
-   wire d3_ord   = d3_gc[GC_ORD];
 
    // An f-register destination takes the FP file's slice of its slot (SH_F0/F1/F2 for A/B/C),
    // whoever writes it: the file has a bank per writer (smolrv64_prf). Every other destination
@@ -525,20 +400,14 @@ module smolrv64_core
    // register is the shard's one writer, carrying its ALU and multiply results and the
    // landings of every other unit (loads, AMOs, CSR reads, the FP ops' integer results,
    // divides). Assigned after the class wires below (d_cls_f is declared there).
-   wire [2:0] d_shard, d2_shard, d3_shard;
 
-   wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
-   wire [RN_PBITS-1:0] rn_prs1_b, rn_prs2_b, rn_prs3_b, rn_prd_b;
-   wire [RN_PBITS-1:0] rn_sprs1_b, rn_sprs2_b, rn_sprs3_b, rn_mprs1_b, rn_mprs2_b, rn_mprs3_b;
-   wire                rn_lv1_b, rn_lv2_b, rn_lv3_b, rn_byp1_b, rn_byp2_b, rn_byp3_b;
-   // ---- 3rd rename port outputs (IW>=3): dead at IW=2, consumed by the slot-C invariant ----
-   wire [RN_PBITS-1:0] rn_prs1_c, rn_prs2_c, rn_prs3_c, rn_prd_c;
-   wire [RN_PBITS-1:0] rn_sprs1_c, rn_sprs2_c, rn_sprs3_c, rn_mprs1_c, rn_mprs2_c, rn_mprs3_c;
-   wire                rn_lv1_c, rn_lv2_c, rn_lv3_c, rn_byp1_c, rn_byp2_c, rn_byp3_c;
-   wire [RN_PBITS-1:0] rn_sprs1, rn_sprs2, rn_sprs3;   // the two map candidates, and
-   wire [RN_PBITS-1:0] rn_mprs1, rn_mprs2, rn_mprs3;   // the late bit that chooses
-   wire                rn_lv1, rn_lv2, rn_lv3;
-   wire                rn_byp1, rn_byp2, rn_byp3;      // (slot A's: there is no earlier slot)
+   // rename's ports, a field per slot (slot k at [k])
+   wire [IW*RN_PBITS-1:0] rn_prs1v, rn_prs2v, rn_prs3v, rn_sprs1v, rn_sprs2v, rn_sprs3v;
+   wire [IW*RN_PBITS-1:0] rn_mprs1v, rn_mprs2v, rn_mprs3v, rn_prdv;
+   wire [IW-1:0]          rn_lv1v, rn_lv2v, rn_lv3v, rn_byp1v, rn_byp2v, rn_byp3v;
+   wire [IW*6-1:0]        s_rs1v, s_rs2v, s_rs3v, s_rdv;
+   wire [IW-1:0]          s_rd_vv, s_takev;
+   wire [IW*3-1:0]        s_shardv;
    wire                rn_stall;
    wire [7:0]          rn_shard_low;   // per shard
    // Rename exactly when the instruction is dispatched (d_take: structural room, no fault
@@ -550,22 +419,16 @@ module smolrv64_core
 
    smolrv64_rename #(.IDXB(RN_IDXB), .IW(IW)) u_rename
      (.clk(clk), .reset(reset),
-      .r_valid({rn_valid_c, rn_valid_b, rn_valid}), .r_cand({d3_valid, d2_valid, d_valid}),
-      .r_rs1({d3_rs1, d2_rs1, d_rs1}), .r_rs2({d3_rs2, d2_rs2, d_rs2}), .r_rs3({d3_rs3, d2_rs3, d_rs3}),
-      .r_rd({d3_rd, d2_rd, d_rd}), .r_rd_v({d3_rd_v, d2_rd_v, d_rd_v}), .r_shard({d3_shard, d2_shard, d_shard}),
-      .r_prs1({rn_prs1_c, rn_prs1_b, rn_prs1}), .r_prs2({rn_prs2_c, rn_prs2_b, rn_prs2}),
-      .r_prs3({rn_prs3_c, rn_prs3_b, rn_prs3}),
-      .r_sprs1({rn_sprs1_c, rn_sprs1_b, rn_sprs1}), .r_sprs2({rn_sprs2_c, rn_sprs2_b, rn_sprs2}),
-      .r_sprs3({rn_sprs3_c, rn_sprs3_b, rn_sprs3}),
-      .r_mprs1({rn_mprs1_c, rn_mprs1_b, rn_mprs1}), .r_mprs2({rn_mprs2_c, rn_mprs2_b, rn_mprs2}),
-      .r_mprs3({rn_mprs3_c, rn_mprs3_b, rn_mprs3}),
-      .r_lv1({rn_lv1_c, rn_lv1_b, rn_lv1}), .r_lv2({rn_lv2_c, rn_lv2_b, rn_lv2}), .r_lv3({rn_lv3_c, rn_lv3_b, rn_lv3}),
-      .r_byp1({rn_byp1_c, rn_byp1_b, rn_byp1}), .r_byp2({rn_byp2_c, rn_byp2_b, rn_byp2}),
-      .r_byp3({rn_byp3_c, rn_byp3_b, rn_byp3}),
-      .r_prd({rn_prd_c, rn_prd_b, rn_prd}),
+      .r_valid(s_takev), .r_cand(fe_dv),
+      .r_rs1(s_rs1v), .r_rs2(s_rs2v), .r_rs3(s_rs3v), .r_rd(s_rdv), .r_rd_v(s_rd_vv), .r_shard(s_shardv),
+      .r_prs1(rn_prs1v), .r_prs2(rn_prs2v), .r_prs3(rn_prs3v),
+      .r_sprs1(rn_sprs1v), .r_sprs2(rn_sprs2v), .r_sprs3(rn_sprs3v),
+      .r_mprs1(rn_mprs1v), .r_mprs2(rn_mprs2v), .r_mprs3(rn_mprs3v),
+      .r_lv1(rn_lv1v), .r_lv2(rn_lv2v), .r_lv3(rn_lv3v),
+      .r_byp1(rn_byp1v), .r_byp2(rn_byp2v), .r_byp3(rn_byp3v),
+      .r_prd(rn_prdv),
       // commit comes from the ROB head and the entries behind it
-      .c_valid({rob_c3_valid, rob_c2_valid, rob_c_valid}), .c_rd({rob_c3_rd, rob_c2_rd, rob_c_rd}),
-      .c_rd_v({rob_c3_rd_v, rob_c2_rd_v, rob_c_rd_v}), .c_prd({rob_c3_prd, rob_c2_prd, rob_c_prd}),
+      .c_valid(rc_v), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd),
       .flush(redirect),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
@@ -599,8 +462,9 @@ module smolrv64_core
    // restore. That already supports N uncommitted instructions; N is only ever 1 today
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
    localparam integer ROB_DEPTH = 32, ROB_IDXB = 5;
-   wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
-   wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
+   wire [IW*ROB_IDXB-1:0] rob_d_idxv;           // the ROB slot each slot takes
+   wire [IW-1:0]          rob_readyv;           // [k]: room for k+1
+   wire                   rob_empty;
    wire [ROB_IDXB:0]   rob_occ;
    wire                ldw_int;            // the LD stream's write goes to a lane (completes at its drain)
    wire                few_int;            // ...and the FE stream's
@@ -631,21 +495,14 @@ module smolrv64_core
    // register write. Not consumed yet -- see the note above lsu_started.
    wire [ROB_IDXB-1:0] rob_head_idx;
    wire                m_at_head = (rob_head_idx == m_rob_idx);
-   wire                rob_c_valid, rob_c_rd_v, rob_c_noret;
-   wire                rob_c2_valid, rob_c2_rd_v, rob_c2_noret;
-   wire [5:0]          rob_c2_rd;
-   wire [RN_PBITS-1:0] rob_c2_prd;
-   // 3rd commit (IW>=3): dead at IW=2 (ROB gates c3_valid on GE3). Fed to rename's c3 port.
-   wire                rob_c3_valid, rob_c3_rd_v, rob_c3_noret;
-   // retire3 is a port now (see the port list): every IW=3 retire count taken before 2026-09-17
-   // summed two of the three commit ports.
-   wire [5:0]          rob_c3_rd;
-   wire [RN_PBITS-1:0] rob_c3_prd;
+   // the ROB's commit ports: k = 0 is the head, k the entry k behind it (rc_idx[k])
+   wire [IW-1:0]          rc_v, rc_rdv, rc_noret, rc_kill, rc_f;
+   wire [IW*6-1:0]        rc_rd;
+   wire [IW*RN_PBITS-1:0] rc_prd;
+   wire [ROB_IDXB-1:0]    rc_idx [0:IW-1];
    // Mirrors m_is_irqop (m_is_sys & funct3==0 & imm==0x7F0) one stage earlier; an op that
    // traps at dispatch never reaches M, so this decode is exact.
    wire d_is_irqop = d_gc[GC_IRQOP];
-   wire [5:0]          rob_c_rd;
-   wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
    always @(posedge clk) if (m_advance) m_rob_idx <= m_go_rob;
@@ -693,15 +550,6 @@ module smolrv64_core
    //
    // rn_prs* keeps the muxed tag: the queue payload and psmem still need the actual number,
    // but that is a write into flops/LUTRAM, not a lookup feeding readiness.
-   wire pnd_s1, pnd_s2, pnd_s3, pnd_m1, pnd_m2, pnd_m3;
-   wire pnd_r1 = rn_lv1 ? pnd_s1 : pnd_m1;
-   wire pnd_r2 = rn_lv2 ? pnd_s2 : pnd_m2;
-   wire pnd_r3 = rn_lv3 ? pnd_s3 : pnd_m3;
-   // slot B: the same two-candidate query; a source that IS A's destination is not ready
-   wire pnd_s1_b, pnd_s2_b, pnd_s3_b, pnd_m1_b, pnd_m2_b, pnd_m3_b;
-   wire pnd_r1_b = ~rn_byp1_b & (rn_lv1_b ? pnd_s1_b : pnd_m1_b);
-   wire pnd_r2_b = ~rn_byp2_b & (rn_lv2_b ? pnd_s2_b : pnd_m2_b);
-   wire pnd_r3_b = ~rn_byp3_b & (rn_lv3_b ? pnd_s3_b : pnd_m3_b);
    // The integrity log's top three bits carry the backend's invariants on the frontend's bus:
    // a writeback to a register that is not pending (a squashed op's result), a register allocated
    // while pending, and an FPU result with nothing in flight or overwriting an unconsumed one.
@@ -713,9 +561,8 @@ module smolrv64_core
    // each lane's two operands (the issue check below)
    localparam integer NQ = 6*IW + 2*NL;
    wire [NQ-1:0] pnd_q;
-   assign {pnd_m3_c, pnd_m2_c, pnd_m1_c, pnd_s3_c, pnd_s2_c, pnd_s1_c,
-           pnd_m3_b, pnd_m2_b, pnd_m1_b, pnd_s3_b, pnd_s2_b, pnd_s1_b,
-           pnd_m3, pnd_m2, pnd_m1, pnd_s3, pnd_s2, pnd_s1} = pnd_q[6*IW-1:0];
+   wire [6*IW*RN_PBITS-1:0] pnd_sq;              // slot k's six candidates at [6k..6k+5]
+   wire [IW-1:0]            pnd_av;
    smolrv64_pending #(.PBITS(RN_PBITS), .NS(IW), .NWB(NWB_C), .NQ(NQ)) u_pend
      (.clk(clk), .reset(reset),
       // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT: the set enable is the slot's own
@@ -724,13 +571,9 @@ module smolrv64_core
       // into all 1,024 pending flops. A candidate is the head of its free list (the stall keeps
       // the group inside the free set), so an untaken one is a free register no source names,
       // and it is set again when it is taken.
-      .a_v({d3_valid & d3_rd_v & ~rn_stall, d2_valid & d2_rd_v & ~rn_stall, d_valid & d_rd_v & ~rn_stall}),
-      .a_preg({rn_prd_c, rn_prd_b, rn_prd}),
+      .a_v(pnd_av), .a_preg(rn_prdv),
       .w_v(wkv), .w_preg(wkp), .err(pend_err),
-      .q({l_psv,
-          rn_mprs3_c, rn_mprs2_c, rn_mprs1_c, rn_sprs3_c, rn_sprs2_c, rn_sprs1_c,
-          rn_mprs3_b, rn_mprs2_b, rn_mprs1_b, rn_sprs3_b, rn_sprs2_b, rn_sprs1_b,
-          rn_mprs3, rn_mprs2, rn_mprs1, rn_sprs3, rn_sprs2, rn_sprs1}),
+      .q({l_psv, pnd_sq}),
       .r(pnd_q),
       .flush(redirect));
 
@@ -855,54 +698,12 @@ module smolrv64_core
    wire d_cls_i = d_gc[GC_I];
    wire d_cls_fc = d_gc[GC_FC];
 
-   // Control flow falls to C_F here so d2_hold treats FP and CTF as one class: they share the
-   // FP/CTF queue's single dispatch port, so A and B cannot both go there in a cycle.
-   wire [1:0] d_cls = d_cls_i ? C_I : C_F;
-
-   wire [RN_PBITS-1:0] d_prd_g = d_rd_v ? rn_prd : {RN_PBITS{1'b0}};
    // A plain store's rs2 is not an operand of the INSTRUCTION any more -- it is an operand
    // of its store-buffer entry, which watches for it independently (smolrv64_sq's snoop). So the
    // scheduler must not wait on it, and this is the whole of that change: one term, no
    // per-entry state, nothing added to select. The store issues on its address alone.
    wire       d_st_nb = d_gc[GC_ST];   // "buffered store" -- rule C1
-   wire [2:0] d_srdy = {pnd_r3 | ~d_rs3_v, pnd_r2 | ~d_rs2_v | d_st_nb, pnd_r1 | ~d_rs1_v};
 
-   // ---- SLOT B (item 10b, 2026-09-05): a second instruction dispatches beside A when ----
-   //   * A dispatches (in order), and neither is anything but a plain op: no serializing,
-   //     fence.i, CBO, AMO, CSR, illegal, fault or interrupt pseudo-op on either side, so
-   //     every "alone in flight" rule keeps its one site;
-   //   * B goes to a DIFFERENT scheduler than A: each scheduler and each payload memory
-   //     keeps its single write port;
-   //   * at most one load and one store between them: one allocation per queue per cycle;
-   //     a load in B behind a store in A captures the tag AFTER that store's, so it sees it
-   //     as older (the queue's d_tag is the tail before this cycle's allocation);
-   //   * room for two in the ROB, and nothing in flight is being redirected.
-   wire d2_cls_f = d2_gc[GC_F];
-   wire d2_cls_c = d2_gc[GC_C];
-   wire d2_cls_m = d2_gc[GC_M];
-   wire d2_cls_s = d2_gc[GC_S];
-   wire d2_cls_l = d2_gc[GC_L];
-   wire d2_cls_i = d2_gc[GC_I];
-   wire d2_cls_fc = d2_gc[GC_FC];
-   wire [1:0] d2_cls = d2_cls_i ? C_I2 : C_F;   // CTF falls to C_F (shares u_iq_f)
-   wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
-   wire       d2_st_nb = d2_gc[GC_ST];
-   wire       d2_ld_nb = d2_gc[GC_LD];
-   wire [2:0] d2_srdy = {pnd_r3_b | ~d2_rs3_v, pnd_r2_b | ~d2_rs2_v | d2_st_nb, pnd_r1_b | ~d2_rs1_v};
-   // slot C dispatch (Stage 3). three_wide (= IW>=3) is the master enable; at IW=2 it is 0,
-   // so the frontend never presents slot C and d3_take/rn_valid_c stay 0 -- retire-identical.
-   // rn_valid_c itself is defined at the d3_take steering below; used forward here (a net).
-   localparam TW3 = (IW >= 3) ? 1'b1 : 1'b0;
-   wire three_wide = TW3;
-   // Slot C full classes: the dispatch swizzle lets slot C reach ANY pipe now (the 3rd ALU is
-   // gone), so it needs the same LS/FC/ALU split as slots A and B, not just "ALU-only".
-   wire d3_cls_f = d3_gc[GC_F];
-   wire d3_cls_c = d3_gc[GC_C];
-   wire d3_cls_m = d3_gc[GC_M];
-   wire d3_cls_s = d3_gc[GC_S];
-   wire d3_cls_l = d3_gc[GC_L];
-   wire d3_cls_i = d3_gc[GC_I];
-   wire d3_cls_fc = d3_gc[GC_FC];
    // Destination shard = the UNIT that writes it (declared with its rationale above).
    // From the opcode alone, never from the trap decode: a trapping op writes nothing, so any
    // shard serves it, and the trap decode carries mstatus.FS (an FP op with FS off is illegal)
@@ -913,21 +714,91 @@ module smolrv64_core
                : (mem | amo)                          ? alu       // the lane's landing slot
                :                                        alu;      // the lane: an ALU op, a link, a load, an AMO, a CSR read
    endfunction
-   assign d_shard  = shard_of(d_rd[5],  d_insn,  d_is_mem,  d_is_amo,  d_is_fp,  d_is_mul,  SH_F0, SH_IE);
-   assign d2_shard = shard_of(d2_rd[5], d2_insn, d2_is_mem, d2_is_amo, d2_is_fp, d2_is_mul, SH_F1, SH_IE2);
-   assign d3_shard = shard_of(d3_rd[5], d3_insn, d3_is_mem, d3_is_amo, d3_is_fp, d3_is_mul, SH_F2, SH_IE3);
-   wire [RN_PBITS-1:0] d3_prd_g = d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}};
-   // slot C source readiness (mirror d2_srdy); slot C is ALU-only here, so no store term.
-   wire pnd_s1_c, pnd_s2_c, pnd_s3_c, pnd_m1_c, pnd_m2_c, pnd_m3_c;
-   wire pnd_r1_c = ~rn_byp1_c & (rn_lv1_c ? pnd_s1_c : pnd_m1_c);
-   wire pnd_r2_c = ~rn_byp2_c & (rn_lv2_c ? pnd_s2_c : pnd_m2_c);
-   wire pnd_r3_c = ~rn_byp3_c & (rn_lv3_c ? pnd_s3_c : pnd_m3_c);
-   wire       d3_st_nb = d3_gc[GC_ST];
-   wire       d3_ld_nb = d3_gc[GC_LD];
-   wire [2:0] d3_srdy = {pnd_r3_c | ~d3_rs3_v, pnd_r2_c | ~d3_rs2_v | d3_st_nb, pnd_r1_c | ~d3_rs1_v};
-   wire d3_plain = d3_gc[GC_PLAIN];
-   wire d_plain = d_gc[GC_PLAIN];
-   wire d2_plain = d2_gc[GC_PLAIN];
+
+   // ======================================================== THE SLOTS
+   // Slot k of the dispatch group (the frontend forms it whole: every member plain, at most one
+   // load, one store and one FP/control-flow op, a head op alone): its record, its classes, its
+   // destination's shard, its renamed sources and their readiness, its payload and its ROB slot.
+   // Slot k's ALU-class op goes to lane k.
+   wire [IW-1:0]          s_v, s_cls_i, s_cls_l, s_cls_fc, s_ld_nb, s_st_nb, s_dcr, s_r2rdy;
+   wire [2:0]             s_srdy_hit [0:IW-1];
+   wire [RN_PBITS-1:0]    s_prd_g [0:IW-1], s_prs2 [0:IW-1];
+   wire [3*RN_PBITS-1:0]  s_ps_in [0:IW-1];
+   wire [PLW-1:0]         s_pl_in [0:IW-1];
+   wire [ROB_IDXB-1:0]    s_rob [0:IW-1];
+   wire [PCW-1:0]         s_pc [0:IW-1], s_tgt [0:IW-1], s_fault_tval [0:IW-1];
+   wire [SEQW-1:0]        s_seq [0:IW-1];
+   wire [31:0]            s_insn [0:IW-1];
+   wire [PDW-1:0]         s_pdet [0:IW-1];
+   wire [5:0]             s_rd [0:IW-1];
+   wire [3:0]             s_fault_cause [0:IW-1];
+   wire [IW-1:0]          s_fault, s_illegal, s_is_branch;
+   wire [1:0]             s_ccls [0:IW-1];          // a call or a return (the retired RAS pointer)
+   wire [IW*RN_PBITS-1:0] s_prd_gv;
+   genvar gs;
+   generate for (gs = 0; gs < IW; gs = gs + 1) begin: sl
+      `IR_DECL(q_)
+      assign `IR_REC(q_) = fe_rec[gs*IRW +: IRW];
+      localparam [2:0] LANE = gs, SLICE = SH_F0 + gs;
+      wire st_nb = q_gc[GC_ST], ld_nb = q_gc[GC_LD];
+      wire [2:0] shard = shard_of(q_rd[5], q_insn, q_is_mem, q_is_amo, q_is_fp, q_is_mul, SLICE, LANE);
+      wire [RN_PBITS-1:0] prs1 = rn_prs1v[gs*RN_PBITS +: RN_PBITS], prs2 = rn_prs2v[gs*RN_PBITS +: RN_PBITS],
+                          prs3 = rn_prs3v[gs*RN_PBITS +: RN_PBITS], prd = rn_prdv[gs*RN_PBITS +: RN_PBITS];
+      // readiness: both map candidates' pending bits, the late lv picking the RESULT; a source that
+      // is an earlier slot's new register is pending by definition
+      wire pr1 = ~rn_byp1v[gs] & (rn_lv1v[gs] ? pnd_q[6*gs]     : pnd_q[6*gs + 3]);
+      wire pr2 = ~rn_byp2v[gs] & (rn_lv2v[gs] ? pnd_q[6*gs + 1] : pnd_q[6*gs + 4]);
+      wire pr3 = ~rn_byp3v[gs] & (rn_lv3v[gs] ? pnd_q[6*gs + 2] : pnd_q[6*gs + 5]);
+      // A plain store's rs2 is an operand of its store-buffer entry, which watches for it itself
+      // (smolrv64_sq's snoop), so the scheduler does not wait on it: the store issues on its address.
+      wire [2:0] srdy = {pr3 | ~q_rs3_v, pr2 | ~q_rs2_v | st_nb, pr1 | ~q_rs1_v};
+      wire [RN_PBITS-1:0] prd_g = q_rd_v ? prd : {RN_PBITS{1'b0}};
+      // decode-redirect (s_dcr) makes taken the prediction: taken now matches (mis_taken=0), and a
+      // not-taken resolve must redirect back to fall-through (mis_nt=1)
+      wire dcr = dcr_arm & q_gc[GC_DCR];
+      assign s_pl_in[gs] = {q_pc, q_insn, q_rvc, q_seq, q_pdet, q_pred_npc, q_rd, q_rd_v,
+                            prd_g, shard, q_rs1, q_imm,
+                            q_mem_size, q_mem_signed, q_is_mem, q_is_store, q_is_amo,
+                            q_amo_func, q_is_branch, q_is_jump, q_is_jalr, q_is_mul,
+                            q_is_csr, q_csr_func, q_is_serialize, q_is_fp, q_is_fencei,
+                            q_is_cbo, q_cbo_zero, q_cbo_keep, q_illegal, q_fault,
+                            q_fault_cause, q_fault_tval,
+                            q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
+                            q_br_func, (dcr ? 1'b0 : q_mis_taken), (dcr ? 1'b1 : q_mis_nt),
+                            q_rs1_v, q_rs2_v, q_rs3_v, q_gc[GC_ORD], sq_d_idx, lq_d_idx};
+      assign s_v[gs] = fe_dv[gs];
+      assign s_takev[gs] = fe_dv[gs] & d_take;       // a group dispatches whole
+      assign s_cls_i[gs] = q_gc[GC_I];  assign s_cls_l[gs] = q_gc[GC_L];  assign s_cls_fc[gs] = q_gc[GC_FC];
+      assign s_ld_nb[gs] = ld_nb;  assign s_st_nb[gs] = st_nb;  assign s_dcr[gs] = dcr;
+      assign s_rs1v[gs*6 +: 6] = q_rs1;  assign s_rs2v[gs*6 +: 6] = q_rs2;  assign s_rs3v[gs*6 +: 6] = q_rs3;
+      assign s_rdv[gs*6 +: 6] = q_rd;    assign s_rd_vv[gs] = q_rd_v;     assign s_shardv[gs*3 +: 3] = shard;
+      assign pnd_sq[(6*gs)*RN_PBITS +: 6*RN_PBITS] =
+             {rn_mprs3v[gs*RN_PBITS +: RN_PBITS], rn_mprs2v[gs*RN_PBITS +: RN_PBITS], rn_mprs1v[gs*RN_PBITS +: RN_PBITS],
+              rn_sprs3v[gs*RN_PBITS +: RN_PBITS], rn_sprs2v[gs*RN_PBITS +: RN_PBITS], rn_sprs1v[gs*RN_PBITS +: RN_PBITS]};
+      // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT (see u_pend)
+      assign pnd_av[gs] = fe_dv[gs] & q_rd_v & ~rn_stall;
+      assign s_srdy_hit[gs] = srdy | {wk(prs3), wk(prs2), wk(prs1)};
+      assign s_prd_g[gs] = prd_g;  assign s_prd_gv[gs*RN_PBITS +: RN_PBITS] = prd_g;
+      assign s_prs2[gs] = prs2;    assign s_r2rdy[gs] = pr2 | ~q_rs2_v;
+      assign s_ps_in[gs] = {prs3, prs2, prs1};
+      assign s_rob[gs] = rob_d_idxv[gs*ROB_IDXB +: ROB_IDXB];
+      assign s_pc[gs] = q_pc;  assign s_tgt[gs] = q_pc + q_imm;  assign s_seq[gs] = q_seq;  assign s_insn[gs] = q_insn;
+      assign s_pdet[gs] = q_pdet;  assign s_rd[gs] = q_rd;  assign s_is_branch[gs] = q_is_branch;
+      assign s_fault[gs] = q_fault;  assign s_illegal[gs] = q_illegal;
+      assign s_fault_cause[gs] = q_fault_cause;  assign s_fault_tval[gs] = q_fault_tval;
+      assign s_ccls[gs] = cti_cls(q_is_jump, q_is_jalr, q_rd_v, q_rd, q_rs1);
+      // what the slot hands its lane: an ALU-class op, its sources (a store's rs2 zeroed: the store
+      // queue's), their readiness with this cycle's wakes folded in, its destination and payload
+      assign sl_li[gs]  = s_takev[gs] & q_gc[GC_I];
+      assign sl_rob[gs] = s_rob[gs];
+      assign sl_ps[gs]  = st_nb ? {prs3, {RN_PBITS{1'b0}}, prs1} : {prs3, prs2, prs1};
+      assign sl_rdy[gs] = s_srdy_hit[gs][1:0];
+      assign sl_prd[gs] = prd_g;
+      assign sl_pl[gs]  = s_pl_in[gs];
+      always @(posedge clk) if (!reset)
+         if (sl_li[gs] & q_rd_v & ~q_rd[5] & (shard != LANE))
+            $fatal(1, "smolrv64_core: slot %0d's ALU op is in shard %0d, not its lane's", gs, shard);
+   end endgenerate
 
    wire [NL-1:0]             wkv_l;          // the lanes' ports: their write registers' issue-timed writes
    wire [NL*RN_PBITS-1:0]    wkp_l;
@@ -943,7 +814,7 @@ module smolrv64_core
 
 
    // ---- DISPATCH STAGE (cycle boundary) -------------------------------------------------
-   // The swizzle crossbar (slot->pipe mux, selects gated by the deep d3_take accept chain)
+   // The swizzle crossbar (slot->pipe mux, selects gated by the deep group-take chain)
    // fed the schedulers' e_r/e_ps registers combinationally, and that mux+hit sat on the
    // dispatch->e_r critical path (-0.42 ns vs the pre-swizzle 2-ALU core). This stage is a
    // per-pipe register between the crossbar output and each scheduler: the crossbar (and the
@@ -1007,21 +878,23 @@ module smolrv64_core
    // Stage-aware: a slot may dispatch iff its target pipe's dispatch stage is empty OR drains
    // into the scheduler this cycle (~stg_v | sched_room). A stuck stage (scheduler full) thus
    // holds dispatch at the frontend rather than losing the op behind the stage register.
-   wire alua_room = ~stg_v_ia | ri_ready;
-   wire alub_room = ~stg_v_ib | ri2_ready;
-   wire aluc_room = ~stg_v_ic | ri3_ready;
    wire f_room    = ~stg_v_f  | rf_ready;
-   wire iq_ready = d_cls_i ? alua_room : f_room;   // CTF falls to F (shared queue)
-   wire iq_ready_b = d2_cls_i ? alub_room : f_room;
-   wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_f = rn_valid_b & d2_cls_fc;
-   // ---- slot = lane: slot k's ALU op goes to lane k; slot C's other ops go to the one ----
-   // LS or FC op's queue (the accepted prefix has <=1 of each).
-   wire c_to_ic = rn_valid_c & d3_cls_i;              // slot3 ALU -> lane C
-   wire c_to_f  = rn_valid_c & d3_cls_fc;             // slot3 FC  -> F/CTF
-   wire f_slot0 = rn_valid   & d_cls_fc;              // slot1 -> F/CTF
-   // slot-3's destination-scheduler ready (by class, NOT rn_valid_c -> no combinational loop
-   // through d3_take): ALU->lane C, LS->M, FC->F.
-   wire iq_ready_c = d3_cls_i ? aluc_room : f_room;
+   // the group's FP/control-flow op (at most one) and what its slot hands the F/CTF stage
+   wire [IW-1:0]         s_tf = s_takev & s_cls_fc;
+   reg  [ROB_IDXB-1:0]   f_rob_in;
+   reg  [3*RN_PBITS-1:0] f_ps_in;
+   reg  [2:0]            f_r_in;
+   reg  [RN_PBITS-1:0]   f_prd_in;
+   reg  [PLW-1:0]        f_pl_in;
+   integer               fsk;
+   always @* begin
+      f_rob_in = s_rob[0];  f_ps_in = s_ps_in[0];  f_r_in = s_srdy_hit[0];  f_prd_in = s_prd_g[0];  f_pl_in = s_pl_in[0];
+      for (fsk = IW - 1; fsk >= 0; fsk = fsk - 1)
+         if (s_tf[fsk]) begin
+            f_rob_in = s_rob[fsk];  f_ps_in = s_ps_in[fsk];  f_r_in = s_srdy_hit[fsk];
+            f_prd_in = s_prd_g[fsk];  f_pl_in = s_pl_in[fsk];
+         end
+   end
 
    // ISSUE ARBITRATION, one per cycle into the single issue register. Long-latency classes
    // win: they are gated on M being free anyway, so they only bid when they can make
@@ -1066,9 +939,6 @@ module smolrv64_core
    // 3:1 mux, now on three reads instead of three indexes.
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
    wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
-   wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
-   wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
-   wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
    always @(posedge clk) begin
       // Written when the stage op moves into its scheduler (T+1), at the entry that scheduler
       // allocates (*_d_ent), from the REGISTERED stage payload -- co-timed with the e_ps write.
@@ -1151,40 +1021,6 @@ module smolrv64_core
                           + 1                                   // ordered
                           + SQ_IB                               // store-buffer slot (a store's)
                           + LQ_IB;                              // load-queue slot
-   wire [PLW-1:0] pl_in = {d_pc, d_insn, d_rvc, d_seq, d_pdet, d_pred_npc, d_rd, d_rd_v,
-                           (d_rd_v ? rn_prd : {RN_PBITS{1'b0}}), d_shard, d_rs1, d_imm,
-                           d_mem_size, d_mem_signed, d_is_mem, d_is_store, d_is_amo,
-                           d_amo_func, d_is_branch, d_is_jump, d_is_jalr, d_is_mul,
-                           d_is_csr, d_csr_func, d_is_serialize, d_is_fp, d_is_fencei,
-                           d_is_cbo, d_cbo_zero, d_cbo_keep, d_illegal, d_fault,
-                           d_fault_cause, d_fault_tval,
-                           d_alu_op, d_alu_w, d_alu_uw, d_op1_sel, d_op2_imm, d_res_link,
-                           // decode-redirect (dcr0) makes taken the prediction: taken now
-                           // matches (mis_taken=0), and a not-taken resolve must redirect
-                           // back to fall-through (mis_nt=1). See dcr0/dec_red above.
-                           d_br_func, (dcr0 ? 1'b0 : d_mis_taken), (dcr0 ? 1'b1 : d_mis_nt),
-                           d_rs1_v, d_rs2_v, d_rs3_v, d_ord, sq_d_idx, lq_d_idx};
-   wire [PLW-1:0] pl_in_b = {d2_pc, d2_insn, d2_rvc, d2_seq, d2_pdet, d2_pred_npc, d2_rd, d2_rd_v,
-                           (d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}}), d2_shard, d2_rs1, d2_imm,
-                           d2_mem_size, d2_mem_signed, d2_is_mem, d2_is_store, d2_is_amo,
-                           d2_amo_func, d2_is_branch, d2_is_jump, d2_is_jalr, d2_is_mul,
-                           d2_is_csr, d2_csr_func, d2_is_serialize, d2_is_fp, d2_is_fencei,
-                           d2_is_cbo, d2_cbo_zero, d2_cbo_keep, d2_illegal, d2_fault,
-                           d2_fault_cause, d2_fault_tval,
-                           d2_alu_op, d2_alu_w, d2_alu_uw, d2_op1_sel, d2_op2_imm, d2_res_link,
-                           d2_br_func, (dcr1 ? 1'b0 : d2_mis_taken), (dcr1 ? 1'b1 : d2_mis_nt),
-                           d2_rs1_v, d2_rs2_v, d2_rs3_v, d2_ord, sq_d_idx, lq_d_idx};
-   // slot C's payload (Stage 3): identical shape, for the third ALU. Dead at IW=2.
-   wire [PLW-1:0] pl_in_c = {d3_pc, d3_insn, d3_rvc, d3_seq, d3_pdet, d3_pred_npc, d3_rd, d3_rd_v,
-                           (d3_rd_v ? rn_prd_c : {RN_PBITS{1'b0}}), d3_shard, d3_rs1, d3_imm,
-                           d3_mem_size, d3_mem_signed, d3_is_mem, d3_is_store, d3_is_amo,
-                           d3_amo_func, d3_is_branch, d3_is_jump, d3_is_jalr, d3_is_mul,
-                           d3_is_csr, d3_csr_func, d3_is_serialize, d3_is_fp, d3_is_fencei,
-                           d3_is_cbo, d3_cbo_zero, d3_cbo_keep, d3_illegal, d3_fault,
-                           d3_fault_cause, d3_fault_tval,
-                           d3_alu_op, d3_alu_w, d3_alu_uw, d3_op1_sel, d3_op2_imm, d3_res_link,
-                           d3_br_func, (dcr2 ? 1'b0 : d3_mis_taken), (dcr2 ? 1'b1 : d3_mis_nt),
-                           d3_rs1_v, d3_rs2_v, d3_rs3_v, d3_ord, sq_d_idx, lq_d_idx};
    // ---- dispatch-stage load + wakeup snoop ----------------------------------------------
    // The dispatch-cycle (T) writeback fold, computed PER SLOT from the early slot pregs so the
    // wkv compare parallels the accept chain and stays off the crossbar-mux->stg_r path. d_srdy
@@ -1198,25 +1034,19 @@ module smolrv64_core
          for (i = 0; i < NWB_C; i = i + 1) wk = wk | (wkv[i] & (wkp[i*RN_PBITS +: RN_PBITS] == p));
       end
    endfunction
-   wire [2:0] srdy_hit0 = d_srdy  | {wk(rn_prs3),   wk(rn_prs2),   wk(rn_prs1)};
-   wire [2:0] srdy_hit1 = d2_srdy | {wk(rn_prs3_b), wk(rn_prs2_b), wk(rn_prs1_b)};
-   wire [2:0] srdy_hit2 = d3_srdy | {wk(rn_prs3_c), wk(rn_prs2_c), wk(rn_prs1_c)};
-   wire [1:0] srdy_l0 = srdy_hit0[1:0];       // a lane's two sources
-   wire [1:0] srdy_l1 = srdy_hit1[1:0];
-   wire [1:0] srdy_l2 = srdy_hit2[1:0];
    // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
       if (reset) stg_v_f <= 1'b0;
       else begin
          // F (FP/CTF): whichever slot is the (single) FC.
-         if (f_slot0 | b_to_f | c_to_f) begin
+         if (|s_tf) begin
             stg_v_f   <= 1'b1;
-            stg_rob_f <= f_slot0 ? rob_d_idx : b_to_f ? rob_d_idx2 : rob_d_idx3;
-            stg_ps_f  <= f_slot0 ? ps_in : b_to_f ? ps_in_b : ps_in_c;
-            stg_r_f   <= f_slot0 ? srdy_hit0 : b_to_f ? srdy_hit1 : srdy_hit2;
-            stg_prd_f <= f_slot0 ? d_prd_g : b_to_f ? d2_prd_g : d3_prd_g;
-            stg_pl_f  <= f_slot0 ? pl_in : b_to_f ? pl_in_b : pl_in_c;
+            stg_rob_f <= f_rob_in;
+            stg_ps_f  <= f_ps_in;
+            stg_r_f   <= f_r_in;
+            stg_prd_f <= f_prd_in;
+            stg_pl_f  <= f_pl_in;
          end else if (mv_f) stg_v_f <= 1'b0;
          else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
          // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
@@ -1236,15 +1066,6 @@ module smolrv64_core
    wire [1:0]            sl_rdy [0:NL-1];
    wire [RN_PBITS-1:0]   sl_prd [0:NL-1];
    wire [PLW-1:0]        sl_pl  [0:NL-1];
-   assign sl_li[0] = rn_valid & d_cls_i;  assign sl_rob[0] = rob_d_idx;   assign sl_rdy[0] = srdy_l0;
-   assign sl_ps[0] = d_st_nb ? {rn_prs3, {RN_PBITS{1'b0}}, rn_prs1} : ps_in;
-   assign sl_prd[0] = d_prd_g;  assign sl_pl[0] = pl_in;
-   assign sl_li[1] = b_to_i2;   assign sl_rob[1] = rob_d_idx2;  assign sl_rdy[1] = srdy_l1;
-   assign sl_ps[1] = d2_st_nb ? {rn_prs3_b, {RN_PBITS{1'b0}}, rn_prs1_b} : ps_in_b;
-   assign sl_prd[1] = d2_prd_g;  assign sl_pl[1] = pl_in_b;
-   assign sl_li[2] = c_to_ic;   assign sl_rob[2] = rob_d_idx3;  assign sl_rdy[2] = srdy_l2;
-   assign sl_ps[2] = d3_st_nb ? {rn_prs3_c, {RN_PBITS{1'b0}}, rn_prs1_c} : ps_in_c;
-   assign sl_prd[2] = d3_prd_g;  assign sl_pl[2] = pl_in_c;
    // each lane's PRF reads (smolrv64_prf's ports ra4..ra9)
    wire [63:0]           l_rd1  [0:NL-1], l_rd2 [0:NL-1];
    // what each lane exports
@@ -1513,10 +1334,39 @@ module smolrv64_core
    wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_pt_ld_kill, lsu_xo_v, lsu_xo_unc, lsu_xo_mem;
    wire                lsu_pt_fast_done;  wire [LQ_IB-1:0] lsu_pt_rtag;   // the fast path's landing, by tag
    wire [55:0]         lsu_xo_pa;
-   wire st_a = rn_valid   & d_st_nb;
-   wire st_b = rn_valid_b & d2_st_nb;
-   wire st_c = rn_valid_c & d3_st_nb;                 // slot C store (swizzle)
-   wire d_st_alloc = st_a | st_b | st_c;              // a group holds at most one store
+   wire [IW-1:0] g_st = s_takev & s_st_nb, g_ld = s_takev & s_ld_nb;   // the group's store and load
+   wire d_st_alloc = |g_st;                           // a group holds at most one store...
+   wire d_ld_alloc = |g_ld;                           // ...and one load
+   // each one's slot: its ROB slot, payload, data register and readiness, destination, pc and seq
+   reg  [ROB_IDXB-1:0] gst_rob, gld_rob;
+   reg  [PLW-1:0]      gst_pl, gld_pl;
+   reg  [RN_PBITS-1:0] gst_dpreg, gld_prd;
+   reg                 rdy_st, gld_rdv;
+   reg  [5:0]          gld_rd;
+   reg  [38:0]         gst_pc, gld_pc;
+   reg  [SEQW-1:0]     gst_seq, gld_seq;
+   reg                 gld_behind_st;                  // the load is younger than the group's store
+   integer             mqk, mqj;
+   always @* begin
+      gst_rob = s_rob[0];  gst_pl = s_pl_in[0];  gst_dpreg = s_prs2[0];  rdy_st = s_r2rdy[0];
+      gst_pc = s_pc[0][38:0];  gst_seq = s_seq[0];
+      gld_rob = s_rob[0];  gld_pl = s_pl_in[0];  gld_prd = s_prd_g[0];  gld_rd = s_rd[0];  gld_rdv = s_rd_vv[0];
+      gld_pc = s_pc[0][38:0];  gld_seq = s_seq[0];
+      gld_behind_st = 1'b0;
+      for (mqk = IW - 1; mqk >= 0; mqk = mqk - 1) begin
+         if (g_st[mqk]) begin
+            gst_rob = s_rob[mqk];  gst_pl = s_pl_in[mqk];  gst_dpreg = s_prs2[mqk];  rdy_st = s_r2rdy[mqk];
+            gst_pc = s_pc[mqk][38:0];  gst_seq = s_seq[mqk];
+         end
+         if (g_ld[mqk]) begin
+            gld_rob = s_rob[mqk];  gld_pl = s_pl_in[mqk];  gld_prd = s_prd_g[mqk];  gld_rd = s_rd[mqk];
+            gld_rdv = s_rd_vv[mqk];  gld_pc = s_pc[mqk][38:0];  gld_seq = s_seq[mqk];
+         end
+      end
+      for (mqk = 0; mqk < IW; mqk = mqk + 1)
+         for (mqj = 0; mqj < mqk; mqj = mqj + 1)
+            if (g_st[mqj] & g_ld[mqk]) gld_behind_st = 1'b1;
+   end
    // The head entry may go to memory only once it IS the ROB head: that is the point at
    // which no older instruction can still trap and no redirect can still squash it.
    // A committed store drains whenever the port is free: it was released by the ROB's
@@ -1571,8 +1421,8 @@ module smolrv64_core
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW)) u_sq
      (.clk(clk), .reset(reset),
-      .d_alloc(d_st_alloc), .d_rob(st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx), .d_dpreg(st_c ? rn_prs2_c : st_b ? rn_prs2_b : rn_prs2), .d_rdy(rdy_st),
-      .d_pc(st_c ? d3_pc[38:0] : st_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(st_c ? d3_seq : st_b ? d2_seq : d_seq),
+      .d_alloc(d_st_alloc), .d_rob(gst_rob), .d_dpreg(gst_dpreg), .d_rdy(rdy_st),
+      .d_pc(gst_pc), .d_seq(gst_seq),
       .d_ready(sq_d_ready), .d_ready2(sq_d_ready2), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .uf_idx(sq_uf_idx), .uf_seq(sq_uf_seq),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
@@ -1620,19 +1470,15 @@ module smolrv64_core
    wire [LQ_IB-1:0]    lq_uf_idx;  wire [SEQW-1:0] lq_uf_seq;
    wire                lq_x_devwait;        // counters: a device load waiting for the head
    wire d_ld_nb    = d_gc[GC_LD];  // plain load, rule C1
-   wire ld_a = rn_valid   & d_ld_nb;
-   wire ld_b = rn_valid_b & d2_ld_nb;
-   wire ld_c = rn_valid_c & d3_ld_nb;                 // slot C load (swizzle)
-   wire d_ld_alloc = ld_a | ld_b | ld_c;              // a group holds at most one load
    // a load behind a store in the same cycle captures the tag AFTER that store's
-   wire [SQ_TB-1:0] ld_sqtag = sq_d_tag + {{SQ_IB{1'b0}}, (st_a & (ld_b | ld_c)) | (st_b & ld_c)};
+   wire [SQ_TB-1:0] ld_sqtag = sq_d_tag + {{SQ_IB{1'b0}}, gld_behind_st};
 
    smolrv64_lq #(.NENT(LQ_N), .IDXB(LQ_IB), .PAW(56), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .SQIB(SQ_TB), .SEQW(SEQW), .LRAM_BASE(LBASE), .LRAM_LG2(LRAM_LG2)) u_lq
      (.clk(clk), .reset(reset),
-      .d_alloc(d_ld_alloc), .d_rob(ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx), .d_prd(ld_c ? d3_prd_g : ld_b ? d2_prd_g : d_prd_g),
-      .d_rd(ld_c ? d3_rd : ld_b ? d2_rd : d_rd), .d_rd_v(ld_c ? d3_rd_v : ld_b ? d2_rd_v : d_rd_v), .d_sqtag(ld_sqtag),
-      .d_pc(ld_c ? d3_pc[38:0] : ld_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(ld_c ? d3_seq : ld_b ? d2_seq : d_seq),
+      .d_alloc(d_ld_alloc), .d_rob(gld_rob), .d_prd(gld_prd),
+      .d_rd(gld_rd), .d_rd_v(gld_rdv), .d_sqtag(ld_sqtag),
+      .d_pc(gld_pc), .d_seq(gld_seq),
       .d_ready(lq_d_ready), .d_ready2(lq_d_ready2), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
       .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt), .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc),
@@ -1728,21 +1574,27 @@ module smolrv64_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
+   // The head's kill: a trap's done is latched (no live dTLB here). Behind the head, M's op
+   // retires only from the head.
+   assign rc_kill[0] = (m_valid & m_done_red & m_trap) | sy_trap;
+   generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc
+      localparam [ROB_IDXB-1:0] K = gs;
+      assign rc_idx[gs] = rob_head_idx + K;
+      assign rc_f[gs]   = rc_rdv[gs] & rc_rd[gs*6+5];     // writes an f-register
+      if (gs > 0) begin: kb
+         assign rc_kill[gs] = m_valid & (m_rob_idx == rc_idx[gs]);
+      end
+   end endgenerate
    smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(8), .IRR_FWD(8'b0000_1000)) u_rob   // w_v[3]: sq_k_take
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
-      .d_valid({rn_valid_c, rn_valid_b, rn_valid}), .d_rd({d3_rd, d2_rd, d_rd}),
-      .d_prd({d3_prd_g, d2_prd_g, d_rd_v ? rn_prd : {RN_PBITS{1'b0}}}), .d_noret({1'b0, 1'b0, d_is_irqop}),
-      .d_ready({rob_ready3, rob_ready2, rob_ready}), .d_idx({rob_d_idx3, rob_d_idx2, rob_d_idx}),
+      .d_valid(s_takev), .d_rd(s_rdv), .d_prd(s_prd_gv),
+      .d_noret({{(IW-1){1'b0}}, d_is_irqop}),          // the interrupt pseudo-op goes alone
+      .d_ready(rob_readyv), .d_idx(rob_d_idxv),
       .w_v(rob_wv), .w_ix(rob_wix),
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
-      // the head's: a trap's done is latched (no live dTLB here); behind it, M's op retires only
-      // from the head
-      .c_kill({1'b0, m_valid & (m_rob_idx == rob_head2_idx), (m_valid & m_done_red & m_trap) | sy_trap}),
-      .c_valid({rob_c3_valid, rob_c2_valid, rob_c_valid}), .c_rd({rob_c3_rd, rob_c2_rd, rob_c_rd}),
-      .c_rd_v({rob_c3_rd_v, rob_c2_rd_v, rob_c_rd_v}), .c_prd({rob_c3_prd, rob_c2_prd, rob_c_prd}),
-      .c_noret({rob_c3_noret, rob_c2_noret, rob_c_noret}),
+      .c_kill(rc_kill), .c_valid(rc_v), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd), .c_noret(rc_noret),
       .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
 
@@ -1752,7 +1604,7 @@ module smolrv64_core
    // ROB's own always-on set (double completion, completion of a dead slot, committing an
    // invalid head, occupancy overflow) plus the scoreboard's, above.
    //
-   // `rob_ready` is now real back-pressure rather than an assertion: with M releasing loads
+   // The ROB's room is real back-pressure rather than an assertion: with M releasing loads
    // early, the ROB genuinely fills behind a head that is waiting for its data.
 
    // M-stage registers (declared here: the bypass reads them)
@@ -1799,21 +1651,6 @@ module smolrv64_core
    // that same cycle, and the PRF read returns the pre-edge value. That is what `fwd` below
    // handles -- the datapath twin of the scheduler's wakeup, matching on the same physical
    // register numbers and the same three write ports.
-   // THE EVERY-CYCLE SHADOW COMPARISON IS GONE, and deliberately.
-   //
-   // It asserted that a renamed read equals the architectural register file, which held only
-   // because -- in smolrv64_rename's own words -- "issue and commit remain IN ORDER at this
-   // milestone". This commit is what ends that. Once a result lands in the PRF at COMPLETION
-   // while the architectural file is written at COMMIT, the two differ for every instruction
-   // in that window, which is most of them; and rv_regfile, having no rename, cannot model
-   // out-of-order writeback at all.
-   //
-   // It earned its keep: five defects during rename bring-up, plus two in this change (a
-   // pending source read before its load returned, and the load-format controls being taken
-   // live from a stage that had moved on). What replaces it is strictly stronger and already
-   // running -- the cosim compares every retired instruction's value against simmerv, in
-   // program order, for billions of retirements. rv_regfile itself stays, written in commit
-   // order, because tb_smolrv64_riscv traces it.
 
    // rn_stall IS in the stall path now (see d_hold). It used to be a $fatal, on the grounds
    // that only ~2 instructions are ever in flight so no shard can run dry -- an argument that
@@ -1891,12 +1728,9 @@ module smolrv64_core
    reg  [SPW-1:0] spl_st [0:SQ_N-1];
    // rs2 already in a register file at dispatch: the store queue reads it. Otherwise its snoop,
    // armed at allocation, takes it from the writeback, so the two never overlap.
-   wire rdy_st = st_c ? (pnd_r2_c | ~d3_rs2_v) : st_b ? (pnd_r2_b | ~d2_rs2_v) : (pnd_r2 | ~d_rs2_v);
    always @(posedge clk) begin
-      if (d_ld_alloc) spl_ld[lq_d_idx] <= {ld_c ? rob_d_idx3 : ld_b ? rob_d_idx2 : rob_d_idx,
-                                           ld_c ? pl_in_c : ld_b ? pl_in_b : pl_in};
-      if (d_st_alloc) spl_st[sq_d_idx] <= {st_c ? rob_d_idx3 : st_b ? rob_d_idx2 : rob_d_idx,
-                                           st_c ? pl_in_c : st_b ? pl_in_b : pl_in};
+      if (d_ld_alloc) spl_ld[lq_d_idx] <= {gld_rob, gld_pl};
+      if (d_st_alloc) spl_st[sq_d_idx] <= {gst_rob, gst_pl};
    end
    reg  [LQ_N-1:0] la_v;                           // a load's VA has arrived and M has not taken it
    reg  [SQ_N-1:0] sa_v;                           // ...a store's
@@ -1936,7 +1770,7 @@ module smolrv64_core
    wire              hA = l_v[0] & is_hop(ln[0].q_insn);   // a head op goes alone: slot A, lane A
    wire              h_go = ho_v & ~s_win & m_advance & ~redirect;
    always @(posedge clk) begin
-      if (rn_valid & d_cls_l) ho_rec <= {rob_d_idx, pl_in};
+      if (rn_valid & d_cls_l) ho_rec <= {s_rob[0], s_pl_in[0]};   // a head op goes alone: slot A
       if (hA) begin ho_v <= 1'b1; ho_va <= l_addr[0]; ho_dat <= l_rs2[0]; end
       if (h_go) ho_v <= 1'b0;
       if (reset | redirect) ho_v <= 1'b0;                 // flush last (rule I11)
@@ -1973,7 +1807,7 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: M takes a queue entry's arrival whose record is another op's (pc %h)", qm_pc);
       // a head op goes alone, so in slot A; one is in flight at a time; it waits with no load
       // or store unfilled
-      if (rn_valid_b & d2_cls_l | rn_valid_c & d3_cls_l)
+      if (|(s_takev & s_cls_l & ~{{(IW-1){1'b0}}, 1'b1}))
          $fatal(1, "smolrv64_core: a head op dispatched beside another op");
       for (ak = 1; ak < NL; ak = ak + 1)
          if (l_v[ak] & is_hop(l_pl[ak][PL_INSN +: 32]))
@@ -2667,7 +2501,8 @@ module smolrv64_core
    wire       td_bs  = redirect | rd_wait;
    wire       td_fe  = ~td_bs & fe_bub;
    wire       td_be  = ~td_bs & (st_m | hd_wait | (d_valid & ~d_take));   // M held, the queue head without credit, or a frozen IR
-   wire [1:0] td_nd  = {1'b0, d_take} + {1'b0, d2_take} + {1'b0, d3_take};
+   wire [3:0] td_n4  = ones_nl(s_takev);
+   wire [1:0] td_nd  = td_n4[1:0];
    reg  [4:0] td_k;
    always @* begin
       if (td_bs)      td_k = redirect ? 5'd3 : 5'd4;
@@ -2710,7 +2545,7 @@ module smolrv64_core
    //
    // But that argument covers minstret ONLY, and the first version of this fix stopped
    // there -- leaving the OTHER route from the same source alive. `retire` is
-   // `rob_c_valid`, and smolrv64_rob's `head_done` write-forwards across every writeback port,
+   // `rc_v`, and smolrv64_rob's `head_done` write-forwards across every writeback port,
    // so retire sits downstream of every unit's completion in the cycle it happens:
    //   m_addr -> lsu_done -> rob w_hits -> retire -> retire_cnt
    //          -> hpm_inc's INSTRET arm -> 13 event muxes -> 13x 64-bit carry chain
@@ -2730,7 +2565,7 @@ module smolrv64_core
       hpm_disp_q <= reset ? 2'd0 : td_nd;
       hpm_lqocc_q <= reset ? 6'd0 : {{(6-LQ_IB-1){1'b0}}, lq_occ};
       hpm_sqocc_q <= reset ? 6'd0 : {{(6-SQ_IB-1){1'b0}}, sq_occ};
-      hpm_ret_q <= reset ? 6'd0 : {5'd0, retire} + {5'd0, retire2} + {5'd0, retire3};
+      hpm_ret_q <= reset ? 6'd0 : {2'd0, ones_nl(retire)};
    end
 
    csr_file u_csr
@@ -2746,8 +2581,7 @@ module smolrv64_core
       // FSW/FSD, which write memory) or whose flags reach fcsr. Linux saves a task's f-registers
       // on a context switch only when FS is Dirty. Commit-gated by construction: the commit
       // valids exclude a trapping op, so it never dirties FS.
-      .fp_dirty_commit((retire  & rob_c_rd_v  & rob_c_rd[5])  | (retire2 & rob_c2_rd_v & rob_c2_rd[5])
-                     | (retire3 & rob_c3_rd_v & rob_c3_rd[5]) | (|ret_fflags)),
+      .fp_dirty_commit((|(retire & rc_f)) | (|ret_fflags)),
       .o_tlb_flush(mmu_flush),
       // GATED BY m_done. Neither of these was, because a SYSTEM op or a poisoned instruction
       // always completed in its single M cycle -- so `in M` and `completing` were the same
@@ -2761,9 +2595,7 @@ module smolrv64_core
       .xtrap_v((xtrap_v & m_done_red) | sy_xfire), .xtrap_intr(1'b0),
       .xtrap_cause(sy_xt ? sy_xcause : xtrap_cause),
       .xtrap_epc(sy_xt ? sy_pc : m_pc), .xtrap_tval(sy_xt ? sy_xtval : xtrap_tval),
-      // retire3 (3rd commit port, IW>=3) must be summed too or minstret undercounts at
-      // 3-wide; retire3 is hard 0 at IW<3, so this stays bit-identical at the shipping width.
-      // Both counts are the DELAYED copy: minstret is exact because a CSR op completes only
+      // Both counts are the DELAYED copy, summed over the commit ports: minstret is exact because a CSR op completes only
       // in its second cycle at the ROB head (m_head_q), by which time every older retirement
       // has been counted; csr_file drops the CSR op's own retirement after a minstret write.
       .hw_ip(hw_ip), .mtime(mtime), .retire_cnt(hpm_ret_q),
@@ -2935,28 +2767,17 @@ module smolrv64_core
    reg [PCW-1:0] xtq_pc     [0:ROB_DEPTH-1];
    reg [3:0]     xtq_cause  [0:ROB_DEPTH-1];
    reg [63:0]    xtq_tval   [0:ROB_DEPTH-1];
-   integer sqi;
+   integer sqi, xsk;
    initial for (sqi = 0; sqi < ROB_DEPTH; sqi = sqi + 1) xtq_kind[sqi] = SYK_NONE;
    always @(posedge clk) if (!reset) begin
       // (a) dispatch: a decode fault or an illegal instruction traps with what decode knows
-      if (rn_valid) begin
-         xtq_kind[rob_d_idx]  <= (d_fault | d_illegal) ? SYK_XTRAP : SYK_NONE;
-         xtq_cause[rob_d_idx] <= d_fault ? d_fault_cause : 4'd2;
-         xtq_tval[rob_d_idx]  <= d_fault ? {{(64-PCW){1'b0}}, d_fault_tval} : 64'd0;
-         xtq_pc[rob_d_idx]    <= d_pc;
-      end
-      if (rn_valid_b) begin
-         xtq_kind[rob_d_idx2]  <= (d2_fault | d2_illegal) ? SYK_XTRAP : SYK_NONE;
-         xtq_cause[rob_d_idx2] <= d2_fault ? d2_fault_cause : 4'd2;
-         xtq_tval[rob_d_idx2]  <= d2_fault ? {{(64-PCW){1'b0}}, d2_fault_tval} : 64'd0;
-         xtq_pc[rob_d_idx2]    <= d2_pc;
-      end
-      if (rn_valid_c) begin
-         xtq_kind[rob_d_idx3]  <= (d3_fault | d3_illegal) ? SYK_XTRAP : SYK_NONE;
-         xtq_cause[rob_d_idx3] <= d3_fault ? d3_fault_cause : 4'd2;
-         xtq_tval[rob_d_idx3]  <= d3_fault ? {{(64-PCW){1'b0}}, d3_fault_tval} : 64'd0;
-         xtq_pc[rob_d_idx3]    <= d3_pc;
-      end
+      for (xsk = 0; xsk < IW; xsk = xsk + 1)
+         if (s_takev[xsk]) begin
+            xtq_kind[s_rob[xsk]]  <= (s_fault[xsk] | s_illegal[xsk]) ? SYK_XTRAP : SYK_NONE;
+            xtq_cause[s_rob[xsk]] <= s_fault[xsk] ? s_fault_cause[xsk] : 4'd2;
+            xtq_tval[s_rob[xsk]]  <= s_fault[xsk] ? {{(64-PCW){1'b0}}, s_fault_tval[xsk]} : 64'd0;
+            xtq_pc[s_rob[xsk]]    <= s_pc[xsk];
+         end
       // (c) a queue entry's translation fault loads the SYSQ (its PC was recorded at dispatch, so
       // the SYSQ's check below holds the queue's stored PC and seq to it)
       if (qf_in) begin
@@ -3197,9 +3018,12 @@ module smolrv64_core
          weak_cond = pd[DCR_HIT] & (c[1] ^ c[0]);
       end
    endfunction
-   wire [1:0] wk_d = {1'b0, rn_valid   & d_is_branch  & weak_cond(d_pdet)}
-                   + {1'b0, rn_valid_b & d2_is_branch & weak_cond(d2_pdet)}
-                   + {1'b0, rn_valid_c & d3_is_branch & weak_cond(d3_pdet)};
+   reg  [1:0] wk_d;                                // weak conditionals dispatching this cycle
+   integer wdk;
+   always @* begin
+      wk_d = 2'd0;
+      for (wdk = 0; wdk < IW; wdk = wdk + 1) wk_d = wk_d + {1'b0, s_takev[wdk] & s_is_branch[wdk] & weak_cond(s_pdet[wdk])};
+   end
    reg  [1:0] wk_r;                                // weak conditionals resolving this cycle
    integer wkr;
    always @* begin
@@ -3389,27 +3213,12 @@ module smolrv64_core
    // model out-of-order writeback: a younger instruction writes x13, then an older load lands
    // and clobbers the same architectural location. Driving it from the ROB head keeps it a
    // valid architectural model, which is what tb_smolrv64_riscv's trace reads it as.
-`ifndef SYNTHESIS
-   assign rf_we = rob_c_valid & rob_c_rd_v;
-   assign rf_wa = rob_c_rd;
-   assign rf_wd = cs_val_h;
-   assign rf_we2 = rob_c2_valid & rob_c2_rd_v;
-   assign rf_wa2 = rob_c2_rd;
-   assign rf_wd2 = cs_val_h2;
-`else
-   assign rf_we = 1'b0;  assign rf_wa = 6'd0;  assign rf_wd = 64'd0;
-   assign rf_we2 = 1'b0; assign rf_wa2 = 6'd0; assign rf_wd2 = 64'd0;
-`endif
 
    // RETIRE IS THE ROB HEAD, not the M stage. Not merely for the cosim: it drives minstret
    // through retire_cnt and csr_file's fp_dirty_commit, both architectural, and both of
    // which must count an instruction when it COMMITS rather than when it happens to finish.
    // With M still blocking the two coincide, which is what makes this step checkable.
-   assign retire      = rob_c_valid & ~rob_c_noret;
-   assign retire2     = rob_c2_valid & ~rob_c2_noret;
-   assign retire3     = rob_c3_valid & ~rob_c3_noret;
-   wire [ROB_IDXB-1:0] rob_head2_idx = rob_head_idx + 1'b1;
-   wire [ROB_IDXB-1:0] rob_head3_idx = rob_head_idx + 2'd2;
+   assign retire = rc_v & ~rc_noret;
 
    // FP EXCEPTION FLAGS COMMIT WITH THEIR OP. An FP op completes out of order, possibly on a path
    // that a mispredicted branch older than it squashes later, so its flags wait in its ROB slot
@@ -3417,17 +3226,19 @@ module smolrv64_core
    // when the op retires. Completion and commit can be the same cycle (the ROB's w_hits), hence
    // the bypass from the landing result.
    reg  [4:0] rob_ff [0:ROB_DEPTH-1];
+   integer    ffk;
    always @(posedge clk) begin
-      if (rn_valid)    rob_ff[rob_d_idx]  <= 5'd0;
-      if (rn_valid_b)  rob_ff[rob_d_idx2] <= 5'd0;
-      if (rn_valid_c)  rob_ff[rob_d_idx3] <= 5'd0;
+      for (ffk = 0; ffk < IW; ffk = ffk + 1) if (s_takev[ffk]) rob_ff[s_rob[ffk]] <= 5'd0;
       if (fp_complete) rob_ff[ft_rob]     <= fl_fflags;
    end
-   wire [4:0] ff_h1 = (fp_complete & (ft_rob == rob_head_idx))  ? fl_fflags : rob_ff[rob_head_idx];
-   wire [4:0] ff_h2 = (fp_complete & (ft_rob == rob_head2_idx)) ? fl_fflags : rob_ff[rob_head2_idx];
-   wire [4:0] ff_h3 = (fp_complete & (ft_rob == rob_head3_idx)) ? fl_fflags : rob_ff[rob_head3_idx];
-   wire [4:0] ret_fflags = ({5{rob_c_valid}}  & ff_h1) | ({5{rob_c2_valid}} & ff_h2)
-                         | ({5{rob_c3_valid}} & ff_h3);
+   reg  [4:0] ret_fflags;
+   integer    ffh;
+   always @* begin
+      ret_fflags = 5'd0;
+      for (ffh = 0; ffh < IW; ffh = ffh + 1)
+         if (rc_v[ffh])
+            ret_fflags = ret_fflags | ((fp_complete & (ft_rob == rc_idx[ffh])) ? fl_fflags : rob_ff[rc_idx[ffh]]);
+   end
 
    // retire_pc/retire_insn are verification payload -- tb_smolrv64_riscv traces them and
    // rv_soc_top leaves both unconnected -- so they come from a simulation-only side array
@@ -3436,15 +3247,11 @@ module smolrv64_core
 `ifndef SYNTHESIS
    reg [PCW-1:0] cs_pc   [0:ROB_DEPTH-1];
    reg [31:0]    cs_insn [0:ROB_DEPTH-1];
+   integer       cpk;
    always @(posedge clk) begin
-      if (rn_valid)   begin cs_pc[rob_d_idx]  <= d_pc;  cs_insn[rob_d_idx]  <= d_insn;  end
-      if (rn_valid_b) begin cs_pc[rob_d_idx2] <= d2_pc; cs_insn[rob_d_idx2] <= d2_insn; end
-      if (rn_valid_c) begin cs_pc[rob_d_idx3] <= d3_pc; cs_insn[rob_d_idx3] <= d3_insn; end
+      for (cpk = 0; cpk < IW; cpk = cpk + 1)
+         if (s_takev[cpk]) begin cs_pc[s_rob[cpk]] <= s_pc[cpk];  cs_insn[s_rob[cpk]] <= s_insn[cpk];  end
    end
-   assign retire_pc   = cs_pc[rob_head_idx];
-   assign retire_insn = cs_insn[rob_head_idx];
-   assign retire2_pc   = cs_pc[rob_head2_idx];
-   assign retire2_insn = cs_insn[rob_head2_idx];
 
    // Values that are only known at COMPLETION, held per ROB slot until that slot commits.
    // Simulation-only, so the ROB stays status-only in hardware. The capture is keyed on M's
@@ -3523,85 +3330,64 @@ module smolrv64_core
    end
    // ...and the same write-forward the ROB's head_done needs, for the same reason: a slot can
    // be captured in the very cycle it commits, so the array read returns pre-edge contents.
-   // Missing it reported rd=0 for the second instruction of the boot.
-   wire        cs_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb
-                          & (m_rob_idx == rob_head_idx);
-   // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
-   // at head, reading csr_rdata live then -- after cs_hit_m's pulse and before the capture
-   // above lands. `time`/`cycle` differ by a tick between the two: the head takes it live.
-   wire        cs_hit_csr = sy_wr & (sy_rob == rob_head_idx);
-   wire        cs_hit_ld  = ld_land & (lq_l_rob == rob_head_idx);
-   wire        cs_hit_sq  = sq_k_take & (sq_kc_rob == rob_head_idx);
-   wire        cs_hit_fp  = fp_land & (ft_rob == rob_head_idx);
-   wire        cs_hit_md  = md_wb & (md_rob == rob_head_idx);
-   // a lane's op completing at issue the head entry (h = 0), the next (1) or the third (2)
-   reg  [2:0]  cs_hl;
-   reg  [63:0] cs_hl_v [0:2];
-   integer     chi, chk;
-   always @* for (chi = 0; chi < 3; chi = chi + 1) begin
+   // Missing it reported rd=0 for the second instruction of the boot. cs_hl: a lane's op
+   // completing at issue commit port k's entry.
+   reg  [IW-1:0] cs_hl;
+   reg  [63:0]   cs_hl_v [0:IW-1];
+   integer       chi, chk;
+   always @* for (chi = 0; chi < IW; chi = chi + 1) begin
       cs_hl[chi] = 1'b0;  cs_hl_v[chi] = 64'd0;
       for (chk = NL - 1; chk >= 0; chk = chk - 1)
-         if (l_iss[chk] & (l_rob[chk] == rob_head_idx + chi[ROB_IDXB-1:0])) begin
+         if (l_iss[chk] & (l_rob[chk] == rc_idx[chi])) begin
             cs_hl[chi] = 1'b1;  cs_hl_v[chi] = l_res[chk];
          end
    end
-   wire [63:0] cs_val_h   = cs_hit_csr ? csr_rdata     // the CSR read's value at its write
-                          : cs_hit_sq ? 64'd0          // a store writes no register
-                          : cs_hit_ld ? lsu_rd_val
-                          : cs_hl[0] ? cs_hl_v[0]
-                          : cs_hit_md ? md_res_q : cs_hit_fp ? fp_wval
-                          : cs_hit_m  ? m_wb_val : cs_val[rob_head_idx];
-   wire [1:0]  cs_mkind_h = cs_hit_sq ? 2'd2
-                          : cs_hit_ld ? 2'd1
-                          : cs_hl[0] ? 2'd0
-                          : cs_hit_md ? 2'd0 : cs_hit_fp ? 2'd0
-                          : cs_hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head_idx];
-   wire [55:0] cs_mpa_h   = cs_hit_sq ? sq_kc_addr
-                          : cs_hit_ld ? lq_l_pa
-                          : cs_hl[0] ? 56'd0
-                          : cs_hit_md ? 56'd0 : cs_hit_fp ? 56'd0
-                          : cs_hit_m  ? lsu_cos_pa : cs_mpa[rob_head_idx];
-   wire [63:0] cs_mdata_h = cs_hit_sq ? sq_kc_data : cs_hit_m ? lsu_cos_data : cs_mdata[rob_head_idx];
-   wire [3:0]  cs_msz_h   = cs_hit_sq ? {2'b0, sq_kc_size} : cs_hit_m ? lsu_cos_size : cs_msz[rob_head_idx];
-   // ...and for the entry behind the head, retiring in the same cycle (item 10c)
-   wire        cs2_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == rob_head2_idx);
-   wire        cs2_hit_ld  = ld_land & (lq_l_rob == rob_head2_idx);
-   wire        cs2_hit_sq  = sq_k_take & (sq_kc_rob == rob_head2_idx);
-   wire        cs2_hit_fp  = fp_land & (ft_rob == rob_head2_idx);
-   wire        cs2_hit_md  = md_wb & (md_rob == rob_head2_idx);
-   wire [63:0] cs_val_h2   = cs2_hit_sq ? 64'd0 : cs2_hit_ld ? lsu_rd_val : cs_hl[1] ? cs_hl_v[1]
-                           : cs2_hit_md ? md_res_q : cs2_hit_fp ? fp_wval : cs2_hit_m ? m_wb_val : cs_val[rob_head2_idx];
-   wire [1:0]  cs_mkind_h2 = cs2_hit_sq ? 2'd2 : cs2_hit_ld ? 2'd1 : cs_hl[1] ? 2'd0 : cs2_hit_md ? 2'd0 : cs2_hit_fp ? 2'd0
-                           : cs2_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head2_idx];
-   wire [55:0] cs_mpa_h2   = cs2_hit_sq ? sq_kc_addr : cs2_hit_ld ? lq_l_pa : cs_hl[1] ? 56'd0 : cs2_hit_md ? 56'd0 : cs2_hit_fp ? 56'd0
-                           : cs2_hit_m ? lsu_cos_pa : cs_mpa[rob_head2_idx];
-   wire [63:0] cs_mdata_h2 = cs2_hit_sq ? sq_kc_data : cs2_hit_m ? lsu_cos_data : cs_mdata[rob_head2_idx];
-   wire [3:0]  cs_msz_h2   = cs2_hit_sq ? {2'b0, sq_kc_size} : cs2_hit_m ? lsu_cos_size : cs_msz[rob_head2_idx];
-   // ...and the third entry, retiring in the same cycle (Stage 3, IW=3)
-   wire        cs3_hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == rob_head3_idx);
-   wire        cs3_hit_ld  = ld_land & (lq_l_rob == rob_head3_idx);
-   wire        cs3_hit_sq  = sq_k_take & (sq_kc_rob == rob_head3_idx);
-   wire        cs3_hit_fp  = fp_land & (ft_rob == rob_head3_idx);
-   wire        cs3_hit_md  = md_wb & (md_rob == rob_head3_idx);
-   wire [63:0] cs_val_h3   = cs3_hit_sq ? 64'd0 : cs3_hit_ld ? lsu_rd_val : cs_hl[2] ? cs_hl_v[2]
-                           : cs3_hit_md ? md_res_q : cs3_hit_fp ? fp_wval : cs3_hit_m ? m_wb_val : cs_val[rob_head3_idx];
-   wire [1:0]  cs_mkind_h3 = cs3_hit_sq ? 2'd2 : cs3_hit_ld ? 2'd1 : cs_hl[2] ? 2'd0 : cs3_hit_md ? 2'd0 : cs3_hit_fp ? 2'd0
-                           : cs3_hit_m ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[rob_head3_idx];
-   wire [55:0] cs_mpa_h3   = cs3_hit_sq ? sq_kc_addr : cs3_hit_ld ? lq_l_pa : cs_hl[2] ? 56'd0 : cs3_hit_md ? 56'd0 : cs3_hit_fp ? 56'd0
-                           : cs3_hit_m ? lsu_cos_pa : cs_mpa[rob_head3_idx];
-   wire [63:0] cs_mdata_h3 = cs3_hit_sq ? sq_kc_data : cs3_hit_m ? lsu_cos_data : cs_mdata[rob_head3_idx];
-   wire [3:0]  cs_msz_h3   = cs3_hit_sq ? {2'b0, sq_kc_size} : cs3_hit_m ? lsu_cos_size : cs_msz[rob_head3_idx];
+   wire [63:0] cs_val_h   [0:IW-1];
+   wire [1:0]  cs_mkind_h [0:IW-1];
+   wire [55:0] cs_mpa_h   [0:IW-1];
+   wire [63:0] cs_mdata_h [0:IW-1];
+   wire [3:0]  cs_msz_h   [0:IW-1];
+   generate for (gs = 0; gs < IW; gs = gs + 1) begin: ch
+      wire [ROB_IDXB-1:0] ix = rc_idx[gs];
+      wire hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == ix);
+      // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
+      // at head, reading csr_rdata live then -- after hit_m's pulse and before the capture
+      // above lands. `time`/`cycle` differ by a tick between the two: the head takes it live.
+      wire hit_csr = sy_wr & (sy_rob == ix);
+      wire hit_ld  = ld_land & (lq_l_rob == ix);
+      wire hit_sq  = sq_k_take & (sq_kc_rob == ix);
+      wire hit_fp  = fp_land & (ft_rob == ix);
+      wire hit_md  = md_wb & (md_rob == ix);
+      assign cs_val_h[gs]   = hit_csr ? csr_rdata     // the CSR read's value at its write
+                            : hit_sq ? 64'd0          // a store writes no register
+                            : hit_ld ? lsu_rd_val
+                            : cs_hl[gs] ? cs_hl_v[gs]
+                            : hit_md ? md_res_q : hit_fp ? fp_wval
+                            : hit_m  ? m_wb_val : cs_val[ix];
+      assign cs_mkind_h[gs] = hit_sq ? 2'd2 : hit_ld ? 2'd1
+                            : (cs_hl[gs] | hit_md | hit_fp) ? 2'd0
+                            : hit_m  ? (m_mem_op ? lsu_cos_kind : 2'd0) : cs_mkind[ix];
+      assign cs_mpa_h[gs]   = hit_sq ? sq_kc_addr : hit_ld ? lq_l_pa
+                            : (cs_hl[gs] | hit_md | hit_fp) ? 56'd0
+                            : hit_m  ? lsu_cos_pa : cs_mpa[ix];
+      assign cs_mdata_h[gs] = hit_sq ? sq_kc_data : hit_m ? lsu_cos_data : cs_mdata[ix];
+      assign cs_msz_h[gs]   = hit_sq ? {2'b0, sq_kc_size} : hit_m ? lsu_cos_size : cs_msz[ix];
+      assign retire_pc[gs*PCW +: PCW]  = cs_pc[ix];
+      assign retire_insn[gs*32 +: 32]  = cs_insn[ix];
+      assign rf_we[gs]                 = rc_v[gs] & rc_rdv[gs];
+      assign rf_wa[gs*6 +: 6]          = rc_rd[gs*6 +: 6];
+      assign rf_wd[gs*64 +: 64]        = cs_val_h[gs];
+   end endgenerate
 `else
-   assign retire_pc   = {PCW{1'b0}};
-   assign retire_insn = 32'd0;
-   assign retire2_pc   = {PCW{1'b0}};
-   assign retire2_insn = 32'd0;
+   assign retire_pc   = {(IW*PCW){1'b0}};
+   assign retire_insn = {(IW*32){1'b0}};
+   assign rf_we = {IW{1'b0}};  assign rf_wa = {(IW*6){1'b0}};  assign rf_wd = {(IW*64){1'b0}};
 `endif
 
    // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
    // exists to guarantee, and it is what makes the CSR result unbypassable above.
    always @(posedge clk)
-     if (!reset && (rn_valid | rn_valid_b) && m_valid && m_is_serialize)
+     if (!reset && (|s_takev) && m_valid && m_is_serialize)
        $fatal(1, "smolrv64_core: dispatched behind a serializing op in M (pc=%h)", m_pc);
 
    // ---- interrupt injection: a solo SYSTEM pseudo-op that traps in M ----
@@ -3691,8 +3477,8 @@ module smolrv64_core
    // retire -- e.g. after an mret, or after a trap has captured it). Everything that
    // a trap changes at that same edge -- privilege above all -- must therefore be
    // REGISTERED at retire time, not read live.
-   reg [1:0]  e_mkind;   reg [55:0] e_mpa;      // cosim memory-effect capture
-   reg [63:0] e_mdata;   reg [3:0]  e_msz;
+   reg [1:0]  e_mkind [0:IW-1];   reg [55:0] e_mpa [0:IW-1];      // cosim memory-effect capture
+   reg [63:0] e_mdata [0:IW-1];   reg [3:0]  e_msz [0:IW-1];
    import "DPI-C" function void probe_retire(
       input longint unsigned pc,
       input int     unsigned insn,
@@ -3727,94 +3513,58 @@ module smolrv64_core
 
    // Destination class comes from the COMMITTING entry, not from M -- the ROB already
    // carries rd/rd_v, so this needs no side array.
-   wire [1:0] ck_rk = ~rob_c_rd_v ? 2'd0 : rob_c_rd[5] ? 2'd2 : 2'd1;
-   wire [1:0] ck_rk2 = ~rob_c2_rd_v ? 2'd0 : rob_c2_rd[5] ? 2'd2 : 2'd1;
-   wire [1:0] ck_rk3 = ~rob_c3_rd_v ? 2'd0 : rob_c3_rd[5] ? 2'd2 : 2'd1;
-   reg        e_v, e_trap;
-   reg [63:0] e_pc, e_val, e_cause, e_tval;
-   reg [31:0] e_insn;
-   reg [1:0]  e_rk, e_prv;
-   reg [4:0]  e_ri;
-   initial    e_v = 1'b0;
-   // the second retire of the cycle (item 10c): its own record, handed over after the first
-   reg        e2_v;
-   reg [63:0] e2_pc, e2_val;
-   reg [31:0] e2_insn;
-   reg [1:0]  e2_rk, e2_mkind;
-   reg [4:0]  e2_ri;
-   reg [55:0] e2_mpa;    reg [63:0] e2_mdata;  reg [3:0] e2_msz;
-   initial    e2_v = 1'b0;
-   // the third retire of the cycle (Stage 3, IW=3): its own record
-   reg        e3_v;
-   reg [63:0] e3_pc, e3_val;
-   reg [31:0] e3_insn;
-   reg [1:0]  e3_rk, e3_mkind;
-   reg [4:0]  e3_ri;
-   reg [55:0] e3_mpa;    reg [63:0] e3_mdata;  reg [3:0] e3_msz;
-   initial    e3_v = 1'b0;
+   reg        e_trap;
+   reg [63:0] e_cause, e_tval;
+   reg [1:0]  e_prv;
+   reg [IW-1:0] e_v;                     // commit port k's record, emitted a cycle later
+   reg [63:0] e_pc [0:IW-1], e_val [0:IW-1];
+   reg [31:0] e_insn [0:IW-1];
+   reg [1:0]  e_rk [0:IW-1];
+   reg [4:0]  e_ri [0:IW-1];
+   initial    e_v = {IW{1'b0}};
+   integer    ek;
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
    always @(posedge clk) begin
-      e_v <= 1'b0;
+      e_v <= {IW{1'b0}};
       if (!reset) begin
          if (cot_take) begin                     // M's trap, or the SYSQ's (C3 step 3)
-            e_v <= 1'b1;  e_trap <= 1'b1;
-            e_pc <= sy_fire ? sy_pc : m_pc;
+            e_v[0] <= 1'b1;  e_trap <= 1'b1;
+            e_pc[0] <= sy_fire ? sy_pc : m_pc;
             // a queue entry's fault reaches the SYSQ without its instruction: it is the ROB head's
-            e_insn <= (cot_intr | cot_ifault) ? 32'd0 : (sy_fire & sy_qf) ? cs_insn[sy_rob]
-                    : sy_fire ? sy_insn : m_insn;
-            e_rk <= 2'd0;  e_ri <= 5'd0;  e_val <= 64'd0;
+            e_insn[0] <= (cot_intr | cot_ifault) ? 32'd0 : (sy_fire & sy_qf) ? cs_insn[sy_rob]
+                       : sy_fire ? sy_insn : m_insn;
+            e_rk[0] <= 2'd0;  e_ri[0] <= 5'd0;  e_val[0] <= 64'd0;
             e_cause <= cot_cause;  e_tval <= cot_tval;
             e_prv <= u_csr.priv;                  // privilege BEFORE the trap
-            e_mkind <= 2'd0;  e_mpa <= 56'd0;     // a trap performed no data access
-            e_mdata <= 64'd0; e_msz <= 4'hF;
-         end else if (retire) begin
-            e_v <= 1'b1;  e_trap <= 1'b0;
-            e_pc <= cs_pc[rob_head_idx];  e_insn <= cs_insn[rob_head_idx];
-            e_rk <= ck_rk;  e_ri <= rob_c_rd[4:0];  e_val <= cs_val_h;
-            e_cause <= 64'd0;  e_tval <= 64'd0;
+            e_mkind[0] <= 2'd0;  e_mpa[0] <= 56'd0;     // a trap performed no data access
+            e_mdata[0] <= 64'd0; e_msz[0] <= 4'hF;
+         end else if (retire[0]) begin
+            e_trap <= 1'b0;  e_cause <= 64'd0;  e_tval <= 64'd0;
             e_prv <= u_csr.priv;
-            // Memory effect of the COMMITTING instruction, for the cosim's store/load check
-            // -- captured when it completed, replayed when it commits.
-            e_mkind <= cs_mkind_h;
-            e_mpa   <= cs_mpa_h;
-            e_mdata <= cs_mdata_h;  e_msz <= cs_msz_h;
          end
-         e2_v <= 1'b0;
-         if (retire2 && !cot_take) begin
-            e2_v <= 1'b1;
-            e2_pc <= cs_pc[rob_head2_idx];  e2_insn <= cs_insn[rob_head2_idx];
-            e2_rk <= ck_rk2;  e2_ri <= rob_c2_rd[4:0];  e2_val <= cs_val_h2;
-            e2_mkind <= cs_mkind_h2;  e2_mpa <= cs_mpa_h2;  e2_mdata <= cs_mdata_h2;  e2_msz <= cs_msz_h2;
-         end
-         e3_v <= 1'b0;
-         if (retire3 && !cot_take) begin
-            e3_v <= 1'b1;
-            e3_pc <= cs_pc[rob_head3_idx];  e3_insn <= cs_insn[rob_head3_idx];
-            e3_rk <= ck_rk3;  e3_ri <= rob_c3_rd[4:0];  e3_val <= cs_val_h3;
-            e3_mkind <= cs_mkind_h3;  e3_mpa <= cs_mpa_h3;  e3_mdata <= cs_mdata_h3;  e3_msz <= cs_msz_h3;
-         end
+         // Destination class and memory effect come from the COMMITTING entry: captured when
+         // it completed, replayed when it commits.
+         if (!cot_take)
+            for (ek = 0; ek < IW; ek = ek + 1)
+               if (retire[ek]) begin
+                  e_v[ek] <= 1'b1;
+                  e_pc[ek] <= cs_pc[rc_idx[ek]];  e_insn[ek] <= cs_insn[rc_idx[ek]];
+                  e_rk[ek] <= ~rc_rdv[ek] ? 2'd0 : rc_rd[ek*6+5] ? 2'd2 : 2'd1;
+                  e_ri[ek] <= rc_rd[ek*6 +: 5];  e_val[ek] <= cs_val_h[ek];
+                  e_mkind[ek] <= cs_mkind_h[ek];  e_mpa[ek] <= cs_mpa_h[ek];
+                  e_mdata[ek] <= cs_mdata_h[ek];  e_msz[ek] <= cs_msz_h[ek];
+               end
       end
       // emit one cycle later, so this instruction's own CSR writes have landed
-      if (e_v)
-         probe_retire(e_pc, e_insn, {6'd0, e_rk},
-                      (e_rk == 2'd0) ? 8'd0 : {3'd0, e_ri},
-                      {6'd0, e_prv}, {7'd0, e_trap}, e_val, e_cause, e_tval,
-                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
-                      {6'd0, e_mkind}, {8'd0, e_mpa}, e_mdata, {4'd0, e_msz});
-      if (e2_v)
-         probe_retire(e2_pc, e2_insn, {6'd0, e2_rk},
-                      (e2_rk == 2'd0) ? 8'd0 : {3'd0, e2_ri},
-                      {6'd0, e_prv}, 8'd0, e2_val, 64'd0, 64'd0,
-                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
-                      {6'd0, e2_mkind}, {8'd0, e2_mpa}, e2_mdata, {4'd0, e2_msz});
-      if (e3_v)
-         probe_retire(e3_pc, e3_insn, {6'd0, e3_rk},
-                      (e3_rk == 2'd0) ? 8'd0 : {3'd0, e3_ri},
-                      {6'd0, e_prv}, 8'd0, e3_val, 64'd0, 64'd0,
-                      64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
-                      {6'd0, e3_mkind}, {8'd0, e3_mpa}, e3_mdata, {4'd0, e3_msz});
+      for (ek = 0; ek < IW; ek = ek + 1)
+         if (e_v[ek])
+            probe_retire(e_pc[ek], e_insn[ek], {6'd0, e_rk[ek]},
+                         (e_rk[ek] == 2'd0) ? 8'd0 : {3'd0, e_ri[ek]},
+                         {6'd0, e_prv}, {7'd0, e_trap}, e_val[ek], e_cause, e_tval,
+                         64'd0, {64{1'b1}}, `VA_UNPACK40(u_csr.mepc), 8'd0,
+                         {6'd0, e_mkind[ek]}, {8'd0, e_mpa[ek]}, e_mdata[ek], {4'd0, e_msz[ek]});
    end
 `endif
 
@@ -3893,16 +3643,13 @@ module smolrv64_core
    // cycle's frees are not credited. Each group allocates at most one entry in each scheduler,
    // the LQ, the SQ and each rename shard, which is what the per-resource checks rely on (and
    // LOWAT=4 covers two groups per shard, so `low` is the rename credit as it stands).
-   wire       ir_ia = d_valid  & d_cls_i;
-   wire       ir_ib = d2_valid & d2_cls_i;
-   wire       ir_ic = d3_valid & d3_cls_i;
-   wire       ir_l  = (d_valid & d_cls_l)  | (d2_valid & d2_cls_l)  | (d3_valid & d3_cls_l);
-   wire       ir_f  = (d_valid & d_cls_fc) | (d2_valid & d2_cls_fc) | (d3_valid & d3_cls_fc);
-   wire       ir_ld = (d_valid & d_ld_nb)  | (d2_valid & d2_ld_nb)  | (d3_valid & d3_ld_nb);
-   wire       ir_st = (d_valid & d_st_nb)  | (d2_valid & d2_st_nb)  | (d3_valid & d3_st_nb);
-   wire [1:0] ir_n  = {1'b0, d_valid} + {1'b0, d2_valid} + {1'b0, d3_valid};
-   wire [ROB_IDXB+1:0] rob_inflt = {1'b0, rob_occ} + {{ROB_IDXB{1'b0}}, ir_n};
-   wire [NL-1:0] ir_i = {ir_ic, ir_ib, ir_ia};        // the IR's group holds lane k's op
+   wire [NL-1:0] ir_i = s_v & s_cls_i;              // the IR's group holds lane k's op
+   wire       ir_l  = |(s_v & s_cls_l);
+   wire       ir_f  = |(s_v & s_cls_fc);
+   wire       ir_ld = |(s_v & s_ld_nb);
+   wire       ir_st = |(s_v & s_st_nb);
+   wire [3:0] ir_n  = ones_nl(s_v);
+   wire [ROB_IDXB+1:0] rob_inflt = {1'b0, rob_occ} + {{(ROB_IDXB-2){1'b0}}, ir_n};
    reg  [NL-1:0] cr_i;                                 // ...and lane k has room for one more
    integer crk;
    always @* for (crk = 0; crk < NL; crk = crk + 1)
@@ -3930,7 +3677,7 @@ module smolrv64_core
    wire cr_ld = ~cbo_any & (ir_ld ? lq_d_ready2 : lq_d_ready);
    wire cr_st = ~cbo_any & (ir_st ? sq_d_ready2 : sq_d_ready);
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & ~ir_ld & ~ir_st;
-   wire cr_rob1 = rob_inflt + 1 <= ROB_DEPTH;
+   wire cr_rob1 = rob_inflt + 1 <= ROB_DEPTH;         // room for the group's slots 1, 2, 3
    wire cr_rob2 = rob_inflt + 2 <= ROB_DEPTH;
    wire cr_rob3 = rob_inflt + 3 <= ROB_DEPTH;
    // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
@@ -3940,13 +3687,14 @@ module smolrv64_core
    wire cr_csr = ~csr_infl & ~(d_valid & d_csr_op);         // a CSR op waits for the one before it
    assign crd = {cr_cbo, cr_csr, cr_ser, cr_pop, cr_rob3, cr_rob2, cr_rob1, cr_st, cr_ld, cr_f, cr_l, cr_i};
    // what the credits guarantee, checked where it is used
-   wire a_room = ~rob_ready | ~iq_ready | ser_block | (d_st_nb & ~sq_d_ready) | (d_ld_nb & ~lq_d_ready);
-   wire b_room = ~iq_ready_b | ~rob_ready2 | (d2_st_nb & ~sq_d_ready) | (d2_ld_nb & ~lq_d_ready);
-   wire c_room = ~iq_ready_c | ~rob_ready3 | (d3_st_nb & ~sq_d_ready) | (d3_ld_nb & ~lq_d_ready);
+   reg  [IW-1:0] s_noroom;                           // a slot's op has no room in what it allocates
+   integer       snk;
+   always @* for (snk = 0; snk < IW; snk = snk + 1)
+      s_noroom[snk] = ~rob_readyv[snk] | ~(s_cls_i[snk] ? (~l_stg_v[snk] | l_ready[snk]) : f_room)
+                    | (s_st_nb[snk] & ~sq_d_ready) | (s_ld_nb[snk] & ~lq_d_ready) | ((snk == 0) & ser_block);
    always @(posedge clk) if (!reset) begin
-      if (d_take & (a_room | (d2_take & b_room) | (d3_take & c_room)))
-         $fatal(1, "smolrv64_core: a group dispatches without room (a %b b %b c %b): the credits are wrong",
-                a_room, d2_take & b_room, d3_take & c_room);
+      if (|(s_takev & s_noroom))
+         $fatal(1, "smolrv64_core: a group dispatches without room (%b): the credits are wrong", s_takev & s_noroom);
       for (crk = 0; crk < NL; crk = crk + 1)
          if (l_stg_v[crk] & ~l_ready[crk])
             $fatal(1, "smolrv64_core: lane %0d's dispatch-stage register waits for its scheduler: the credits are wrong", crk);
@@ -3968,20 +3716,22 @@ module smolrv64_core
    // gate had just been freed of. The registered fr_v holds dispatch from the cycle after
    // the branch resolves; the one cycle of wrong-path dispatch before that is the flush's.
    wire d_take = d_valid & ~redirect_q & ~fr_v & ~dec_red_q;   // ~dec_red_q: hold the one-cycle-late decode-redirect window (mirrors redirect_q)
-   wire d2_take = d2_valid & d_take;
-   assign rn_valid_b = d2_take;
-   wire d3_take = d3_valid & d_take;
-   assign rn_valid_c = d3_take;
-   // The oldest DISPATCHED decode-redirect CTI drives the frontend resteer (fe_red below).
-   // d2_take already carries ~dcr0 and d3_take ~dcr0&~dcr1, so at most one dr* is high.
-   wire dr0 = d_take  & dcr0;
-   wire dr1 = d2_take & dcr1;
-   wire dr2 = d3_take & dcr2;
-   assign dec_red     = dr0 | dr1 | dr2;
-   assign dec_red_tgt = dr0 ? (d_pc  + d_imm)
-                      : dr1 ? (d2_pc + d2_imm)
-                      :       (d3_pc + d3_imm);
-   assign dec_red_seq = (dr0 ? d_seq : dr1 ? d2_seq : d3_seq) + 1'b1;
+   // The oldest DISPATCHED decode-redirect CTI drives the frontend resteer (fe_red below); the
+   // group ends at it, so at most one slot's is set.
+   wire [IW-1:0] s_dr = s_takev & s_dcr;
+   reg  [PCW-1:0]  dr_tgt;
+   reg  [SEQW-1:0] dr_seq;
+   reg  [PDW-1:0]  dr_pdet;
+   reg  [1:0]      dr_ccls;
+   integer         drk;
+   always @* begin
+      dr_tgt = s_tgt[0];  dr_seq = s_seq[0];  dr_pdet = s_pdet[0];  dr_ccls = s_ccls[0];
+      for (drk = IW - 1; drk >= 0; drk = drk - 1)
+         if (s_dr[drk]) begin dr_tgt = s_tgt[drk];  dr_seq = s_seq[drk];  dr_pdet = s_pdet[drk];  dr_ccls = s_ccls[drk]; end
+   end
+   assign dec_red     = |s_dr;
+   assign dec_red_tgt = dr_tgt;
+   assign dec_red_seq = dr_seq + 1'b1;
 
    // ---- the RAS top every frontend redirect restores (smolrv64_predictor rb_rsp) ----------------
    // A redirect restores the RAS pointer to where the redirecting instruction leaves it:
@@ -4000,32 +3750,29 @@ module smolrv64_core
          cti_cls = {is_jump & lrd, is_jalr & lrs & ~lrd};
       end
    endfunction
-   wire [1:0] d_cls1 = cti_cls(d_is_jump,  d_is_jalr,  d_rd_v,  d_rd,  d_rs1);
-   wire [1:0] d_cls2 = cti_cls(d2_is_jump, d2_is_jalr, d2_rd_v, d2_rd, d2_rs1);
-   wire [1:0] d_cls3 = cti_cls(d3_is_jump, d3_is_jalr, d3_rd_v, d3_rd, d3_rs1);
    // The retired pointer: each ROB entry's {call, ret}, written at dispatch, read at commit.
    reg [1:0]      rcls [0:ROB_DEPTH-1];
+   integer        rck;
    reg [RASB-1:0] rsp_r;
    integer ri;
    initial begin rsp_r = {RASB{1'b0}}; for (ri = 0; ri < ROB_DEPTH; ri = ri + 1) rcls[ri] = 2'b00; end
    always @(posedge clk) begin
-      if (rn_valid)   rcls[rob_d_idx]  <= d_cls1;
-      if (rn_valid_b) rcls[rob_d_idx2] <= d_cls2;
-      if (rn_valid_c) rcls[rob_d_idx3] <= d_cls3;
+      for (rck = 0; rck < IW; rck = rck + 1) if (s_takev[rck]) rcls[s_rob[rck]] <= s_ccls[rck];
    end
    function [RASB-1:0] rsp_step;    // +1 for a call, -1 for a return
       input [1:0] cls;
       rsp_step = cls[1] ? {{(RASB-1){1'b0}}, 1'b1} : cls[0] ? {RASB{1'b1}} : {RASB{1'b0}};
    endfunction
-   wire [RASB-1:0] rsp_c1 = rob_c_valid  ? rsp_step(rcls[rob_head_idx])  : {RASB{1'b0}};
-   wire [RASB-1:0] rsp_c2 = rob_c2_valid ? rsp_step(rcls[rob_head2_idx]) : {RASB{1'b0}};
-   wire [RASB-1:0] rsp_c3 = rob_c3_valid ? rsp_step(rcls[rob_head3_idx]) : {RASB{1'b0}};
-   always @(posedge clk) rsp_r <= reset ? {RASB{1'b0}} : rsp_r + rsp_c1 + rsp_c2 + rsp_c3;
+   reg  [RASB-1:0] rsp_c;
+   integer         rsk;
+   always @* begin
+      rsp_c = {RASB{1'b0}};
+      for (rsk = 0; rsk < IW; rsk = rsk + 1) if (rc_v[rsk]) rsp_c = rsp_c + rsp_step(rcls[rc_idx[rsk]]);
+   end
+   always @(posedge clk) rsp_r <= reset ? {RASB{1'b0}} : rsp_r + rsp_c;
    wire [RASB-1:0] cf_rsp  = cf_pdet[PD_RSP +: RASB]
                            + rsp_step({cf_is_jump & cf_link_rd, cf_is_jalr & cf_link_rs & ~cf_link_rd});
-   wire [RASB-1:0] dec_rsp = dr0 ? d_pdet[PD_RSP +: RASB]  + rsp_step({d_cls1[1],  1'b0})
-                           : dr1 ? d2_pdet[PD_RSP +: RASB] + rsp_step({d_cls2[1], 1'b0})
-                           :       d3_pdet[PD_RSP +: RASB] + rsp_step({d_cls3[1], 1'b0});
+   wire [RASB-1:0] dec_rsp = dr_pdet[PD_RSP +: RASB] + rsp_step({dr_ccls[1], 1'b0});
    wire [RASB-1:0] fe_red_rsp = (m_red_fire | sy_red) ? rsp_r : fr_set ? cf_rsp : dec_rsp;
    always @(posedge clk) fe_red_rsp_q <= fe_red_rsp;
    // ---- the history every frontend redirect restores (smolrv64_predictor rb_ghr) ------------------
@@ -4035,18 +3782,15 @@ module smolrv64_core
    // xret, a serializing op) starts a new context and restarts the history at zero.
    wire [GHL-1:0] cf_ghr  = cf_pdet[PD_GHR +: GHL];
    wire [GHL-1:0] fr_ghr  = (cf_is_branch & cf_pdet[DCR_HIT]) ? {cf_ghr[GHL-2:0], cf_taken} : cf_ghr;
-   wire [GHL-1:0] dec_ghr = dr0 ? d_pdet[PD_GHR +: GHL] : dr1 ? d2_pdet[PD_GHR +: GHL] : d3_pdet[PD_GHR +: GHL];
+   wire [GHL-1:0] dec_ghr = dr_pdet[PD_GHR +: GHL];
    wire [GHL-1:0] fe_red_ghr = (m_red_fire | sy_red) ? {GHL{1'b0}} : fr_set ? fr_ghr : dec_ghr;
    always @(posedge clk) fe_red_ghr_q <= fe_red_ghr;
    always @(posedge clk) if (!reset) begin
-      if (rn_valid_b & ~rn_valid)       $fatal(1, "smolrv64_core: slot B dispatched without slot A");
-      if (rn_valid_b & (d2_cls == d_cls)) $fatal(1, "smolrv64_core: slot B dispatched to slot A's scheduler");
-      if (rn_valid_b & ((d_st_nb & d2_st_nb) | (d_ld_nb & d2_ld_nb)))
+      // a group dispatches whole and holds at most one load, one store and one F/CTF op
+      if (|(s_takev & ~s_v))           $fatal(1, "smolrv64_core: a slot dispatched without an instruction");
+      if ((ones_nl(g_st) > 4'd1) | (ones_nl(g_ld) > 4'd1))
          $fatal(1, "smolrv64_core: two allocations into one memory queue");
-      if (rn_valid_c & ~rn_valid_b)     $fatal(1, "smolrv64_core: slot C dispatched without slot B");
-      // no two dispatched ops target the same memory or F/CTF pipe (each ALU lane has one slot).
-      if (c_to_ic & d3_rd_v & ~d3_rd[5] & (d3_shard != SH_IE3)) $fatal(1, "smolrv64_core: slot C's ALU op in shard %0d, not lane C's", d3_shard);
-      if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the F pipe");
+      if (ones_nl(s_tf) > 4'd1)        $fatal(1, "smolrv64_core: two ops on the F pipe in one group");
    end
 
    // `accept` means X CAN TAKE A NEW BUNDLE -- it is free, or it is being dispatched this
@@ -4100,7 +3844,7 @@ module smolrv64_core
    // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev[38:0] (this cycle's event and stall
    // attribution, the counters' bus; the top-down depth bits above 38 stay off this ILA).
    wire [15:0] fpu_dbg;
-   assign core_dbg = {fpu_dbg, rob_empty, rob_c_valid, m_valid, m_done, m_at_head, head_block, m_needs_head,
+   assign core_dbg = {fpu_dbg, rob_empty, rc_v[0], m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,

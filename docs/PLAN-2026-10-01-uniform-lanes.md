@@ -421,6 +421,11 @@ four lanes and the four FP slices.
    `_b/_c`) become generate loops over `IW`. Lane D is then a parameter rather than a fourth
    copy of some 250 sites in the core. Gate: the same 60 M retire count and the same timing
    at IW=3.
+   **Built (2026-10-05):** cycle-identical at 60 M (40,756,540). The PRF, the pending table,
+   the ROB and rename take per-lane and per-slot vectors; the core's slots are one generate
+   (`sl[k]`), its lanes another (`ln[k]`), and its commit side is per port (`rc_*`; the core's
+   and the SoC's `retire` is a bit per commit port). The architectural shadow register file
+   (`rv_regfile`), which nothing read, is gone.
 3. **5.4c: IW=4 with the dense ROB.** `SMOLRV64_IW=4`: lane D, slot D, slice F3. Lockstep IPC
    at 60 M and 300 M against IW=3 before timing is fought, as at Stage 3.
 4. **5.4d: the sharded ROB, 32 rows of four.** A group takes a row, slot k in column k; the

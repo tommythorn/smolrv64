@@ -49,9 +49,12 @@ module tb;
    wire             ptw_read, dptw_read;
    reg  [63:0]      ptw_rdata, dptw_rdata;
    reg              ptw_rvalid, dptw_rvalid;
-      wire             retire, retire2, redirect;
-   wire [PCW-1:0]   retire_pc, retire2_pc, redirect_target;
-   wire [31:0]      retire_insn, retire2_insn;
+   localparam       IW = `SMOLRV64_IW;
+   wire [IW-1:0]    retire;
+   wire [IW*PCW-1:0] retire_pc;
+   wire [IW*32-1:0] retire_insn;
+   wire             redirect;
+   wire [PCW-1:0]   redirect_target;
 
    wire [15:0]      lsu_err;   // the LSU's integrity-log bits: never nonzero in a passing run
    always @(posedge clk) if (|lsu_err)
@@ -81,7 +84,6 @@ module tb;
       .dptw_addr(dptw_addr), .dptw_read(dptw_read),
       .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
             .retire(retire), .retire_pc(retire_pc), .retire_insn(retire_insn),
-      .retire2(retire2), .retire2_pc(retire2_pc), .retire2_insn(retire2_insn),
       .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err));
 
    // ---------------------------------------------------------- byte memory
@@ -116,7 +118,7 @@ module tb;
 
    // -------------------------------------------------------- exit monitor
    reg [63:0] tohost;
-   integer    c, b2, ncyc, trace = 0, nret = 0;
+   integer    c, b2, rk, ncyc, trace = 0, nret = 0;
    reg        done;
    reg [8*256-1:0] hexfile;
    initial begin
@@ -142,14 +144,13 @@ module tb;
       // a bare $finish here let the loop run on and print a bogus TIMEOUT after PASS.
       for (c=0; c<ncyc && !done; c=c+1) begin
          @(negedge clk);
-                  nret = nret + retire + retire2;
+         for (rk = 0; rk < IW; rk = rk + 1) if (retire[rk]) begin
+            nret = nret + 1;
+            if (trace &&  dut.rf_we[rk]) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire_pc[rk*PCW +: PCW],
+                                                 retire_insn[rk*32 +: 32], dut.rf_wa[rk*6 +: 6], dut.rf_wd[rk*64 +: 64]);
+            if (trace && !dut.rf_we[rk]) $display("[%0d] R pc=%h insn=%h", c, retire_pc[rk*PCW +: PCW], retire_insn[rk*32 +: 32]);
+         end
          if (trace) begin
-            if (retire &&  dut.rf_we) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire_pc,
-                                              retire_insn, dut.rf_wa, dut.rf_wd);
-                        if (retire && !dut.rf_we) $display("[%0d] R pc=%h insn=%h", c, retire_pc, retire_insn);
-            if (retire2 &&  dut.rf_we2) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire2_pc,
-                                                retire2_insn, dut.rf_wa2, dut.rf_wd2);
-            if (retire2 && !dut.rf_we2) $display("[%0d] R pc=%h insn=%h", c, retire2_pc, retire2_insn);
             if (dmem_wen) $display("[%0d]   ST @%h data=%h mask=%b", c, dmem_waddr, dmem_wdata,
                                    dmem_wmask);
             if (redirect) $display("[%0d] REDIRECT -> %h", c, redirect_target);

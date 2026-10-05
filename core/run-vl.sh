@@ -30,7 +30,7 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-CASEINCOMPLETE -Wno-LATCH -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM -Wno-DECLFILENAME \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
    -I. -I../src --top-module tb --Mdir obj_dir_core -o tb_core \
-   smolrv64_core.v smolrv64_pending.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v rv_regfile.v \
+   smolrv64_core.v smolrv64_pending.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
    $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
    tb_smolrv64_riscv.v > /tmp/corevlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/corevlbuild.log | head -20; exit 1; fi

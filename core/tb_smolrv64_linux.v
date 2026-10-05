@@ -2,7 +2,7 @@
 `default_nettype none
 
 // Linux-boot harness for the SoC (rv_soc_top). Resets DIRECTLY to OpenSBI
-// (0x8000_0000) with a1 = the DTB pointer (+a1=, seeded into rv_regfile's x11),
+// (0x8000_0000) with a1 = the DTB pointer (+a1=, seeded into the PRF's x11),
 // so the monitor is bypassed and the DUT starts where the reference model would.
 // Console output comes out of rv_soc_top's UART $write.
 //
@@ -14,6 +14,9 @@
 // (B6, 2026-09-17). The default tiny128 DTB carries no virtio node, so without +disk the
 // region is never touched and the run is the plain initrd boot.
 `include "tb_rand.vh"
+`ifndef SMOLRV64_IW
+ `define SMOLRV64_IW 3
+`endif
 module tb;
    localparam [63:0] BASE = 64'h8000_0000;
 `ifdef SMOLRV64_MEM_SIZE_LG2
@@ -27,7 +30,8 @@ module tb;
 
    reg clk = 0; always #5 clk = ~clk;
    reg reset;
-      wire        retire, retire2, retire3, dmem_wen;
+   wire [`SMOLRV64_IW-1:0] retire;
+   wire        dmem_wen;
    wire [63:0] dmem_waddr, dmem_wdata;  wire [7:0] dmem_wmask;
    wire        ddr_q_valid, ddr_q_we, ddr_r_ready, ddr_w_ready;
    wire [4:0]  ddr_q_id;  wire [57:0] ddr_q_addr;  wire [63:0] ddr_q_wmask;  wire [511:0] ddr_q_wdata;
@@ -70,7 +74,7 @@ module tb;
 `endif
    reg tb_dma_wr = 1'b0;           // a device wrote memory this cycle (the virtio-blk slave, the DMA agent)
    rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB), .SIZE_KB(`TB_IC_KB)) dut
-     (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2), .retire3(retire3),
+     (.clk(clk), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ddr_q_valid(ddr_q_valid), .ddr_q_ready(ddr_q_ready), .ddr_q_id(ddr_q_id), .ddr_q_we(ddr_q_we),
@@ -530,6 +534,7 @@ module tb;
 
    reg [8*256-1:0] fw, dtb, initrd, disk;
    reg [63:0] ncyc, c, nret, last_ret;
+   integer    nrk;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
 
    // ---- per-cycle accounting: every cycle is exactly one of BADSPEC / FRONTEND / BACKEND /
@@ -703,7 +708,7 @@ module tb;
    reg [31:0] iw_v, iw_u;
    reg [4:0]  iw_wp;
    reg [63:0] iw_n, iw_waste;
-   integer    iwi;
+   integer    iwi, iwk;
    initial begin iw_v = 0; iw_u = 0; iw_wp = 0; iw_n = 0; iw_waste = 0; end
    // ...and the same for I$ misses, by VA line: the last 64 missing lines.
    reg [32:0] im_ln [0:63];
@@ -712,11 +717,10 @@ module tb;
    reg [63:0] im_n, im_waste;
    initial begin im_v = 0; im_u = 0; im_wp = 0; im_n = 0; im_waste = 0; end
    always @(negedge clk) if (!reset) begin
-      for (iwi = 0; iwi < 64; iwi = iwi + 1) if (im_v[iwi] && (
-             (dut.core.retire  && dut.core.retire_pc[38:6]  == im_ln[iwi]) ||
-             (dut.core.retire2 && dut.core.retire2_pc[38:6] == im_ln[iwi]) ||
-             (dut.core.retire3 && dut.core.cs_pc[dut.core.rob_head3_idx][38:6] == im_ln[iwi])))
-         im_u[iwi] = 1'b1;
+      for (iwi = 0; iwi < 64; iwi = iwi + 1)
+         for (iwk = 0; iwk < dut.core.IW; iwk = iwk + 1)
+            if (im_v[iwi] && retire[iwk] && dut.core.cs_pc[dut.core.rc_idx[iwk]][38:6] == im_ln[iwi])
+               im_u[iwi] = 1'b1;
       if (dut.u_icache.perf_miss) begin
          if (im_v[im_wp] && !im_u[im_wp]) im_waste = im_waste + 1;
          im_ln[im_wp] = dut.u_icache.s1_va[38:6]; im_v[im_wp] = 1'b1; im_u[im_wp] = 1'b0;
@@ -724,11 +728,10 @@ module tb;
       end
    end
    always @(negedge clk) if (!reset) begin
-      for (iwi = 0; iwi < 32; iwi = iwi + 1) if (iw_v[iwi] && (
-             (dut.core.retire  && dut.core.retire_pc[38:12]  == iw_pg[iwi]) ||
-             (dut.core.retire2 && dut.core.retire2_pc[38:12] == iw_pg[iwi]) ||
-             (dut.core.retire3 && dut.core.cs_pc[dut.core.rob_head3_idx][38:12] == iw_pg[iwi])))
-         iw_u[iwi] = 1'b1;
+      for (iwi = 0; iwi < 32; iwi = iwi + 1)
+         for (iwk = 0; iwk < dut.core.IW; iwk = iwk + 1)
+            if (iw_v[iwi] && retire[iwk] && dut.core.cs_pc[dut.core.rc_idx[iwk]][38:12] == iw_pg[iwi])
+               iw_u[iwi] = 1'b1;
       if (dut.core.u_immu.start_walk) begin
          if (iw_v[iw_wp] && !iw_u[iw_wp]) iw_waste = iw_waste + 1;
          iw_pg[iw_wp] = dut.core.u_immu.req_vaddr[38:12]; iw_v[iw_wp] = 1'b1; iw_u[iw_wp] = 1'b0;
@@ -748,18 +751,23 @@ module tb;
    // CTI resolves out of order and trains before the older mispredict squashes it): resolve marks
    // the ROB entry, dispatch into it clears the mark, a commit of a marked entry counts.
    reg [31:0] tr_mk;
+   integer    tmk;
    reg [63:0] tr_n, tr_ret;
    reg [63:0] tr_drops;
    initial begin tr_mk = 0; tr_n = 0; tr_ret = 0; tr_drops = 0; end
    always @(posedge clk) if (!reset) begin
-      if (dut.core.rn_valid)   tr_mk[dut.core.rob_d_idx]  <= 1'b0;
-      if (dut.core.rn_valid_b) tr_mk[dut.core.rob_d_idx2] <= 1'b0;
-      if (dut.core.rn_valid_c) tr_mk[dut.core.rob_d_idx3] <= 1'b0;
+      for (tmk = 0; tmk < dut.core.IW; tmk = tmk + 1)
+         if (dut.core.s_takev[tmk]) tr_mk[dut.core.s_rob[tmk]] <= 1'b0;
       if (dut.core.res_v) begin tr_mk[dut.core.tr_rob] <= 1'b1;  tr_n <= tr_n + 1; end
       tr_drops <= tr_drops + 64'(dut.core.tr_drop);
-      tr_ret <= tr_ret + (dut.core.rob_c_valid  & tr_mk[dut.core.rob_head_idx])
-                       + (dut.core.rob_c2_valid & tr_mk[dut.core.rob_head2_idx])
-                       + (dut.core.rob_c3_valid & tr_mk[dut.core.rob_head3_idx]);
+      tr_ret <= tr_ret + tr_c;
+   end
+   reg [63:0] tr_c;                 // marked entries committing this cycle
+   integer    tmc;
+   always @* begin
+      tr_c = 64'd0;
+      for (tmc = 0; tmc < dut.core.IW; tmc = tmc + 1)
+         tr_c = tr_c + 64'(dut.core.rc_v[tmc] & tr_mk[dut.core.rc_idx[tmc]]);
    end
    wire fr_open = ~dut.core.fe.u_ring.freeze & dut.core.fe.u_ring.xlate_ok & dut.core.fe.u_ring.inpg;
    wire fr_rej  = dut.core.fe.f_rej;
@@ -901,22 +909,17 @@ module tb;
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
       kan_wv_q  <= dut.core.rob_wv;
       kan_wix_q <= dut.core.rob_wix;
-      // 2. retire (up to three), then flush every live entry a backend redirect squashes. After
+      // 2. retire (up to IW), then flush every live entry a backend redirect squashes. After
       // the issues: the ROB write-forwards a writeback to the head, so an ALU op can issue and
       // retire in the same cycle.
-      if (dut.core.rob_c_valid)  kan_end(5'(dut.core.rob_head_idx),  1'b0);
-      if (dut.core.rob_c2_valid) kan_end(5'(dut.core.rob_head2_idx), 1'b0);
-      if (dut.core.rob_c3_valid) kan_end(5'(dut.core.rob_head3_idx), 1'b0);
+      for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.rc_v[kw]) kan_end(5'(dut.core.rc_idx[kw]), 1'b0);
       if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
       // 3. the frontend: last cycle's queue pushes, the instruction register, then dispatch
       for (kw = 0; kw < 3; kw = kw + 1) if (psh_v[kw]) kq_stage(psh_seq[kw], "Dq");
-      if (dut.core.d_valid)  kq_stage(dut.core.d_seq,  "Ir");
-      if (dut.core.d2_valid) kq_stage(dut.core.d2_seq, "Ir");
-      if (dut.core.d3_valid) kq_stage(dut.core.d3_seq, "Ir");
+      for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.s_v[kw]) kq_stage(dut.core.s_seq[kw], "Ir");
       if (trace_on) begin
-         if (dut.core.rn_valid)   kan_new(5'(dut.core.rob_d_idx),  dut.core.d_pc,  dut.core.d_insn,  dut.core.d_seq);
-         if (dut.core.rn_valid_b) kan_new(5'(dut.core.rob_d_idx2), dut.core.d2_pc, dut.core.d2_insn, dut.core.d2_seq);
-         if (dut.core.rn_valid_c) kan_new(5'(dut.core.rob_d_idx3), dut.core.d3_pc, dut.core.d3_insn, dut.core.d3_seq);
+         for (kw = 0; kw < dut.core.IW; kw = kw + 1)
+            if (dut.core.s_takev[kw]) kan_new(5'(dut.core.s_rob[kw]), dut.core.s_pc[kw], dut.core.s_insn[kw], dut.core.s_seq[kw]);
       end
       // ...a frontend redirect clears the bundle register, the queue and the IR; else this
       // cycle's push is recorded (it shows next cycle) and a fetched bundle opens its rows
@@ -978,13 +981,12 @@ module tb;
    reg fe_tr_on;
    initial fe_tr_on = $test$plusargs("fe_trace");
    always @(posedge clk) if (!reset && fe_tr_on && trace_on)
-      $display("FE c=%0d pc=%h avail=%0d ok=%b mk=%b adv=%0d taken=%b rej=%b pq=%0d fire=%b pb=%b q=%0d room=%b ir=%b%b%b disp=%b%b%b red=%b",
+      $display("FE c=%0d pc=%h avail=%0d ok=%b mk=%b adv=%0d taken=%b rej=%b pq=%0d fire=%b pb=%b q=%0d room=%b ir=%b disp=%b red=%b",
                c, dut.core.fe.u_fetch.pc_q, dut.core.fe.imem_avail, dut.core.fe.imem_ok,
                dut.core.fe.imem_mk, dut.core.fe.f_adv_hw, dut.core.fe.f_pop & dut.core.fe.bp_tk,
                dut.core.fe.f_rej, dut.core.fe.pq_cnt, dut.core.fe.fire, dut.core.fe.pb_v,
                dut.core.fe.q_cnt, dut.core.fe.q_room,
-               dut.core.d_valid, dut.core.d2_valid, dut.core.d3_valid,
-               dut.core.rn_valid, dut.core.rn_valid_b, dut.core.rn_valid_c, dut.core.fe.redirect);
+               dut.core.s_v, dut.core.s_takev, dut.core.fe.redirect);
 
    // +watch_pc=<hex pc>: follow ONE instruction through the F/CTF pipe -- its F issue (the link the
    // unit computed), its CTF landing, and every FE-shard PRF write to the physreg it was given.
@@ -1005,22 +1007,18 @@ module tb;
             $display("[c=%0d] watch lane-issue lane=%0d cti=%b mis=%b fr_v=%b head=%0d", c,
                      ww, dut.core.l_cti[ww], dut.core.l_mis[ww], dut.core.fr_v, dut.core.rob_head_idx);
       // the watched op retires: the value the cosim REPORTS beside the physreg's REAL contents
-      if (dut.core.retire && dut.core.retire_pc == watch_pc)
+      if (retire[0] && dut.core.cs_pc[dut.core.rob_head_idx] == watch_pc)
          $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h cs_val[head]=%h",
-                  c, dut.core.retire_pc, dut.core.rob_head_idx, dut.core.cs_val_h,
+                  c, watch_pc, dut.core.rob_head_idx, dut.core.cs_val_h[0],
                   dut.core.cs_val[dut.core.rob_head_idx]);
       if (watch_prd_v && dut.core.we_fe && dut.core.wa_fe == watch_prd)
          $display("[c=%0d] watch FE-write prd=%0d data=%h  fp_wb=%b md_wr=%b",
                   c, dut.core.wa_fe, dut.core.wb_fe, dut.core.fp_wb, dut.core.md_wr);
       if (dut.core.redirect && watch_prd_v) $display("[c=%0d] watch redirect (prd %0d still watched)", c, watch_prd);
-      // retirement on any of the three commit ports
-      if ((dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc) ||
-          (dut.core.rob_c2_valid && dut.core.cs_pc[dut.core.rob_head2_idx] == watch_pc) ||
-          (dut.core.rob_c3_valid && dut.core.cs_pc[dut.core.rob_head3_idx] == watch_pc))
-         $display("[c=%0d] watch COMMIT ports=%b%b%b", c,
-                  dut.core.rob_c3_valid && dut.core.cs_pc[dut.core.rob_head3_idx] == watch_pc,
-                  dut.core.rob_c2_valid && dut.core.cs_pc[dut.core.rob_head2_idx] == watch_pc,
-                  dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc);
+      // retirement on any commit port
+      for (ww = 0; ww < dut.core.IW; ww = ww + 1)
+         if (dut.core.rc_v[ww] && dut.core.cs_pc[dut.core.rc_idx[ww]] == watch_pc)
+            $display("[c=%0d] watch COMMIT port=%0d", c, ww);
    end
    initial begin
       ncyc = 200000000; nret = 0; last_ret = 0;
@@ -1056,10 +1054,10 @@ module tb;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
       for (c = 0; ((ncyc == 0) || (c < ncyc)) && !tohost_done; c = c + 1) begin
          @(negedge clk);
-                  nret = nret + retire + retire2 + retire3;   // all three commit ports (IW=3 undercounted before 2026-09-17)
+                  for (nrk = 0; nrk < `SMOLRV64_IW; nrk = nrk + 1) nret = nret + retire[nrk];
                   // A HANG IS A FAILURE AT ONCE: nothing in the machine waits a million cycles (WFI
                   // completes, an idle kernel retires), so a run that stops retiring stops here.
-                  if (retire | retire2 | retire3) last_ret = c;
+                  if (|retire) last_ret = c;
                   else if (c - last_ret > 64'd1000000)
                      $fatal(1, "tb: nothing retired for %0d cycles (retires=%0d, ROB head %0d, pc~%h)",
                             c - last_ret, nret, dut.core.rob_head_idx, dut.imem_addr);

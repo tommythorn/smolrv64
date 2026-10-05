@@ -49,7 +49,7 @@ if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
       -DSMOLRV64_COSIM ${VDEFS:-} \
       -CFLAGS "-O2 -I$SIMMERV_INC" -LDFLAGS "$SIMMERV_LIB -lpthread -ldl -lm $EXTRA_LD" \
       -I. -I../src --top-module tb --Mdir obj_dir_smolrv64_cosim -o tb_smolrv64_cosim \
-      smolrv64_core.v smolrv64_pending.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v rv_regfile.v \
+      smolrv64_core.v smolrv64_pending.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
       $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
       tb_smolrv64_riscv.v ../src/probe_cosim.cpp > /tmp/corecosimbuild.log 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/corecosimbuild.log | head -20; exit 1; fi

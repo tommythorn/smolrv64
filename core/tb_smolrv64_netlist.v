@@ -3,10 +3,13 @@
 // (tools/netlist-boot.sh, rule F5) or the RTL (-DRTL_RUN) -- with a full port trace: every retire, store, DDR request and UART byte, one
 // line per event, so a netlist run and an RTL run of the same tree diff to their first divergence.
 //   +maxcyc=N (default 400000)  +maxchars=N (default 60)
+`ifndef SMOLRV64_IW
+ `define SMOLRV64_IW 3
+`endif
 module tb;
    reg clk = 0; always #3 clk = ~clk;
    reg reset = 1;
-   wire retire, retire2, dmem_wen; wire [63:0] dmem_waddr, dmem_wdata; wire [7:0] dmem_wmask;
+   wire [`SMOLRV64_IW-1:0] retire; wire dmem_wen; wire [63:0] dmem_waddr, dmem_wdata; wire [7:0] dmem_wmask;
    wire ddr_q_valid, ddr_q_we, ddr_r_ready, ddr_w_ready; wire [4:0] ddr_q_id; wire [57:0] ddr_q_addr;
    wire [63:0] ddr_q_wmask; wire [511:0] ddr_q_wdata;
    reg d_busy = 0, d_we = 0, ddr_r_valid = 0, ddr_w_valid = 0; reg [4:0] d_id = 0; reg [1:0] d_beat = 0;
@@ -14,7 +17,7 @@ module tb;
    wire fbdiag_reset_req; wire [14:0] virtio_addr; wire virtio_read, virtio_write; wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [17:0] irq_dbg; wire [1:0] cache_par_err; wire [63:0] cache_par_dbg;
    rv_soc_top `ifdef RTL_RUN #(.RESET_PC(64'h70000000)) `endif dut
-     (.clk(clk), .reset(reset), .retire(retire), .retire2(retire2),
+     (.clk(clk), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_q_valid(ddr_q_valid), .ddr_q_ready(~d_busy), .ddr_q_id(ddr_q_id), .ddr_q_we(ddr_q_we), .ddr_q_addr(ddr_q_addr),
       .ddr_q_wmask(ddr_q_wmask), .ddr_q_wdata(ddr_q_wdata),
@@ -35,6 +38,8 @@ module tb;
       if (ddr_q_valid & ~d_busy) begin d_busy <= 1'b1; d_we <= ddr_q_we; d_id <= ddr_q_id; end
    end
    integer cyc = 0, nchar = 0, nret = 0, ndmem = 0, nddr = 0, maxcyc = 400000, maxchars = 60;
+   integer nr, ri;     // instructions retired this cycle
+   always @* begin nr = 0; for (ri = 0; ri < `SMOLRV64_IW; ri = ri + 1) nr = nr + retire[ri]; end
    initial begin
       if (!$value$plusargs("maxcyc=%d", maxcyc)) maxcyc = 400000;
       if (!$value$plusargs("maxchars=%d", maxchars)) maxchars = 60;
@@ -42,7 +47,7 @@ module tb;
    always @(posedge clk) begin
       cyc <= cyc + 1;
       if (cyc == 20) reset <= 0;
-      if (retire | retire2) begin nret <= nret + retire + retire2; $display("[%0d] R%0d", cyc, retire + retire2); end
+      if (|retire) begin nret <= nret + nr; $display("[%0d] R%0d", cyc, nr); end
       if (dmem_wen) begin ndmem <= ndmem + 1; $display("[%0d] W %h %h %h", cyc, dmem_waddr, dmem_wdata, dmem_wmask); end
       if (ddr_q_valid & ~d_busy) begin nddr <= nddr + 1; $display("[%0d] DDR %s %h", cyc, ddr_q_we ? "wr" : "rd", ddr_q_addr); end
       if (uart_tx_valid) begin nchar <= nchar + 1; $display("[%0d] UART %02h '%c'", cyc, uart_tx_data, uart_tx_data); end

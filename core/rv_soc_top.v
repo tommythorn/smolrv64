@@ -23,7 +23,7 @@
 // traffic onto ONE line memory port + the local boot SRAM. MMIO routing, CLINT/PLIC/UART,
 // the virtio bridge and the PTW-through-cache adapters live here. (Forked from the retired
 // sharded core's soc_top.v in 2026-08; two page-table walkers, iTLB and dTLB, since the
-// LSU translates one op at a time; `retire` is one pulse per retiring instruction.)
+// LSU translates one op at a time; `retire` has a bit per commit port.)
 //
 // The cache adapters here are the ones the retired harness proved (sticky-rvalid read port,
 // write-through write port, fence.i drain+invalidate FSM) into a real module, and
@@ -56,9 +56,7 @@ module rv_soc_top #(
    input  wire             clk,
    input  wire             reset,
    // observation for a TB (retire + the store stream, to watch tohost)
-       output wire             retire,
-    output wire             retire2,            // a second retire in the same cycle (item 10c)
-    output wire             retire3,            // a third (IW>=3): the testbench must sum all three
+   output wire [IW-1:0]    retire,             // the core's commit ports that retired this cycle
    output wire             dmem_wen,
    output wire [63:0]      dmem_waddr,
    output wire [63:0]      dmem_wdata,
@@ -174,8 +172,7 @@ module rv_soc_top #(
       .dmem_wready(dmem_wready), .dmem_waccept(dmem_waccept), .dmem_wroom(dc_wr_room), .dmem_idle(dmem_idle), .ifence(ifence),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read), .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .dptw_addr(dptw_addr), .dptw_read(dptw_read), .dptw_rdata(dptw_rdata), .dptw_rvalid(dptw_rvalid),
-            .retire(retire), .retire_pc(), .retire_insn(),
-      .retire2(retire2), .retire2_pc(), .retire2_insn(), .retire3(retire3),
+      .retire(retire), .retire_pc(), .retire_insn(),
       .redirect(redirect), .redirect_target(redirect_target), .lsu_err(lsu_err), .fe_err(fe_err), .core_dbg(core_dbg_c));
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------

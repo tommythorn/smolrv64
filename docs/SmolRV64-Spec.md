@@ -1491,7 +1491,6 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 | `cs_val` | 16 | 64 | retire value — captured at the writeback event |
 | `cs_mkind` | 16 | 2 | memory-effect kind |
 | `cs_mpa` | 16 | 56 | memory-effect physical address |
-| `r` (`rv_regfile`) | 64 | 64 | architectural shadow, written at commit |
 
 ---
 
