@@ -365,9 +365,15 @@ timing is fought.
    one `s_` lookup a cycle with the walker as overflow, measured before a second lookup port
    is added; FP stores in M for one increment rather than a split store-data uop.
 
+5. **5.2e, SH_FE dissolves.** Built (2026-10-05): an FP op's or divide's integer destination is
+   its slot's lane shard; the FE stream (the F stage's landing, else the MD stage's divide)
+   takes the lane's landing buffer as a load does, behind the buffer, the SYSQ and the load
+   landing, and completes when it drains. SH_FE's bank is deleted, and the shard numbers 1 and
+   2 (SH_LD, SH_FE) are free for 5.4. 60 M: 40,883,141 (+0.31% on 5.2d-c).
+
 What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system ops. Their
 integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
-slot, which dissolves SH_FE.
+slot.
 
 ## The PRF in block RAM: built, measured, dropped (2026-10-03)
 

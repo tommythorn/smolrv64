@@ -497,13 +497,11 @@ module smolrv64_core
 
    // An f-register destination takes the FP file's slice of its slot (SH_F0/F1/F2 for A/B/C),
    // whoever writes it: the file has a bank per writer (smolrv64_prf). Every other destination
-   // takes the shard of the UNIT that writes it, and nothing else. Loads and AMOs take SH_LD
-   // (M, a landing load), and so do the SYSQ's results (a CSR read). mul/div and the FP ops
-   // with integer destinations take SH_FE (the MD stage and the F stage), and so does a
-   // jal/jalr link (the CTF pipe). Each ALU is its own shard's only writer. A second writer on a shard costs a port arbiter on the wakeup broadcast: M on
-   // SH_IE put the LSU's completion cone into the integer scheduler's ready bits (24 levels),
-   // M on SH_FE put it in front of the CTF link (22 levels). Assigned after the class wires
-   // below (d_cls_f is declared there).
+   // takes its slot's lane shard (SH_IE/IE2/IE3), whatever produces it: the lane's write
+   // register is the shard's one writer, carrying its ALU and multiply results and the
+   // landings of every other unit (loads, AMOs, CSR reads, the FP ops' integer results,
+   // divides). SH_LD and SH_FE take nothing. Assigned after the class wires below (d_cls_f is
+   // declared there).
    wire [2:0] d_shard, d2_shard, d3_shard;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
@@ -606,6 +604,7 @@ module smolrv64_core
    wire [63:0]         dA_dat, dB_dat, dC_dat;
    wire [ROB_IDXB-1:0] dA_rob, dB_rob, dC_rob;
    wire                ldw_int;            // the LD stream's write goes to a lane (completes at its drain)
+   wire                few_int;            // ...and the FE stream's
    wire                lbA_any, lbB_any, lbC_any;   // a landing waits for the lane's slot
    wire                sy_lane_ok;                   // lane A's slot is free for the SYSQ
    // the landing buffers (defined with the LD stream): per lane, LBN entries
@@ -615,14 +614,15 @@ module smolrv64_core
    reg  [ROB_IDXB-1:0] lb_rob [0:3*LBN-1];
    reg  [LBB-1:0]      lb_h [0:2], lb_t [0:2];
    reg  [LBB:0]        lb_n [0:2];
+   reg                 lb_fe [0:3*LBN-1];  // the entry is the FE stream's (the stall counters)
 
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
    // queue, M's port (which carries the landing loads)
-   wire [7:0]          rob_wv  = {md_wb, cf_red_fire,
+   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int), cf_red_fire,
                                   (iss_alu3 & ~lane_mis[2] & ~lane_late(qc_insn)) | mC_2 | dCc,
                                   (iss_alu2 & ~lane_mis[1] & ~lane_late(qb_insn)) | mB_2 | dBc,
-                                  sq_k_take, fp_land, (iss_alu & ~lane_mis[0] & ~lane_late(qa_insn)) | mA_2 | dAc,
+                                  sq_k_take, fp_land & ~(fp_wb & few_int), (iss_alu & ~lane_mis[0] & ~lane_late(qa_insn)) | mA_2 | dAc,
                                   rob_w_valid & ~ldw_int};
    wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, dCc ? dC_rob : mC_2 ? mC_rob2 : a3_rob, dBc ? dB_rob : mB_2 ? mB_rob2 : a2_rob,
                                   sq_kc_rob, ft_rob, dAc ? dA_rob : mA_2 ? mA_rob2 : a_rob, rob_w_idx};
@@ -864,8 +864,8 @@ module smolrv64_core
    // irqop pseudo-op stays ordered (d_cls_l), so M keeps the single trap site; a real CTI
    // never traps at execute (RVC targets are 2-byte aligned, jalr clears bit 0).
    wire d_cls_c = d_gc[GC_C];
-   // A mul/div is the F/CTF port's third drain (C1, 2026-09-17): it leaves the ordered queue,
-   // where a 64-cycle divide held every younger load, and lands on SH_FE by tag like the FPU.
+   // A divide is the F port's third drain into the MD stage; its result lands by the stage's
+   // tag like the FPU's.
    wire d_cls_m = d_gc[GC_M];
    // SYSTEM opcode (the irqop included), FENCE and FENCE.I (MISC-MEM, funct3 00x; CBO is 010),
    // and an instruction that traps at dispatch -- a fetch fault or an illegal instruction: every
@@ -934,7 +934,6 @@ module smolrv64_core
                            input mul, input [2:0] f_slice, input [2:0] alu);
       shard_of = rd_fp                                ? f_slice   // an f-register
                : (mem | amo)                          ? alu       // the lane's landing slot
-               : (fp | (mul & i[14]))                 ? SH_FE     // the F stage, the MD stage (a divide)
                :                                        alu;      // the lane: an ALU op, a link, a load, an AMO, a CSR read
    endfunction
    assign d_shard  = shard_of(d_rd[5],  d_insn,  d_is_mem,  d_is_amo,  d_is_fp,  d_is_mul,  SH_F0, SH_IE);
@@ -2308,11 +2307,9 @@ module smolrv64_core
    assign dmem_idle = lsu_idle & (sq_occ == 0);
 
    // ---- the MD stage: mul/div off the ordered pipe (C1, 2026-09-17) ----
-   // The F/CTF port's third drain. One op at a time (the divider is single-occupancy; mul3
-   // pipelines but its `busy` admits one), started from the port's forwarded reads in the issue
-   // cycle exactly as the F stage captures them, and landing on SH_FE by its own tag like the
-   // FPU: rob and prd ride in the stage, never in M. M's completion cone, the load shard's
-   // write port and the ordered queue no longer know a multiplier exists.
+   // The F port's third drain. One divide at a time (the divider is single-occupancy), started
+   // from the port's forwarded reads in the issue cycle exactly as the F stage captures them,
+   // and landing by its own tag like the FPU: rob and prd ride in the stage.
    reg                md_v, md_div, md_rd_v, md_pend;
    reg [ROB_IDXB-1:0] md_rob;
    reg [RN_PBITS-1:0] md_prd;
@@ -2322,10 +2319,10 @@ module smolrv64_core
    wire [63:0] div_result;
    wire        md_f3_2 = qf_insn[14];                     // funct3[2]: div/rem
    // The result is LATCHED on the unit's done pulse (mul3's persists, the divider's is one cycle)
-   // and written when SH_FE is free: the FPU and the CTF link cannot hold theirs, this can.
+   // and leaves when the FPU is not landing: the FPU cannot hold its result, this can.
    wire        md_done = md_v & ~md_pend & div_done;
    wire        md_wb   = md_pend & (~md_rd_v | ~fp_wb);   // the op completes (ROB)
-   wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes SH_FE
+   wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes its register
    assign      md_advance = ~md_v | md_wb;
    divider u_div
      (.clk(clk), .reset(reset), .start(iss_md & md_f3_2), .abort(redirect),
@@ -2345,12 +2342,12 @@ module smolrv64_core
       if (redirect) begin md_v <= 1'b0; md_pend <= 1'b0; end
    end
    always @(posedge clk) if (!reset) begin
-      if (iss_md & (qf_shard != SH_FE))  $fatal(1, "smolrv64_core: a mul/div issued with shard %0d, not SH_FE", qf_shard);
+      if (iss_md & (qf_shard >= SH_F0))  $fatal(1, "smolrv64_core: a divide issued with an FP shard %0d", qf_shard);
       if (iss_md & md_v & ~md_wb)        $fatal(1, "smolrv64_core: a mul/div issued into a busy MD stage");
       if (iss_md & div_busy)             $fatal(1, "smolrv64_core: a divide started into a busy divider (the start would be ignored)");
       if (iss_md & ~md_f3_2)             $fatal(1, "smolrv64_core: a multiply reached the MD stage, not its lane");
       if (m_valid & ~(m_is_mem | m_is_amo)) $fatal(1, "smolrv64_core: M holds an op that is not a load, store or head op (pc %h)", m_pc);
-      if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage wrote SH_FE together with the FPU");
+      if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage and the FPU wrote in one cycle");
    end
 
    // ---- FP unit (CVFPU) + the in-core FP ops ----
@@ -2367,9 +2364,9 @@ module smolrv64_core
    // The queue is this one register, and its fire is a flop compare at the ROB head. csr_file's
    // upd_* port is driven from these flops (step 2's lesson: a LUTRAM read in front of
    // csr_file's combinational redirect cost IW=3 its closure); the CSR read address is sy_addr,
-   // a flop, like m_imm before it. The read's value goes to SH_LD through M's port (M, whose op
-   // is younger then, does not complete while the SYSQ's op is the head); the completion through
-   // M's ROB port; a trap through c_kill; a redirect through the one redirect gate. A read of instret takes its second cycle at head so the delayed retire
+   // a flop. The read's value and the completion go through lane A's write slot, which is free
+   // when the SYSQ fires (M, whose op is younger then, does not complete while the SYSQ's op is
+   // the head); a trap through c_kill; a redirect through the one redirect gate. A read of instret takes its second cycle at head so the delayed retire
    // count has every older retirement (M1b), unchanged.
    reg                sy_v, sy_rd_v, sy_is_csr, sy_head_q;
    reg [ROB_IDXB-1:0] sy_rob;
@@ -2431,7 +2428,7 @@ module smolrv64_core
    wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi);  // trap, xret, illegal CSR, fence.i: a redirect
    wire sy_trap    = sy_fire & (csr_redir_trap | sy_xt);  // ...that is an exception: kill, no result
    wire sy_done    = sy_fire & ~sy_trap;                 // completes through lane A's landing slot
-   // the CSR read's value onto SH_LD. A CSR op that csr_file traps writes its register too: the
+   // the CSR read's value into lane A. A CSR op that csr_file traps writes its register too: the
    // trap flushes every reader, and the write and its wake stay clear of csr_file's decision.
    wire sy_wr      = sy_fire & sy_rd_v & ~sy_xt;
    assign sy_advance = ~sy_v | sy_fire;
@@ -2631,8 +2628,8 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: F stage holds a non-FP op (insn %08x)", f_insn);
       if (m_valid & m_is_fp & ~m_is_mem)
          $fatal(1, "smolrv64_core: a non-memory FP op reached M (pc %h)", m_pc);
-      if (iss_f & (qf_shard != SH_FE) & (qf_shard < SH_F0))
-         $fatal(1, "smolrv64_core: F-class op is in shard %0d, neither SH_FE nor an FP slice", qf_shard);
+      if (iss_f & ((qf_shard == SH_FE) | (qf_shard == SH_LD)))
+         $fatal(1, "smolrv64_core: F-class op is in shard %0d, neither a lane's nor an FP slice", qf_shard);
       // ROUNDING MODE IS AN FP BARRIER, and out-of-order FP depends on it.
       //
       // Reordering FP is safe for the exception FLAGS because they accumulate: csr_file
@@ -2767,23 +2764,25 @@ module smolrv64_core
    // Gated on "no lane issued", not on M: M busy with loads would mask an FP chain that is the
    // critical path.
    wire no_issue  = ~(pick_i | pick_i2 | pick_i3);
-   // A register a load, AMO or CSR read will write: a CSR read's is in SH_LD; a load's or AMO's is
-   // in its lane's shard, so it is found as a live LQ entry's destination, a landing waiting in a
-   // lane's buffer, or M's AMO. An FP load's is an f-register, counted under dep_fp below.
+   // A register a load, AMO or CSR read will write, all in a lane's shard: a live LQ entry's
+   // destination, a landing waiting in a lane's buffer, M's AMO or the SYSQ's op. An FP load's is
+   // an f-register, counted under dep_fp below.
    // the landing buffers' waiting destinations, 0 for an empty slot (a wire: the function below
    // reads no array, rule F4)
-   wire [3*LBN*RN_PBITS-1:0] lb_live;
+   wire [3*LBN*RN_PBITS-1:0] lb_live, lb_live_fe;
    genvar glb;
    generate
       for (glb = 0; glb < 3*LBN; glb = glb + 1) begin : g_lb_live
          wire [LBB-1:0] dl = glb[LBB-1:0] - lb_h[glb / LBN];   // the entry's age in its lane's ring
-         assign lb_live[glb*RN_PBITS +: RN_PBITS] = ({1'b0, dl} < lb_n[glb / LBN]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
+         wire lv = {1'b0, dl} < lb_n[glb / LBN];
+         assign lb_live[glb*RN_PBITS +: RN_PBITS]    = (lv & ~lb_fe[glb]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
+         assign lb_live_fe[glb*RN_PBITS +: RN_PBITS] = (lv &  lb_fe[glb]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
       end
    endgenerate
    function automatic ld_dst(input [RN_PBITS-1:0] p);
       integer k;
       begin
-         ld_dst = (p[RN_PBITS-1:RN_IDXB] == SH_LD) | (m_valid & m_is_amo & m_rd_v & (m_prd == p));
+         ld_dst = (m_valid & m_is_amo & m_rd_v & (m_prd == p)) | (sy_v & sy_rd_v & (sy_prd == p));
          for (k = 0; k < LQ_N; k = k + 1)
             if ((lq_e_dprd[k*RN_PBITS +: RN_PBITS] == p) & (p[RN_PBITS-1:RN_IDXB] < SH_F0)) ld_dst = 1'b1;
          for (k = 0; k < 3*LBN; k = k + 1)
@@ -2794,12 +2793,21 @@ module smolrv64_core
                               | (ri_blk_v & ld_dst(ri_blk_pr))
                               | (ri2_blk_v & ld_dst(ri2_blk_pr))
                               | (ri3_blk_v & ld_dst(ri3_blk_pr)));
-   // An f-register (FP slices: an FP op's or an FP load's) or SH_FE (an FP op's integer
-   // result, a mul/div, a link).
-   wire dep_fp    = no_issue & ((rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
-                              | (ri_blk_v & ((bsh_i == SH_FE) | (bsh_i >= SH_F0)))
-                              | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0)))
-                              | (ri3_blk_v & ((bsh_i3 == SH_FE) | (bsh_i3 >= SH_F0))));
+   // An f-register (FP slices: an FP op's or an FP load's), or an FP op's or divide's integer
+   // result: in the F stage, in the MD stage, or waiting in a lane's landing buffer.
+   function automatic fe_dst(input [RN_PBITS-1:0] p);
+      integer k;
+      begin
+         fe_dst = (p[RN_PBITS-1:RN_IDXB] >= SH_F0) | (f_valid & (f_prd == p))
+                | (md_v & md_rd_v & (md_prd == p));
+         for (k = 0; k < 3*LBN; k = k + 1)
+            if ((lb_live_fe[k*RN_PBITS +: RN_PBITS] == p) & (p != {RN_PBITS{1'b0}})) fe_dst = 1'b1;
+      end
+   endfunction
+   wire dep_fp    = no_issue & ((rf_blk_v & fe_dst(rf_blk_pr))
+                              | (ri_blk_v & fe_dst(ri_blk_pr))
+                              | (ri2_blk_v & fe_dst(ri2_blk_pr))
+                              | (ri3_blk_v & fe_dst(ri3_blk_pr)));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v;                           // the MD stage holds a divide (occupancy, not a stall)
    wire st_mul    = mA_1 | mA_2 | mB_1 | mB_2 | mC_1 | mC_2;   // a multiply in flight in a lane
@@ -3050,9 +3058,6 @@ module smolrv64_core
    wire        fp_land  = fp_complete;
    wire        fp_wb    = fp_land & ft_rd_v;
    always @(posedge clk) if (!reset) begin
-      // The SH_FE check moved to the F stage, where it compares the shard of the op being
-      // dispatched. Left here it compared fp_disp -- now the F stage's -- against M's
-      // shard, two unrelated instructions, and fired on rv64ud-p-fcvt.
       // The tag is the only thing naming the destination now, so a result that arrives
       // unowned would write a live register silently instead of being caught by fb_busy.
       if (fp_land & (ft_prd == {RN_PBITS{1'b0}}) & ft_rd_v)
@@ -3453,23 +3458,12 @@ module smolrv64_core
    assign wb_ie = dA ? dA_dat : mA_2 ? mA_res : xa_result;
    wire [63:0] wb_ie2 = dB ? dB_dat : mB_2 ? mB_res : xb_result;
    wire [63:0] wb_ie3 = dC ? dC_dat : mC_2 ? mC_res : xc_result;
-   // SH_LD is now M's shard outright, so this mux carries every result M produces, not
-   // just the memory and mul/div ones it started as. The two new arms are the two classes
-   // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
-   // after the mem/amo/mul arms above is a jump's link register.
-   // A CSR READ TAKES THE LIVE csr_rdata, NEVER THE LATCH: m_unit_res has no CSR arm, and a
-   // CSR op now always sits at head for a cycle before completing (m_head_q), which sets
-   // m_unit_done_q -- the latched arm then handed a stale m_result to the destination. (The
-   // same hazard existed whenever a landing load held a CSR op at head.) Live is also what
-   // makes the delayed minstret read exact: it is sampled in the completion cycle.
    assign wb_ld = lsu_rd_val;              // a landing load's or M's AMO's (the SYSQ's goes to lane A)
-   // SH_FE's writers: the F stage's landing, the CTF link (when the F stage isn't landing) and
-   // the MD stage (when neither is).
+   // the FE stream: the F stage's landing, else the MD stage's divide
    assign wb_fe = fp_wb         ? fp_wval
-                :                 md_res_q;       // a mul/div result (C1)
-   // Two writers now: M's own completion, and a load landing after M has moved on. They can
-   // never coincide -- m_done is forced low on ld_land above -- so the single PRF write
-   // address still holds and smolrv64_prf keeps its one-write-per-cycle property.
+                :                 md_res_q;       // a divide's result
+   // The LD stream has two writers, M's own completion and a load landing after M has moved
+   // on; they never coincide (m_done is forced low on ld_land).
    //
    // THE WRITEBACK VALID IS BUILT FROM THE TERMS THAT CAN ACTUALLY WRITE, not from m_done.
    // we_ld/we_fe are the wakeup broadcast: every scheduler entry compares against them, the
@@ -3492,10 +3486,9 @@ module smolrv64_core
              m_wb, m_wb_ref);
    wire ld_wb = ld_land & lq_l_rd_v;
 
-   // PER-SHARD WRITE PORTS. Each shard is driven by its OWN writers rather than through a
-   // muxed address: IE by the ALUs, LD by M, a landing load or the SYSQ, FE by the F stage's
-   // landing, the CTF link or the MD stage. m_done is forced low on ld_land/fp_land, so no
-   // shard sees two writers in a cycle; the one-writer-per-cycle property is asserted below.
+   // PER-SHARD WRITE PORTS. Each lane's shard is written by its lane's write register alone,
+   // which takes, in order, its landing buffer's head, the ALU at issue and the multiply in its
+   // reserved slot; the FP slices by the LD and FE streams.
    // A lane's wake and write-register enables do not read the live redirect (rule I11): a redirect
    // fires at the ROB head, so the op executing in a lane then is younger and flushed everywhere
    // (each flush arm is ordered last); its write lands at T+1 in a register the rollback frees,
@@ -3520,14 +3513,19 @@ module smolrv64_core
       alu_q_v <= ~reset & we_ie;
       if (we_ie) begin alu_q_prd <= wa_ie; alu_q_val <= wb_ie; end
    end
-   // THE LD STREAM: a landing load, M's AMO result or the SYSQ's CSR read, one a cycle. An FP
-   // load's and a CSR read's land on the LD port as before; an integer load's or AMO's lands in
-   // its lane (ldw_int, the lane by its register's shard).
+   // THE LD STREAM: a landing load or M's AMO result, one a cycle. An FP load's lands on the LD
+   // port in its FP slice; an integer load's or AMO's in its lane (ldw_int, the lane by its
+   // register's shard).
    wire ld_any = m_wb | ld_wb;
    wire [2:0] ldw_sh = wa_ld[RN_PBITS-1:RN_IDXB];
    assign ldw_int = ld_any & ((ldw_sh == SH_IE) | (ldw_sh == SH_IE2) | (ldw_sh == SH_IE3));
    wire we_ld = ld_any & ~ldw_int;
-   wire we_fe = fp_wb | md_wr;
+   // THE FE STREAM: the F stage's landing or the MD stage's result, one a cycle (the divide yields
+   // to the FPU). An f-register's lands on the FE port in its FP slice; an integer one in its lane.
+   wire fe_any = fp_wb | md_wr;
+   wire [2:0] few_sh = wa_fe[RN_PBITS-1:RN_IDXB];
+   assign few_int = fe_any & ((few_sh == SH_IE) | (few_sh == SH_IE2) | (few_sh == SH_IE3));
+   wire we_fe = fe_any & ~few_int;
    wire [RN_PBITS-1:0] wa_ie = dA ? dA_prd : mA_2 ? mA_prd2 : qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [ROB_IDXB-1:0] ldw_rob = ld_wb ? lq_l_rob : m_rob_idx;
@@ -3546,8 +3544,10 @@ module smolrv64_core
    // redirect needs. Load-hit speculation (waking the consumers from the D$ lookup) is a later step.
    integer             lbi;
    initial for (lbi = 0; lbi < 3; lbi = lbi + 1) begin lb_h[lbi] = 0; lb_t[lbi] = 0; lb_n[lbi] = 0; end
-   // the LD stream's push into its lane; the SYSQ's goes through lane A in its fire cycle
+   // the LD and FE streams' pushes into their lanes; the SYSQ's goes through lane A in its fire cycle
    wire [2:0] p0 = {ldw_int & (ldw_sh == SH_IE3), ldw_int & (ldw_sh == SH_IE2), ldw_int & (ldw_sh == SH_IE)};
+   wire [2:0] p2 = {few_int & (few_sh == SH_IE3), few_int & (few_sh == SH_IE2), few_int & (few_sh == SH_IE)};
+   wire [ROB_IDXB-1:0] few_rob = fp_wb ? ft_rob : md_rob;
    wire       sp_v = sy_wr | sy_done;
    wire [2:0] p1 = {2'b00, sp_v};
    // the lane's write and ROB ports are free: nothing executing that completes at issue, and no
@@ -3558,19 +3558,24 @@ module smolrv64_core
    wire [2:0] lb_any = {lb_n[2] != 0, lb_n[1] != 0, lb_n[0] != 0};
    assign lbA_any = lb_any[0];  assign lbB_any = lb_any[1];  assign lbC_any = lb_any[2];
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
-   // each lane drains, in order, its oldest waiting entry, the SYSQ's, the LD stream's
-   wire [2:0] lb_drain = lb_free & (lb_any | p0 | p1);
-   wire [2:0] by0 = lb_drain & ~lb_any & ~p1 & p0;      // the LD stream's goes straight through...
+   // each lane drains, in order, its oldest waiting entry, the SYSQ's, the LD stream's, the FE's
+   wire [2:0] lb_drain = lb_free & (lb_any | p0 | p1 | p2);
+   wire [2:0] by0 = lb_drain & ~lb_any & ~p1 & p0;      // a stream's goes straight through...
+   wire [2:0] by2 = lb_drain & ~lb_any & ~p1 & ~p0 & p2;
    wire [2:0] en0 = p0 & ~by0;                          // ...or waits
+   wire [2:0] en2 = p2 & ~by2;
    // the drained entry of each lane, {wr, cmp, prd, dat, rob} (a wire per lane: rule F4)
    wire [2+RN_PBITS+64+ROB_IDXB-1:0] lp [0:2];
+   wire [LBB-1:0]                    lb_t2 [0:2];         // the FE stream's slot, after the LD's
    genvar glp;
    generate
       for (glp = 0; glp < 3; glp = glp + 1) begin : g_lp
          wire [LBB-1:0] hh = lb_h[glp];
          assign lp[glp] = lb_any[glp] ? {1'b1, 1'b1, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
                         : p1[glp]     ? {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob}
-                        :               {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob};
+                        : p0[glp]     ? {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob}
+                        :               {1'b1, 1'b1, wa_fe, wb_fe, few_rob};
+         assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate
    assign {dA_w, dA_c, dA_prd, dA_dat, dA_rob} = lp[0];
@@ -3582,17 +3587,22 @@ module smolrv64_core
       for (lbi = 0; lbi < 3; lbi = lbi + 1) begin
          if (en0[lbi]) begin
             lb_prd[lbi*LBN + lb_t[lbi]] <= wa_ld;  lb_dat[lbi*LBN + lb_t[lbi]] <= wb_ld;
-            lb_rob[lbi*LBN + lb_t[lbi]] <= ldw_rob;
-            lb_t[lbi] <= lb_t[lbi] + 1'b1;
+            lb_rob[lbi*LBN + lb_t[lbi]] <= ldw_rob;  lb_fe[lbi*LBN + lb_t[lbi]] <= 1'b0;
          end
+         if (en2[lbi]) begin
+            lb_prd[lbi*LBN + lb_t2[lbi]] <= wa_fe;  lb_dat[lbi*LBN + lb_t2[lbi]] <= wb_fe;
+            lb_rob[lbi*LBN + lb_t2[lbi]] <= few_rob;  lb_fe[lbi*LBN + lb_t2[lbi]] <= 1'b1;
+         end
+         lb_t[lbi] <= lb_t[lbi] + {{(LBB-1){1'b0}}, en0[lbi]} + {{(LBB-1){1'b0}}, en2[lbi]};
          if (lb_drain[lbi] & lb_any[lbi]) lb_h[lbi] <= lb_h[lbi] + 1'b1;
-         lb_n[lbi] <= lb_n[lbi] + {{LBB{1'b0}}, en0[lbi]} - {{LBB{1'b0}}, lb_drain[lbi] & lb_any[lbi]};
+         lb_n[lbi] <= lb_n[lbi] + {{LBB{1'b0}}, en0[lbi]} + {{LBB{1'b0}}, en2[lbi]}
+                                - {{LBB{1'b0}}, lb_drain[lbi] & lb_any[lbi]};
          if (reset | redirect) begin lb_h[lbi] <= 0; lb_t[lbi] <= 0; lb_n[lbi] <= 0; end   // flush last (rule I11)
       end
    end
    always @(posedge clk) if (!reset) begin
       for (lbi = 0; lbi < 3; lbi = lbi + 1)
-         if (en0[lbi] & (lb_n[lbi] == LBN[LBB:0]) & ~(lb_drain[lbi] & lb_any[lbi]))
+         if ({1'b0, lb_n[lbi]} + en0[lbi] + en2[lbi] - (lb_drain[lbi] & lb_any[lbi]) > LBN)
             $fatal(1, "smolrv64_core: lane %0d's landing buffer overflows", lbi);
       if (sp_v & ~lb_drain[0])
          $fatal(1, "smolrv64_core: the SYSQ fired without lane A's slot");
@@ -3603,10 +3613,10 @@ module smolrv64_core
    always @(posedge clk) if (!reset) begin
       if (m_wb & ld_wb)
          $fatal(1, "smolrv64_core: LD shard written by both M and a landing load");
-      // M's result (an AMO's) goes to its lane, an FP load's to its FP slice; SH_FE is not a
-      // landing's, so a result routed there would be dropped silently
-      if (ld_any & (ldw_sh == SH_FE))
-         $fatal(1, "smolrv64_core: the LD stream wrote SH_FE (pc %h)", m_pc);
+      // an integer result lands in its lane, an f-register's in its FP slice: SH_LD and SH_FE have
+      // no bank, so a result routed there would be dropped silently
+      if ((ld_any & ((ldw_sh == SH_FE) | (ldw_sh == SH_LD))) | (fe_any & ((few_sh == SH_FE) | (few_sh == SH_LD))))
+         $fatal(1, "smolrv64_core: a result routed to SH_LD or SH_FE (pc %h)", m_pc);
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot

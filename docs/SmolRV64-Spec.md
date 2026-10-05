@@ -422,14 +422,16 @@ core's pending lookup indexes the MAP's candidate and masks its result with `r_b
 ### 5.1 Sharding
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
-read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
-the F stage (FPU results, integer destinations included) and the MD stage (divide results
-by tag); a multiply writes its lane's shard (§7). The F stage's
-writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4b step 1(c)):
+read ports only; sharding by *writer* is what buys write ports. The integer shards are the
+lanes' (SH_IE, SH_IE2, SH_IE3), one write register each: the lane's ALU result and link at
+issue, a multiply in its reserved slot (§7), and every other integer result -- a load's, AMO's
+or CSR read's (§8), an FP op's integer destination, a divide's -- through the lane's landing
+buffer (§8). SH_LD and SH_FE have no writer and no bank (asserted unwritten). The F stage
+writes the FP slices; its writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4b step 1(c)):
 one cycle off the stage's operand registers into a one-entry result register (`icr_*`) that
 lands through the FPU's own landing in any cycle the FPU is not landing; a waiting result
 holds the stage. An FP op with mstatus.FS off is illegal at dispatch and traps from the SYSQ.
-M writes SH_LD alone (asserted). **A link is its lane's ALU result**, written into the lane's
+**A link is its lane's ALU result**, written into the lane's
 shard at issue, so a jal/jalr never waits for a port and its squash waits for nothing (rule D13
 is satisfied by construction). The live read ports are eleven: M rs1/rs2, the three lanes' rs1/rs2, F rs1/rs2/rs3 -- M's rs3
 (`ra3`) is tied off.
@@ -836,8 +838,8 @@ compare, `sy_fire = sy_at_head & ~port_yield & (~sy_instret | sy_head_q)` -- the
 gate M's dones use (`port_yield = ld_land | fp_land`, computed once), and the
 instret read's second cycle at head (M1b) kept. `csr_file`'s `raddr` and `upd_*` are the
 register's flops (step 2's lesson: a LUTRAM read in front of `csr_file`'s combinational redirect
-cost IW=3 its closure). The read's value goes to SH_LD and the completion to the ROB through
-M's ports (M, whose op is younger then, does not complete while the SYSQ's op is the ROB head,
+cost IW=3 its closure). The read's value goes to lane A's write slot (§8) and the completion to
+the ROB through lane A's port (M, whose op is younger then, does not complete while the SYSQ's op is the ROB head,
 asserted); a trap through `c_kill`; a redirect through
 the one redirect gate (`redirect`, `fe_red_pulse`, `fe_red_tgt/seq`, `redirect_is_trap`).
 
@@ -865,11 +867,11 @@ multiply a cycle. Invariants: nothing executes in a lane's reserved slot, and th
 **A divide** is class M at dispatch (`d_cls_m`), shares `u_iq_f` with FP arithmetic and system
 ops, and drains from the select register `j_*` into the MD stage (`iss_md`) with the port's
 forwarded reads as its operands. The stage holds one: the divider (~64 cycles) starts in the
-issue cycle, the result is latched on its done pulse (`md_pend`, `md_res_q`) and written to
-SH_FE by the stage's own tag when the FPU is not writing (`md_wr`); the ROB completes through
-its own port (`md_wb`). `abort(redirect)` and the flush arm last keep it sound while redirects
-fire at the ROB head. Invariants: an issue never starts a busy divider, never lands on a shard
-other than SH_FE, and no multiply reaches the stage; the writeback's clear precedes the issue's
+issue cycle, the result is latched on its done pulse (`md_pend`, `md_res_q`) and leaves by the
+stage's own tag when the FPU is not writing (`md_wr`), into its lane's write slot like an FP
+op's integer result (§8). `abort(redirect)` and the flush arm last keep it sound while redirects
+fire at the ROB head. Invariants: an issue never starts a busy divider and no multiply reaches
+the stage; the writeback's clear precedes the issue's
 set in the stage register.
 
 ## 8. Load/store unit and MMU
@@ -902,6 +904,13 @@ set in the stage register.
   the SYSQ fires only into a free lane A, so a redirecting op writes and completes in its fire
   cycle. FP loads land on the LD port in their FP slices as before. Waking a load's consumers
   from its D$ lookup (load-hit speculation, with replay on a miss) is a later step.
+- **So does an FP op's or divide's integer result (5.2e).** The FE stream (the F stage's
+  landing or the MD stage's divide, `md_wr`) writes an f-register into its FP slice; an integer
+  destination (`few_int`, by its shard) takes its lane's landing buffer the same way, behind
+  the buffer's own entries, the SYSQ and the load landing, and completes when it drains.
+  SH_FE has no writer and no bank. A cycle can enqueue a load's and an FE result in the same
+  lane (two enqueue slots); the Top-Down `dep-fp` class finds the FE stream's destinations by
+  the F and MD stages' registers and the buffers' FE entries (`lb_fe`).
 - **The head ops run from the head-op register (5.2d-b step 3).** An AMO, LR/SC or CBO goes
   alone, so in slot A and lane A, whose adder generates its address and which reads its rs2 (an
   AMO's or SC's data). Both wait in the one-entry head-op register (`ho_*`), the op's record
@@ -948,7 +957,7 @@ set in the stage register.
   `{01,00}`/`{10,00}`), and the response is claimed by that tag -- never by "only one in
   flight" (rule B1). The formatting state lives per tag in the LSU (`o_nb/o_sgn/o_fp/o_boff`,
   `o_v` = a response is still coming), the landing is `ld_land_fast` by `pt_rtag` into the
-  load queue's entry, the ROB, SH_LD and the retire record. A start needs the read buffer free
+  load queue's entry, the ROB, the lane's landing (above) and the retire record. A start needs the read buffer free
   (`port_free = ~mem_rbusy & ~mem_ren`) and the tag not outstanding (`~o_v[tag]`); a store
   needs neither. A redirect kills every fast load in flight, INCLUDING one starting in that
   cycle (`o_kill`; the slow path's `ld_sq` does the same) -- the response still comes and is
@@ -1357,8 +1366,7 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | array | module | shape | width | bits | storage | ports |
 |---|---|---|---|---|---|---|
 | `mem_ie` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared (3 for the M/F port, 2 per ALU port), 1W |
-| `lb_prd`, `lb_dat`, `lb_rob` | `smolrv64_core` | 3×4 | 10/64/5 | 948 | flops | the lanes' landing buffers (§8) |
-| `mem_fe` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W |
+| `lb_prd`, `lb_dat`, `lb_rob`, `lb_fe` | `smolrv64_core` | 3×4 | 10/64/5/1 | 960 | flops | the lanes' landing buffers (§8) |
 | `fp[0..2].mem_l`, `fp[0..2].mem_f` | `smolrv64_prf` | 64 each | 64 | 24 576 | LUTRAM | 4R (`ra2`, `ra10-12`), 1W each: the FP file's load and F-stage banks |
 | `fp[0..2].lvt` | `smolrv64_prf` | 64 each | 1 | 192 | flops | which bank holds each FP register |
 | `mem_ie2` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W (item 10d-ii) |

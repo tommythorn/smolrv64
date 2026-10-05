@@ -35,8 +35,8 @@ module smolrv64_rename
   #(parameter IDXB  = 7,
     parameter PBITS = IDXB + 3,               // 3 shard bits: room for a 5th shard (the 3rd ALU)
     parameter N_IE  = 64,
-    parameter N_LD  = 64,                 // integer loads, AMOs, CSR reads
-    parameter N_FE  = 64,                 // integer results of the F stage, mul/div, links
+    parameter N_LD  = 64,                 // SH_LD: no destination renames into it
+    parameter N_FE  = 64,                 // SH_FE: no destination renames into it
     parameter N_FP  = 64,                 // each FP slice (SH_F0..SH_F2), one per rename slot
     parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
     parameter N_IE3 = 64,                 // the third ALU's shard (Stage 3)
