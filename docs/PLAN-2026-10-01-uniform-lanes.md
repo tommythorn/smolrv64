@@ -321,6 +321,29 @@ timing is fought.
       read) announces itself a cycle ahead and takes its lane's next free write slot, the
       reservation 5.2c built.
 
+      **5.2d-c in detail (design, 2026-10-04, for review).** A load's, AMO's or CSR read's
+      destination moves from SH_LD to its slot's lane shard (`shard_of`), so the landing needs
+      the lane's one write port in a cycle the lane leaves empty. 5.2c's reservation works
+      because the multiply is known at execute T and writes at T+2: the registered `m*_1` is
+      the lane's `unit_busy` at T+1, nothing executes at T+2, and the slot carries the wake,
+      the ROB completion and the result into the lane's write register. A landing has to be
+      known two cycles ahead the same way; "a cycle ahead" is too late for a registered
+      `unit_busy`. The fork:
+      - **A (recommended): the D$ lookup is the announce.** A load's data is `rd_valid` two
+        cycles after its lookup on a hit, and a miss lands through a released waiter's replay,
+        which is again a lookup two cycles ahead. So every lookup of a lane's load reserves
+        that lane's slot two cycles on, exactly like a multiply; the landing then is the
+        multiply's T+2 slot (wake, ROB completion, the lane's write register). A lookup that
+        misses wastes its reserved slot. Needs: rv_dcache exports the lookup and its tag, the
+        LQ keeps each entry's lane, and the uncached/device and straddle paths (the LSU's FSM)
+        announce the same way or land in a reserved slot of their own.
+      - **B: a landing buffer per lane.** The landing waits in a one-entry buffer and takes the
+        lane's next empty write slot, the buffer's occupancy (registered) holding the lane's
+        select for a cycle. No D$ protocol change, but load-to-use grows by a cycle or more in a
+        busy lane, and the buffer is a second write path into the lane's register.
+      The head-op result and the SYSQ's CSR read are rare and serialised: they take the same
+      buffer or reservation as the slot they dispatched in (always slot A for a head op).
+
    The defaults chosen where the design forks: fills from up to three lanes rather than one
    memory op per cycle (an issue-side limit would put cross-lane arbitration into select);
    one `s_` lookup a cycle with the walker as overflow, measured before a second lookup port
