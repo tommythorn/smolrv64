@@ -19,7 +19,9 @@ module mul3
    input  wire        is_w,
    output wire        busy,
    output wire        done,         // 1-cycle pulse: result valid
-   output wire [63:0] result);
+   output wire [63:0] result,
+   output wire        pre_done,     // the result a cycle before `done`, for a consumer that
+   output wire [63:0] pre_result);  // registers it itself (the lanes' write register)
 
    wire a_sgn = (f3 == 3'b001) | (f3 == 3'b010);   // MULH, MULHSU
    wire b_sgn = (f3 == 3'b001);                     // MULH
@@ -35,13 +37,14 @@ module mul3
    reg        [63:0] res3;
 
    initial begin v1 = 0; v2 = 0; v3 = 0; end
+   wire [63:0] res_d = w2 ? {{32{p2[31]}}, p2[31:0]} : (hi2 ? p2[127:64] : p2[63:0]);
    always @(posedge clk) begin
       if (reset || abort) begin
          v1 <= 1'b0; v2 <= 1'b0; v3 <= 1'b0;
       end else begin
          v1 <= start;  a1 <= $signed(a_ext); b1 <= $signed(b_ext); w1 <= is_w; hi1 <= hi;
          v2 <= v1;     p2 <= a1 * b1;        w2 <= w1; hi2 <= hi1;
-         v3 <= v2;     res3 <= w2 ? {{32{p2[31]}}, p2[31:0]} : (hi2 ? p2[127:64] : p2[63:0]);
+         v3 <= v2;     res3 <= res_d;
       end
    end
 
@@ -51,6 +54,8 @@ module mul3
    assign busy   = v1 | v2 | v3;
 
    assign done   = v3;
+   assign pre_done   = v2;
+   assign pre_result = res_d;
    assign result = res3;
 endmodule
 

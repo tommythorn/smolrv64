@@ -29,7 +29,7 @@ module tb;
              .FIXEDL(1)) dut
      (.clk(clk),.reset(reset),
       .d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),.d_ps(d_ps),.d_r(d_r),
-      .d_prd(d_prd),.d_ent(d_ent),
+      .d_prd(d_prd),.d_long(1'b0),.d_ent(d_ent),
       .wb_v(wb_v),.wb_preg(wb_preg),
       .unit_busy(unit_busy),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
       .iss_take(iss_take),
@@ -48,7 +48,7 @@ module tb;
              .FIXEDL(0),.INORDER(1)) dut_io
      (.clk(clk),.reset(reset),
       .d_valid(io_d_valid),.d_ready(io_d_ready),.d_rob(io_rob),.d_ps(io_ps),.d_r(io_r),
-      .d_prd({PBITS{1'b0}}),.d_ent(io_d_ent),
+      .d_prd({PBITS{1'b0}}),.d_long(1'b0),.d_ent(io_d_ent),
       .wb_v(io_wb_v),.wb_preg(io_wb_preg),
       .unit_busy(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
       .iss_take(io_take),

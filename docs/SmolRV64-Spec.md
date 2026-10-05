@@ -22,7 +22,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
-| Issue | **dynamic**: ALU ops, branches and jumps issue in their slot's lane (three schedulers, three ALUs) and reorder freely; FP ops and mul/div reorder on the F/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to `IW`/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
@@ -70,7 +70,7 @@ schedulers, each with its own ALU and shard, and no steering. An ALU op complete
 
 Everything else carries an `ord` bit; of those, memory, AMO, CSR, `fence.i`, cbo and
 anything already known to fault keep program order in `u_iq_l`, while FP, branches, jumps
-and (since C1, 2026-09-17) mul/div are pulled out into the F/CTF/MD queue (§7). Only
+and divides are pulled out into the F/MD queue, multiplies into the lanes (§7). Only
 memory actually requires that ordering; the rest inherit it because they share M (§6.1).
 
 That split is what makes the rest unnecessary rather than merely deferred:
@@ -418,8 +418,8 @@ core's pending lookup indexes the MAP's candidate and masks its result with `r_b
 
 The PRF has **a write address and a write enable per shard, four shards**. Duplication buys
 read ports only; sharding by *writer* is what buys write ports. SH_FE has three writers:
-the F stage (FPU results, integer destinations included) and the MD stage (mul/div results
-by tag, since C1 of the memory backend program, 2026-09-17). The F stage's
+the F stage (FPU results, integer destinations included) and the MD stage (divide results
+by tag); a multiply writes its lane's shard (§7). The F stage's
 writes include the in-core FP ops (FSGNJ, FEQ/FLT/FLE, FMV both ways, FCLASS; C4b step 1(c)):
 one cycle off the stage's operand registers into a one-entry result register (`icr_*`) that
 lands through the FPU's own landing in any cycle the FPU is not landing; a waiting result
@@ -435,7 +435,7 @@ is satisfied by construction). The live read ports are eleven: M rs1/rs2, the th
 | IE2 | 64 | **lane B's ALU, alone** (slot B's ALU ops) | > 32, like IE |
 | IE3 | 64 | **lane C's ALU, alone** (slot C's ALU ops) | > 32, like IE |
 | LD | 64 | M and the load landing: integer loads, AMOs, CSR reads | > 32 (integer arch regs) |
-| FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the MD stage (mul/div, C1) | > 32 |
+| FE | 64 | the F stage's integer results (`fcvt.w.d`, `fmv.x.d`, `fle.d`, `fclass`), the MD stage (divides) | > 32 |
 | F0, F1, F2 | 64 each | f0–f31 only: FP loads (the load port) and FP results (the F stage's port) | > 32 (FP arch regs) each |
 
 **The FP file is sliced by rename slot and banked by writer.** An f-register destination
@@ -657,7 +657,7 @@ moves the wall.
 |---|---|---|---|
 | entries (`NENT`) | 10 each | 12 | 8 |
 | sources (`NSRC`) | 2 | 3 | 3 |
-| holds | ALU ops, branches and jumps of slot A, B, C | memory, AMO, CBO | FP arithmetic, mul/div, system ops |
+| holds | ALU ops, multiplies, branches and jumps of slot A, B, C | memory, AMO, CBO | FP arithmetic, divides, system ops |
 | ordering | **reorders freely** | **in order**, circular `qhead`/`qtail` | **reorders freely** |
 | unit | completes at issue (a mispredict at its squash), writes IE, IE2, IE3 | M | stage F, the MD stage, the SYSQ |
 | `unit_busy` | **none** — each shard has one writer | `~m_advance`: the issue register refills in the cycle M takes its op, so memory ops issue back to back | `j_v & ~j_adv`: the F/CTF select register is full and not draining |
@@ -775,6 +775,7 @@ runs inside every 240-test and cosim run.
 | lane A's ALU (slot A's ALU ops) | 1 cycle (at issue) | — | no | IE shard |
 | lane B's ALU (slot B's ALU ops) | 1 cycle (at issue) | — | no | IE2 shard |
 | lane C's ALU (slot C's ALU ops) | 1 cycle (at issue) | — | no | IE3 shard |
+| each lane's multiplier (`mul3`, slot k's multiplies) | 3 cycles: wake at T+2, written at T+3 | — | no (one a cycle) | the lane's shard |
 | branch, `jal`/`jalr` (its slot's lane) | 1 cycle (at issue) | — | no | the lane's shard (the link) |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
@@ -783,7 +784,7 @@ runs inside every 240-test and cosim run.
 | LSU load | see §8 | 4 fast (by tag, C4a) + 1 slow | **no** | LD shard; the FP file's load bank for an FP load |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
-Only loads, FP and (since C1) mul/div are non-blocking. Stores and AMOs still hold M: a
+Only loads, FP, multiplies and divides are non-blocking. Stores and AMOs still hold M: a
 store has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
@@ -843,21 +844,28 @@ serialise. A trap from dispatch drives `csr_file`'s `xtrap_*` inputs from the re
 completes at its fire; FENCE.I pulses `ifence` and redirects to its PC + 4. M holds no system
 op, fence or dispatch-time trap (all asserted); it keeps memory ops, AMOs, CBOs and data faults. The `xtq_*` shadow checks both M's trap payload and the SYSQ's.
 
-### 7.x The MD stage: mul/div on the F/CTF port (C1, 2026-09-17)
+### 7.x Multiplies in the lanes, divides in the MD stage (lanes 5.2c, 2026-10-04)
 
-A mul/div is class M at dispatch (`d_cls_m`), shares `u_iq_f` (NF 5 → 8) with FP arithmetic
-and control flow, and drains from the select register `j_*` into the MD stage (`iss_md`, the
-port's third drain) with the port's forwarded reads as its operands. The stage holds one op:
-`mul3` (3 cycles) or the divider (~64) starts in the issue cycle, the result is latched on the
-unit's done pulse (`md_pend`, `md_res_q`) and written to SH_FE by the stage's own tag when the
-FPU and the CTF link are not writing (`md_wr`; M yields the shard as it does to the link); the
-ROB completes through a ninth port (`md_wb`). `abort(redirect)` on the units and the flush arm
-last keep it sound while redirects fire at the ROB head. What it removes: the ordered queue
-no longer holds a divide in front of every younger load, and M's completion cone, the
-load-shard write port and `wb_ld` no longer know a multiplier exists. Invariants: an issue
-never starts a busy unit, never lands on a shard other than SH_FE, never reaches M; the
-writeback's clear precedes the issue's set in the stage register (an issue in the writeback
-cycle is legal and was lost once).
+**A multiply runs in its slot's lane** (`smolrv64_gclass`: class I). `mul3` starts from the
+lane's forwarded operands in the execute cycle T and the lane reserves its slot at T+2 for it:
+the lane's scheduler selects nothing at T+1 (`m*_1` is its `unit_busy`, a register), so nothing
+else executes at T+2. That slot carries the multiply's wake (its consumers execute at T+3 off
+the lane's write register), its ROB completion, its value on the lane's snoop bus (`wb_ie*`,
+the store queue's data), and its result (`mul3`'s stage B, `pre_result`) into the lane's write
+register at the edge, which the PRF writes at T+3. A multiply is never in a scheduler's
+wake-at-select matrix (`e_long`): its dependents wake at its broadcast. The lane takes one
+multiply a cycle. Invariants: nothing executes in a lane's reserved slot, and the multiply is at
+`mul3`'s stage B in it.
+
+**A divide** is class M at dispatch (`d_cls_m`), shares `u_iq_f` with FP arithmetic and system
+ops, and drains from the select register `j_*` into the MD stage (`iss_md`) with the port's
+forwarded reads as its operands. The stage holds one: the divider (~64 cycles) starts in the
+issue cycle, the result is latched on its done pulse (`md_pend`, `md_res_q`) and written to
+SH_FE by the stage's own tag when the FPU is not writing (`md_wr`); the ROB completes through
+its own port (`md_wb`). `abort(redirect)` and the flush arm last keep it sound while redirects
+fire at the ROB head. Invariants: an issue never starts a busy divider, never lands on a shard
+other than SH_FE, and no multiply reaches the stage; the writeback's clear precedes the issue's
+set in the stage register.
 
 ## 8. Load/store unit and MMU
 

@@ -597,6 +597,13 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
    wire [ROB_IDXB:0]   rob_occ;
+   // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
+   // mispredicting CTI at its squash), the FP and MD landings, the store queue, M's port
+   wire [7:0]          rob_wv  = {md_wb, cf_red_fire,
+                                  (iss_alu3 & ~lane_mis[2] & ~mC_go) | mC_2, (iss_alu2 & ~lane_mis[1] & ~mB_go) | mB_2,
+                                  sq_k_take, fp_land, (iss_alu & ~lane_mis[0] & ~mA_go) | mA_2, rob_w_valid};
+   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, mC_2 ? mC_rob2 : a3_rob, mB_2 ? mB_rob2 : a2_rob,
+                                  sq_kc_rob, ft_rob, mA_2 ? mA_rob2 : a_rob, rob_w_idx};
    wire                lq_d_ready2, sq_d_ready2;
    wire [IBI:0]        ri_free, ri2_free, ri3_free;
    wire [IBL:0]        rl_free;
@@ -927,7 +934,7 @@ module smolrv64_core
                            input mul, input [2:0] f_slice, input [2:0] alu);
       shard_of = rd_fp                                ? f_slice   // an f-register
                : (mem | amo)                          ? SH_LD     // M, a landing load
-               : (fp | mul)                           ? SH_FE     // the F stage, the MD stage
+               : (fp | (mul & i[14]))                 ? SH_FE     // the F stage, the MD stage (a divide)
                : (i[6:2] == 5'b11100) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00))
                                                       ? SH_LD     // the SYSQ (a CSR read)
                :                                        alu;      // the lane: an ALU op or a link
@@ -1026,13 +1033,17 @@ module smolrv64_core
    wire mv_l  = stg_v_l  & rl_ready;
    wire mv_f  = stg_v_f  & rf_ready;
 
+   function automatic is_mulop(input [31:0] i);     // MUL, MULH*, MULW: OP or OP-32, M, funct3 < 4
+      is_mulop = ((i[6:2] == 5'b01100) | (i[6:2] == 5'b01110)) & (i[31:25] == 7'b0000001) & ~i[14];
+   endfunction
+   localparam integer PL_INSN = PLW - PCW - 32;   // the instruction's place in the payload (pl_in)
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
              .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
       .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
-      .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_ent(ri_d_ent),
+      .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_long(is_mulop(stg_pl_ia[PL_INSN +: 32])),.d_ent(ri_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(1'b0),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
+      .unit_busy(mA_1),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
       .hold_v(a_v),.hold_ent(a_ent),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ),.free_n(ri_free));
@@ -1041,9 +1052,9 @@ module smolrv64_core
              .FIXEDL(1),.INORDER(0)) u_iq_i2
      (.clk(clk),.reset(reset),
       .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
-      .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_ent(ri2_d_ent),
+      .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_long(is_mulop(stg_pl_ib[PL_INSN +: 32])),.d_ent(ri2_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(1'b0),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
+      .unit_busy(mB_1),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
      .iss_take(ri2_take),
       .hold_v(a2_v),.hold_ent(a2_ent),
       .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ),.free_n(ri2_free));
@@ -1053,9 +1064,9 @@ module smolrv64_core
              .FIXEDL(1),.INORDER(0)) u_iq_i3
      (.clk(clk),.reset(reset),
       .d_valid(mv_ic),.d_ready(ri3_ready),.d_rob(stg_rob_ic),
-      .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_ent(ri3_d_ent),
+      .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_long(is_mulop(stg_pl_ic[PL_INSN +: 32])),.d_ent(ri3_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(1'b0),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
+      .unit_busy(mC_1),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
      .iss_take(ri3_take),
       .hold_v(a3_v),.hold_ent(a3_ent),
       .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ),.free_n(ri3_free));
@@ -1066,7 +1077,7 @@ module smolrv64_core
       .d_valid(mv_l),.d_ready(rl_ready),
       .d_rob(stg_rob_l),
       .d_ps(stg_ps_l),.d_r(stg_r_l),
-      .d_prd(stg_prd_l),.d_ent(rl_d_ent),
+      .d_prd(stg_prd_l),.d_long(1'b0),.d_ent(rl_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(~m_advance),
       .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
@@ -1086,7 +1097,7 @@ module smolrv64_core
       .d_valid(mv_f),.d_ready(rf_ready),
       .d_rob(stg_rob_f),
       .d_ps(stg_ps_f),.d_r(stg_r_f),
-      .d_prd(stg_prd_f),.d_ent(rf_d_ent),
+      .d_prd(stg_prd_f),.d_long(1'b0),.d_ent(rf_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
       .unit_busy(j_v & ~j_adv),           // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
@@ -1896,9 +1907,7 @@ module smolrv64_core
       // step connects d_valid3 to the third rename slot. d_ready3/d_idx3/c3 outputs are
       // gated 0 inside the ROB at IW<3, so leaving them open is harmless.
       .d_valid3(rn_valid_c), .d_rd3(d3_rd), .d_prd3(d3_prd_g), .d_noret3(1'b0), .d_ready3(rob_ready3), .d_idx3(rob_d_idx3),
-      .w_v({md_wb, cf_red_fire, iss_alu3 & ~lane_mis[2], iss_alu2 & ~lane_mis[1], sq_k_take, fp_land,
-            iss_alu & ~lane_mis[0], rob_w_valid}),
-      .w_ix({md_rob, fr_rob, a3_rob, a2_rob, sq_kc_rob, ft_rob, a_rob, rob_w_idx}),
+      .w_v(rob_wv), .w_ix(rob_wix),
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
       .c_kill((m_valid & m_done & m_trap) | sy_trap),
       .c2_kill(m_valid & (m_rob_idx == rob_head2_idx)),   // M's op retires only from the head
@@ -2107,6 +2116,81 @@ module smolrv64_core
       .result(xa_result), .addr(), .redirect(xa_redirect), .target(xa_target),
       .taken(xa_taken), .taken_tgt(xa_taken_tgt));
 
+
+   // ---- each lane's multiplier (lanes step 5.2c) ----
+   // A multiply runs in its slot's lane: mul3 starts from the lane's forwarded operands in the
+   // execute cycle T, and the lane reserves its slot at T+2 for it -- the scheduler selects
+   // nothing at T+1 (m*_1 is its unit_busy), so nothing else executes at T+2. That slot carries
+   // the multiply's wake (its consumers execute at T+3 off the write register), its ROB
+   // completion, and its result into the lane's write register at the edge, which the PRF
+   // writes at T+3. The multiplier takes one a cycle; the divide stays in the MD stage.
+   wire               mA_go = iss_alu & is_mulop(qa_insn);
+   reg                mA_1, mA_2, mA_rdv1, mA_rdv2;
+   reg [ROB_IDXB-1:0] mA_rob1, mA_rob2;
+   reg [RN_PBITS-1:0] mA_prd1, mA_prd2;
+   wire               mA_pre;
+   wire [63:0]        mA_res;
+   initial begin mA_1 = 1'b0; mA_2 = 1'b0; end
+   mul3 u_mulA
+     (.clk(clk), .reset(reset), .start(mA_go), .abort(redirect),
+      .rs1(xa_rs1), .rs2(xa_rs2), .f3(qa_insn[14:12]), .is_w(qa_insn[6:2] == 5'b01110),
+      .busy(), .done(), .result(), .pre_done(mA_pre), .pre_result(mA_res));
+   always @(posedge clk) begin
+      mA_1 <= ~reset & ~redirect & mA_go;
+      mA_2 <= ~reset & ~redirect & mA_1;
+      mA_rob1 <= a_rob;    mA_prd1 <= qa_prd;  mA_rdv1 <= qa_rd_v;
+      mA_rob2 <= mA_rob1; mA_prd2 <= mA_prd1; mA_rdv2 <= mA_rdv1;
+   end
+   wire               mA_wr = mA_2 & mA_rdv2;
+   always @(posedge clk) if (!reset) begin
+      if (mA_2 & a_v)   $fatal(1, "smolrv64_core: lane A executes an op in its multiply's reserved slot");
+      if (mA_2 & ~mA_pre) $fatal(1, "smolrv64_core: lane A's multiply is not at mul3's stage B in its slot");
+   end
+   wire               mB_go = iss_alu2 & is_mulop(qb_insn);
+   reg                mB_1, mB_2, mB_rdv1, mB_rdv2;
+   reg [ROB_IDXB-1:0] mB_rob1, mB_rob2;
+   reg [RN_PBITS-1:0] mB_prd1, mB_prd2;
+   wire               mB_pre;
+   wire [63:0]        mB_res;
+   initial begin mB_1 = 1'b0; mB_2 = 1'b0; end
+   mul3 u_mulB
+     (.clk(clk), .reset(reset), .start(mB_go), .abort(redirect),
+      .rs1(xb_rs1), .rs2(xb_rs2), .f3(qb_insn[14:12]), .is_w(qb_insn[6:2] == 5'b01110),
+      .busy(), .done(), .result(), .pre_done(mB_pre), .pre_result(mB_res));
+   always @(posedge clk) begin
+      mB_1 <= ~reset & ~redirect & mB_go;
+      mB_2 <= ~reset & ~redirect & mB_1;
+      mB_rob1 <= a2_rob;    mB_prd1 <= qb_prd;  mB_rdv1 <= qb_rd_v;
+      mB_rob2 <= mB_rob1; mB_prd2 <= mB_prd1; mB_rdv2 <= mB_rdv1;
+   end
+   wire               mB_wr = mB_2 & mB_rdv2;
+   always @(posedge clk) if (!reset) begin
+      if (mB_2 & a2_v)   $fatal(1, "smolrv64_core: lane B executes an op in its multiply's reserved slot");
+      if (mB_2 & ~mB_pre) $fatal(1, "smolrv64_core: lane B's multiply is not at mul3's stage B in its slot");
+   end
+   wire               mC_go = iss_alu3 & is_mulop(qc_insn);
+   reg                mC_1, mC_2, mC_rdv1, mC_rdv2;
+   reg [ROB_IDXB-1:0] mC_rob1, mC_rob2;
+   reg [RN_PBITS-1:0] mC_prd1, mC_prd2;
+   wire               mC_pre;
+   wire [63:0]        mC_res;
+   initial begin mC_1 = 1'b0; mC_2 = 1'b0; end
+   mul3 u_mulC
+     (.clk(clk), .reset(reset), .start(mC_go), .abort(redirect),
+      .rs1(xc_rs1), .rs2(xc_rs2), .f3(qc_insn[14:12]), .is_w(qc_insn[6:2] == 5'b01110),
+      .busy(), .done(), .result(), .pre_done(mC_pre), .pre_result(mC_res));
+   always @(posedge clk) begin
+      mC_1 <= ~reset & ~redirect & mC_go;
+      mC_2 <= ~reset & ~redirect & mC_1;
+      mC_rob1 <= a3_rob;    mC_prd1 <= qc_prd;  mC_rdv1 <= qc_rd_v;
+      mC_rob2 <= mC_rob1; mC_prd2 <= mC_prd1; mC_rdv2 <= mC_rdv1;
+   end
+   wire               mC_wr = mC_2 & mC_rdv2;
+   always @(posedge clk) if (!reset) begin
+      if (mC_2 & a3_v)   $fatal(1, "smolrv64_core: lane C executes an op in its multiply's reserved slot");
+      if (mC_2 & ~mC_pre) $fatal(1, "smolrv64_core: lane C's multiply is not at mul3's stage B in its slot");
+   end
+
    wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
    wire        x_redirect, x_taken;
 
@@ -2216,19 +2300,15 @@ module smolrv64_core
    reg [RN_PBITS-1:0] md_prd;
    reg [63:0]         md_res_q;
    initial begin md_v = 1'b0; md_pend = 1'b0; end
-   wire        mul_done, div_done, mul_busy, div_busy;
-   wire [63:0] mul_result, div_result;
+   wire        div_done, div_busy;
+   wire [63:0] div_result;
    wire        md_f3_2 = qf_insn[14];                     // funct3[2]: div/rem
    // The result is LATCHED on the unit's done pulse (mul3's persists, the divider's is one cycle)
    // and written when SH_FE is free: the FPU and the CTF link cannot hold theirs, this can.
-   wire        md_done = md_v & ~md_pend & (md_div ? div_done : mul_done);
+   wire        md_done = md_v & ~md_pend & div_done;
    wire        md_wb   = md_pend & (~md_rd_v | ~fp_wb);   // the op completes (ROB)
    wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes SH_FE
    assign      md_advance = ~md_v | md_wb;
-   mul3 u_mul
-     (.clk(clk), .reset(reset), .start(iss_md & ~md_f3_2), .abort(redirect),
-      .rs1(xf_rs1), .rs2(xf_rs2), .f3(qf_insn[14:12]), .is_w(qf_insn[6:2] == 5'b01110),
-      .busy(mul_busy), .done(mul_done), .result(mul_result));
    divider u_div
      (.clk(clk), .reset(reset), .start(iss_md & md_f3_2), .abort(redirect),
       .rs1(xf_rs1), .rs2(xf_rs2), .f3(qf_insn[14:12]), .is_w(qf_insn[6:2] == 5'b01110),
@@ -2237,7 +2317,7 @@ module smolrv64_core
       // The writeback's clear comes FIRST: an issue in the same cycle (md_advance = md_wb admits
       // it) must win, or the stage forgets an op the unit is already computing and the next
       // issue starts into a busy multiplier, which ignores it -- rv64um-p-mul hung at retire 111.
-      if (md_done) begin md_pend <= 1'b1; md_res_q <= md_div ? div_result : mul_result; end
+      if (md_done) begin md_pend <= 1'b1; md_res_q <= div_result; end
       if (md_wb)   begin md_v <= 1'b0; md_pend <= 1'b0; end
       if (iss_md) begin
          md_v <= 1'b1; md_div <= md_f3_2; md_rob <= j_rob; md_prd <= qf_prd; md_rd_v <= qf_rd_v; md_pend <= 1'b0;
@@ -2249,10 +2329,10 @@ module smolrv64_core
    always @(posedge clk) if (!reset) begin
       if (iss_md & (qf_shard != SH_FE))  $fatal(1, "smolrv64_core: a mul/div issued with shard %0d, not SH_FE", qf_shard);
       if (iss_md & md_v & ~md_wb)        $fatal(1, "smolrv64_core: a mul/div issued into a busy MD stage");
-      if (iss_md & (mul_busy | div_busy)) $fatal(1, "smolrv64_core: a mul/div started into a busy unit (the start would be ignored)");
+      if (iss_md & div_busy)             $fatal(1, "smolrv64_core: a divide started into a busy divider (the start would be ignored)");
+      if (iss_md & ~md_f3_2)             $fatal(1, "smolrv64_core: a multiply reached the MD stage, not its lane");
       if (m_valid & m_is_mul)            $fatal(1, "smolrv64_core: a mul/div reached M");
       if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage wrote SH_FE together with the FPU");
-      if (md_done & (mul_done & div_done)) $fatal(1, "smolrv64_core: both mul and div done at once");
    end
 
    // ---- FP unit (CVFPU) + the in-core FP ops ----
@@ -3327,9 +3407,10 @@ module smolrv64_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   assign wb_ie = xa_result;                      // one writer: the ALU, on its own port
-   wire [63:0] wb_ie2 = xb_result;                // ...and the second ALU's shard, its own writer
-   wire [63:0] wb_ie3 = xc_result;                // ...and the third ALU's (Stage 3)
+   // each lane's broadcast value: its ALU op's at issue, or its multiply's in the reserved slot
+   assign wb_ie = mA_2 ? mA_res : xa_result;
+   wire [63:0] wb_ie2 = mB_2 ? mB_res : xb_result;
+   wire [63:0] wb_ie3 = mC_2 ? mC_res : xc_result;
    // SH_LD is now M's shard outright, so this mux carries every result M produces, not
    // just the memory and mul/div ones it started as. The two new arms are the two classes
    // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
@@ -3377,29 +3458,29 @@ module smolrv64_core
    // muxed address: IE by the ALUs, LD by M, a landing load or the SYSQ, FE by the F stage's
    // landing, the CTF link or the MD stage. m_done is forced low on ld_land/fp_land, so no
    // shard sees two writers in a cycle; the one-writer-per-cycle property is asserted below.
-   wire alu_wb = iss_alu & qa_rd_v;
-   wire alu2_wb = iss_alu2 & qb_rd_v;
-   wire we_ie2 = alu2_wb;
-   wire [RN_PBITS-1:0] wa_ie2 = qb_prd;
+   wire alu_wb = iss_alu & qa_rd_v & ~mA_go;   // a multiply writes in its reserved slot
+   wire alu2_wb = iss_alu2 & qb_rd_v & ~mB_go;   // a multiply writes in its reserved slot
+   wire we_ie2 = alu2_wb | mB_wr;
+   wire [RN_PBITS-1:0] wa_ie2 = mB_2 ? mB_prd2 : qb_prd;
    always @(posedge clk) begin
-      alu2_q_v <= ~reset & alu2_wb;
-      if (alu2_wb) begin alu2_q_prd <= qb_prd; alu2_q_val <= xb_result; end
+      alu2_q_v <= ~reset & we_ie2;
+      if (we_ie2) begin alu2_q_prd <= wa_ie2; alu2_q_val <= mB_2 ? mB_res : xb_result; end
    end
-   wire alu3_wb = iss_alu3 & qc_rd_v;                    // the third ALU (Stage 3)
-   wire we_ie3 = alu3_wb;
-   wire [RN_PBITS-1:0] wa_ie3 = qc_prd;
+   wire alu3_wb = iss_alu3 & qc_rd_v & ~mC_go;   // a multiply writes in its reserved slot                    // the third ALU (Stage 3)
+   wire we_ie3 = alu3_wb | mC_wr;
+   wire [RN_PBITS-1:0] wa_ie3 = mC_2 ? mC_prd2 : qc_prd;
    always @(posedge clk) begin
-      alu3_q_v <= ~reset & alu3_wb;
-      if (alu3_wb) begin alu3_q_prd <= qc_prd; alu3_q_val <= xc_result; end
+      alu3_q_v <= ~reset & we_ie3;
+      if (we_ie3) begin alu3_q_prd <= wa_ie3; alu3_q_val <= mC_2 ? mC_res : xc_result; end
    end
-   wire we_ie = alu_wb;                    // the ISSUE-timed event: wake, pending clear, snoop
+   wire we_ie = alu_wb | mA_wr;            // the ISSUE-timed event: wake, pending clear, snoop
    always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)
-      alu_q_v <= ~reset & alu_wb;
-      if (alu_wb) begin alu_q_prd <= qa_prd; alu_q_val <= xa_result; end
+      alu_q_v <= ~reset & we_ie;
+      if (we_ie) begin alu_q_prd <= wa_ie; alu_q_val <= mA_2 ? mA_res : xa_result; end
    end
    wire we_ld = m_wb | ld_wb | sy_wr;
    wire we_fe = fp_wb | md_wr;
-   wire [RN_PBITS-1:0] wa_ie = qa_prd;
+   wire [RN_PBITS-1:0] wa_ie = mA_2 ? mA_prd2 : qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : sy_wr ? sy_prd : m_prd;
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : md_prd;
    always @(posedge clk) if (!reset) begin
@@ -3538,17 +3619,20 @@ module smolrv64_core
          cs_mkind[ft_rob] <= 2'd0;      // an FP op has no memory effect
          cs_mpa[ft_rob]   <= 56'd0;
       end
-      if (iss_alu2) begin               // the second ALU port
+      if (mA_2) begin cs_val[mA_rob2] <= mA_res; cs_mkind[mA_rob2] <= 2'd0; cs_mpa[mA_rob2] <= 56'd0; end
+      if (mB_2) begin cs_val[mB_rob2] <= mB_res; cs_mkind[mB_rob2] <= 2'd0; cs_mpa[mB_rob2] <= 56'd0; end
+      if (mC_2) begin cs_val[mC_rob2] <= mC_res; cs_mkind[mC_rob2] <= 2'd0; cs_mpa[mC_rob2] <= 56'd0; end
+      if (iss_alu2 & ~mB_go) begin      // the second ALU port
          cs_val[a2_rob]   <= xb_result;
          cs_mkind[a2_rob] <= 2'd0;
          cs_mpa[a2_rob]   <= 56'd0;
       end
-      if (iss_alu3) begin               // the third ALU port (Stage 3)
+      if (iss_alu3 & ~mC_go) begin      // the third ALU port (Stage 3)
          cs_val[a3_rob]   <= xc_result;
          cs_mkind[a3_rob] <= 2'd0;
          cs_mpa[a3_rob]   <= 56'd0;
       end
-      if (iss_alu) begin                // completed at issue on the ALU port, never saw M
+      if (iss_alu & ~mA_go) begin       // completed at issue on the ALU port, never saw M
          cs_val[a_rob]   <= xa_result;
          cs_mkind[a_rob] <= 2'd0;
          cs_mpa[a_rob]   <= 56'd0;

@@ -55,6 +55,7 @@ module smolrv64_iq
     input  wire [NSRC*PBITS-1:0] d_ps,
     input  wire [NSRC-1:0]       d_r,        // source already available
     input  wire [PBITS-1:0]      d_prd,      // destination, for wake-at-select
+    input  wire                  d_long,     // its result comes later than the next cycle (a multiply): no wake at select
     output wire [IDXB-1:0]       d_ent,      // slot taken; index the payload with it
 
     // ---- wakeup ----
@@ -87,6 +88,8 @@ module smolrv64_iq
    reg [NSRC*PBITS-1:0]  e_ps  [0:NENT-1];
    reg [NSRC-1:0]        e_r   [0:NENT-1];
    reg [PBITS-1:0]       e_prd [0:NENT-1];
+   reg [NENT-1:0]        e_long;           // a later result: its dependents wake at its writeback
+   initial e_long = {NENT{1'b0}};
 
    integer k, q;
    initial begin
@@ -208,7 +211,7 @@ module smolrv64_iq
    always @* begin
       for (dq = 0; dq < NSRC; dq = dq + 1)
          for (dj = 0; dj < NENT; dj = dj + 1)
-            drow[dq][dj] = v[dj] & (e_prd[dj] == d_ps[dq*PBITS +: PBITS]);
+            drow[dq][dj] = v[dj] & ~e_long[dj] & (e_prd[dj] == d_ps[dq*PBITS +: PBITS]);
    end
    initial for (dq = 0; dq < NENT*NSRC; dq = dq + 1) dep[dq] = {NENT{1'b0}};
 
@@ -249,6 +252,7 @@ module smolrv64_iq
             e_rob[fsel] <= d_rob;
             e_ps[fsel]  <= d_ps;
             e_prd[fsel] <= d_prd;
+            e_long[fsel] <= d_long;
             for (q = 0; q < NSRC; q = q + 1) begin
                dep[fsel*NSRC+q] <= drow[q];               // registers only; the column clear below wins over it
                e_r[fsel][q] <= d_r[q] | hit(d_ps[q*PBITS +: PBITS])
@@ -274,7 +278,7 @@ module smolrv64_iq
       for (ak = 0; ak < NENT; ak = ak + 1) if (v[ak] && (ak != isel))
          for (aq = 0; aq < NSRC; aq = aq + 1)
             if ((e_ps[ak][aq*PBITS +: PBITS] != {PBITS{1'b0}})
-                && (dep[ak*NSRC+aq][isel] != (e_prd[isel] == e_ps[ak][aq*PBITS +: PBITS])))
+                && (dep[ak*NSRC+aq][isel] != (~e_long[isel] & (e_prd[isel] == e_ps[ak][aq*PBITS +: PBITS]))))
                $fatal(1, "smolrv64_iq: dependency matrix disagrees with the tag compare (entry %0d src %0d, producer %0d)", ak, aq, isel);
    end
    always @(posedge clk) if (!reset) begin

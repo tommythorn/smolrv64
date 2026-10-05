@@ -924,11 +924,8 @@ module tb;
       if (dut.core.iss_alu3) kan_stage(5'(dut.core.a3_rob), "Xc");
       if (dut.core.iss_m)    kan_stage(5'(dut.core.i_rob),  "M");
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
-      kan_wv_q  <= {dut.core.md_wb, dut.core.cf_red_fire, dut.core.iss_alu3 & ~dut.core.lane_mis[2],
-                    dut.core.iss_alu2 & ~dut.core.lane_mis[1], dut.core.sq_k_take, dut.core.fp_land,
-                    dut.core.iss_alu & ~dut.core.lane_mis[0], dut.core.rob_w_valid};
-      kan_wix_q <= {5'(dut.core.md_rob), 5'(dut.core.fr_rob), 5'(dut.core.a3_rob), 5'(dut.core.a2_rob),
-                    5'(dut.core.sq_kc_rob), 5'(dut.core.ft_rob), 5'(dut.core.a_rob), 5'(dut.core.rob_w_idx)};
+      kan_wv_q  <= dut.core.rob_wv;
+      kan_wix_q <= dut.core.rob_wix;
       // 2. retire (up to three), then flush every live entry a backend redirect squashes. After
       // the issues: the ROB write-forwards a writeback to the head, so an ALU op can issue and
       // retire in the same cycle.

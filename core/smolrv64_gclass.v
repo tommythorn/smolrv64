@@ -38,13 +38,15 @@ module smolrv64_gclass
    // control flow is the slot's lane; a fetch-faulted CTI or the irqop stays ordered, so M
    // keeps the single trap site
    wire cls_c = (is_branch | is_jump | is_jalr) & ~illegal & ~fault & ~irqop;
-   wire cls_m = is_mul & ~illegal & ~fault & ~irqop;
+   // a multiply runs in its slot's lane (5.2c); a divide in the shared MD stage
+   wire mul_l = is_mul & ~insn[14] & ~illegal & ~fault & ~irqop;
+   wire cls_m = is_mul &  insn[14] & ~illegal & ~fault & ~irqop;
    // SYSTEM (the irqop included), FENCE and FENCE.I (MISC-MEM funct3 00x; CBO is 010), and an
    // instruction that traps at dispatch: each serialises and fires at the ROB head from the SYSQ
    wire cls_s = (insn[6:2] == 5'b11100) | ((insn[6:2] == 5'b00011) & (insn[14:13] == 2'b00))
               | illegal | fault;
-   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s;   // the ordered memory pipe (u_iq_l)
-   wire cls_i  = ~ord | cls_c;                               // ALU op or control flow: the slot's lane
+   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s & ~mul_l;   // the ordered memory pipe (u_iq_l)
+   wire cls_i  = ~ord | cls_c | mul_l;                       // ALU op, control flow or multiply: the slot's lane
    wire cls_fc = cls_f | cls_m | cls_s;                      // the FP/MD/SYS pipe (u_iq_f)
    // a serialising op, fence.i, CBO, AMO, CSR, a trap at dispatch or the irqop goes alone
    wire plain = ~(is_serialize | is_fencei | is_cbo | is_amo | is_csr | illegal | fault | irqop);
