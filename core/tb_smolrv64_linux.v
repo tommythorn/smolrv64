@@ -617,17 +617,17 @@ module tb;
       integer na, nb, nc, ia, ib, ic;
       // where the rules cut a group short of the available heads, and why; and the cycles the head
       // had an instruction but no credit for it (outside a freeze, a low shard or a serialisation)
-      if (dut.core.fe.rule1 & ~dut.core.fe.rule2 & dut.core.fe.q_have2 & dut.core.fe.two_wide) begin
-         if (~dut.core.fe.g0[7] | ~dut.core.fe.g1[7])                        ds_b_alone = ds_b_alone + 1;
-         else if (dut.core.fe.g0[11])                                         ds_b_sq    = ds_b_sq + 1;
+      if (dut.core.fe.rule[0] & ~dut.core.fe.rule[1] & (dut.core.fe.q_cnt >= 2)) begin
+         if (~dut.core.fe.g[0][7] | ~dut.core.fe.g[1][7])                    ds_b_alone = ds_b_alone + 1;
+         else if (dut.core.fe.g[0][11])                                       ds_b_sq    = ds_b_sq + 1;
          else                                                                 ds_b_rule  = ds_b_rule + 1;
       end
-      if (dut.core.fe.rule2 & ~dut.core.fe.rule3 & dut.core.fe.q_have3 & dut.core.fe.three_wide) begin
-         if (~dut.core.fe.g2[7])                                              ds_c_alone = ds_c_alone + 1;
-         else if (dut.core.fe.g1[11])                                         ds_c_sq    = ds_c_sq + 1;
+      if (dut.core.fe.rule[1] & ~dut.core.fe.rule[2] & (dut.core.fe.q_cnt >= 3)) begin
+         if (~dut.core.fe.g[2][7])                                            ds_c_alone = ds_c_alone + 1;
+         else if (dut.core.fe.g[1][11])                                       ds_c_sq    = ds_c_sq + 1;
          else                                                                 ds_c_rule  = ds_c_rule + 1;
       end
-      if (dut.core.fe.rule1 & ~dut.core.fe.take1 & dut.core.fe.crd[10]) ds_b_room = ds_b_room + 1;   // the head waits for a credit
+      if (dut.core.fe.rule[0] & ~dut.core.fe.take[0] & dut.core.fe.crd[10]) ds_b_room = ds_b_room + 1;   // the head waits for a credit
       na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
       nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
       nc = $countones(dut.core.u_iq_i3.rdy);  ic = dut.core.ri3_iss_v ? 1 : 0;
@@ -911,9 +911,9 @@ module tb;
       if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
       // 3. the frontend: last cycle's queue pushes, the instruction register, then dispatch
       for (kw = 0; kw < 3; kw = kw + 1) if (psh_v[kw]) kq_stage(psh_seq[kw], "Dq");
-      if (dut.core.fe.d_valid)  kq_stage(dut.core.d_seq,  "Ir");
-      if (dut.core.fe.d2_valid) kq_stage(dut.core.d2_seq, "Ir");
-      if (dut.core.fe.d3_valid) kq_stage(dut.core.d3_seq, "Ir");
+      if (dut.core.d_valid)  kq_stage(dut.core.d_seq,  "Ir");
+      if (dut.core.d2_valid) kq_stage(dut.core.d2_seq, "Ir");
+      if (dut.core.d3_valid) kq_stage(dut.core.d3_seq, "Ir");
       if (trace_on) begin
          if (dut.core.rn_valid)   kan_new(5'(dut.core.rob_d_idx),  dut.core.d_pc,  dut.core.d_insn,  dut.core.d_seq);
          if (dut.core.rn_valid_b) kan_new(5'(dut.core.rob_d_idx2), dut.core.d2_pc, dut.core.d2_insn, dut.core.d2_seq);
@@ -984,7 +984,7 @@ module tb;
                dut.core.fe.imem_mk, dut.core.fe.f_adv_hw, dut.core.fe.f_pop & dut.core.fe.bp_tk,
                dut.core.fe.f_rej, dut.core.fe.pq_cnt, dut.core.fe.fire, dut.core.fe.pb_v,
                dut.core.fe.q_cnt, dut.core.fe.q_room,
-               dut.core.fe.d_valid, dut.core.fe.d2_valid, dut.core.fe.d3_valid,
+               dut.core.d_valid, dut.core.d2_valid, dut.core.d3_valid,
                dut.core.rn_valid, dut.core.rn_valid_b, dut.core.rn_valid_c, dut.core.fe.redirect);
 
    // +watch_pc=<hex pc>: follow ONE instruction through the F/CTF pipe -- its F issue (the link the

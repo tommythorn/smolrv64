@@ -1,4 +1,5 @@
 `include "va_codec.vh"
+`include "smolrv64_irec.vh"
 `default_nettype none
 
 // In-order pipelined RVA22S64 core: F | X | M.
@@ -137,11 +138,10 @@ module smolrv64_core
    wire [4:0]               d_amo_func;
    wire                     d_is_fp, d_is_fencei, d_is_cbo, d_cbo_zero, d_cbo_keep;
    wire                     d_illegal, d_mis_taken, d_mis_nt, d_fault;
-   // AN FP INSTRUCTION WITH mstatus.FS OFF IS ILLEGAL AT DISPATCH. FS changes only by a CSR write,
-   // which serialises, so at dispatch it already reflects every older instruction; the op then
-   // traps from the SYSQ like any other illegal instruction. One site: every core use of
-   // d*_illegal below sees it.
-   wire                     d_illegal_fe, d2_illegal_fe, d3_illegal_fe;
+   // AN FP INSTRUCTION WITH mstatus.FS OFF IS ILLEGAL AT DISPATCH (decode folds it into the
+   // record's illegal bit, smolrv64_dslot). FS changes only by a CSR write, which serialises, so
+   // at dispatch it already reflects every older instruction; the op then traps from the SYSQ
+   // like any other illegal instruction.
    wire [15:0]              d_gc, d2_gc, d3_gc;     // smolrv64_gclass, from the frontend's decode
    localparam integer GC_F = 0, GC_C = 1, GC_M = 2, GC_S = 3, GC_L = 4, GC_I = 5, GC_FC = 6,
                       GC_PLAIN = 7, GC_IRQOP = 8, GC_ORD = 9, GC_FPV = 10, GC_DCR = 11,
@@ -299,8 +299,6 @@ module smolrv64_core
    wire d2_cbo_zero;
    wire d2_cbo_keep;
    wire d2_illegal;
-   assign d_illegal  = d_illegal_fe;    // FS Off included, at decode (smolrv64_gclass)
-   assign d2_illegal = d2_illegal_fe;
    wire d2_mis_taken;
    wire d2_mis_nt;
    wire d2_fault;
@@ -337,7 +335,6 @@ module smolrv64_core
    wire d3_is_fp, d3_is_fencei;
    wire d3_is_cbo, d3_cbo_zero, d3_cbo_keep;
    wire d3_illegal;
-   assign d3_illegal = d3_illegal_fe;
    wire d3_mis_taken, d3_mis_nt;
    wire d3_fault;
    wire [3:0] d3_fault_cause;
@@ -346,17 +343,9 @@ module smolrv64_core
    localparam integer DCR_BACK = 1;   // static-taken for a BACKWARD conditional branch on a BTB miss (loop back-edge bet)
    smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .PDW(PDW), .RASB(RASB), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK),
                   .RESET_PC(RESET_PC)) fe
-     (.clk(clk), .reset(reset), .accept(accept), .consume(rn_valid),
-      // slot B (item 10b): not filled yet -- two_wide low keeps the one-IR timing exactly
-   // slot B (item 10b): dispatched beside A when the rules below allow
-      .consume_b(rn_valid_b), .two_wide(1'b1),
-      // slot C (IW>=3): consume_c is the third rename valid; three_wide=(IW>=3) is the master
-      // enable. At IW=2 three_wide=0, so the frontend never presents slot C.
-      .consume_c(rn_valid_c), .three_wide(three_wide),
-      .d2_valid(d2_valid), .d2_pc(d2_pc), .d2_insn(d2_insn), .d2_rvc(d2_rvc), .d2_seq(d2_seq), .d2_pdet(d2_pdet), .d2_pred_npc(d2_pred_npc), .d2_rd(d2_rd), .d2_rs1(d2_rs1), .d2_rs2(d2_rs2), .d2_rs3(d2_rs3), .d2_rd_v(d2_rd_v), .d2_rs1_v(d2_rs1_v), .d2_rs2_v(d2_rs2_v), .d2_rs3_v(d2_rs3_v), .d2_imm(d2_imm), .d2_alu_op(d2_alu_op), .d2_alu_w(d2_alu_w), .d2_alu_uw(d2_alu_uw), .d2_op1_sel(d2_op1_sel), .d2_op2_imm(d2_op2_imm), .d2_res_link(d2_res_link), .d2_is_mem(d2_is_mem), .d2_is_store(d2_is_store), .d2_mem_size(d2_mem_size), .d2_mem_signed(d2_mem_signed), .d2_is_branch(d2_is_branch), .d2_br_func(d2_br_func), .d2_is_jump(d2_is_jump), .d2_is_jalr(d2_is_jalr), .d2_is_mul(d2_is_mul), .d2_is_csr(d2_is_csr), .d2_csr_func(d2_csr_func), .d2_is_serialize(d2_is_serialize), .d2_is_amo(d2_is_amo), .d2_amo_func(d2_amo_func), .d2_is_fp(d2_is_fp), .d2_is_fencei(d2_is_fencei), .d2_is_cbo(d2_is_cbo), .d2_cbo_zero(d2_cbo_zero), .d2_cbo_keep(d2_cbo_keep), .d2_illegal(d2_illegal_fe), .d2_mis_taken(d2_mis_taken), .d2_mis_nt(d2_mis_nt), .d2_fault(d2_fault), .d2_fault_cause(d2_fault_cause), .d2_fault_tval(d2_fault_tval),
-      .d3_valid(d3_valid), .d3_pc(d3_pc), .d3_insn(d3_insn), .d3_rvc(d3_rvc), .d3_seq(d3_seq), .d3_pdet(d3_pdet), .d3_pred_npc(d3_pred_npc), .d3_rd(d3_rd), .d3_rs1(d3_rs1), .d3_rs2(d3_rs2), .d3_rs3(d3_rs3), .d3_rd_v(d3_rd_v), .d3_rs1_v(d3_rs1_v), .d3_rs2_v(d3_rs2_v), .d3_rs3_v(d3_rs3_v), .d3_imm(d3_imm), .d3_alu_op(d3_alu_op), .d3_alu_w(d3_alu_w), .d3_alu_uw(d3_alu_uw), .d3_op1_sel(d3_op1_sel), .d3_op2_imm(d3_op2_imm), .d3_res_link(d3_res_link), .d3_is_mem(d3_is_mem), .d3_is_store(d3_is_store), .d3_mem_size(d3_mem_size), .d3_mem_signed(d3_mem_signed), .d3_is_branch(d3_is_branch), .d3_br_func(d3_br_func), .d3_is_jump(d3_is_jump), .d3_is_jalr(d3_is_jalr), .d3_is_mul(d3_is_mul), .d3_is_csr(d3_is_csr), .d3_csr_func(d3_csr_func), .d3_is_serialize(d3_is_serialize), .d3_is_amo(d3_is_amo), .d3_amo_func(d3_amo_func), .d3_is_fp(d3_is_fp), .d3_is_fencei(d3_is_fencei), .d3_is_cbo(d3_is_cbo), .d3_cbo_zero(d3_cbo_zero), .d3_cbo_keep(d3_cbo_keep), .d3_illegal(d3_illegal_fe), .d3_mis_taken(d3_mis_taken), .d3_mis_nt(d3_mis_nt), .d3_fault(d3_fault), .d3_fault_cause(d3_fault_cause), .d3_fault_tval(d3_fault_tval),
+     (.clk(clk), .reset(reset), .accept(accept), .consume(fe_consume),
+      .d_valid(fe_dv), .d_rec(fe_rec),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc),
-      .d_gc(d_gc), .d2_gc(d2_gc), .d3_gc(d3_gc),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -368,22 +357,22 @@ module smolrv64_core
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
       .res_taken(res_taken_q), .res_pdet(res_pdet_q), .res_tgt(res_tgt_q),
       .res_pc(res_pc_q), .res_rvc(res_rvc_q),
-      .d_valid(d_valid), .d_pc(d_pc), .d_insn(d_insn), .d_rvc(d_rvc), .d_seq(d_seq),
-      .d_pdet(d_pdet), .d_pred_npc(d_pred_npc),
-      .d_rd(d_rd), .d_rs1(d_rs1), .d_rs2(d_rs2), .d_rs3(d_rs3),
-      .d_rd_v(d_rd_v), .d_rs1_v(d_rs1_v), .d_rs2_v(d_rs2_v), .d_rs3_v(d_rs3_v),
-      .d_imm(d_imm),
-      .d_alu_op(d_alu_op), .d_alu_w(d_alu_w), .d_alu_uw(d_alu_uw), .d_op1_sel(d_op1_sel),
-      .d_op2_imm(d_op2_imm), .d_res_link(d_res_link),
-      .d_is_mem(d_is_mem), .d_is_store(d_is_store), .d_mem_size(d_mem_size),
-      .d_mem_signed(d_mem_signed), .d_is_branch(d_is_branch), .d_br_func(d_br_func),
-      .d_is_jump(d_is_jump), .d_is_jalr(d_is_jalr), .d_is_mul(d_is_mul), .d_is_csr(d_is_csr),
-      .d_csr_func(d_csr_func), .d_is_serialize(d_is_serialize), .d_is_amo(d_is_amo),
-      .d_amo_func(d_amo_func), .d_is_fp(d_is_fp), .d_is_fencei(d_is_fencei),
-      .d_is_cbo(d_is_cbo), .d_cbo_zero(d_cbo_zero), .d_cbo_keep(d_cbo_keep),
-      .d_illegal(d_illegal_fe), .d_mis_taken(d_mis_taken), .d_mis_nt(d_mis_nt),
-      .d_fault(d_fault), .d_fault_cause(d_fault_cause), .d_fault_tval(d_fault_tval),
       .cur_seq(fe_cur_seq), .fe_err(fe_err_f));
+
+   // the dispatch group: slot k's decoded record (smolrv64_irec.vh), unpacked under its names
+   localparam integer IRW = `IR_RECW;
+   wire [IW-1:0]     fe_dv;
+   wire [IW*IRW-1:0] fe_rec;
+   wire [IW-1:0]     fe_consume;
+   assign d_valid = fe_dv[0];  assign `IR_REC(d_) = fe_rec[0 +: IRW];
+   assign d2_valid = fe_dv[1];  assign `IR_REC(d2_) = fe_rec[IRW +: IRW];
+   generate if (IW >= 3) begin: g_s3
+      assign d3_valid = fe_dv[2];  assign `IR_REC(d3_) = fe_rec[2*IRW +: IRW];
+      assign fe_consume = {rn_valid_c, rn_valid_b, rn_valid};
+   end else begin: g_s2
+      assign d3_valid = 1'b0;  assign `IR_REC(d3_) = {IRW{1'b0}};
+      assign fe_consume = {rn_valid_b, rn_valid};
+   end endgenerate
 
    // ---- decode-stage direct-CTI redirect (static) -------------------------------------
    // Take a control transfer the predictor called fall-through AT DISPATCH, instead of
