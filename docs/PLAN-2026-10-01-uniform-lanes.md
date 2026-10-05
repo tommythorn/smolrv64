@@ -261,6 +261,50 @@ timing is fought.
    dissolves into the lanes' shards. Until the VIPT L1 takes the dTLB into its access cycle
    (`PLAN-2026-10-03-dcache-vipt-l2.md`), the memory unit translates before the access.
 
+   **5.2d in detail (design, 2026-10-04).** M today: `u_iq_l` (in order) -> `i_*` -> `u_x`
+   computes `m_addr` -> the dTLB's lookup port (`s_`) translates it and fills the op's LQ/SQ
+   entry (VA, PA, `tv`, `unc`, `mem`; a load may start its access in the same pass) -> for an
+   AMO, LR/SC or CBO, the LSU's own FSM at the ROB head. Everything else in M is already dead or
+   asserted out. The queue side already walks (`wk_*`, the `t_` port), records faults in entries,
+   starts loads (`acc`), and commits and drains stores. What M alone still provides, and so what
+   5.2d has to replace:
+   - **the first dTLB lookup of every load and store** (the queue walker serves only M's misses);
+   - **address-only faults** (a page-crossing misaligned access, a non-canonical VA), trapping
+     from M with the full 64-bit `tval` (the entries hold VA[38:0]);
+   - **store data already in the PRF at issue** (`a_data`), including the FP file's for
+     `fsw`/`fsd`: M's `ra2` is the only integer-side port that reads the FP file;
+   - **program-order address fills**, which two things assume: a CBO waiting on `sq_av_any`
+     (meant as "an older store's address is unknown") and the LQ's `l_older` timing argument;
+   - **the head-only ops** (AMO, LR/SC, CBO) and M's trap and redirect.
+
+   The increments, each lockstep-gated:
+   1. **5.2d-a: plain loads and integer stores generate their address in their slot's lane.**
+      They become class I (`smolrv64_gclass`), keep their LQ/SQ credit, and the group rule
+      becomes "at most one load and one store" (the queues' single allocation ports) instead of
+      "one ordered op". The lane treats one like a multiply: no write, wake or ROB completion at
+      issue, no wake at select (`e_long`). The lane's VA (and, for a store, its rs2 when that is
+      no longer pending) is registered and fills the entry the next cycle; the LQ and SQ take
+      up to three fills a cycle (their fields are flops). The `s_` port translates one of them,
+      a load first, in the fill cycle, keeping the early start; any other fill enters with
+      `tv=0` and the queue walker translates it, as it does M's misses today. Address-only
+      faults are decided at the fill and recorded in the entry with the full VA (a side array
+      read only at the trap), so they trap from the SYSQ like a page fault. The CBO's wait and
+      `l_older` get an explicit age compare. M keeps FP stores and the head-only ops.
+   2. **5.2d-b: FP stores and the head-only ops leave M.** The SQ gets one read port onto the
+      PRF and the FP file (one store's data a cycle, for entries whose data was ready before
+      the snoop armed), so every store issues in a lane. An AMO, LR/SC or CBO generates its
+      address in its lane and waits in a one-entry head-op register in the memory unit, which
+      starts the LSU's FSM at the ROB head; its result takes SH_LD and the ROB port as M's
+      does. `u_iq_l`, `i_*`, `u_x` and every `m_*` register go.
+   3. **5.2d-c: SH_LD dissolves.** A landing load (and the head-op result, and the SYSQ's CSR
+      read) announces itself a cycle ahead and takes its lane's next free write slot, the
+      reservation 5.2c built.
+
+   The defaults chosen where the design forks: fills from up to three lanes rather than one
+   memory op per cycle (an issue-side limit would put cross-lane arbitration into select);
+   one `s_` lookup a cycle with the walker as overflow, measured before a second lookup port
+   is added; FP stores in M for one increment rather than a split store-data uop.
+
 What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system ops. Their
 integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
 slot, which dissolves SH_FE.
