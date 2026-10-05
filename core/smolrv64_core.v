@@ -433,13 +433,21 @@ module smolrv64_core
    wire [63:0] mmu_satp;
    wire [1:0]  mmu_priv, mmu_dpriv;
    wire        mmu_sum, mmu_mxr, mmu_flush;
+   // THE TLB FLUSH IS A REGISTER: csr_file's is its system op's live fire (an sfence.vma or a satp
+   // write), and through the fetch freeze and the iTLB it reached the I$ request and the fetch
+   // ring. It takes effect a cycle later, the cycle the op's own redirect reaches the front end
+   // (fe_red_q), and the freeze it raises then withholds that cycle's fetch, so no fetch uses a
+   // stale translation; every younger op dies at the redirect.
+   reg         mmu_flush_q;
+   initial     mmu_flush_q = 1'b0;
+   always @(posedge clk) mmu_flush_q <= ~reset & mmu_flush;
    wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
 
    mmu #(.AW(56), .DRAM_TOP(DRAM_TOP), .TLBN(64), .TLBI(6)) u_immu
      (.clk(clk), .reset(reset),
       .req_valid(1'b1), .req_vaddr(imem_va), .req_access(2'd0),
-      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush),
+      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush_q),
       .ptw_addr(ptw_addr), .ptw_read(ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
@@ -459,7 +467,7 @@ module smolrv64_core
       ipriv_q <= mmu_priv;
       isatp_q <= satp_fetch;
    end
-   assign imem_ctx_chg  = mmu_flush | (isatp_q != satp_fetch);
+   assign imem_ctx_chg  = mmu_flush_q | (isatp_q != satp_fetch);
    assign fe_redirect   = fe_red_pulse;
    assign imem_satp_q   = isatp_q;
    assign imem_priv_q   = ipriv_q;
@@ -2035,7 +2043,7 @@ module smolrv64_core
       .wk_pa(lsu_wk_pa), .wk_unc(lsu_wk_unc), .wk_mem(lsu_wk_mem), .wk_flt(lsu_wk_flt), .wk_fc(lsu_wk_fc),
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
-      .xl_flush(mmu_flush), .flush(redirect), .m_head(m_at_head),
+      .xl_flush(mmu_flush_q), .flush(redirect), .m_head(m_at_head),
       // A committed store, or the LQ's candidate at head: the LSU asserts every non-DRAM start
       // is non-speculative against ITS OWN region decode (rule D12). The head compare alone is
       // exact: a live index is unique, a flush empties the queue, and a candidate whose ROB

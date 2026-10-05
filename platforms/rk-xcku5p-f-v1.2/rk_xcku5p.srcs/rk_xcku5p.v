@@ -809,6 +809,15 @@ module rk_xcku5p(
 
    // The MMIO bridge's core side runs at probe_clk; its async FIFOs are the probe_clk<->ui_clk CDC.
    wire mmio_bridge_clk = probe_clk;   wire mmio_bridge_rst = probe_reset;
+   // The response is a register before it enters the core: the FIFO's block-RAM output, far from
+   // the core, fed the LSU's slow-path load data and through it every lane's write register and
+   // landing buffer. A device read takes one more cycle.
+   reg         core_mmio_readdatavalid_q = 1'b0;
+   reg  [31:0] core_mmio_readdata_q = 32'd0;
+   always @(posedge probe_clk) begin
+      core_mmio_readdatavalid_q <= ~probe_reset & core_mmio_readdatavalid;
+      core_mmio_readdata_q      <= core_mmio_readdata;
+   end
    smolrv64_mmio_clock_bridge mmio_clock_bridge_inst(
       .core_clock          (mmio_bridge_clk),
       .core_reset          (mmio_bridge_rst),
@@ -2123,7 +2132,7 @@ module rk_xcku5p(
       .cache_par_err(probe_par_err), .cache_par_dbg(probe_par_dbg),
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
-      .virtio_rdata(core_mmio_readdata), .virtio_rvalid(core_mmio_readdatavalid),
+      .virtio_rdata(core_mmio_readdata_q), .virtio_rvalid(core_mmio_readdatavalid_q),
       .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(p_kbd_irq), .dma_wr(p_dma_wr), .core_dbg(probe_core_dbg));
 
 `ifdef ILA_IRQ
