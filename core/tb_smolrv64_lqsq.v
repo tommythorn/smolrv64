@@ -33,6 +33,7 @@ module tb;
    reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0, lq_a_unc=0;
    wire             lq_x_head;   // the LQ candidate's head compare (2026-09-17); unused here
    wire             lq_x_devwait; wire [NENT-1:0] sq_l_block_unk_q;   // counter-only outputs (2026-09-17)
+   wire             lq_d_ready2, sq_d_ready2;
    wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v;
    wire [IDXB-1:0]  lq_d_idx, lq_x_idx;  wire [IDXB:0] lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
@@ -65,7 +66,7 @@ module tb;
    smolrv64_lq #(.DRAM_BASE(56'd0),.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.SQIB(IDXB+1)) u_lq
      (.clk(clk),.reset(reset),
       .d_alloc(lq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
-      .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_idx(lq_d_idx),
+      .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_ready2(lq_d_ready2),.d_idx(lq_d_idx),
       .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_va(39'(lq_a_pa)), .a_tv(1'b1),.a_size(lq_a_size),
       .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(lq_a_unc),
       .e_off(e_off),.e_size(e_size),.e_tag(e_tag),.e_av(e_av),.e_block(e_block),.x_block(lq_x_block),
@@ -81,7 +82,7 @@ module tb;
    // fills the load queue -- exactly smolrv64_core's m_lq_fill wiring
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
-      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),
+      .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),
       .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_size(sq_a_size),.a_unc(sq_a_unc),
       .a_data_v(sq_a_data_v),.a_data(sq_a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),

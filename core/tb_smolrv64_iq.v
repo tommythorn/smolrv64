@@ -22,7 +22,7 @@ module tb;
    wire [IDXB-1:0] d_ent, iss_ent;
    wire [ROBB-1:0] iss_rob;
    wire [PBITS-1:0] blk_pr;
-   wire [IDXB:0] occupancy;
+   wire [IDXB:0] occupancy, free_n;
    integer errs=0;
 
    smolrv64_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
@@ -34,7 +34,7 @@ module tb;
       .unit_busy(unit_busy),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
       .iss_take(iss_take),
       .hold_v(hold_v),.hold_ent(hold_ent),
-      .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.occupancy(occupancy));
+      .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.occupancy(occupancy),.free_n(free_n));
 
    // Second instance in INORDER mode -- the load scheduler's configuration.
    reg io_d_valid=0, io_take=0, io_hold=0;
@@ -43,7 +43,7 @@ module tb;
    wire io_iss_v, io_d_ready, io_blk_v;
    wire [ROBB-1:0] io_iss_rob;
    wire [IDXB-1:0] io_d_ent, io_iss_ent;
-   wire [PBITS-1:0] io_blk_pr; wire [IDXB:0] io_occ;
+   wire [PBITS-1:0] io_blk_pr; wire [IDXB:0] io_occ, io_free_n;
    smolrv64_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
              .FIXEDL(0),.INORDER(1)) dut_io
      (.clk(clk),.reset(reset),
@@ -53,7 +53,7 @@ module tb;
       .unit_busy(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
       .iss_take(io_take),
       .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),
-      .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.occupancy(io_occ));
+      .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.occupancy(io_occ),.free_n(io_free_n));
 
    task disp(input [ROBB-1:0] rob, input [PBITS-1:0] p0, input r0, input [PBITS-1:0] prd);
       begin
@@ -124,8 +124,8 @@ module tb;
 
       // 6. flush
       @(negedge clk); flush=1; @(posedge clk); @(negedge clk); flush=0;
-      if (occupancy!==0 || iss_v!==1'b0) begin
-         $display("FAIL flush: occ=%0d iss_v=%b", occupancy, iss_v); errs=errs+1;
+      if (occupancy!==0 || iss_v!==1'b0 || free_n!==NENT) begin
+         $display("FAIL flush: occ=%0d iss_v=%b free_n=%0d", occupancy, iss_v, free_n); errs=errs+1;
       end else $display("  ok  flush clears");
 
       // 1b. every dispatched entry issues exactly once (order unconstrained)
