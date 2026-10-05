@@ -430,6 +430,11 @@ four lanes and the four FP slices.
    names a lane or a slot past the arrays.
 3. **5.4c: IW=4 with the dense ROB.** `SMOLRV64_IW=4`: lane D, slot D, slice F3. Lockstep IPC
    at 60 M and 300 M against IW=3 before timing is fought, as at Stage 3.
+   **Built (2026-10-05):** with 5.4b the width is a parameter, so IW=4 needed only the ROB's
+   fourth lane completion port and the credit layout (both in 5.4b-6); `build.tcl` takes 2..4.
+   The 240 riscv-tests pass, and the boot runs in lockstep: 60 M retires 41,109,903 (+0.87% on
+   IW=3's 40,756,540), 300 M 197,517,200 (-0.98% on IW=3's 199,478,367), on the dense 32-entry
+   ROB. The fourth slot buys nothing yet; 5.4d's rows come next.
 4. **5.4d: the sharded ROB, 32 rows of four.** A group takes a row, slot k in column k; the
    ROB's credit is a row; `{row, col}` is the age. Each lane completes its own column. The
    ports that complete any column -- the FP landing, the store queue's irrevocable take, the

@@ -21,7 +21,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
-| Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
+| Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` and `4` build the two- and four-wide machines); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); loads, stores, AMOs, LR/SC and CBOs generate their address in their slot's lane and reach M through their LQ/SQ entry or the head-op register (§8) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to `IW`/cycle |

@@ -256,10 +256,10 @@ if {1} {
         lappend vdefines "SMOLRV64_HW=8"
     }
     # Pipeline width. 3 is the shipping build AND the RTL default (the ifndef SMOLRV64_IW in
-    # smolrv64_core.v / rv_soc_top.v); 2 and 1 are the narrower configurations. One knob drives the whole width-generic frontend + backend.
+    # smolrv64_core.v / rv_soc_top.v); 2 and 4 are the other widths. One knob drives the whole width-generic frontend + backend.
     if {[info exists env(SMOLRV64_IW)] && $env(SMOLRV64_IW) ne ""} {
-        if {$env(SMOLRV64_IW) != 1 && $env(SMOLRV64_IW) != 2 && $env(SMOLRV64_IW) != 3} {
-            error "SMOLRV64_IW=$env(SMOLRV64_IW): only 1, 2 or 3 (pipeline width); 3 is the shipping build."
+        if {$env(SMOLRV64_IW) < 2 || $env(SMOLRV64_IW) > 4} {
+            error "SMOLRV64_IW=$env(SMOLRV64_IW): only 2, 3 or 4 (pipeline width); 3 is the shipping build."
         }
         puts "SMOLRV64_IW override: pipeline width = $env(SMOLRV64_IW) (the shipping build is 3)."
         lappend vdefines "SMOLRV64_IW=$env(SMOLRV64_IW)"
