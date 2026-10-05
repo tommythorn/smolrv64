@@ -1,8 +1,8 @@
 // smolrv64_gclass -- an instruction's dispatch class, from its decoded fields.
 //
 // The ONE definition of what an instruction is to dispatch: which scheduler it goes to
-// (its slot's lane, the ordered memory pipe, or the FP/MD/SYS pipe), whether it may go
-// beside anything else (plain), and whether it redirects fetch at decode (an unpredicted
+// (its slot's lane, or the FP/MD/SYS pipe), whether it is a head op (an AMO, LR/SC or CBO),
+// whether it may go beside anything else (plain), and whether it redirects fetch at decode (an unpredicted
 // jal, or a backward conditional the BTB missed, predicted not taken). The frontend
 // evaluates it once per instruction at decode and the result rides in the decoupling
 // queue's record: the queue head forms dispatch groups from it and dispatch routes by it,
@@ -49,8 +49,10 @@ module smolrv64_gclass
    // LR/SC and a CBO stay on the ordered memory pipe
    wire mem_l = ((is_mem & ~is_store & ~is_amo & ~is_cbo) | (is_store & ~is_amo & ~is_cbo))
               & ~illegal & ~fault & ~irqop;
-   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s & ~mul_l & ~mem_l;   // the ordered memory pipe (u_iq_l)
-   wire cls_i  = ~ord | cls_c | mul_l | mem_l;               // ALU op, control flow, multiply, load or store: the slot's lane
+   // an AMO, LR/SC or CBO generates its address in its slot's lane too, and runs from the
+   // head-op register at the ROB head
+   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s & ~mul_l & ~mem_l;   // a head op (AMO, LR/SC, CBO)
+   wire cls_i  = ~ord | cls_c | mul_l | mem_l | cls_l;       // everything but FP, divide and system ops: the slot's lane
    wire cls_fc = cls_f | cls_m | cls_s;                      // the FP/MD/SYS pipe (u_iq_f)
    // a serialising op, fence.i, CBO, AMO, CSR, a trap at dispatch or the irqop goes alone
    wire plain = ~(is_serialize | is_fencei | is_cbo | is_amo | is_csr | illegal | fault | irqop);

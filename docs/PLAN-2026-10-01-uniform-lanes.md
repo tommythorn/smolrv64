@@ -306,12 +306,17 @@ timing is fought.
       once the four lanes exist. The ideal there is branch, store, load, divide, multiply, the
       rest, with age as the secondary key, costed against the scheduler's select path; a
       long-latency-first select alone measured +0.7% on Dhrystone.
-   2. **5.2d-b: FP stores and the head-only ops leave M.** The SQ gets one read port onto the
-      PRF and the FP file (one store's data a cycle, for entries whose data was ready before
-      the snoop armed), so every store issues in a lane. An AMO, LR/SC or CBO generates its
-      address in its lane and waits in a one-entry head-op register in the memory unit, which
-      starts the LSU's FSM at the ROB head; its result takes SH_LD and the ROB port as M's
-      does. `u_iq_l`, `i_*`, `u_x` and every `m_*` register go.
+   2. **5.2d-b: FP stores and the head-only ops leave M.** Built (2026-10-04) in three gated
+      steps. (1) A load's or store's address-only fault rides in its entry, filled as faulted, and
+      traps from the SYSQ like a page fault (tval from a full-VA side array): M holds only its
+      own accesses' faults (+0.16% at 60 M). (2) The SQ fetches store data itself: a value in a
+      register file at allocation is read on `ra2` by the SQ's oldest entry still waiting for
+      one, a later one by the snoop; lanes deliver only a VA, and FP stores are lane stores
+      (-0.27%). (3) An AMO, LR/SC or CBO goes alone, so in lane A, which generates its address
+      and reads its rs2 into a one-entry head-op register; M takes it when no load or store is
+      unfilled and runs it at the ROB head. One head op is in flight at a time. `u_iq_l`, the
+      issue register `i_*` and M's execute unit `u_x` are gone (-0.02%). M remains as the fill
+      and head-op stage.
    3. **5.2d-c: SH_LD dissolves.** A landing load (and the head-op result, and the SYSQ's CSR
       read) announces itself a cycle ahead and takes its lane's next free write slot, the
       reservation 5.2c built.

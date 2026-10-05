@@ -575,7 +575,7 @@ module smolrv64_core
       // doc 1's "values live in one place". Reading them at dispatch and carrying them into
       // M is the second copy that property exists to avoid.
       // ra3 is tied off: M reads two operands.
-      .ra1(i_ps1), .ra2(sq_r_v ? sq_r_preg : i_ps2), .ra3({RN_PBITS{1'b0}}),
+      .ra1({RN_PBITS{1'b0}}), .ra2(sq_r_preg), .ra3({RN_PBITS{1'b0}}),
       .rd1(prf_rs1), .rd2(prf_rs2), .rd3(prf_rs3),
       .ra4(a_ps1), .ra5(a_ps2), .rd4(prf_a1), .rd5(prf_a2),
       .ra6(a2_ps1), .ra7(a2_ps2), .rd6(prf_a21), .rd7(prf_a22),
@@ -608,7 +608,6 @@ module smolrv64_core
                                   sq_kc_rob, ft_rob, mA_2 ? mA_rob2 : a_rob, rob_w_idx};
    wire                lq_d_ready2, sq_d_ready2;
    wire [IBI:0]        ri_free, ri2_free, ri3_free;
-   wire [IBL:0]        rl_free;
    wire [IBF:0]        rf_free;
    wire [13:0]         crd;               // the dispatch credits (smolrv64_frontend CR_*)
    wire                fe_hd_v, fe_hd_take;   // the queue head: an instruction, and whether it pops
@@ -636,10 +635,7 @@ module smolrv64_core
    wire [RN_PBITS-1:0] rob_c_prd;
    reg  [ROB_IDXB-1:0] m_rob_idx;          // rides with the op, names its slot at completion
    initial m_rob_idx = {ROB_IDXB{1'b0}};
-   // i_rob, not iq_iss_rob: M is loaded from the ISSUE REGISTER now, a cycle after
-   // selection. Naming the current selection here let M's slot drift from the instruction
-   // M actually holds, and both completion ports then marked the same entry done.
-   always @(posedge clk) if (m_advance) m_rob_idx <= s_win ? s_rec[PLW +: ROB_IDXB] : i_rob;
+   always @(posedge clk) if (m_advance) m_rob_idx <= m_go_rob;
 
    // Completion. While M blocks this is just "M finished", so the head is always the M
    // instruction; when the blocking is cut, this becomes one input per unit.
@@ -725,7 +721,7 @@ module smolrv64_core
       .r1(pnd_s1), .r2(pnd_s2), .r3(pnd_s3),
       .q7(rn_mprs1), .q8(rn_mprs2), .q9(rn_mprs3),
       .r7(pnd_m1), .r8(pnd_m2), .r9(pnd_m3),
-      .q4(i_ps1), .q5(i_ps2), .q6(i_ps3),
+      .q4({RN_PBITS{1'b0}}), .q5({RN_PBITS{1'b0}}), .q6({RN_PBITS{1'b0}}),
       .r4(pnd_i1), .r5(pnd_i2), .r6(pnd_i3),
       .flush(redirect));
 
@@ -742,19 +738,6 @@ module smolrv64_core
    // instruction to M. Consumption has moved to ISSUE and the scheduler enforces the same
    // property structurally -- an entry is not selectable until every source is ready -- so
    // the check moves with it: nothing may issue with a source still pending and no forward.
-      always @(posedge clk) if (!reset & iss_m) begin
-      // "pending" is the REGISTER, cleared at the writeback edge -- so an entry the
-      // scheduler woke this cycle is legitimately still marked pending while its value
-      // arrives on a forward. The property is that a source is available, by either route.
-      if (q_rs1_v & ~pnd_i1)
-         $fatal(1, "core: executed with rs1 p%0d still pending (rob=%0d pc=%h insn=%h ord=%b)",
-                i_ps1, i_rob, q_pc, q_insn, q_ord);
-      // (a plain store's rs2 is never waited on, but a plain store issues in a lane, below)
-      if (q_rs2_v & ~pnd_i2)
-         $fatal(1, "core: executed with rs2 p%0d still pending (rob=%0d)", i_ps2, i_rob);
-      if (q_rs3_v & ~pnd_i3)
-         $fatal(1, "core: executed with rs3 p%0d still pending (rob=%0d)", i_ps3, i_rob);
-   end
    always @(posedge clk) if (!reset & iss_alu) begin
       if (qa_rs1_v & ~pnd_a1)
          $fatal(1, "core: ALU port executed with rs1 p%0d still pending (rob=%0d pc=%h)", a_ps1, a_rob, qa_pc);
@@ -801,7 +784,6 @@ module smolrv64_core
    // workload REJECTS. Size the schedulers on the suite, and treat a microbenchmark win as
    // provisional until a suite run confirms it. The 95 ps has to be found somewhere else.
    localparam integer NI = 10, IBI = 4;    // integer: pure ALU, reorders freely
-   localparam integer NL = 12, IBL = 4;    // every M-class op: memory, mul/div, CSR,
                                            // branches, FP -- one in-order stream
    // NF=8, the policy minimum, since 2026-08-28 (47e1d26a); every gated build since has
    // closed 166.67 MHz with it, at +0.001-0.002 ns. Before that NF=5 was the largest FP
@@ -828,10 +810,8 @@ module smolrv64_core
    // by a better scheduler.
    localparam integer NF = 8,  IBF = 3;   // 8 since C1: mul/div share it (was 5)    // FP arith, three sources, its OWN unit. 5 since gate V4 (2026-09-05):
                                            // the two-wide core closed at exactly 0.000 ns and did not boot; FP gives first
-   localparam integer OFF_I = 0, OFF_L = NI, OFF_F = NI + NL;
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
    localparam integer NWB_C   = 5;         // writeback ports watched: one per PRF shard (SH_IE3 since Stage 3)
-   localparam integer PL_N = NI + NL + NF, PL_IB = 5;
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
    localparam integer SQ_TB = SQ_IB + 1;         // ...and its seqno: the index plus a wrap bit
                                                  // (smolrv64_sq's head/tail counters), so that a load
@@ -880,7 +860,7 @@ module smolrv64_core
 
    // Control flow falls to C_F here so d2_hold treats FP and CTF as one class: they share the
    // FP/CTF queue's single dispatch port, so A and B cannot both go there in a cycle.
-   wire [1:0] d_cls = d_cls_i ? C_I : d_cls_l ? C_L : C_F;
+   wire [1:0] d_cls = d_cls_i ? C_I : C_F;
 
    wire [RN_PBITS-1:0] d_prd_g = d_rd_v ? rn_prd : {RN_PBITS{1'b0}};
    // A plain store's rs2 is not an operand of the INSTRUCTION any more -- it is an operand
@@ -907,7 +887,7 @@ module smolrv64_core
    wire d2_cls_l = d2_gc[GC_L];
    wire d2_cls_i = d2_gc[GC_I];
    wire d2_cls_fc = d2_gc[GC_FC];
-   wire [1:0] d2_cls = d2_cls_i ? C_I2 : d2_cls_l ? C_L : C_F;   // CTF falls to C_F (shares u_iq_f)
+   wire [1:0] d2_cls = d2_cls_i ? C_I2 : C_F;   // CTF falls to C_F (shares u_iq_f)
    wire [RN_PBITS-1:0] d2_prd_g = d2_rd_v ? rn_prd_b : {RN_PBITS{1'b0}};
    wire       d2_st_nb = d2_gc[GC_ST];
    wire       d2_ld_nb = d2_gc[GC_LD];
@@ -966,17 +946,11 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] ri3_iss_rob;  wire [RN_PBITS-1:0] ri3_blk_pr;  wire [IBI:0] ri3_occ;  wire ri3_take;
    wire [ROB_IDXB-1:0] ri_iss_rob;
    wire [RN_PBITS-1:0] ri_blk_pr;      wire [IBI:0] ri_occ;
-   wire rl_ready, rl_iss_v, rl_blk_v;  wire [IBL-1:0] rl_d_ent, rl_iss_ent;
-   wire [ROB_IDXB-1:0] rl_iss_rob;
-   wire [RN_PBITS-1:0] rl_blk_pr;      wire [IBL:0] rl_occ;
    wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
    wire [ROB_IDXB-1:0] rf_iss_rob;
    wire [RN_PBITS-1:0] rf_blk_pr;      wire [IBF:0] rf_occ;
-   wire ri_take, rl_take, rf_take;
-   wire i_needs_m;                     // the issue register holds an M-class op
-   wire s_win;                         // ...but a lane's load or store, older, takes M instead
-   wire i_ok;                          // ...or i_*'s op may go
-   wire i_needs_f;                     // ...or an F-class one
+   wire ri_take, rf_take;
+   wire s_win;                         // M takes a lane's load or store this cycle
    wire f_advance;
 
    // ---- THE ALU'S OWN ISSUE PORT (item 10d-i, 2026-09-05) -----------------------------
@@ -1020,19 +994,18 @@ module smolrv64_core
    // below, computed from the early slot pregs so it stays off the mux->register path); every
    // later stuck cycle ORs a fresh wkv snoop of the stage's own pregs; and the move cycle is
    // caught by the scheduler's own fill hit(d_ps). See docs/SmolRV64-Spec.md 15.
-   reg              stg_v_ia, stg_v_ib, stg_v_ic, stg_v_l, stg_v_f;
-   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_ic, stg_rob_l, stg_rob_f;
-   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_ic, stg_ps_l, stg_ps_f;
+   reg              stg_v_ia, stg_v_ib, stg_v_ic, stg_v_f;
+   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_ic, stg_rob_f;
+   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_ic, stg_ps_f;
    reg [1:0]        stg_r_ia, stg_r_ib, stg_r_ic;
-   reg [2:0]        stg_r_l, stg_r_f;
-   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_ic, stg_prd_l, stg_prd_f;
-   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_ic, stg_pl_l, stg_pl_f;
-   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_ic=1'b0; stg_v_l=1'b0; stg_v_f=1'b0; end
+   reg [2:0]        stg_r_f;
+   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_ic, stg_prd_f;
+   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_ic, stg_pl_f;
+   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_ic=1'b0; stg_v_f=1'b0; end
    // The scheduler accepts the stage op when it has room; back-pressure to the frontend below.
    wire mv_ia = stg_v_ia & ri_ready;
    wire mv_ib = stg_v_ib & ri2_ready;
    wire mv_ic = stg_v_ic & ri3_ready;
-   wire mv_l  = stg_v_l  & rl_ready;
    wire mv_f  = stg_v_f  & rf_ready;
 
    function automatic is_mulop(input [31:0] i);     // MUL, MULH*, MULW: OP or OP-32, M, funct3 < 4
@@ -1041,9 +1014,12 @@ module smolrv64_core
    function automatic is_lmem(input [31:0] i);      // a plain load or store: a lane generates its address
       is_lmem = (i[6:3] == 4'b0000) | (i[6:3] == 4'b0100);   // LOAD/LOAD-FP, STORE/STORE-FP
    endfunction
+   function automatic is_hop(input [31:0] i);       // an AMO, LR/SC or CBO: a head op
+      is_hop = (i[6:2] == 5'b01011) | ((i[6:2] == 5'b00011) & (i[14:12] == 3'b010));
+   endfunction
    // a lane op that does not complete in its execute cycle: no write, wake or ROB completion there
    function automatic lane_late(input [31:0] i);
-      lane_late = is_mulop(i) | is_lmem(i);
+      lane_late = is_mulop(i) | is_lmem(i) | is_hop(i);
    endfunction
    localparam integer PL_INSN = PLW - PCW - 32;   // the instruction's place in the payload (pl_in)
    smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
@@ -1080,19 +1056,6 @@ module smolrv64_core
       .hold_v(a3_v),.hold_ent(a3_ent),
       .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ),.free_n(ri3_free));
 
-   smolrv64_iq #(.NENT(NL),.IDXB(IBL),.NSRC(3),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-             .FIXEDL(0),.INORDER(1)) u_iq_l
-     (.clk(clk),.reset(reset),
-      .d_valid(mv_l),.d_ready(rl_ready),
-      .d_rob(stg_rob_l),
-      .d_ps(stg_ps_l),.d_r(stg_r_l),
-      .d_prd(stg_prd_l),.d_long(1'b0),.d_ent(rl_d_ent),
-      .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(~m_advance),
-      .iss_v(rl_iss_v),.iss_ent(rl_iss_ent),.iss_rob(rl_iss_rob),
-     .iss_take(rl_take),
-      .hold_v(i_v & (i_cls == C_L)),.hold_ent(i_ent[IBL-1:0]),
-      .blk_v(rl_blk_v),.blk_pr(rl_blk_pr),.flush(redirect),.occupancy(rl_occ),.free_n(rl_free));
 
    // INORDER(0): FP arith may reorder freely. It has no memory ordering to respect and
    // cannot trap, and reordering is the entire point -- the Gaussian Blur loop
@@ -1121,38 +1084,29 @@ module smolrv64_core
    wire alua_room = ~stg_v_ia | ri_ready;
    wire alub_room = ~stg_v_ib | ri2_ready;
    wire aluc_room = ~stg_v_ic | ri3_ready;
-   wire m_room    = ~stg_v_l  | rl_ready;
    wire f_room    = ~stg_v_f  | rf_ready;
-   wire iq_ready = d_cls_i ? alua_room : d_cls_l ? m_room : f_room;   // CTF falls to F (shared queue)
-   wire iq_ready_b = d2_cls_i ? alub_room : d2_cls_l ? m_room : f_room;
-   wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_l = rn_valid_b & d2_cls_l, b_to_f = rn_valid_b & d2_cls_fc;
+   wire iq_ready = d_cls_i ? alua_room : f_room;   // CTF falls to F (shared queue)
+   wire iq_ready_b = d2_cls_i ? alub_room : f_room;
+   wire b_to_i2 = rn_valid_b & d2_cls_i, b_to_f = rn_valid_b & d2_cls_fc;
    // ---- slot = lane: slot k's ALU op goes to lane k; slot C's other ops go to the one ----
    // LS or FC op's queue (the accepted prefix has <=1 of each).
    wire c_to_ic = rn_valid_c & d3_cls_i;              // slot3 ALU -> lane C
-   wire c_to_l  = rn_valid_c & d3_cls_l;              // slot3 LS  -> M
    wire c_to_f  = rn_valid_c & d3_cls_fc;             // slot3 FC  -> F/CTF
-   wire l_slot0 = rn_valid   & d_cls_l;               // slot1 -> M
    wire f_slot0 = rn_valid   & d_cls_fc;              // slot1 -> F/CTF
    // slot-3's destination-scheduler ready (by class, NOT rn_valid_c -> no combinational loop
    // through d3_take): ALU->lane C, LS->M, FC->F.
-   wire iq_ready_c = d3_cls_i ? aluc_room : d3_cls_l ? m_room : f_room;
+   wire iq_ready_c = d3_cls_i ? aluc_room : f_room;
    wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
-                               : d_cls_l ? {{(RS_IDXB-IBL){1'b0}}, rl_d_ent}
                                :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
 
    // ISSUE ARBITRATION, one per cycle into the single issue register. Long-latency classes
    // win: they are gated on M being free anyway, so they only bid when they can make
    // progress, while an ALU op can always go next cycle instead.
-   wire pick_l = rl_iss_v;
    wire pick_i = ri_iss_v;                                // its own port: never waits for M
    wire pick_i2 = ri2_iss_v;                              // the second ALU's, likewise
    wire pick_i3 = ri3_iss_v;                              // the third ALU's, likewise
    // The F scheduler no longer shares this port: it issues into its own select register
    // j_* (CTF-on-FP). i_* is M-only now, so no arbitration and no class mux here.
-   wire iq_iss_v = pick_l;                                // the M port
-   wire [1:0] pick_cls = C_L;                             // i_* only ever holds an ordered op
-   wire [RS_IDXB-1:0] iq_iss_ent = {{(RS_IDXB-IBL){1'b0}}, rl_iss_ent};
-   wire [ROB_IDXB-1:0] iq_iss_rob = rl_iss_rob;
    // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
    // with it. The source tags used to come OUT of each queue as `iss_ps` -- an async read of
    // the entry array (e_ps[sel], a 16:1 mux over FLOPS) then a 3-way class mux, two levels
@@ -1192,9 +1146,7 @@ module smolrv64_core
    reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_i2 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
-   reg  [3*RN_PBITS-1:0] psmem_l [0:NL-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
-   wire [3*RN_PBITS-1:0] ps_out   = psmem_l[rl_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
    wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
    wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
@@ -1208,17 +1160,11 @@ module smolrv64_core
       if (mv_ia) psmem_i[ri_d_ent]  <= stg_ps_ia;
       if (mv_ib) psmem_i2[ri2_d_ent] <= stg_ps_ib;
       if (mv_ic) psmem_i3[ri3_d_ent] <= stg_ps_ic;
-      if (mv_l)  psmem_l[rl_d_ent]  <= stg_ps_l;
       if (mv_f)  psmem_f[rf_d_ent]  <= stg_ps_f;
    end
-   wire [RN_PBITS-1:0] iq_iss_ps1 = ps_out[0 +: RN_PBITS];
-   wire [RN_PBITS-1:0] iq_iss_ps2 = ps_out[RN_PBITS +: RN_PBITS];
-   wire [RN_PBITS-1:0] iq_iss_ps3 = ps_out[2*RN_PBITS +: RN_PBITS];
-   wire iq_iss_take;
    assign ri_take = pick_i;                              // the ALU port takes every cycle; a take in
    assign ri2_take = pick_i2;                            // the redirect cycle dies in a_v/a2_v (cleared)
    assign ri3_take = pick_i3;                            // lane C, likewise
-   assign rl_take = pick_l & iq_iss_take;
    // The shared FP/CTF queue feeds j_* directly (single source). j_isctf, from the picked op's
    // payload, routes the drain: control flow to cf_*, FP to f_valid. (CTF-over-FP priority is a
    // later addition; for now the queue picks by its own policy.)
@@ -1234,8 +1180,8 @@ module smolrv64_core
                   : (j_needs_f ? f_advance : 1'b1);
    wire j_ready   = ~j_v | j_adv;
    assign rf_take = rf_iss_v;   // rf_iss_v is already gated by unit_busy = j_v & ~j_adv
-   wire iq_blk_v = rl_blk_v | rf_blk_v | ri_blk_v;
-   wire [RN_PBITS-1:0] iq_blk_pr = rl_blk_v ? rl_blk_pr : rf_blk_v ? rf_blk_pr : ri_blk_pr;
+   wire iq_blk_v = rf_blk_v | ri_blk_v;
+   wire [RN_PBITS-1:0] iq_blk_pr = rf_blk_v ? rf_blk_pr : ri_blk_pr;
 
    // ---- SELECT GETS ITS OWN STAGE -------------------------------------------------
    // Select, payload read, register read, execute and writeback in ONE cycle was 50 logic
@@ -1253,12 +1199,6 @@ module smolrv64_core
    // at N+2 -- consecutive execute cycles, no bubble. The same timing is why no operand
    // forwarding exists anywhere here: every producer's write has landed before its consumer
    // reads.
-   reg                 i_v;
-   reg [1:0]           i_cls;      // which scheduler it came from -- selects the hold port
-   reg [RS_IDXB-1:0]   i_ent;
-   reg [ROB_IDXB-1:0]  i_rob;
-   reg [RN_PBITS-1:0]  i_ps1, i_ps2, i_ps3;
-   initial i_v = 1'b0;
 
    // The independent FP/CTF select register (CTF-on-FP). i_* is M-only now; this port has its
    // OWN three PRF read ports, so a branch or FP op issues in the same cycle as a load instead
@@ -1273,17 +1213,6 @@ module smolrv64_core
 
    // An ordered op completes when M takes it; an ALU op completes unconditionally, because
    // SH_IE has exactly one writer and it is this one. Nothing can be in the way.
-   assign i_needs_f   = i_v & (i_cls == C_F);
-   assign i_needs_m   = i_v & q_ord & ~i_needs_f;
-   wire   i_done      = i_v & (i_needs_f ? f_advance : m_advance & i_ok);   // only M/F ops live here now
-   wire   iss_ready   = ~i_v | i_done;
-   assign iq_iss_take = iq_iss_v & iss_ready;            // likewise: i_v is cleared by the redirect
-   // ~redirect on BOTH. The register is cleared on a redirect, but these are
-   // combinational off i_v -- without the guard an instruction being squashed still writes
-   // the register file and still marks its ROB slot done, in the very cycle rename is
-   // rolling that physical register back. That is the zombie writeback in miniature, and it
-   // is what failed all 61 virtual-memory tests: they are the ones that trap often.
-   wire   iss_m       = i_ok & m_advance & ~redirect;    // loads M this cycle
    wire   iss_f       = j_needs_f & f_advance & ~redirect;    // j_* drains an FP op into f_valid
    wire   iss_md      = j_needs_m & md_advance & ~redirect;   // ...or a mul/div into the MD stage (C1)
    wire   iss_sys     = j_needs_s & sy_advance & ~redirect;   // ...or a system op into the SYSQ (C3 step 3)
@@ -1318,16 +1247,6 @@ module smolrv64_core
       end
    end
 
-   always @(posedge clk) begin
-      if (reset | redirect) i_v <= 1'b0;
-      else if (iss_ready) begin
-         i_v <= iq_iss_take;
-         if (iq_iss_take) begin
-            i_cls <= pick_cls;    i_ent <= iq_iss_ent;  i_rob <= iq_iss_rob;
-            i_ps1 <= iq_iss_ps1;  i_ps2 <= iq_iss_ps2;  i_ps3 <= iq_iss_ps3;
-         end
-      end
-   end
 
    // j_* loads the FP/CTF queue's pick when it can accept (empty, or its op draining into
    // cf_*/f_valid this cycle).
@@ -1406,10 +1325,9 @@ module smolrv64_core
    wire [1:0] snp_ia = {wk(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
    wire [1:0] snp_ib = {wk(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
    wire [1:0] snp_ic = {wk(stg_ps_ic[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ic[0*RN_PBITS +: RN_PBITS])};
-   wire [2:0] snp_l  = {wk(stg_ps_l[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_l[0*RN_PBITS +: RN_PBITS])};
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
-      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_f<=1'b0; end
       else begin
          // Lane k's stage takes slot k's ALU op. A store names no rs2 there: the lane generates
          // its address only, and the store queue fetches its data (an FP store's rs2 is an FP
@@ -1441,16 +1359,6 @@ module smolrv64_core
             stg_pl_ic  <= pl_in_c;
          end else if (mv_ic) stg_v_ic <= 1'b0;
          else if (stg_v_ic) stg_r_ic <= stg_r_ic | snp_ic;
-         // M (load/store): whichever slot is the (single) LS.
-         if (l_slot0 | b_to_l | c_to_l) begin
-            stg_v_l   <= 1'b1;
-            stg_rob_l <= l_slot0 ? rob_d_idx : b_to_l ? rob_d_idx2 : rob_d_idx3;
-            stg_ps_l  <= l_slot0 ? ps_in : b_to_l ? ps_in_b : ps_in_c;
-            stg_r_l   <= l_slot0 ? srdy_hit0 : b_to_l ? srdy_hit1 : srdy_hit2;
-            stg_prd_l <= l_slot0 ? d_prd_g : b_to_l ? d2_prd_g : d3_prd_g;
-            stg_pl_l  <= l_slot0 ? pl_in : b_to_l ? pl_in_b : pl_in_c;
-         end else if (mv_l) stg_v_l <= 1'b0;
-         else if (stg_v_l) stg_r_l <= stg_r_l | snp_l;
          // F (FP/CTF): whichever slot is the (single) FC.
          if (f_slot0 | b_to_f | c_to_f) begin
             stg_v_f   <= 1'b1;
@@ -1462,7 +1370,7 @@ module smolrv64_core
          end else if (mv_f) stg_v_f <= 1'b0;
          else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
          // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
-         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_l<=1'b0; stg_v_f<=1'b0; end
+         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_f<=1'b0; end
       end
    end
 
@@ -1472,7 +1380,6 @@ module smolrv64_core
    reg [PLW-1:0] plmem_i [0:NI-1];
    reg [PLW-1:0] plmem_i2 [0:NI-1];
    reg [PLW-1:0] plmem_i3 [0:NI-1];
-   reg [PLW-1:0] plmem_l [0:NL-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
    // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
    // 2026-09-06). They used to be read in the execute cycle at last cycle's entry, so every
@@ -1483,16 +1390,13 @@ module smolrv64_core
    // address is the scheduler's select, not the pick), and the port's load captures it. An
    // entry issues no earlier than the cycle after its dispatch, so a read never meets its
    // own write.
-   wire [PLW-1:0] pl_cand  = plmem_l[rl_iss_ent];   // i_* is M-only now
-   reg  [PLW-1:0] pl_q, pla_q, pla2_q, pla3_q, plf_q;
+   reg  [PLW-1:0] pla_q, pla2_q, pla3_q, plf_q;
    always @(posedge clk) begin
-      if (iss_ready & iq_iss_take) pl_q   <= pl_cand;
       if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
       if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
       if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
       if (rf_take)                 plf_q  <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
    end
-   wire [PLW-1:0] pl_out   = pl_q;
    wire [PLW-1:0] pla_out  = pla_q;                         // the ALU port's payload
    wire [PLW-1:0] pla2_out = pla2_q;                        // the second ALU port's
    wire [PLW-1:0] pla3_out = pla3_q;                        // the third ALU port's
@@ -1502,41 +1406,9 @@ module smolrv64_core
       if (mv_ia) plmem_i[ri_d_ent]  <= stg_pl_ia;
       if (mv_ib) plmem_i2[ri2_d_ent] <= stg_pl_ib;
       if (mv_ic) plmem_i3[ri3_d_ent] <= stg_pl_ic;
-      if (mv_l)  plmem_l[rl_d_ent]  <= stg_pl_l;
       if (mv_f)  plmem_f[rf_d_ent]  <= stg_pl_f;
    end
 
-   wire [PCW-1:0]      q_pc, q_pred_npc, q_fault_tval;
-   wire [31:0]         q_insn;
-   wire [SQ_IB-1:0]    q_sq_tag;
-   wire [LQ_IB-1:0]    q_lq_idx;
-   wire                q_rvc, q_rd_v, q_mem_signed, q_is_mem, q_is_store, q_is_amo;
-   wire [SEQW-1:0]     q_seq;
-   wire [PDW-1:0]      q_pdet;
-   wire [5:0]          q_rd, q_rs1;
-   wire [RN_PBITS-1:0] q_prd;
-   wire [2:0]          q_shard;
-   wire [1:0]          q_mem_size;
-   wire [63:0]         q_imm;
-   wire [4:0]          q_amo_func;
-   wire                q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr;
-   wire [2:0]          q_csr_func;
-   wire                q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero;
-   wire                q_cbo_keep, q_illegal, q_fault;
-   wire [3:0]          q_fault_cause;
-   wire [5:0]          q_alu_op;
-   wire                q_alu_w, q_alu_uw, q_op2_imm, q_res_link, q_mis_taken, q_mis_nt;
-   wire [1:0]          q_op1_sel;
-   wire [2:0]          q_br_func;
-   wire                q_rs1_v, q_rs2_v, q_rs3_v, q_ord;
-   assign {q_pc, q_insn, q_rvc, q_seq, q_pdet, q_pred_npc, q_rd, q_rd_v, q_prd, q_shard,
-           q_rs1, q_imm, q_mem_size, q_mem_signed, q_is_mem, q_is_store, q_is_amo,
-           q_amo_func, q_is_branch, q_is_jump, q_is_jalr, q_is_mul, q_is_csr, q_csr_func,
-           q_is_serialize, q_is_fp, q_is_fencei, q_is_cbo, q_cbo_zero, q_cbo_keep,
-           q_illegal, q_fault, q_fault_cause, q_fault_tval,
-           q_alu_op, q_alu_w, q_alu_uw, q_op1_sel, q_op2_imm, q_res_link,
-           q_br_func, q_mis_taken, q_mis_nt,
-           q_rs1_v, q_rs2_v, q_rs3_v, q_ord, q_sq_tag, q_lq_idx} = pl_out;
    // the same unpack for the ALU port (unused fields fall away)
    wire [PCW-1:0]      qa_pc, qa_pred_npc, qa_fault_tval;
    wire [31:0]         qa_insn;
@@ -1957,7 +1829,7 @@ module smolrv64_core
    reg  [5:0]       m_rd, m_rs1;
    reg  [RN_PBITS-1:0] m_prd;           // rename result, carried X->M
    reg  [2:0]       m_shard;
-   reg  [63:0]      m_imm, m_result, m_addr, m_st_data, m_rs1_val, m_rs3_val;
+   reg  [63:0]      m_imm, m_result, m_addr, m_st_data;
    reg  [1:0]       m_mem_size;
    reg              m_mem_signed, m_is_mem, m_is_store, m_is_amo;
    reg  [4:0]       m_amo_func;
@@ -2030,7 +1902,7 @@ module smolrv64_core
    // read colliding with the writeback is bypassed). Reads happen at issue now and the
    // collision is covered by `fwd`, so the check is replaced by one on the new mechanism:
    // an issuing entry whose source is written this cycle must take the forwarded value.
-   always @(posedge clk) if (!reset & iq_iss_v & (WRTHRU_OFF == 0)) begin
+   always @(posedge clk) if (!reset & (WRTHRU_OFF == 0)) begin
       // placeholder: WRTHRU_OFF is 1, so this never fires. Kept as the anchor for the
       // read-during-write property so it is stated somewhere rather than remembered.
       if (1'b0) $fatal(1, "unreachable");
@@ -2073,12 +1945,6 @@ module smolrv64_core
    // 3-producer forward: a source can be waiting on any of the three ALUs' writeback registers.
    // A physical register has one writer, so at most one of {fwd,fwdb,fwdc} is true -- the mux
    // order is immaterial.
-   wire fwd1 = alu_q_v & (i_ps1 == alu_q_prd), fwd1b = alu2_q_v & (i_ps1 == alu2_q_prd), fwd1c = alu3_q_v & (i_ps1 == alu3_q_prd);
-   wire fwd2 = alu_q_v & (i_ps2 == alu_q_prd), fwd2b = alu2_q_v & (i_ps2 == alu2_q_prd), fwd2c = alu3_q_v & (i_ps2 == alu3_q_prd);
-   wire fwd3 = alu_q_v & (i_ps3 == alu_q_prd), fwd3b = alu2_q_v & (i_ps3 == alu2_q_prd), fwd3c = alu3_q_v & (i_ps3 == alu3_q_prd);
-   wire [63:0] x_rs1 = fwd1 ? alu_q_val : fwd1b ? alu2_q_val : fwd1c ? alu3_q_val : prf_rs1;
-   wire [63:0] x_rs2 = fwd2 ? alu_q_val : fwd2b ? alu2_q_val : fwd2c ? alu3_q_val : prf_rs2;
-   wire [63:0] x_rs3 = fwd3 ? alu_q_val : fwd3b ? alu2_q_val : fwd3c ? alu3_q_val : prf_rs3;
    // The F/CTF port's operands, forwarded from the ALUs exactly like M's x_rs* (an FP op with
    // an integer source, or a CTF op, may consume an ALU result produced the same cycle).
    wire fwdf1 = alu_q_v & (j_ps1 == alu_q_prd), fwdf1b = alu2_q_v & (j_ps1 == alu2_q_prd), fwdf1c = alu3_q_v & (j_ps1 == alu3_q_prd);
@@ -2207,18 +2073,6 @@ module smolrv64_core
       if (mC_2 & ~mC_pre) $fatal(1, "smolrv64_core: lane C's multiply is not at mul3's stage B in its slot");
    end
 
-   wire [63:0] x_result, x_addr, x_target, x_taken_tgt;
-   wire        x_redirect, x_taken;
-
-   smolrv64_exec u_x
-     (.alu_op(q_alu_op), .alu_w(q_alu_w), .alu_uw(q_alu_uw), .op1_sel(q_op1_sel),
-      .op2_imm(q_op2_imm), .res_link(q_res_link), .is_rvc(q_rvc),
-      .is_branch(q_is_branch), .is_jump(q_is_jump), .is_jalr(q_is_jalr),
-      .br_func(q_br_func),
-      .rs1_val(x_rs1), .rs2_val(x_rs2), .imm(q_imm), .pc(q_pc),
-      .pred_npc(q_pred_npc), .mis_taken(q_mis_taken), .mis_nt(q_mis_nt),
-      .result(x_result), .addr(x_addr), .redirect(x_redirect), .target(x_target),
-      .taken(x_taken), .taken_tgt(x_taken_tgt));
 
    // ---- the lanes' loads and stores reach M through their queue entries (lanes step 5.2d-a) ----
    // A plain load or an integer store issues in its slot's lane, whose adder generates the VA; the
@@ -2246,7 +2100,7 @@ module smolrv64_core
    reg  [63:0]     sa_va [0:SQ_N-1];
    initial begin la_v = {LQ_N{1'b0}}; sa_v = {SQ_N{1'b0}}; end
    wire lmA = a_v & is_lmem(qa_insn), lmB = a2_v & is_lmem(qb_insn), lmC = a3_v & is_lmem(qc_insn);
-   // the oldest unfilled op: a load or a store (an AMO or CBO in i_* has none older, see cbo_any)
+   // the oldest unfilled op: a load or a store
    wire              u_ld = lq_uf_any & (~sq_uf_any | older(lq_uf_seq, sq_uf_seq));
    wire              s_st = ~u_ld;
    // ...whose VA has arrived, or is in a lane's adder this cycle: M takes it from there, a cycle
@@ -2259,11 +2113,27 @@ module smolrv64_core
    wire              byC = by(lmC, qc_is_store, qc_lq_idx, qc_sq_tag);
    wire              s_byp = byA | byB | byC;
    assign s_win = s_byp | (u_ld ? la_v[lq_uf_idx] : (sq_uf_any & sa_v[sq_uf_idx]));
-   // i_*'s op (an AMO, LR/SC or CBO) goes when nothing is unfilled, which is always (cbo_any)
-   assign            i_ok = i_needs_m & ~(lq_uf_any | sq_uf_any);
    wire              s_go = s_win & m_advance & ~redirect;
    wire [SPW-1:0]    s_rec = u_ld ? spl_ld[lq_uf_idx] : spl_st[sq_uf_idx];
-   wire [PLW-1:0]    pl_m  = s_win ? s_rec[PLW-1:0] : pl_out;   // the op M takes
+   // THE HEAD-OP REGISTER. An AMO, LR/SC or CBO goes alone, so in slot A and lane A; the lane
+   // generates its address and reads rs2 (an AMO's or SC's data), and the op waits here, its
+   // record written at dispatch, for M, which runs it at the ROB head. One is in flight at a
+   // time (the credit), and none while a load or store is unfilled (cbo_any, the serialising).
+   reg               ho_v;
+   reg  [63:0]       ho_va, ho_dat;
+   reg  [SPW-1:0]    ho_rec;
+   initial ho_v = 1'b0;
+   wire              hA = a_v & is_hop(qa_insn);
+   wire              h_go = ho_v & ~s_win & m_advance & ~redirect;
+   always @(posedge clk) begin
+      if (rn_valid & d_cls_l) ho_rec <= {rob_d_idx, pl_in};
+      if (hA) begin ho_v <= 1'b1; ho_va <= xa_addr; ho_dat <= xa_rs2; end
+      if (h_go) ho_v <= 1'b0;
+      if (reset | redirect) ho_v <= 1'b0;                 // flush last (rule I11)
+   end
+   wire [PLW-1:0]    pl_m  = s_win ? s_rec[PLW-1:0] : ho_rec[PLW-1:0];   // the op M takes
+   wire [ROB_IDXB-1:0] m_go_rob = s_win ? s_rec[PLW +: ROB_IDXB] : ho_rec[PLW +: ROB_IDXB];
+   wire              m_go = s_go | h_go;               // M takes an op (the pipe view's M stage)
    wire [63:0]       s_va  = byA ? xa_addr : byB ? xb_addr : byC ? xc_addr : u_ld ? la_va[lq_uf_idx] : sa_va[sq_uf_idx];
    always @(posedge clk) begin
       if (lmA & ~qa_is_store) begin la_v[qa_lq_idx] <= 1'b1; la_va[qa_lq_idx] <= xa_addr; end
@@ -2293,14 +2163,16 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: M holds a faulting plain load or store (pc %h)", m_pc);
       if (s_go & ~(is_lmem(qm_insn) & (qm_is_store == s_st) & (s_st ? (qm_sq_tag == sq_uf_idx) : (qm_lq_idx == lq_uf_idx))))
          $fatal(1, "smolrv64_core: M takes a queue entry's arrival whose record is another op's (pc %h)", qm_pc);
-      // a plain load or store is always a lane's; an AMO or CBO waits in i_* with no load or
-      // store unfilled, and reads rs2 with no store queue read in flight (it runs drained)
-      if (i_needs_m & q_is_mem & ~q_is_amo & ~q_is_cbo)
-         $fatal(1, "smolrv64_core: a plain load or store is on the ordered pipe (pc %h)", q_pc);
-      if (i_needs_m & (lq_uf_any | sq_uf_any))
-         $fatal(1, "smolrv64_core: an AMO or CBO waits in i_* beside an unfilled load or store (pc %h)", q_pc);
-      if (iss_m & q_rs2_v & sq_r_v)
-         $fatal(1, "smolrv64_core: an AMO reads rs2 in a store queue read's cycle (pc %h)", q_pc);
+      // a head op goes alone, so in slot A; one is in flight at a time; it waits with no load
+      // or store unfilled
+      if (rn_valid_b & d2_cls_l | rn_valid_c & d3_cls_l)
+         $fatal(1, "smolrv64_core: a head op dispatched beside another op");
+      if ((a2_v & is_hop(qb_insn)) | (a3_v & is_hop(qc_insn)))
+         $fatal(1, "smolrv64_core: a head op executes outside lane A");
+      if (hA & ho_v)
+         $fatal(1, "smolrv64_core: a head op arrives with the head-op register full");
+      if (ho_v & (lq_uf_any | sq_uf_any))
+         $fatal(1, "smolrv64_core: a head op waits beside an unfilled load or store (pc %h)", ho_rec[PL_INSN + 32 +: PCW]);
    end
    // the same unpack for the op M takes
    wire [PCW-1:0]      qm_pc, qm_pred_npc, qm_fault_tval;
@@ -2587,7 +2459,6 @@ module smolrv64_core
       if (rn_valid & d_csr_op & csr_infl) $fatal(1, "smolrv64_core: a second CSR op dispatched with one in flight");
       if (sy_fire & ld_land)             $fatal(1, "smolrv64_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "smolrv64_core: a system op reached M (pc %h)", m_pc);
-      if (iss_m & (q_fault | q_illegal))   $fatal(1, "smolrv64_core: an op that traps at dispatch issued to M (pc %h)", q_pc);
       if (m_valid & (m_insn[6:2] == 5'b00011) & (m_insn[14:13] == 2'b00))
                                          $fatal(1, "smolrv64_core: a fence reached M (pc %h)", m_pc);
       if (sy_red & (m_red_fire | cf_red_fire)) $fatal(1, "smolrv64_core: the SYSQ redirects together with M or the CTF pipe");
@@ -2879,26 +2750,20 @@ module smolrv64_core
    // Each scheduler's blocking source is classified on its own shard and OR-ed. A cycle can
    // now count in more than one event, which is correct -- the machine really is waiting on
    // both -- and matches how these events already behaved (the stack sums past 100%).
-   wire [2:0] bsh_l = rl_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_f = rf_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_i = ri_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_i2 = ri2_blk_pr[RN_PBITS-1:RN_IDXB];
    wire [2:0] bsh_i3 = ri3_blk_pr[RN_PBITS-1:RN_IDXB];
-   // Gated on "nothing issued", NOT on m_advance. The old `m_advance &` gate dated from M
-   // being the only unit, where "M could accept" was the same thing as "issue could
-   // proceed". With three units it silently masks: on workloads/mlbench M is busy with
-   // loads nearly every cycle, so dep_fp could never fire and the FP add chain that IS the
-   // critical path reported 0%.
-   wire no_issue  = ~(iq_iss_v | pick_i | pick_i2 | pick_i3);
-   wire dep_ld    = no_issue & ((rl_blk_v & (bsh_l == SH_LD))
-                              | (rf_blk_v & (bsh_f == SH_LD))
+   // Gated on "no lane issued", not on M: M busy with loads would mask an FP chain that is the
+   // critical path.
+   wire no_issue  = ~(pick_i | pick_i2 | pick_i3);
+   wire dep_ld    = no_issue & ((rf_blk_v & (bsh_f == SH_LD))
                               | (ri_blk_v & (bsh_i == SH_LD))
                               | (ri2_blk_v & (bsh_i2 == SH_LD))
                               | (ri3_blk_v & (bsh_i3 == SH_LD)));
    // An f-register (FP slices: an FP op's or an FP load's) or SH_FE (an FP op's integer
    // result, a mul/div, a link).
-   wire dep_fp    = no_issue & ((rl_blk_v & ((bsh_l == SH_FE) | (bsh_l >= SH_F0)))
-                              | (rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
+   wire dep_fp    = no_issue & ((rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
                               | (ri_blk_v & ((bsh_i == SH_FE) | (bsh_i >= SH_F0)))
                               | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0)))
                               | (ri3_blk_v & ((bsh_i3 == SH_FE) | (bsh_i3 >= SH_F0))));
@@ -4172,24 +4037,26 @@ module smolrv64_core
    wire cr_ia = {1'b0, ri_free}  > ({1'b0, stg_v_ia} + {1'b0, ir_ia});
    wire cr_ib = {1'b0, ri2_free} > ({1'b0, stg_v_ib} + {1'b0, ir_ib});
    wire cr_ic = {1'b0, ri3_free} > ({1'b0, stg_v_ic} + {1'b0, ir_ic});
-   wire cr_l  = {1'b0, rl_free}  > ({1'b0, stg_v_l}  + {1'b0, ir_l});
+   wire cr_l  = ~ho_inf & ~ir_l;                       // one head op in flight
    wire cr_f  = {1'b0, rf_free}  > ({1'b0, stg_v_f}  + {1'b0, ir_f});
-   // A CBO waits in M for the ROB head, so it dispatches only once every older load and store has
-   // its address (none can then need M behind it), and no load or store dispatches while one is in
-   // flight (none can reach memory, or fill the store queue, ahead of it).
+   // A head op (an AMO, LR/SC or CBO) waits in M for the ROB head, so a CBO dispatches only once
+   // every older load and store has its address (an AMO or LR/SC drains first), one head op is in
+   // flight at a time (the head-op register holds one), and no load or store dispatches while one
+   // is in flight (none can reach memory, or fill the store queue, ahead of it).
    wire       d_cbo_g = d_gc[GC_L] & ~d_gc[GC_PLAIN] & ~d_gc[GC_SER];   // smolrv64_frontend's g0_cbo
-   reg  [ROB_IDXB:0] cbo_n;                        // CBOs dispatched and not yet done in M
-   initial cbo_n = {(ROB_IDXB+1){1'b0}};
-   wire       cbo_end = m_valid & m_is_cbo & m_done;
+   reg        ho_inf;                              // a head op dispatched and not yet done in M
+   initial ho_inf = 1'b0;
+   wire       ho_end = m_valid & (m_is_amo | m_is_cbo) & m_done;
    always @(posedge clk) begin
-      cbo_n <= cbo_n + {{ROB_IDXB{1'b0}}, rn_valid & d_cbo_g} - {{ROB_IDXB{1'b0}}, cbo_end};
-      if (reset | redirect) cbo_n <= {(ROB_IDXB+1){1'b0}};
+      if (rn_valid & d_cls_l) ho_inf <= 1'b1;
+      else if (ho_end)        ho_inf <= 1'b0;
+      if (reset | redirect)   ho_inf <= 1'b0;
    end
    always @(posedge clk) if (!reset) begin
       if (d_valid & (d_cbo_g != d_is_cbo)) $fatal(1, "smolrv64_core: the dispatch class's CBO decode disagrees with is_cbo");
-      if (cbo_end & (cbo_n == {(ROB_IDXB+1){1'b0}})) $fatal(1, "smolrv64_core: a CBO completes with none in flight");
+      if (ho_end & ~ho_inf) $fatal(1, "smolrv64_core: a head op completes with none in flight");
    end
-   wire cbo_any = (cbo_n != {(ROB_IDXB+1){1'b0}}) | (d_valid & d_cbo_g);
+   wire cbo_any = ho_inf | ir_l;
    wire cr_ld = ~cbo_any & (ir_ld ? lq_d_ready2 : lq_d_ready);
    wire cr_st = ~cbo_any & (ir_st ? sq_d_ready2 : sq_d_ready);
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & ~ir_ld & ~ir_st;
@@ -4211,7 +4078,7 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: a group dispatches without room (a %b b %b c %b): the credits are wrong",
                 a_room, d2_take & b_room, d3_take & c_room);
       if ((stg_v_ia & ~ri_ready) | (stg_v_ib & ~ri2_ready) | (stg_v_ic & ~ri3_ready)
-          | (stg_v_l & ~rl_ready) | (stg_v_f & ~rf_ready))
+          | (stg_v_f & ~rf_ready))
          $fatal(1, "smolrv64_core: a dispatch-stage register waits for its scheduler: the credits are wrong");
    end
    // NOT GATED ON THIS CYCLE'S REDIRECT (2026-09-05, gate V3 at -0.919 ns). The redirect is
@@ -4306,7 +4173,6 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: two allocations into one memory queue");
       if (rn_valid_c & ~rn_valid_b)     $fatal(1, "smolrv64_core: slot C dispatched without slot B");
       // no two dispatched ops target the same memory or F/CTF pipe (each ALU lane has one slot).
-      if ((l_slot0 + b_to_l + c_to_l) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the M pipe");
       if (c_to_ic & d3_rd_v & ~d3_gc[GC_LD] & (d3_shard != SH_IE3)) $fatal(1, "smolrv64_core: slot C's ALU op in shard %0d, not lane C's", d3_shard);
       if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the F pipe");
    end
@@ -4331,7 +4197,7 @@ module smolrv64_core
          if (~m_advance & redirect) m_valid <= 1'b0;
 
          if (m_advance) begin
-            m_valid       <= iss_m | s_go;
+            m_valid       <= m_go;
             m_pc          <= qm_pc;
             m_insn        <= qm_insn;
             m_rvc         <= qm_rvc;
@@ -4344,13 +4210,11 @@ module smolrv64_core
             m_shard       <= qm_shard;
             m_rs1         <= qm_rs1;
             m_imm         <= qm_imm;
-            m_result      <= x_result;
-            m_addr        <= s_win ? s_va : x_addr;
-            m_st_data     <= x_rs2;          // an AMO's or SC's: the store queue reads its own
+            m_result      <= 64'd0;
+            m_addr        <= s_win ? s_va : ho_va;
+            m_st_data     <= ho_dat;         // an AMO's or SC's: the store queue reads its own
             m_sq_tag      <= qm_sq_tag;
             m_lq_idx      <= qm_lq_idx;
-            m_rs1_val     <= x_rs1;
-            m_rs3_val     <= x_rs3;   // FMA 3rd operand
             m_mem_size    <= qm_mem_size;
             m_mem_signed  <= qm_mem_signed;
             m_is_mem      <= qm_is_mem;
@@ -4360,10 +4224,10 @@ module smolrv64_core
             m_is_branch   <= qm_is_branch;
             m_is_jump     <= qm_is_jump;
             m_is_jalr     <= qm_is_jalr;
-            m_redirect    <= x_redirect & ~s_win;
-            m_target      <= x_target;
-            m_taken       <= x_taken;
-            m_taken_tgt   <= x_taken_tgt;
+            m_redirect    <= 1'b0;
+            m_target      <= {PCW{1'b0}};
+            m_taken       <= 1'b0;
+            m_taken_tgt   <= {PCW{1'b0}};
             m_is_mul      <= qm_is_mul;
             m_is_csr      <= qm_is_csr;
             m_csr_func    <= qm_csr_func;

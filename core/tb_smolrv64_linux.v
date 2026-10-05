@@ -560,17 +560,12 @@ module tb;
    // ---- MEM-SIM: what the next memory-backend step could recover, printed with TOPDOWN-SIM ----
    // D$: cycles any fill is in flight and the MSHRs live over them, fills started, cycles a request
    // is parked in the waiter table, cycles the write-back buffer is full, and how many of the
-   // core's ST_MEM cycles overlap the fills and the waits. u_iq_l (in order): cycles its head is not ready, and of
-   // those, cycles a younger entry -- a load (it has a destination) -- is ready and could issue if
-   // the queue issued out of order; split by whether the blocked head is a load or a store.
-   localparam integer MS_NL = 12;            // u_iq_l's entries (smolrv64_core NL)
+   // core's ST_MEM cycles overlap the fills and the waits.
    reg [63:0] ms_fill, ms_fills, ms_park, ms_stmem, ms_stmem_fill, ms_stmem_park, ms_live, ms_wbfull, ms_cln, ms_clnc;
-   reg [63:0] ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth;
    initial begin ms_fill = 0; ms_fills = 0; ms_park = 0; ms_stmem = 0; ms_stmem_fill = 0; ms_stmem_park = 0;
-                 ms_live = 0; ms_wbfull = 0; ms_cln = 0; ms_clnc = 0; ms_hblk = 0; ms_byp = 0; ms_byp_ldh = 0; ms_byp_sth = 0; end
+                 ms_live = 0; ms_wbfull = 0; ms_cln = 0; ms_clnc = 0; end
    always @(posedge clk) if (!reset) begin : memsim
-      reg fv, park, hrdy, yld;
-      integer g, h;
+      reg fv, park;
       fv   = (dut.u_dcache.ob_live != 0);
       park = dut.u_dcache.ob_wait;
       if (fv)                    begin ms_fill <= ms_fill + 1;  ms_live <= ms_live + 64'(dut.u_dcache.ob_live); end
@@ -584,20 +579,6 @@ module tb;
          if (fv)   ms_stmem_fill <= ms_stmem_fill + 1;
          if (park) ms_stmem_park <= ms_stmem_park + 1;
       end
-      h    = dut.core.u_iq_l.qhead;
-      hrdy = &dut.core.u_iq_l.srdy[h*3 +: 3];
-      if (dut.core.u_iq_l.v[h] & ~hrdy) begin
-         yld = 1'b0;
-         for (g = 0; g < MS_NL; g = g + 1)
-            if ((g != h) && dut.core.u_iq_l.v[g] && (&dut.core.u_iq_l.srdy[g*3 +: 3])
-                && (dut.core.u_iq_l.e_prd[g] != 0)) yld = 1'b1;
-         ms_hblk <= ms_hblk + 1;
-         if (yld) begin
-            ms_byp <= ms_byp + 1;
-            if (dut.core.u_iq_l.e_prd[h] != 0) ms_byp_ldh <= ms_byp_ldh + 1;
-            else                               ms_byp_sth <= ms_byp_sth + 1;
-         end
-      end
    end
 
    // ---- DISP-SIM: the dispatch rules and ALU waiting (docs/PLAN-2026-10-01-uniform-lanes.md, step 2) ----
@@ -606,21 +587,20 @@ module tb;
    // three-ALU rule), squashed behind a decode resteer, or by room (scheduler, ROB, rename, queues).
    // ALU: ready entries an ALU scheduler leaves behind each cycle beyond the one it issues, those
    // left while the other ALU issues nothing, and issues that pass over an older ready entry.
-   // Memory: u_iq_l issues, issues in back-to-back cycles, cycles its head is ready and not
-   // issued; LSU access starts and starts in back-to-back cycles.
+   // Memory: LSU access starts and starts in back-to-back cycles.
    localparam integer NI_SIM = 10;           // an ALU scheduler's entries (smolrv64_core NI)
    reg [63:0] ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room;
    reg [63:0] al_wait, al_wait_idle, al_young;
-   reg [63:0] ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b;
+   reg [63:0] ls_st, ls_b2b;
    // A read held only by the request register: the port's load or M's early load could start but
    // for last cycle's request pulse (mem_ren) -- what a two-deep request buffer would start.
    reg [63:0] ls_rd, ls_rd_b2b, ls_pulse_held;
    reg        ls_rd_q;
    initial begin ls_rd = 0; ls_rd_b2b = 0; ls_pulse_held = 0; ls_rd_q = 0; end
-   reg        ml_iss_q, ls_st_q;
+   reg        ls_st_q;
    initial begin ds_b_alone = 0; ds_b_rule = 0; ds_b_sq = 0; ds_b_room = 0; ds_c_alone = 0; ds_c_rule = 0;
                  ds_c_sq = 0; ds_c_room = 0; al_wait = 0; al_wait_idle = 0; al_young = 0;
-                 ml_iss = 0; ml_b2b = 0; ml_hrdy = 0; ls_st = 0; ls_b2b = 0; ml_iss_q = 0; ls_st_q = 0; end
+                 ls_st = 0; ls_b2b = 0; ls_st_q = 0; end
    function automatic integer older_ready(input [31:0] rdy_v, input integer sel, input integer n, input integer which);
       integer k, ak, as;
       begin
@@ -659,10 +639,6 @@ module tb;
       if (ia != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i.rdy),  32'(dut.core.ri_iss_ent),  NI_SIM, 0));
       if (ib != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i2.rdy), 32'(dut.core.ri2_iss_ent), NI_SIM, 1));
       if (ic != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i3.rdy), 32'(dut.core.ri3_iss_ent), NI_SIM, 2));
-      if (dut.core.rl_iss_v) begin ml_iss = ml_iss + 1; if (ml_iss_q) ml_b2b = ml_b2b + 1; end
-      if (dut.core.u_iq_l.v[dut.core.u_iq_l.qhead] & (&dut.core.u_iq_l.srdy[dut.core.u_iq_l.qhead*3 +: 3])
-          & ~dut.core.rl_iss_v) ml_hrdy = ml_hrdy + 1;
-      ml_iss_q = dut.core.rl_iss_v;
       if (dut.core.lsu_started) begin ls_st = ls_st + 1; if (ls_st_q) ls_b2b = ls_b2b + 1; end
       ls_st_q = dut.core.lsu_started;
       if (dut.core.u_lsu.mem_ren) begin ls_rd = ls_rd + 1; if (ls_rd_q) ls_rd_b2b = ls_rd_b2b + 1; end
@@ -922,7 +898,7 @@ module tb;
       if (dut.core.iss_alu)  kan_stage(5'(dut.core.a_rob),  "Xa");
       if (dut.core.iss_alu2) kan_stage(5'(dut.core.a2_rob), "Xb");
       if (dut.core.iss_alu3) kan_stage(5'(dut.core.a3_rob), "Xc");
-      if (dut.core.iss_m)    kan_stage(5'(dut.core.i_rob),  "M");
+      if (dut.core.m_go)     kan_stage(5'(dut.core.m_go_rob), "M");
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
       kan_wv_q  <= dut.core.rob_wv;
       kan_wix_q <= dut.core.rob_wix;
@@ -1127,8 +1103,8 @@ module tb;
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
       $display("DISP-SIM group cut before slot B: alone=%0d rule=%0d resteer=%0d | head waits for a credit=%0d | before slot C: alone=%0d rule=%0d resteer=%0d (%0d)",
                ds_b_alone, ds_b_rule, ds_b_sq, ds_b_room, ds_c_alone, ds_c_rule, ds_c_sq, ds_c_room);
-      $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | iq_l issues=%0d back-to-back=%0d head-ready-not-issued=%0d | lsu starts=%0d back-to-back=%0d",
-               al_wait, al_wait_idle, al_young, ml_iss, ml_b2b, ml_hrdy, ls_st, ls_b2b);
+      $display("DISP-SIM alu ready-waiting=%0d (with the other ALU idle %0d) issued-past-an-older-ready=%0d | lsu starts=%0d back-to-back=%0d",
+               al_wait, al_wait_idle, al_young, ls_st, ls_b2b);
       $display("SER-SIM be:serialize by class: csr-read=%0d csr-write=%0d amo=%0d fence=%0d fence.i=%0d sfence=%0d xret/ecall=%0d trap=%0d",
                ser_c[0], ser_c[1], ser_c[2], ser_c[3], ser_c[4], ser_c[5], ser_c[6], ser_c[7]);
       $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
@@ -1137,8 +1113,6 @@ module tb;
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
                ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,
                ms_stmem, ms_stmem_fill, ms_stmem_park);
-      $display("MEM-SIM iq_l head-not-ready=%0d younger-load-ready=%0d (head a load=%0d, head a store=%0d)",
-               ms_hblk, ms_byp, ms_byp_ldh, ms_byp_sth);
       if (kan_on) $fclose(kf);
       $display("perf-stat-sim: begin");
       $display("%0d cycles", c);           // the cycles actually run (== +cycles unless +tohost ended it)
