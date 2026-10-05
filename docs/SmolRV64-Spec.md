@@ -1531,8 +1531,12 @@ The `td` report, top to bottom:
 
 The `cpi` set's wait-cycle rows overlap (a cycle waiting on a load and on ROB room counts in
 both), so they are depth under the `td` buckets, not a second partition; its *unattributed*
-line is what no event names. Check a board number against the simulator's `TOPDOWN-SIM` for
-the same binary (`workloads/rvbench`, `make run B=<name>`) before reasoning from it.
+line is what no event names. The simulator's `TOPDOWN-SIM` prints the same classifier for a
+whole simulated run, and `workloads/rvbench` (`make run B=<name>`) runs the bare-metal programs
+there; before reasoning from a surprising board number, look for the same shape in simulation.
+The board's reference run is `sha256sum` on `/usr/bin/emacs-nox`, five times: at c0f65e6d it
+dispatches 65.8% of cycles, IPC 2.03, with the back-end at 21.4% (no ROB room 14.7%) and the
+front-end at 12.1% (an instruction fetched while the queue is empty, `FE_QUE`, 9.9%).
 
 ### 11.1 The integrity log (`rv_errlog`, 2026-09-20)
 
