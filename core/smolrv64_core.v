@@ -3547,8 +3547,13 @@ module smolrv64_core
    // redirect needs. Load-hit speculation (waking the consumers from the D$ lookup) is a later step.
    integer             lbi;
    initial for (lbi = 0; lbi < 3; lbi = lbi + 1) begin lb_h[lbi] = 0; lb_t[lbi] = 0; lb_n[lbi] = 0; end
-   // the LD and FE streams' pushes into their lanes; the SYSQ's goes through lane A in its fire cycle
+   // the LD and FE streams' pushes into their lanes; the SYSQ's goes through lane A in its fire cycle.
+   // M's own result (an AMO, LR or SC: the LSU's live completion) always waits a cycle here, so
+   // only a landing load can go straight through (pl): the lane's write address, ROB index and
+   // wake never select on the LSU's completion, only its buffer write does.
    wire [2:0] p0 = {ldw_int & (ldw_sh == SH_IE3), ldw_int & (ldw_sh == SH_IE2), ldw_int & (ldw_sh == SH_IE)};
+   wire       pl_v = ld_wb & ~ldw_sh[2];
+   wire [2:0] pl = {pl_v & (ldw_sh == SH_IE3), pl_v & (ldw_sh == SH_IE2), pl_v & (ldw_sh == SH_IE)};
    wire [2:0] p2 = {few_int & (few_sh == SH_IE3), few_int & (few_sh == SH_IE2), few_int & (few_sh == SH_IE)};
    wire [ROB_IDXB-1:0] few_rob = fp_wb ? ft_rob : md_rob;
    wire       sp_v = sy_wr | sy_done;
@@ -3561,10 +3566,10 @@ module smolrv64_core
    wire [2:0] lb_any = {lb_n[2] != 0, lb_n[1] != 0, lb_n[0] != 0};
    assign lbA_any = lb_any[0];  assign lbB_any = lb_any[1];  assign lbC_any = lb_any[2];
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
-   // each lane drains, in order, its oldest waiting entry, the SYSQ's, the LD stream's, the FE's
-   wire [2:0] lb_drain = lb_free & (lb_any | p0 | p1 | p2);
-   wire [2:0] by0 = lb_drain & ~lb_any & ~p1 & p0;      // a stream's goes straight through...
-   wire [2:0] by2 = lb_drain & ~lb_any & ~p1 & ~p0 & p2;
+   // each lane drains, in order, its oldest waiting entry, the SYSQ's, a landing load's, the FE's
+   wire [2:0] lb_drain = lb_free & (lb_any | pl | p1 | p2);
+   wire [2:0] by0 = lb_drain & ~lb_any & ~p1 & pl;      // a stream's goes straight through...
+   wire [2:0] by2 = lb_drain & ~lb_any & ~p1 & ~pl & p2;
    wire [2:0] en0 = p0 & ~by0;                          // ...or waits
    wire [2:0] en2 = p2 & ~by2;
    // the drained entry of each lane, {wr, cmp, prd, dat, rob} (a wire per lane: rule F4)
@@ -3576,7 +3581,7 @@ module smolrv64_core
          wire [LBB-1:0] hh = lb_h[glp];
          assign lp[glp] = lb_any[glp] ? {1'b1, 1'b1, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
                         : p1[glp]     ? {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob}
-                        : p0[glp]     ? {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob}
+                        : pl[glp]     ? {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob}
                         :               {1'b1, 1'b1, wa_fe, wb_fe, few_rob};
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
