@@ -98,3 +98,7 @@ mbd_e   : D$ merge buffers, even chunks (as flops they were 4.6k registers and t
 mbd_o   : D$ merge buffers, odd chunks
 nru0    : D$ way 0 line recently used, per set
 nru1    : D$ way 1 line recently used, per set
+spl_ld : a lane load's record by LQ entry, written at dispatch, read at M's fill
+spl_st : a lane store's record by SQ entry, written at dispatch, read at M's fill
+fva_l : a load entry's full VA, a trap's tval
+fva_s : a store entry's full VA, a trap's tval
