@@ -505,6 +505,10 @@ module smolrv64_core
    localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
 `include "smolrv64_shards.vh"
    localparam integer NL = IW;                     // the lanes: slot k's ALU-class ops go to lane k
+   function automatic [3:0] ones_nl(input [NL-1:0] v);   // how many of the lanes' bits are set
+      integer i;
+      begin ones_nl = 4'd0; for (i = 0; i < NL; i = i + 1) ones_nl = ones_nl + {3'd0, v[i]}; end
+   endfunction
    function automatic sh_used(input [2:0] sh);     // lanes 0..IW-1 and FP slices 4..4+IW-1
       sh_used = ({1'b0, sh[1:0]} < IW[2:0]);
    endfunction
@@ -1959,7 +1963,7 @@ module smolrv64_core
          if (l_lm[ak] & (l_st[ak] ? sa_v[l_sqt[ak]] : la_v[l_lqi[ak]]))
             $fatal(1, "smolrv64_core: lane %0d delivers an address to an entry whose address M has not taken", ak);
       end
-      if ($countones(l_by) > 1)
+      if (ones_nl(l_by) > 4'd1)
          $fatal(1, "smolrv64_core: two lanes hold the oldest unfilled load or store");
       // the record M takes is this entry's own: a lane load or store written at its dispatch
       // a plain load or store never faults in M: its address-only fault rides in its entry
@@ -2474,8 +2478,8 @@ module smolrv64_core
    wire                cf_link_rd   = lr_rdv[wl] & ((lr_rd[wl] == 6'd1) | (lr_rd[wl] == 6'd5));
    wire                cf_link_rs   = (lr_rs1[wl] == 6'd1) | (lr_rs1[wl] == 6'd5);
    always @(posedge clk) if (!reset) begin
-      if ($countones(lw) > 1)
-         $fatal(1, "smolrv64_core: %0d lanes each claim the oldest mispredict", $countones(lw));
+      if (ones_nl(lw) > 4'd1)
+         $fatal(1, "smolrv64_core: %0d lanes each claim the oldest mispredict", ones_nl(lw));
       if (cf_mis & ~|lw)
          $fatal(1, "smolrv64_core: lanes mispredict but none is the oldest");
    end
@@ -3141,6 +3145,7 @@ module smolrv64_core
    end
    wire [NL-1:0] l_call = lr_jmp & l_lrd, l_ret = lr_jalr & l_lrs & ~l_lrd;
    integer tk;
+   wire [3:0] tq_wn = ones_nl(tq_w);                 // the lanes' CTIs enqueuing this cycle
    always @(posedge clk) begin
       if (reset | redirect) begin
          tq_h <= 0;  tq_t <= 0;  tq_n <= 0;
@@ -3153,12 +3158,13 @@ module smolrv64_core
             tq_cbr[a] <= lr_br[tk];  tq_call[a] <= l_call[tk];  tq_ret[a] <= l_ret[tk];
             tq_taken[a] <= lr_taken[tk];
          end
-         tq_t <= tq_t + TQB'($countones(tq_w));
+         tq_t <= tq_t + tq_wn[TQB-1:0];
          tq_h <= tq_h + {{(TQB-1){1'b0}}, tq_out};
-         tq_n <= tq_n + (TQB+1)'($countones(tq_w)) - {{TQB{1'b0}}, tq_out};
+         tq_n <= tq_n + tq_wn[TQB:0] - {{TQB{1'b0}}, tq_out};
       end
    end
-   wire [RKB:0] tr_drop = (RKB+1)'($countones(tr_ok & ~tq_w));
+   wire [3:0]   tq_dn = ones_nl(tr_ok & ~tq_w);
+   wire [RKB:0] tr_drop = tq_dn[RKB:0];
    assign tr_seq = fr_set ? lr_seq[wl] : tq_seq[tq_h];
    wire [ROB_IDXB-1:0] tr_rob = fr_set ? lr_rob[wl] : tq_rob[tq_h];   // (the bench marks the trained CTI by it)
    assign res_v     = fr_set ? (lr_br[wl] | lr_jmp[wl]) : (tq_out & ~tq_dead);

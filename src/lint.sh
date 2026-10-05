@@ -88,5 +88,12 @@ if grep -nE '^[^/]*\$u?random *\(' ../core/tb_*.v ../src/tb_*.v; then
    echo "lint: a seeded \$random/\$urandom in a bench -- draw from src/tb_rand.vh"; fail=1
 fi
 
+# Vivado reads the core's RTL as Verilog-2005, where Verilator lints SystemVerilog: a
+# SystemVerilog-only call or size cast lints clean here and stops synthesis instead.
+if grep -nE "\\\$countones|\\\$onehot|[A-Za-z0-9_)]'\\(" \
+      $(ls ../core/smolrv64_*.v ../core/rv_*.v | grep -v '/tb_'); then
+   echo "lint: a SystemVerilog-only construct in the RTL -- Vivado synthesizes it as Verilog-2005"; fail=1
+fi
+
 [ $fail -ne 0 ] && exit 1
 echo "lint: clean"
