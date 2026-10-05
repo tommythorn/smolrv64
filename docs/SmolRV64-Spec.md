@@ -885,12 +885,16 @@ set in the stage register.
   store queue's snoop, armed at allocation, takes it from the writeback). **M fills in program
   order**: it takes the oldest load or store whose address has not arrived (`uf_idx`/`uf_seq`
   from each queue, a sequence compare between the two) once its VA is in, or `i_*`'s op when
-  that is the oldest (an FP store) or nothing is unfilled (an AMO or CBO). An op M holds -- a
-  fault waits there for the ROB head -- therefore never has an older load or store waiting
-  behind it; a younger wrong-path fault taken ahead of an older arrival deadlocks the ROB head
-  on that older op. Everything M did for a load or store it still does: the dTLB lookup, the
-  LQ/SQ fill, a load's early start, the address-only faults with the full VA. FP stores, AMOs,
-  LR/SC and CBOs stay in `u_iq_l`.
+  that is the oldest (an FP store) or nothing is unfilled (an AMO or CBO). Everything M did for
+  a load or store it still does: the dTLB lookup, the LQ/SQ fill, a load's early start. FP
+  stores, AMOs, LR/SC and CBOs stay in `u_iq_l`.
+- **A load's or store's address-only fault rides in its entry** (5.2d-b step 1). A page
+  crossing, a non-canonical VA or an address beyond the top under Bare fills the entry as
+  faulted (`xo_flt`, `xo_fc` into `a_flt`, `a_fc`), exactly as the walker's page fault does, and
+  traps from the SYSQ when it is the ROB head; `tval` is the full VA M wrote at the fill
+  (`fva_l`, `fva_s`, since the entries hold VA[38:0]). M holds only its own accesses' faults
+  (AMO, LR/SC, CBO) -- asserted -- and a faulted entry never reaches memory, so the page-offset
+  alias test need not be exact for it.
 - **The LSU decides a port start from the port's fields only.** M's request fields describe the
   access only when it is M's (`eff_amo`, `eff_cbo`): M can be empty with its fields left from an
   older op while the LQ or SQ starts one. Asserted: the port's access never runs an AMO's states,

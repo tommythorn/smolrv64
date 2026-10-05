@@ -1725,12 +1725,14 @@ module smolrv64_core
    wire                sq_k_v, lq_k_v, sq_f_v, lq_f_v;
    wire [SQ_IB-1:0]    sq_k_idx;
    wire [LQ_IB-1:0]    lq_k_idx;
-   wire [38:0]         sq_k_va, lq_k_va, sq_f_va, lq_f_va, sq_f_pc, lq_f_pc;
+   wire [38:0]         sq_k_va, lq_k_va, sq_f_pc, lq_f_pc;
    wire [ROB_IDXB-1:0] sq_f_rob, lq_f_rob;
    wire [3:0]          sq_f_fc, lq_f_fc;
    wire [SEQW-1:0]     sq_f_seq, lq_f_seq;
    wire                lsu_wk_done, lsu_wk_unc, lsu_wk_mem, lsu_wk_flt, lsu_xo_tv;
    wire [55:0]         lsu_wk_pa;
+   wire                lsu_xo_flt;           // the fill's address alone faults: the entry carries it
+   wire [3:0]          lsu_xo_fc;
    wire [3:0]          lsu_wk_fc;
    // THE REQUEST IS A REGISTER. Choosing the entry (the queues' candidate pointers, the store-
    // or-load pick) and the walker's 2048-entry TLB read are a cycle apart, so the choice never
@@ -1759,7 +1761,8 @@ module smolrv64_core
       .d_pc(st_c ? d3_pc[38:0] : st_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(st_c ? d3_seq : st_b ? d2_seq : d_seq),
       .d_ready(sq_d_ready), .d_ready2(sq_d_ready2), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .uf_idx(sq_uf_idx), .uf_seq(sq_uf_seq),
-      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
+      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
+      .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_data_v(m_rs2_rdy), .a_data(m_st_data),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_ie3, wb_ie2, wb_fe, wb_ld, wb_ie}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
@@ -1769,14 +1772,14 @@ module smolrv64_core
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
       .l_off(lq_e_off), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx),
-      .l_fill_off(m_addr[11:0]), .l_fill_size(m_mem_size),
+      .l_fill_off(m_addr[11:0]), .l_fill_size(m_mem_size), .l_fill_flt(lsu_xo_flt),
       .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .l_block_unk_q(sq_l_block_unk_q),
       .k_v(sq_k_v), .k_idx(sq_k_idx), .k_va(sq_k_va),
       .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
-      .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_va(sq_f_va), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
+      .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
       .occupancy(sq_occ), .flush(redirect));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
@@ -1817,7 +1820,8 @@ module smolrv64_core
       .d_pc(ld_c ? d3_pc[38:0] : ld_b ? d2_pc[38:0] : d_pc[38:0]), .d_seq(ld_c ? d3_seq : ld_b ? d2_seq : d_seq),
       .d_ready(lq_d_ready), .d_ready2(lq_d_ready2), .d_idx(lq_d_idx),
       .a_v(m_lq_fill), .a_sent(lsu_xo_early), .a_idx(m_lq_idx),
-      .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv), .a_size(m_mem_size),
+      .a_pa(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt), .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc),
+      .a_size(m_mem_size),
       .a_signed(m_mem_signed), .a_fp(m_is_fp), .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem),
       .e_off(lq_e_off), .e_size(lq_e_size), .e_tag(lq_e_tag), .e_av(lq_e_av),
       .e_block(lq_e_block), .x_block(sq_ld_block), .q_tag(lq_q_tag),
@@ -1829,7 +1833,7 @@ module smolrv64_core
       .k_v(lq_k_v), .k_idx(lq_k_idx), .k_va(lq_k_va),
       .w_v(lsu_wk_done & ~wk_st), .w_idx(lq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
-      .f_v(lq_f_v), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_va(lq_f_va), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
+      .f_v(lq_f_v), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .uf_any(lq_uf_any), .uf_idx(lq_uf_idx), .uf_seq(lq_uf_seq), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
@@ -2289,6 +2293,9 @@ module smolrv64_core
       if ((byA + byB + byC) > 2'd1)
          $fatal(1, "smolrv64_core: two lanes hold the oldest unfilled load or store");
       // the record M takes is this entry's own: a lane load or store written at its dispatch
+      // a plain load or store never faults in M: its address-only fault rides in its entry
+      if (lsu_fault & (m_ld_nb | m_st_nb))
+         $fatal(1, "smolrv64_core: M holds a faulting plain load or store (pc %h)", m_pc);
       if (s_go & ~(is_lmem(qm_insn) & (qm_is_store == s_st) & (s_st ? (qm_sq_tag == sq_uf_idx) : (qm_lq_idx == lq_uf_idx))))
          $fatal(1, "smolrv64_core: M takes a queue entry's arrival whose record is another op's (pc %h)", qm_pc);
       // a load is always a lane's; an AMO or CBO waits in i_* with nothing older unfilled
@@ -2374,7 +2381,7 @@ module smolrv64_core
       // memory is written later, from the buffer's commit port below.
       // Loads AND buffered stores translate here and go no further; the access itself
       // comes back through the pre-translated port, from smolrv64_lq or smolrv64_sq.
-      .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_mem(lsu_xo_mem), .xo_v(lsu_xo_v),
+      .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_mem(lsu_xo_mem), .xo_v(lsu_xo_v), .xo_flt(lsu_xo_flt), .xo_fc(lsu_xo_fc),
       .xo_early(lsu_xo_early),
       .pt_v(pt_v), .pt_store(pt_store),
       .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
@@ -2502,19 +2509,28 @@ module smolrv64_core
    // The record is registered on its way in, so the SYSQ's inputs are flops, never the queues'
    // muxes and the head compare; its valid bit leaves out a redirect cycle (the entry dies at that
    // edge), and the payload rides with no redirect in its enable (rule I11).
+   // An entry's full VA, written at its fill: a trap's tval (a non-canonical address is wider than
+   // the entries' VA[38:0])
+   reg  [63:0] fva_l [0:LQ_N-1];
+   reg  [63:0] fva_s [0:SQ_N-1];
+   always @(posedge clk) begin
+      if (m_lq_fill) fva_l[m_lq_idx] <= m_addr;
+      if (m_sq_fill) fva_s[m_sq_tag] <= m_addr;
+   end
    wire qf_sq = sq_f_v & (sq_f_rob == rob_head_idx) & ~rob_empty;
    wire qf_lq = lq_f_v & (lq_f_rob == rob_head_idx) & ~rob_empty;
    reg                qfr_v;
    reg [ROB_IDXB-1:0] qfr_rob;
    reg [3:0]          qfr_fc;
-   reg [38:0]         qfr_va, qfr_pc;
+   reg [63:0]         qfr_va;
+   reg [38:0]         qfr_pc;
    reg [SEQW-1:0]     qfr_seq;
    initial qfr_v = 1'b0;
    always @(posedge clk) begin
       qfr_v   <= ~reset & ~redirect & (qf_sq | qf_lq);
       qfr_rob <= qf_sq ? sq_f_rob : lq_f_rob;
       qfr_fc  <= qf_sq ? sq_f_fc  : lq_f_fc;
-      qfr_va  <= qf_sq ? sq_f_va  : lq_f_va;
+      qfr_va  <= qf_sq ? fva_s[sq_k_idx] : fva_l[lq_k_idx];   // the faulting entry is the candidate
       qfr_pc  <= qf_sq ? sq_f_pc  : lq_f_pc;
       qfr_seq <= qf_sq ? sq_f_seq : lq_f_seq;
    end
@@ -2556,7 +2572,7 @@ module smolrv64_core
          sy_seq <= qfr_seq;
          sy_xt <= 1'b1;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;
          sy_xcause <= qfr_fc;
-         sy_xtval  <= {{25{qfr_va[38]}}, qfr_va};
+         sy_xtval  <= qfr_va;
       end
       if (reset | redirect) sy_v <= 1'b0;                // flush arm last (I11); its own redirect included
    end
@@ -3276,7 +3292,7 @@ module smolrv64_core
       if (qf_in) begin
          xtq_kind[qfr_rob]  <= SYK_XTRAP;
          xtq_cause[qfr_rob] <= qfr_fc;
-         xtq_tval[qfr_rob]  <= {{25{qfr_va[38]}}, qfr_va};
+         xtq_tval[qfr_rob]  <= qfr_va;
       end
       // (b) the LSU reports a data fault for M's op
       if (m_flt_pulse) begin

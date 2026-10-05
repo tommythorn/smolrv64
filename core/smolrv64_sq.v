@@ -69,6 +69,8 @@ module smolrv64_sq
     input  wire [PAW-1:0]        a_addr,     // ...its PA, when a_tv
     input  wire [VAW-1:0]        a_va,       // the VA, always: the alias test and the walker read it
     input  wire                  a_tv,       // M's lookup translated it (else the walker will)
+    input  wire                  a_flt,      // ...or its address alone faults (a_tv is then set)
+    input  wire [3:0]            a_fc,
     input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
     input  wire                  a_unc,      // uncached, decided at translate time
     input  wire                  a_data_v,   // the issue-time PRF read of rs2 was valid
@@ -121,6 +123,7 @@ module smolrv64_sq
     input  wire [LQIB-1:0]       l_fill_ix,   // ...into this entry
     input  wire [11:0]           l_fill_off,
     input  wire [1:0]            l_fill_size,
+    input  wire                  l_fill_flt,  // ...and faults on its address alone (never reaches memory)
     output wire [LQN-1:0]        l_block_unk_q, // per entry, REGISTERED: blocked by an older store whose ADDRESS IS
                                               // UNKNOWN (the rest of l_block_q is a known overlap). Counters only.
     output wire [LQN-1:0]        l_block,     // per entry: an older store aliases it
@@ -147,7 +150,6 @@ module smolrv64_sq
     output wire                  f_v,
     output wire [ROBB-1:0]       f_rob,
     output wire [3:0]            f_fc,
-    output wire [VAW-1:0]        f_va,
     output wire [VAW-1:0]        f_pc,
     output wire [SEQW-1:0]       f_seq,
 
@@ -233,7 +235,6 @@ module smolrv64_sq
    assign f_v   = kc_live & tv[kc] & flt[kc];
    assign f_rob = rob[kc];
    assign f_fc  = fc[kc];
-   assign f_va  = va[kc];
    assign f_pc  = pc[kc];
    assign f_seq = sqn[kc];
 
@@ -429,7 +430,7 @@ module smolrv64_sq
          // address only. The data operand is NOT captured here -- see the snoop.
          if (a_v) begin
             addr[a_idx] <= a_addr;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;
-            unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= 1'b0;
+            unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
             if (a_data_v & ~dv[a_idx]) begin data[a_idx] <= a_data; dv[a_idx] <= 1'b1; end
          end
          // the walker's answer: the PA and NC bit, or the fault the store traps with at the head
@@ -506,11 +507,11 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: the walker's answer for entry %0d is not for the untranslated first uncommitted one", w_idx);
       if (w_v & a_v & (a_idx == w_idx))
          $fatal(1, "smolrv64_sq: entry %0d filled and translated in one cycle", w_idx);
-      // The alias test compares page offsets, which is exact only because no queued access
-      // crosses a page (M raises address-misaligned for one).
-      if (a_v & (({1'b0, a_va[11:0]} + (13'd1 << a_size)) > 13'h1000))
+      // The alias test compares page offsets, which is exact only because no access that reaches
+      // memory crosses a page (one that would faults on its address alone, in its entry).
+      if (a_v & ~a_flt & (({1'b0, a_va[11:0]} + (13'd1 << a_size)) > 13'h1000))
          $fatal(1, "smolrv64_sq: store entry %0d at va %h crosses a page", a_idx, a_va);
-      if (l_fill & (({1'b0, l_fill_off} + (13'd1 << l_fill_size)) > 13'h1000))
+      if (l_fill & ~l_fill_flt & (({1'b0, l_fill_off} + (13'd1 << l_fill_size)) > 13'h1000))
          $fatal(1, "smolrv64_sq: load entry %0d at offset %h crosses a page", l_fill_ix, l_fill_off);
       if (c_take & ~tv[head])
          $fatal(1, "smolrv64_sq: a store drained without a translation");

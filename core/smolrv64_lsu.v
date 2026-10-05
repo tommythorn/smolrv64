@@ -92,6 +92,8 @@ module smolrv64_lsu
     output wire            xo_early,       // ...and the access started here too (req_early
                                            // honoured: the FSM was idle and the port free)
     output wire            xo_tv,          // ...with its PA: the TLB held it (else the walker will)
+    output wire            xo_flt,         // ...or with the fault its address alone decides
+    output wire [3:0]      xo_fc,
     // ---- THE WALKER, for a queue entry M handed over untranslated ----
     // The walker's port serves M's FSM-starting op first (an AMO, LR/SC or CBO: the ROB head),
     // else this request, held by smolrv64_core until wk_done.
@@ -383,24 +385,27 @@ module smolrv64_lsu
    wire [3:0] al_mask = req_nb - 4'd1;
    wire amo_mis = req_amo & ((req_vaddr[3:0] & al_mask) != 4'd0);
 
-   wire mis_flt = (xl_x & xpage) | (xl_f & (xpage | amo_mis));
-   // the translate-only pass faults only on what the address alone decides; a page fault is
-   // the walker's, and rides in the entry
-   wire xl_flt  = (xl_x & s_flt) | (xl_fp & t_ready & t_fault);
+   // M's own accesses (AMO, LR/SC, CBO) fault here. A translate-only pass never does: what the
+   // address alone decides (a page crossing, non-canonical, beyond the top under Bare) rides in
+   // its entry like the walker's page fault, and traps from it at the ROB head
+   wire mis_flt = xl_f & (xpage | amo_mis);
+   wire xl_flt  = xl_fp & t_ready & t_fault;
 
    assign fault       = req_valid & (mis_flt | xl_flt);
-   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : xl_x ? s_cause : t_cause;
+   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : t_cause;
    assign fault_tval  = req_vaddr;
+   assign xo_flt      = xl_x & (xpage | s_flt);
+   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : s_cause;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
    wire xl_ok_f  = xl_fp & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
    wire xo_ok    = xl_x & s_ok & ~xpage;
    // ...or hands its VA over untranslated (the TLB does not hold it, or its perms failed, which
-   // only a fresh walk may turn into a fault) and does not wait for the walk. M lets go either
-   // way, so its completion is the address-only test: the TLB is in the PA and `tv` the entry
-   // gets, never in M's done or the entry's fill.
-   wire xo_any   = xl_x & ~s_flt & ~xpage;
+   // only a fresh walk may turn into a fault) and does not wait for the walk, or hands over its
+   // address-only fault. M lets go every way: the pass always completes, and the TLB is in the
+   // PA and `tv` the entry gets, never in M's done.
+   wire xo_any   = xl_x;
    // NO disambiguation here any more. smolrv64_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).

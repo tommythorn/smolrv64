@@ -82,6 +82,8 @@ module smolrv64_lq
     input  wire [PAW-1:0]        a_pa,        // ...its PA, when a_tv
     input  wire [VAW-1:0]        a_va,        // the VA, always: the alias test and the walker read it
     input  wire                  a_tv,        // M's lookup translated it (else the walker will)
+    input  wire                  a_flt,       // ...or its address alone faults (a_tv is then set)
+    input  wire [3:0]            a_fc,
     input  wire [1:0]            a_size,
     input  wire                  a_signed,
     input  wire                  a_fp,
@@ -157,7 +159,6 @@ module smolrv64_lq
     output wire                  f_v,
     output wire [ROBB-1:0]       f_rob,
     output wire [3:0]            f_fc,
-    output wire [VAW-1:0]        f_va,
     output wire [VAW-1:0]        f_pc,
     output wire [SEQW-1:0]       f_seq,
 
@@ -249,7 +250,6 @@ module smolrv64_lq
    assign f_v   = cand_a & tv[acc] & flt[acc];
    assign f_rob = rob[acc];
    assign f_fc  = fc[acc];
-   assign f_va  = va[acc];
    assign f_pc  = pc[acc];
    assign f_seq = sqn[acc];
    // The mirror of cand_v: the candidate is live and its address is NOT yet known, which is
@@ -310,7 +310,7 @@ module smolrv64_lq
          if (a_v) begin
             pa[a_idx] <= a_pa;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;
             sgn[a_idx] <= a_signed;  isfp[a_idx] <= a_fp;  unc[a_idx] <= a_unc;  mem[a_idx] <= a_mem;  av[a_idx] <= 1'b1;
-            tv[a_idx] <= a_tv;  flt[a_idx] <= 1'b0;
+            tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
          end
          // the walker's answer: the PA and its classes, or the fault the load traps with at the head
          if (w_v) begin
@@ -344,7 +344,7 @@ module smolrv64_lq
    always @(posedge clk) if (!reset && w_v && ~w_flt && (w_mem != w_mem_chk))
       $fatal(1, "smolrv64_lq: the walker classifies pa=%h for entry %0d as %0s, its region says %0s (rule D12)",
              w_pa, w_idx, w_mem ? "memory" : "device", w_mem_chk ? "memory" : "device");
-   always @(posedge clk) if (!reset && a_v && a_tv && (a_mem != a_mem_chk))
+   always @(posedge clk) if (!reset && a_v && a_tv && ~a_flt && (a_mem != a_mem_chk))
       $fatal(1, "smolrv64_lq: fill %0d classifies pa=%h as %0s, its region says %0s (rule D12)",
              a_idx, a_pa, a_mem ? "memory" : "device", a_mem_chk ? "memory" : "device");
 

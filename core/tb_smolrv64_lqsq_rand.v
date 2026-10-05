@@ -50,7 +50,7 @@ module tb;
    // the walker and trap ports: every fill here is translated, so they stay quiet
    wire             lk_v, sk_v, lf_v, sf_v;
    wire [IDXB-1:0]  lk_idx, sk_idx;
-   wire [38:0]      lk_va, sk_va, lf_va, sf_va, lf_pc, sf_pc;
+   wire [38:0]      lk_va, sk_va, lf_pc, sf_pc;
    wire [ROBB-1:0]  lf_rob, sf_rob;
    wire [3:0]       lf_fc, sf_fc;
    wire [7:0]       lf_seq, sf_seq;
@@ -74,30 +74,30 @@ module tb;
      (.clk(clk),.reset(reset),
       .d_alloc(lq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
       .d_sqtag(lq_d_sqtag),.d_ready(lq_d_ready),.d_ready2(lq_d_ready2),.d_idx(lq_d_idx),
-      .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_va(39'(lq_a_pa)), .a_tv(1'b1),.a_size(lq_a_size),
+      .a_v(lq_a_v),.a_sent(lq_a_sent),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_va(39'(lq_a_pa)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(lq_a_size),
       .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(lq_a_unc),
       .e_off(e_off),.e_size(e_size),.e_tag(e_tag),.e_av(e_av),.e_block(e_block),.x_block(lq_x_block),
       .q_tag(lq_q_tag),.b_idx(lq_b_idx),.b_ok(lq_b_ok),
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
       .x_fp(lq_x_fp),.x_unc(lq_x_unc),.x_head(lq_x_head),.x_devwait(lq_x_devwait),.x_take(lq_x_take),
       .l_v(lq_l_v),.l_idx(lq_l_idx),.l_prd(lq_l_prd),.l_rd(lq_l_rd),.l_rd_v(lq_l_rd_v),.l_rob(lq_l_rob),
-      .l_pa(lq_l_pa),.k_v(lk_v),.k_idx(lk_idx),.k_va(lk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(lf_v),.f_rob(lf_rob),.f_fc(lf_fc),.f_va(lf_va),.f_pc(lf_pc),.f_seq(lf_seq),.occupancy(lq_occ), .av_any(lq_av_any),.uf_any(lq_uf_any),.uf_idx(lq_uf_idx),.uf_seq(lq_uf_seq),.flush(flush),
+      .l_pa(lq_l_pa),.k_v(lk_v),.k_idx(lk_idx),.k_va(lk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(lf_v),.f_rob(lf_rob),.f_fc(lf_fc),.f_pc(lf_pc),.f_seq(lf_seq),.occupancy(lq_occ), .av_any(lq_av_any),.uf_any(lq_uf_any),.uf_idx(lq_uf_idx),.uf_seq(lq_uf_seq),.flush(flush),
       // every bench address is DRAM (speculates freely), so the device head-gate is never taken
       .a_mem(1'b1),.rob_head({ROBB{1'b0}}));
 
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
       .d_alloc(sq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_ready(sq_d_ready),.d_ready2(sq_d_ready2),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.uf_idx(sq_uf_idx),.uf_seq(sq_uf_seq),
-      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_size(sq_a_size),.a_unc(sq_a_unc),
+      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(sq_a_size),.a_unc(sq_a_unc),
       .a_data_v(sq_a_data_v),.a_data(sq_a_data),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_take(sq_c_take),
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
       .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
-      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size),
+      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
-      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_va(sf_va),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush));
+      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush));
 
    // ------------------------------------------------------------- the program-order model
    // st: 0 dispatched (no address) | 1 address known (store: uncommitted; load: waiting)
