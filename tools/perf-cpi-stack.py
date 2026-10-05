@@ -12,14 +12,10 @@ their parent. DPATCH (instructions dispatched) gives the slot view against IW x 
 The CPI-stack view below is the older wait-cycle view: its events overlap (a cycle waits on
 several things at once) and it is kept for its depth, never summed as a partition.
 
-The counters charge every non-retiring cycle to exactly ONE cause (see
-workloads/ipcstat/hpmstat.c), so
-
-    CPI = 1 (issue) + sum(backend stalls)/instret + frontend-bubbles/instret
-
-reconstructs the measured CPI exactly.  This script checks that it does and prints the
-residual, so a silently-wrong event map shows up as a broken identity rather than a
-plausible-looking table.
+A dispatch stall is the queue head holding an instruction it has no credit for (hd_wait,
+SmolRV64-Spec 3.2): ST_DSP and ST_ROB, and ST_IQ..ST_SRZ beneath ST_DSP, all describe the head.
+ST_MUL and ST_DIV are occupancy (a multiply in flight in a lane, the MD stage holding a divide),
+not stalls. SmolRV64-Spec 11, "Reading the report", says what each line points at.
 
 Event names come from docs/smolrv64-perf-events.json, which tools/gen-perf-events.py
 generates from src/csr_file.v and src/lint.sh verifies -- so this cannot drift from the
@@ -33,14 +29,13 @@ Usage (13 programmable counters -- one set per run, never the union, see perf-sm
     tools/perf-cpi-stack.py saved-perf-output.txt
     tools/perf-cpi-stack.py --width 2 ...        # a narrower build than the shipping IW=3
 
-The identity this checks: dispatch is WIDTH instructions per cycle (3, the shipping IW), so
+The identity the cpi view checks: dispatch is WIDTH instructions per cycle (3, the shipping IW), so
     cycles = instructions/WIDTH + sum(named stall cycles) + frontend bubbles + UNATTRIBUTED
-and "unattributed" is what no event names.  On a two-wide core a cycle that dispatches ONE
-instruction has no counter yet: half of it lands in unattributed, which is where the
-frontend's single-instruction bundles (the chunk-boundary cap, item 10e) show up.  A run with only the FE_* events is not a stack:
-every backend stall lands there (2026-09-05: 10.7% of sha256sum's cycles), and the tool says
-so rather than folding it into a "retire" line.  Events can overlap (a cycle blocked on a load
-AND on ROB space counts in both), so a small negative is overlap, not an error.
+and "unattributed" is what no event names, including every cycle that dispatches fewer than
+WIDTH. A run with only the FE_* events is not a stack: every backend stall lands in
+unattributed, and the tool says so rather than folding it into a "retire" line. Events can
+overlap (a cycle blocked on a load AND on ROB space counts in both), so a small negative is
+overlap, not an error.
 """
 import json, os, re, sys
 
@@ -56,13 +51,13 @@ CANDIDATES = [os.environ.get("SMOLRV_PERF_EVENTS"),
 
 # FE_MMU and FE_IC are SUBSETS of FE_BUB ("X idle ... because"), so they are reported as a
 # breakdown underneath it and never added alongside it.
-BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "divider"),
-           ("ST_MUL", "multiplier"), ("ST_FPU", "FPU"),
-           ("ST_DSP", "dispatch held (scheduler / rename / queues / serializing)"),
-           ("ST_ROB", "dispatch: ROB full")]
+BACKEND = [("ST_MEM", "LSU  (D$ / dTLB / AMO)"), ("ST_DIV", "a divide in flight (occupancy)"),
+           ("ST_MUL", "a multiply in flight (occupancy)"), ("ST_FPU", "FPU"),
+           ("ST_DSP", "queue head without a credit (scheduler / rename / queues / serializing)"),
+           ("ST_ROB", "queue head without ROB room")]
 # ST_IQ..ST_SRZ are the disjoint parts of ST_DSP (the `hold` set): a breakdown underneath it.
-DSP_SUB = [("ST_IQ", "the scheduler is full"), ("ST_RN", "rename: a free list is empty"),
-           ("ST_SQ", "store queue full"), ("ST_LQ", "load queue full"), ("ST_SRZ", "serializing op")]
+DSP_SUB = [("ST_IQ", "its scheduler has no credit"), ("ST_RN", "rename: a shard below LOWAT"),
+           ("ST_SQ", "no store-queue credit"), ("ST_LQ", "no load-queue credit"), ("ST_SRZ", "serializing op")]
 # What ST_MEM is made of (2026-09-17, the memory backend program): cycle buckets printed
 # underneath it as shares of all cycles, never added (they overlap ST_MEM and each other),
 # plus the per-1k counts and the mean queue occupancies that go with them.
@@ -145,8 +140,8 @@ def topdown(v, width):
     sub(fe, [("latency: iMMU walk / no fetch bytes", "TD_FE_LAT")])
     print("    %-34s %6.2f%%" % ("back-end", pc(be)))
     sub(be, [("memory: M on a memory op / a load result", "TD_BE_MEM"),
-             ("the ROB is full", "TD_BE_ROB"),
-             ("a scheduler or load/store queue is full", "TD_BE_IQ")])
+             ("no ROB room", "TD_BE_ROB"),
+             ("no scheduler / load / store queue room", "TD_BE_IQ")])
     if v.get("DPATCH") is not None:
         slots = width * cyc
         print("\n  slots (%d x cycles)" % width)

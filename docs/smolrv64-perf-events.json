@@ -52,52 +52,52 @@
   {
     "EventName": "ST_DIV",
     "EventCode": "0x0301",
-    "BriefDescription": "the MD stage holds a divide (occupancy; since C1 mul/div are off M)"
+    "BriefDescription": "the MD stage holds a divide (occupancy)"
   },
   {
     "EventName": "ST_MUL",
     "EventCode": "0x0302",
-    "BriefDescription": "the MD stage holds a multiply (occupancy)"
+    "BriefDescription": "a multiply in flight in a lane (occupancy)"
   },
   {
     "EventName": "ST_FPU",
     "EventCode": "0x0303",
-    "BriefDescription": "the MD stage holds a multiply (occupancy) on the CVFPU, + X held for a pending FP result"
+    "BriefDescription": "a multiply in flight in a lane (occupancy) on the CVFPU, + X held for a pending FP result"
   },
   {
     "EventName": "ST_DSP",
     "EventCode": "0x0304",
-    "BriefDescription": "dispatch held, not a data dependency and not the ROB: the sum of ST_IQ..ST_SRZ"
+    "BriefDescription": "the queue head without a credit, not the ROB: the sum of ST_IQ..ST_SRZ"
   },
   {
     "EventName": "ST_ROB",
     "EventCode": "0x0305",
-    "BriefDescription": "dispatch blocked: the ROB is full"
+    "BriefDescription": "the queue head waits for ROB room"
   },
   {
     "EventName": "ST_IQ",
     "EventCode": "0x0306",
-    "BriefDescription": "dispatch held: the instruction's scheduler is full"
+    "BriefDescription": "the queue head: its scheduler has no credit"
   },
   {
     "EventName": "ST_RN",
     "EventCode": "0x0307",
-    "BriefDescription": "dispatch held: rename, a free list is empty"
+    "BriefDescription": "the queue head: a rename shard is below LOWAT"
   },
   {
     "EventName": "ST_SQ",
     "EventCode": "0x0308",
-    "BriefDescription": "dispatch held: the store queue is full"
+    "BriefDescription": "the queue head: no store-queue credit"
   },
   {
     "EventName": "ST_LQ",
     "EventCode": "0x0309",
-    "BriefDescription": "dispatch held: the load queue is full"
+    "BriefDescription": "the queue head: no load-queue credit"
   },
   {
     "EventName": "ST_SRZ",
     "EventCode": "0x030a",
-    "BriefDescription": "dispatch held: a serializing op drains (the rest of ST_DSP)"
+    "BriefDescription": "the queue head: a serializing op drains or is in flight (the rest of ST_DSP)"
   },
   {
     "EventName": "FE_BUB",
@@ -212,7 +212,7 @@
   {
     "EventName": "TD_BE",
     "EventCode": "0x0402",
-    "BriefDescription": "top-down: back-end (M held, or an instruction present and not taken)"
+    "BriefDescription": "top-down: back-end (M held, or the queue head without a credit)"
   },
   {
     "EventName": "TD_BE_MEM",
@@ -222,12 +222,12 @@
   {
     "EventName": "TD_BE_ROB",
     "EventCode": "0x0404",
-    "BriefDescription": "top-down: back-end with the ROB full"
+    "BriefDescription": "top-down: back-end, no ROB room"
   },
   {
     "EventName": "TD_BE_IQ",
     "EventCode": "0x0405",
-    "BriefDescription": "top-down: back-end with a scheduler or a load/store queue full"
+    "BriefDescription": "top-down: back-end, no scheduler or load/store queue room"
   },
   {
     "EventName": "TD_FE_LAT",
@@ -237,7 +237,7 @@
   {
     "EventName": "TD_FE",
     "EventCode": "0x0407",
-    "BriefDescription": "top-down: front-end (nothing to dispatch, not bad speculation)"
+    "BriefDescription": "top-down: front-end (the queue head has nothing, not bad speculation)"
   },
   {
     "EventName": "DPATCH",

@@ -225,7 +225,8 @@ The board boots through the ROM monitor: `workloads/ubuntu/ubuntu-boot.sh` uploa
 device tree and the OpenSBI+Linux payload over the serial console at 3 Mbaud and starts
 them; the root filesystem is served over NFS. On the board,
 `tools/perf-smol.sh td <cmd> 2>&1 | tools/perf-cpi-stack.py` runs a command under the
-Top-Down event set and prints the report.
+Top-Down event set and prints the report; `docs/SmolRV64-Spec.md` §11, "Reading the report",
+explains each line and the `cpi` and `mem` sets that go under it.
 
 ## Repository layout
 

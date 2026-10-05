@@ -198,16 +198,16 @@ module csr_file
                       HPMEV_ICACC  = 16'h0110,   // I$ line lookups resolved (hit or miss)
                       HPMEV_ICMISS = 16'h0112,   // I$ line lookups that missed
                       HPMEV_ST_MEM = 16'h0300,   // M stalled on the LSU, + X held for a pending load
-                      HPMEV_ST_DIV = 16'h0301,   // the MD stage holds a divide (occupancy; since C1 mul/div are off M)
-                      HPMEV_ST_MUL = 16'h0302,   // the MD stage holds a multiply (occupancy)
+                      HPMEV_ST_DIV = 16'h0301,   // the MD stage holds a divide (occupancy)
+                      HPMEV_ST_MUL = 16'h0302,   // a multiply in flight in a lane (occupancy)
                       HPMEV_ST_FPU = 16'h0303,   // ...on the CVFPU, + X held for a pending FP result
-                      HPMEV_ST_DSP = 16'h0304,   // dispatch held, not a data dependency and not the ROB: the sum of ST_IQ..ST_SRZ
-                      HPMEV_ST_ROB = 16'h0305,   // dispatch blocked: the ROB is full
-                      HPMEV_ST_IQ  = 16'h0306,   // dispatch held: the instruction's scheduler is full
-                      HPMEV_ST_RN  = 16'h0307,   // dispatch held: rename, a free list is empty
-                      HPMEV_ST_SQ  = 16'h0308,   // dispatch held: the store queue is full
-                      HPMEV_ST_LQ  = 16'h0309,   // dispatch held: the load queue is full
-                      HPMEV_ST_SRZ = 16'h030a,   // dispatch held: a serializing op drains (the rest of ST_DSP)
+                      HPMEV_ST_DSP = 16'h0304,   // the queue head without a credit, not the ROB: the sum of ST_IQ..ST_SRZ
+                      HPMEV_ST_ROB = 16'h0305,   // the queue head waits for ROB room
+                      HPMEV_ST_IQ  = 16'h0306,   // the queue head: its scheduler has no credit
+                      HPMEV_ST_RN  = 16'h0307,   // the queue head: a rename shard is below LOWAT
+                      HPMEV_ST_SQ  = 16'h0308,   // the queue head: no store-queue credit
+                      HPMEV_ST_LQ  = 16'h0309,   // the queue head: no load-queue credit
+                      HPMEV_ST_SRZ = 16'h030a,   // the queue head: a serializing op drains or is in flight (the rest of ST_DSP)
                       HPMEV_FE_BUB = 16'h0310,   // X idle: frontend supplied no instruction
                       HPMEV_FE_MMU = 16'h0311,   // ...because the iMMU was walking
                       HPMEV_FE_IC  = 16'h0312,   // ...because the fetch window was empty
@@ -232,12 +232,12 @@ module csr_file
                      HPMEV_MEM_SQOCC    = 16'h0322,   // store-queue occupancy, summed per cycle
                      // TOP-DOWN (SmolRV64-Spec 11.2): TD_BS + TD_FE + TD_BE + the dispatching cycles = cycles, exactly
                      HPMEV_TD_BS        = 16'h0401,   // top-down: bad speculation (a redirect, or a resolved restart waiting)
-                     HPMEV_TD_BE        = 16'h0402,   // top-down: back-end (M held, or an instruction present and not taken)
+                     HPMEV_TD_BE        = 16'h0402,   // top-down: back-end (M held, or the queue head without a credit)
                      HPMEV_TD_BE_MEM    = 16'h0403,   // top-down: back-end waiting on memory (M on a memory op, or a load result)
-                     HPMEV_TD_BE_ROB    = 16'h0404,   // top-down: back-end with the ROB full
-                     HPMEV_TD_BE_IQ     = 16'h0405,   // top-down: back-end with a scheduler or a load/store queue full
+                     HPMEV_TD_BE_ROB    = 16'h0404,   // top-down: back-end, no ROB room
+                     HPMEV_TD_BE_IQ     = 16'h0405,   // top-down: back-end, no scheduler or load/store queue room
                      HPMEV_TD_FE_LAT    = 16'h0406,   // top-down: front-end latency (iMMU walking, or no fetch bytes)
-                     HPMEV_TD_FE        = 16'h0407,   // top-down: front-end (nothing to dispatch, not bad speculation)
+                     HPMEV_TD_FE        = 16'h0407,   // top-down: front-end (the queue head has nothing, not bad speculation)
                      HPMEV_DPATCH       = 16'h0408;   // instructions dispatched (0..3 per cycle)
    // per-counter increment this cycle for the mhpmeventN-selected event (0..retire_cnt).
    // EVERY input here is a register as far as this module is concerned: `hpm_ev` and

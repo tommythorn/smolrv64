@@ -2763,8 +2763,8 @@ module smolrv64_core
                               | (ri2_blk_v & ((bsh_i2 == SH_FE) | (bsh_i2 >= SH_F0)))
                               | (ri3_blk_v & ((bsh_i3 == SH_FE) | (bsh_i3 >= SH_F0))));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
-   wire st_div    = md_v &  md_div;                 // the MD stage holds a divide (C1: occupancy, not an M stall)
-   wire st_mul    = md_v & ~md_div;                 // ...a multiply
+   wire st_div    = md_v;                           // the MD stage holds a divide (occupancy, not a stall)
+   wire st_mul    = mA_1 | mA_2 | mB_1 | mB_2 | mC_1 | mC_2;   // a multiply in flight in a lane
    // ST_FPU watches stage F: `f_valid & ~fp_disp` is stage F holding an op the unit will not
    // yet take. (~f_advance is the same expression; written out for clarity.)
    wire st_fpu    = (f_valid & ~fp_disp) | dep_fp;  // ...on the FPU

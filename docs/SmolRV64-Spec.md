@@ -1456,9 +1456,9 @@ tools/perf-cpi-stack.py` is the report: level 1, the depth under each parent, an
 | event | id | meaning |
 |---|---|---|
 | `TD_BS` | r0401 | bad speculation: a redirect, or a resolved restart waiting for the head |
-| `TD_FE` | r0407 | front-end: nothing to dispatch, M not held, not bad speculation |
-| `TD_BE` | r0402 | back-end: M held, or an instruction present and not taken |
-| `TD_BE_MEM` / `TD_BE_ROB` / `TD_BE_IQ` | r0403 / r0404 / r0405 | within `TD_BE`: memory (M on a memory op, or waiting for a load result) / the ROB full / a scheduler or load/store queue full |
+| `TD_FE` | r0407 | front-end: the IR is empty and the queue head is not waiting for a credit (it has nothing), M not held, not bad speculation |
+| `TD_BE` | r0402 | back-end: M held, or the queue head holds an instruction it has no credit for (`hd_wait`, §3.2), or a frozen IR |
+| `TD_BE_MEM` / `TD_BE_ROB` / `TD_BE_IQ` | r0403 / r0404 / r0405 | within `TD_BE`: memory (M on a memory op, or waiting for a load result) / no ROB credit / no scheduler, LQ or SQ credit; the rest of `TD_BE` is M held on a non-memory op, a dependency on the FPU, rename (a shard below `LOWAT`) and serialisation |
 | `TD_FE_LAT` | r0406 | within `TD_FE`: latency, the iMMU walking or no fetch bytes |
 | `DPATCH` | r0408 | instructions dispatched (0..3 a cycle): the slots against 3 × cycles |
 
@@ -1470,21 +1470,20 @@ never a partition:
 
 | event | id | meaning |
 |---|---|---|
-| `ST_MEM` | r0300 | M stalled on the LSU **+** X held for a pending load result |
-| `ST_DIV` / `ST_MUL` | r0301 / r0302 | M stalled on divider / multiplier |
+| `ST_MEM` | r0300 | M stalled on a memory op **+** no scheduler issuing while one's blocked entry waits for a load result (`dep_ld`) |
 | `ST_FPU` | r0303 | M stalled on the FPU **+** X held for a pending FP result |
-| `ST_DSP` | r0304 | dispatch held, not a data dependency and not the ROB: the scheduler, rename, a queue or a serializing op (was `ST_SER`, which named only the last) |
+| `ST_DSP` | r0304 | the queue head holds an instruction it has no credit for (`hd_wait`), not the ROB and not a data dependency: a scheduler, rename, a queue or a serializing op |
 | `FE_BUB` | r0310 | frontend bubble |
 | `FE_MMU` / `FE_IC` | r0311 / r0312 | iMMU walking / I$ no window |
 | `FE_ALN` / `FE_QUE` | r0313 / r0314 | no whole instruction / queue empty |
 | D$ / I$ access, miss | r0100/r0102, r0110/r0112 | per request, never per replay: the D$ counts loads and stores taken and line fills started, the I$ requests taken and first-lookup misses |
 | redirects | r0005 | |
 | `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
-| `ST_ROB` | r0305 | dispatch blocked: the ROB is full |
-| `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in d_hold's order: the instruction's scheduler full / rename's free list empty / store queue full / load queue full / a serializing op draining (the `hold` set, 2026-09-07) |
+| `ST_ROB` | r0305 | the queue head waits for ROB room (`hd_wait & ~cr_rob1`) |
+| `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in this order: the head's scheduler has no credit / a rename shard is below `LOWAT` / no store-queue credit / no load-queue credit / the rest, a serializing op draining or one in flight |
 | `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 2048 entries direct-mapped on VPN[10:0]; two hot pages 8 MiB apart share an index and cost a walk per load and no D$ miss |
-| `ST_MUL` / `ST_DIV` | r0302 / r0301 | since C1: cycles the MD stage holds a multiply / a divide (occupancy on the F/CTF/MD port), no longer an M stall |
+| `ST_MUL` / `ST_DIV` | r0302 / r0301 | occupancy, not stalls: cycles a multiply is in flight in any lane (`m*_1`, `m*_2`) / the MD stage holds a divide |
 | `MEM_HITSER` | r0319 | a ready load candidate the LSU door did not take (hit serialization) |
 | `MEM_LDINFL` | r031a | a load access in flight; a hit is ~3 cycles, the rest is miss wait |
 | `MEM_STDOOR` | r031b | a store at the D$ door, unaccepted |
@@ -1498,6 +1497,42 @@ never a partition:
 owns the register being waited on: when a unit stopped blocking M, the wait did not go away,
 it moved to X, and charging it to `ST_SER` made a data dependency read as a serializing op.
 A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
+
+**Reading the report.** On the board (once, `tools/perf-smol-setup.sh` lowers
+`perf_event_paranoid` so no `sudo` is needed; copy `docs/smolrv64-perf-events.json` beside
+the script):
+
+    tools/perf-smol.sh td  CMD 2>&1 | tools/perf-cpi-stack.py    # where the cycles go
+    tools/perf-smol.sh cpi CMD 2>&1 | tools/perf-cpi-stack.py    # which wait, in depth
+    tools/perf-smol.sh mem CMD 2>&1 | tools/perf-cpi-stack.py    # what the memory wait is made of
+
+Each set is one run of 13 counters; never ask for more (`all`), which multiplexes. `perf stat`
+counts the whole command, so the answer is about the whole command: run the region of interest
+in a loop long enough to dominate start-up, or read it with a different window and say so.
+
+The `td` report, top to bottom:
+
+- **level 1** partitions the cycles: *dispatching* (a group dispatched), *bad speculation*,
+  *front-end*, *back-end*. It sums to 100% by construction; if it does not, the event map is
+  wrong and the script stops.
+- **bad speculation** splits into the redirect itself and *a resolved restart waiting*
+  (`RD_WAIT`, the mispredict drain to the ROB head). The per-1k redirect counts beneath say
+  which kind: conditional branches and jalr point at the predictor, traps at the program.
+- **front-end**: the queue head had nothing. *latency* is the iMMU walking or no fetch bytes
+  (the I$; see `I$ misses` per 1k); the rest is alignment and the queue refilling after a
+  redirect (`cpi` set: `FE_ALN`, `FE_QUE`).
+- **back-end**: *memory* is M on a memory op or a scheduler waiting for a load (`mem` set
+  next); *the ROB is full* means something long-latency at the head with nothing behind it to
+  retire; *a scheduler or load/store queue is full* means one class saturated (the `cpi` set's
+  `ST_IQ`/`ST_LQ`/`ST_SQ` say which); the rest is rename and serialisation (`ST_RN`,
+  `ST_SRZ`).
+- **slots** are 3 per cycle: *retired* is the IPC as a share, and *dispatched, squashed* is
+  the wrong-path work.
+
+The `cpi` set's wait-cycle rows overlap (a cycle waiting on a load and on ROB room counts in
+both), so they are depth under the `td` buckets, not a second partition; its *unattributed*
+line is what no event names. Check a board number against the simulator's `TOPDOWN-SIM` for
+the same binary (`workloads/rvbench`, `make run B=<name>`) before reasoning from it.
 
 ### 11.1 The integrity log (`rv_errlog`, 2026-09-20)
 
