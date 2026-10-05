@@ -895,9 +895,8 @@ module tb;
    always @(posedge clk) if (!reset && kan_on) begin
       // 1. completions registered last cycle, then this cycle's issues
       for (kw = 0; kw < 8; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
-      if (dut.core.iss_alu)  kan_stage(5'(dut.core.a_rob),  "Xa");
-      if (dut.core.iss_alu2) kan_stage(5'(dut.core.a2_rob), "Xb");
-      if (dut.core.iss_alu3) kan_stage(5'(dut.core.a3_rob), "Xc");
+      for (kw = 0; kw < dut.core.NL; kw = kw + 1)
+         if (dut.core.l_iss[kw]) kan_stage(5'(dut.core.l_rob[kw]), kw == 0 ? "Xa" : kw == 1 ? "Xb" : kw == 2 ? "Xc" : "Xd");
       if (dut.core.m_go)     kan_stage(5'(dut.core.m_go_rob), "M");
       if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
       kan_wv_q  <= dut.core.rob_wv;
@@ -993,6 +992,7 @@ module tb;
    // straight-line program executes a PC once, so the three lines are the whole story.
    reg [63:0] watch_pc;  reg watch_on;  reg [15:0] watch_prd;  reg watch_prd_v;  reg [15:0] watch_rob;
    initial begin watch_on = $value$plusargs("watch_pc=%h", watch_pc); watch_prd_v = 1'b0; watch_prd = 16'd0; end
+   integer ww;
    always @(posedge clk) if (!reset && watch_on) begin
       if (dut.core.iss_f && dut.core.qf_pc == watch_pc) begin
          $display("[c=%0d] watch F-issue pc=%h rob=%0d rd=x%0d rd_v=%b prd=%0d",
@@ -1000,12 +1000,10 @@ module tb;
          watch_prd <= dut.core.qf_prd;  watch_prd_v <= dut.core.qf_rd_v;
       end
       // a control-flow op resolving in its lane
-      if ((dut.core.iss_alu && dut.core.qa_pc == watch_pc) || (dut.core.iss_alu2 && dut.core.qb_pc == watch_pc)
-          || (dut.core.iss_alu3 && dut.core.qc_pc == watch_pc))
-         $display("[c=%0d] watch lane-issue lanes=%b%b%b cti=%b mis=%b fr_v=%b head=%0d", c,
-                  dut.core.iss_alu3 && dut.core.qc_pc == watch_pc, dut.core.iss_alu2 && dut.core.qb_pc == watch_pc,
-                  dut.core.iss_alu && dut.core.qa_pc == watch_pc, dut.core.lane_cti, dut.core.lane_mis,
-                  dut.core.fr_v, dut.core.rob_head_idx);
+      for (ww = 0; ww < dut.core.NL; ww = ww + 1)
+         if (dut.core.l_iss[ww] && dut.core.l_pc[ww] == watch_pc)
+            $display("[c=%0d] watch lane-issue lane=%0d cti=%b mis=%b fr_v=%b head=%0d", c,
+                     ww, dut.core.l_cti[ww], dut.core.l_mis[ww], dut.core.fr_v, dut.core.rob_head_idx);
       // the watched op retires: the value the cosim REPORTS beside the physreg's REAL contents
       if (dut.core.retire && dut.core.retire_pc == watch_pc)
          $display("[c=%0d] watch RETIRE   pc=%h head=%0d reported=%h cs_val[head]=%h",
