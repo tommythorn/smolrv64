@@ -28,7 +28,6 @@ e_rob   : issue-queue ROB index, read only at [sel]
 
 # ---- the physical register file: the largest array in the design ------------------------
 mem_ie  : PRF integer shard; sharded by WRITER so each has ONE write port
-mem_ld  : PRF load shard
 mem_fe  : PRF F-stage shard (the FP ops' integer results, mul/div, links)
 mem_ie2 : PRF lane B's integer shard, written by lane B's ALU alone
 mem_ie3 : PRF lane C's integer shard, written by lane C's ALU alone

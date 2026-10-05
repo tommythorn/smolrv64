@@ -346,6 +346,14 @@ timing is fought.
       The head-op result and the SYSQ's CSR read are rare and serialised: they take the same
       buffer or reservation as the slot they dispatched in (always slot A for a head op).
 
+      **Built (2026-10-05):** B with a 4-entry landing buffer per lane whose occupancy is the
+      lane's `unit_busy`; a landing completes in the ROB when it drains. The SYSQ's result (a CSR
+      read) takes lane A's slot too, but never waits: it fires only into a free lane A, which holds
+      its select while a system op is the ROB head, so a redirecting system op writes in its fire
+      cycle -- a write kept past its own flush lands in a register rename has rolled back. With
+      that, `sy_fire` no longer waits for the LD port (`port_yield`), and SH_LD's bank is deleted.
+      60 M: 40,754,856 (-2.82% on 5.2d-b, the lanes now also carrying the landings).
+
       **Decided (Tommy, 2026-10-04): B now, load-hit speculation later.** A is load-hit
       speculation: dependents woken from the lookup must be rolled back when it misses, which is
       the complicated part. It is postponed to its own step after the lanes, and it is

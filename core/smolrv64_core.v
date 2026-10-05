@@ -597,15 +597,35 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
    wire [ROB_IDXB:0]   rob_occ;
+   // a lane's landing slot (a landing load's or AMO's result, see the landing buffers): drained
+   // this cycle, its register, value and ROB slot
+   wire                dA, dB, dC;            // ...writing a register
+   wire                dAc, dBc, dCc;         // ...completing its op
+   wire                dA_w, dB_w, dC_w, dA_c, dB_c, dC_c;
+   wire [RN_PBITS-1:0] dA_prd, dB_prd, dC_prd;
+   wire [63:0]         dA_dat, dB_dat, dC_dat;
+   wire [ROB_IDXB-1:0] dA_rob, dB_rob, dC_rob;
+   wire                ldw_int;            // the LD stream's write goes to a lane (completes at its drain)
+   wire                lbA_any, lbB_any, lbC_any;   // a landing waits for the lane's slot
+   wire                sy_lane_ok;                   // lane A's slot is free for the SYSQ
+   // the landing buffers (defined with the LD stream): per lane, LBN entries
+   localparam integer LBN = 4, LBB = 2;
+   reg  [RN_PBITS-1:0] lb_prd [0:3*LBN-1];
+   reg  [63:0]         lb_dat [0:3*LBN-1];
+   reg  [ROB_IDXB-1:0] lb_rob [0:3*LBN-1];
+   reg  [LBB-1:0]      lb_h [0:2], lb_t [0:2];
+   reg  [LBB:0]        lb_n [0:2];
+
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
    // queue, M's port (which carries the landing loads)
    wire [7:0]          rob_wv  = {md_wb, cf_red_fire,
-                                  (iss_alu3 & ~lane_mis[2] & ~lane_late(qc_insn)) | mC_2,
-                                  (iss_alu2 & ~lane_mis[1] & ~lane_late(qb_insn)) | mB_2,
-                                  sq_k_take, fp_land, (iss_alu & ~lane_mis[0] & ~lane_late(qa_insn)) | mA_2, rob_w_valid};
-   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, mC_2 ? mC_rob2 : a3_rob, mB_2 ? mB_rob2 : a2_rob,
-                                  sq_kc_rob, ft_rob, mA_2 ? mA_rob2 : a_rob, rob_w_idx};
+                                  (iss_alu3 & ~lane_mis[2] & ~lane_late(qc_insn)) | mC_2 | dCc,
+                                  (iss_alu2 & ~lane_mis[1] & ~lane_late(qb_insn)) | mB_2 | dBc,
+                                  sq_k_take, fp_land, (iss_alu & ~lane_mis[0] & ~lane_late(qa_insn)) | mA_2 | dAc,
+                                  rob_w_valid & ~ldw_int};
+   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, dCc ? dC_rob : mC_2 ? mC_rob2 : a3_rob, dBc ? dB_rob : mB_2 ? mB_rob2 : a2_rob,
+                                  sq_kc_rob, ft_rob, dAc ? dA_rob : mA_2 ? mA_rob2 : a_rob, rob_w_idx};
    wire                lq_d_ready2, sq_d_ready2;
    wire [IBI:0]        ri_free, ri2_free, ri3_free;
    wire [IBF:0]        rf_free;
@@ -652,8 +672,8 @@ module smolrv64_core
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
-   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land | sy_done;
-   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : sy_done ? sy_rob : m_rob_idx;   // sy_done: M is empty (asserted)
+   wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land;
+   wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : m_rob_idx;
 
    // ---- per-physreg readiness (SHADOW: read and checked, not yet acted on) -----------
    // docs/Area-Efficient-Scalar-OoO.md 5. The scheduler needs readiness as STATE per
@@ -913,11 +933,9 @@ module smolrv64_core
    function [2:0] shard_of(input rd_fp, input [31:0] i, input mem, input amo, input fp,
                            input mul, input [2:0] f_slice, input [2:0] alu);
       shard_of = rd_fp                                ? f_slice   // an f-register
-               : (mem | amo)                          ? SH_LD     // M, a landing load
+               : (mem | amo)                          ? alu       // the lane's landing slot
                : (fp | (mul & i[14]))                 ? SH_FE     // the F stage, the MD stage (a divide)
-               : (i[6:2] == 5'b11100) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00))
-                                                      ? SH_LD     // the SYSQ (a CSR read)
-               :                                        alu;      // the lane: an ALU op or a link
+               :                                        alu;      // the lane: an ALU op, a link, a load, an AMO, a CSR read
    endfunction
    assign d_shard  = shard_of(d_rd[5],  d_insn,  d_is_mem,  d_is_amo,  d_is_fp,  d_is_mul,  SH_F0, SH_IE);
    assign d2_shard = shard_of(d2_rd[5], d2_insn, d2_is_mem, d2_is_amo, d2_is_fp, d2_is_mul, SH_F1, SH_IE2);
@@ -1028,7 +1046,7 @@ module smolrv64_core
       .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
       .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_long(lane_late(stg_pl_ia[PL_INSN +: 32])),.d_ent(ri_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(mA_1),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
+      .unit_busy(mA_1 | lbA_any | sy_at_head),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
       .hold_v(a_v),.hold_ent(a_ent),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ),.free_n(ri_free));
@@ -1039,7 +1057,7 @@ module smolrv64_core
       .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
       .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_long(lane_late(stg_pl_ib[PL_INSN +: 32])),.d_ent(ri2_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(mB_1),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
+      .unit_busy(mB_1 | lbB_any),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
      .iss_take(ri2_take),
       .hold_v(a2_v),.hold_ent(a2_ent),
       .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ),.free_n(ri2_free));
@@ -1051,7 +1069,7 @@ module smolrv64_core
       .d_valid(mv_ic),.d_ready(ri3_ready),.d_rob(stg_rob_ic),
       .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_long(lane_late(stg_pl_ic[PL_INSN +: 32])),.d_ent(ri3_d_ent),
       .wb_v(wkv),.wb_preg(wkp),
-      .unit_busy(mC_1),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
+      .unit_busy(mC_1 | lbC_any),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
      .iss_take(ri3_take),
       .hold_v(a3_v),.hold_ent(a3_ent),
       .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ),.free_n(ri3_free));
@@ -1676,6 +1694,7 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] lq_l_rob;
    wire [55:0]         lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;  wire lq_av_any, lq_uf_any;
+   wire [LQ_N*RN_PBITS-1:0] lq_e_dprd;   // the live loads' destinations (the stall counters)
    wire [LQ_IB-1:0]    lq_uf_idx;  wire [SEQW-1:0] lq_uf_seq;
    wire                lq_x_devwait;        // counters: a device load waiting for the head
    wire d_ld_nb    = d_gc[GC_LD];  // plain load, rule C1
@@ -1708,7 +1727,7 @@ module smolrv64_core
       .w_v(lsu_wk_done & ~wk_st), .w_idx(lq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
       .f_v(lq_f_v), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
-      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .uf_any(lq_uf_any), .uf_idx(lq_uf_idx), .uf_seq(lq_uf_seq), .rob_head(rob_head_idx), .flush(redirect));
+      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .uf_idx(lq_uf_idx), .uf_seq(lq_uf_seq), .rob_head(rob_head_idx), .flush(redirect));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // The queue costs a load two cycles -- one to register the address, one to select the
@@ -2405,13 +2424,13 @@ module smolrv64_core
    wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
    wire qf_in = qfr_v & ~sy_at_head;
    wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
-   wire sy_fire    = sy_at_head & ~port_yield & (~sy_instret | sy_head_q);
+   wire sy_fire    = sy_at_head & sy_lane_ok & (~sy_instret | sy_head_q);   // its result takes lane A's slot
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
    // otherwise), so a trap from dispatch is its own redirect here, as M's data fault is.
    wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi);  // trap, xret, illegal CSR, fence.i: a redirect
    wire sy_trap    = sy_fire & (csr_redir_trap | sy_xt);  // ...that is an exception: kill, no result
-   wire sy_done    = sy_fire & ~sy_trap;                 // completes through M's ROB port
+   wire sy_done    = sy_fire & ~sy_trap;                 // completes through lane A's landing slot
    // the CSR read's value onto SH_LD. A CSR op that csr_file traps writes its register too: the
    // trap flushes every reader, and the write and its wake stay clear of csr_file's decision.
    wire sy_wr      = sy_fire & sy_rd_v & ~sy_xt;
@@ -2446,14 +2465,11 @@ module smolrv64_core
       if (iss_sys & sy_v & ~sy_fire)     $fatal(1, "smolrv64_core: a system op issued into a busy SYSQ (it is serialising)");
       if (qf_in & sy_v & ~sy_is_csr)      $fatal(1, "smolrv64_core: a queue entry's fault displaces a SYSQ op that is not a younger CSR op");
       if (qf_sq & qf_lq)                 $fatal(1, "smolrv64_core: a load and a store both fault as the ROB head");
-      if (sy_wr & (sy_prd[RN_PBITS-1:RN_IDXB] != SH_LD)) $fatal(1, "smolrv64_core: the SYSQ wrote pr=%h, not SH_LD", sy_prd);
       // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
       // (a CSR op does not drain: younger work may be in flight; M yields to it, see m_done)
       if (sy_fire & ~sy_qf & ~sy_is_csr & m_valid) $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
       if (sy_fire & ~sy_qf & ~sy_is_csr & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
-      if (sy_fire & sy_wr & m_done)      $fatal(1, "smolrv64_core: the SYSQ and M write SH_LD in one cycle");
       if (rn_valid & d_csr_op & csr_infl) $fatal(1, "smolrv64_core: a second CSR op dispatched with one in flight");
-      if (sy_fire & ld_land)             $fatal(1, "smolrv64_core: a system op fires in a load's landing cycle: the port is not free");
       if (m_valid & m_is_sys)            $fatal(1, "smolrv64_core: a system op reached M (pc %h)", m_pc);
       if (m_valid & (m_insn[6:2] == 5'b00011) & (m_insn[14:13] == 2'b00))
                                          $fatal(1, "smolrv64_core: a fence reached M (pc %h)", m_pc);
@@ -2751,10 +2767,33 @@ module smolrv64_core
    // Gated on "no lane issued", not on M: M busy with loads would mask an FP chain that is the
    // critical path.
    wire no_issue  = ~(pick_i | pick_i2 | pick_i3);
-   wire dep_ld    = no_issue & ((rf_blk_v & (bsh_f == SH_LD))
-                              | (ri_blk_v & (bsh_i == SH_LD))
-                              | (ri2_blk_v & (bsh_i2 == SH_LD))
-                              | (ri3_blk_v & (bsh_i3 == SH_LD)));
+   // A register a load, AMO or CSR read will write: a CSR read's is in SH_LD; a load's or AMO's is
+   // in its lane's shard, so it is found as a live LQ entry's destination, a landing waiting in a
+   // lane's buffer, or M's AMO. An FP load's is an f-register, counted under dep_fp below.
+   // the landing buffers' waiting destinations, 0 for an empty slot (a wire: the function below
+   // reads no array, rule F4)
+   wire [3*LBN*RN_PBITS-1:0] lb_live;
+   genvar glb;
+   generate
+      for (glb = 0; glb < 3*LBN; glb = glb + 1) begin : g_lb_live
+         wire [LBB-1:0] dl = glb[LBB-1:0] - lb_h[glb / LBN];   // the entry's age in its lane's ring
+         assign lb_live[glb*RN_PBITS +: RN_PBITS] = ({1'b0, dl} < lb_n[glb / LBN]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
+      end
+   endgenerate
+   function automatic ld_dst(input [RN_PBITS-1:0] p);
+      integer k;
+      begin
+         ld_dst = (p[RN_PBITS-1:RN_IDXB] == SH_LD) | (m_valid & m_is_amo & m_rd_v & (m_prd == p));
+         for (k = 0; k < LQ_N; k = k + 1)
+            if ((lq_e_dprd[k*RN_PBITS +: RN_PBITS] == p) & (p[RN_PBITS-1:RN_IDXB] < SH_F0)) ld_dst = 1'b1;
+         for (k = 0; k < 3*LBN; k = k + 1)
+            if ((lb_live[k*RN_PBITS +: RN_PBITS] == p) & (p != {RN_PBITS{1'b0}})) ld_dst = 1'b1;
+      end
+   endfunction
+   wire dep_ld    = no_issue & ((rf_blk_v & ld_dst(rf_blk_pr))
+                              | (ri_blk_v & ld_dst(ri_blk_pr))
+                              | (ri2_blk_v & ld_dst(ri2_blk_pr))
+                              | (ri3_blk_v & ld_dst(ri3_blk_pr)));
    // An f-register (FP slices: an FP op's or an FP load's) or SH_FE (an FP op's integer
    // result, a mul/div, a link).
    wire dep_fp    = no_issue & ((rf_blk_v & ((bsh_f == SH_FE) | (bsh_f >= SH_F0)))
@@ -3411,9 +3450,9 @@ module smolrv64_core
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
    // each lane's broadcast value: its ALU op's at issue, or its multiply's in the reserved slot
-   assign wb_ie = mA_2 ? mA_res : xa_result;
-   wire [63:0] wb_ie2 = mB_2 ? mB_res : xb_result;
-   wire [63:0] wb_ie3 = mC_2 ? mC_res : xc_result;
+   assign wb_ie = dA ? dA_dat : mA_2 ? mA_res : xa_result;
+   wire [63:0] wb_ie2 = dB ? dB_dat : mB_2 ? mB_res : xb_result;
+   wire [63:0] wb_ie3 = dC ? dC_dat : mC_2 ? mC_res : xc_result;
    // SH_LD is now M's shard outright, so this mux carries every result M produces, not
    // just the memory and mul/div ones it started as. The two new arms are the two classes
    // d_shard just moved out of SH_IE: a CSR read, and everything else M completes -- which
@@ -3423,9 +3462,7 @@ module smolrv64_core
    // m_unit_done_q -- the latched arm then handed a stale m_result to the destination. (The
    // same hazard existed whenever a landing load held a CSR op at head.) Live is also what
    // makes the delayed minstret read exact: it is sampled in the completion cycle.
-   assign wb_ld = ld_wb                     ? lsu_rd_val
-                : sy_wr                     ? csr_rdata    // before M's arms: M does not complete while
-                :                             lsu_rd_val;   // the SYSQ's op is the head (m_done), so M's is not a result
+   assign wb_ld = lsu_rd_val;              // a landing load's or M's AMO's (the SYSQ's goes to lane A)
    // SH_FE's writers: the F stage's landing, the CTF link (when the F stage isn't landing) and
    // the MD stage (when neither is).
    assign wb_fe = fp_wb         ? fp_wval
@@ -3465,36 +3502,111 @@ module smolrv64_core
    // before any new producer of it can dispatch. A multiply writes in its reserved slot.
    wire alu_wb = a_v & qa_rd_v & ~lane_late(qa_insn);
    wire alu2_wb = a2_v & qb_rd_v & ~lane_late(qb_insn);
-   wire we_ie2 = alu2_wb | mB_wr;
-   wire [RN_PBITS-1:0] wa_ie2 = mB_2 ? mB_prd2 : qb_prd;
+   wire we_ie2 = alu2_wb | mB_wr | dB;
+   wire [RN_PBITS-1:0] wa_ie2 = dB ? dB_prd : mB_2 ? mB_prd2 : qb_prd;
    always @(posedge clk) begin
       alu2_q_v <= ~reset & we_ie2;
-      if (we_ie2) begin alu2_q_prd <= wa_ie2; alu2_q_val <= mB_2 ? mB_res : xb_result; end
+      if (we_ie2) begin alu2_q_prd <= wa_ie2; alu2_q_val <= wb_ie2; end
    end
    wire alu3_wb = a3_v & qc_rd_v & ~lane_late(qc_insn);
-   wire we_ie3 = alu3_wb | mC_wr;
-   wire [RN_PBITS-1:0] wa_ie3 = mC_2 ? mC_prd2 : qc_prd;
+   wire we_ie3 = alu3_wb | mC_wr | dC;
+   wire [RN_PBITS-1:0] wa_ie3 = dC ? dC_prd : mC_2 ? mC_prd2 : qc_prd;
    always @(posedge clk) begin
       alu3_q_v <= ~reset & we_ie3;
-      if (we_ie3) begin alu3_q_prd <= wa_ie3; alu3_q_val <= mC_2 ? mC_res : xc_result; end
+      if (we_ie3) begin alu3_q_prd <= wa_ie3; alu3_q_val <= wb_ie3; end
    end
-   wire we_ie = alu_wb | mA_wr;            // the ISSUE-timed event: wake, pending clear, snoop
+   wire we_ie = alu_wb | mA_wr | dA;       // the ISSUE-timed event: wake, pending clear, snoop
    always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)
       alu_q_v <= ~reset & we_ie;
-      if (we_ie) begin alu_q_prd <= wa_ie; alu_q_val <= mA_2 ? mA_res : xa_result; end
+      if (we_ie) begin alu_q_prd <= wa_ie; alu_q_val <= wb_ie; end
    end
-   wire we_ld = m_wb | ld_wb | sy_wr;
+   // THE LD STREAM: a landing load, M's AMO result or the SYSQ's CSR read, one a cycle. An FP
+   // load's and a CSR read's land on the LD port as before; an integer load's or AMO's lands in
+   // its lane (ldw_int, the lane by its register's shard).
+   wire ld_any = m_wb | ld_wb;
+   wire [2:0] ldw_sh = wa_ld[RN_PBITS-1:RN_IDXB];
+   assign ldw_int = ld_any & ((ldw_sh == SH_IE) | (ldw_sh == SH_IE2) | (ldw_sh == SH_IE3));
+   wire we_ld = ld_any & ~ldw_int;
    wire we_fe = fp_wb | md_wr;
-   wire [RN_PBITS-1:0] wa_ie = mA_2 ? mA_prd2 : qa_prd;
-   wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : sy_wr ? sy_prd : m_prd;
+   wire [RN_PBITS-1:0] wa_ie = dA ? dA_prd : mA_2 ? mA_prd2 : qa_prd;
+   wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
+   wire [ROB_IDXB-1:0] ldw_rob = ld_wb ? lq_l_rob : m_rob_idx;
+
+   // ---- THE LANDING BUFFERS (lanes step 5.2d-c) ----
+   // An integer load's or AMO's result, and the SYSQ's (a CSR read, a system op's completion),
+   // lands in its lane: the lane's write register, its wake and pending clear, the store queue's
+   // snoop and the lane's ROB completion port -- in a cycle the lane leaves both free (nothing
+   // executing that completes at issue, no multiply in its slot). A load's or AMO's goes straight
+   // through when the lane is free and nothing waits; otherwise it waits here, and a waiting entry
+   // holds the lane's select (unit_busy), so a free cycle comes within two. It completes when it
+   // drains, never before, so a waiting entry belongs to an op that has not retired and a redirect
+   // empties the buffers. The SYSQ never waits: a system op goes alone, so it is lane A's, and it
+   // fires only when lane A is free and nothing waits there (lane A holds its select while a
+   // system op is the ROB head), so its write and completion are in its fire cycle, as its
+   // redirect needs. Load-hit speculation (waking the consumers from the D$ lookup) is a later step.
+   integer             lbi;
+   initial for (lbi = 0; lbi < 3; lbi = lbi + 1) begin lb_h[lbi] = 0; lb_t[lbi] = 0; lb_n[lbi] = 0; end
+   // the LD stream's push into its lane; the SYSQ's goes through lane A in its fire cycle
+   wire [2:0] p0 = {ldw_int & (ldw_sh == SH_IE3), ldw_int & (ldw_sh == SH_IE2), ldw_int & (ldw_sh == SH_IE)};
+   wire       sp_v = sy_wr | sy_done;
+   wire [2:0] p1 = {2'b00, sp_v};
+   // the lane's write and ROB ports are free: nothing executing that completes at issue, and no
+   // multiply in its reserved slot (both registers)
+   wire [2:0] lb_free = {~(a3_v & ~lane_late(qc_insn)) & ~mC_2,
+                         ~(a2_v & ~lane_late(qb_insn)) & ~mB_2,
+                         ~(a_v  & ~lane_late(qa_insn)) & ~mA_2};
+   wire [2:0] lb_any = {lb_n[2] != 0, lb_n[1] != 0, lb_n[0] != 0};
+   assign lbA_any = lb_any[0];  assign lbB_any = lb_any[1];  assign lbC_any = lb_any[2];
+   assign sy_lane_ok = lb_free[0] & ~lb_any[0];
+   // each lane drains, in order, its oldest waiting entry, the SYSQ's, the LD stream's
+   wire [2:0] lb_drain = lb_free & (lb_any | p0 | p1);
+   wire [2:0] by0 = lb_drain & ~lb_any & ~p1 & p0;      // the LD stream's goes straight through...
+   wire [2:0] en0 = p0 & ~by0;                          // ...or waits
+   // the drained entry of each lane, {wr, cmp, prd, dat, rob} (a wire per lane: rule F4)
+   wire [2+RN_PBITS+64+ROB_IDXB-1:0] lp [0:2];
+   genvar glp;
+   generate
+      for (glp = 0; glp < 3; glp = glp + 1) begin : g_lp
+         wire [LBB-1:0] hh = lb_h[glp];
+         assign lp[glp] = lb_any[glp] ? {1'b1, 1'b1, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
+                        : p1[glp]     ? {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob}
+                        :               {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob};
+      end
+   endgenerate
+   assign {dA_w, dA_c, dA_prd, dA_dat, dA_rob} = lp[0];
+   assign {dB_w, dB_c, dB_prd, dB_dat, dB_rob} = lp[1];
+   assign {dC_w, dC_c, dC_prd, dC_dat, dC_rob} = lp[2];
+   assign dA = lb_drain[0] & dA_w;  assign dB = lb_drain[1] & dB_w;  assign dC = lb_drain[2] & dC_w;
+   assign dAc = lb_drain[0] & dA_c; assign dBc = lb_drain[1] & dB_c; assign dCc = lb_drain[2] & dC_c;
+   always @(posedge clk) begin
+      for (lbi = 0; lbi < 3; lbi = lbi + 1) begin
+         if (en0[lbi]) begin
+            lb_prd[lbi*LBN + lb_t[lbi]] <= wa_ld;  lb_dat[lbi*LBN + lb_t[lbi]] <= wb_ld;
+            lb_rob[lbi*LBN + lb_t[lbi]] <= ldw_rob;
+            lb_t[lbi] <= lb_t[lbi] + 1'b1;
+         end
+         if (lb_drain[lbi] & lb_any[lbi]) lb_h[lbi] <= lb_h[lbi] + 1'b1;
+         lb_n[lbi] <= lb_n[lbi] + {{LBB{1'b0}}, en0[lbi]} - {{LBB{1'b0}}, lb_drain[lbi] & lb_any[lbi]};
+         if (reset | redirect) begin lb_h[lbi] <= 0; lb_t[lbi] <= 0; lb_n[lbi] <= 0; end   // flush last (rule I11)
+      end
+   end
+   always @(posedge clk) if (!reset) begin
+      for (lbi = 0; lbi < 3; lbi = lbi + 1)
+         if (en0[lbi] & (lb_n[lbi] == LBN[LBB:0]) & ~(lb_drain[lbi] & lb_any[lbi]))
+            $fatal(1, "smolrv64_core: lane %0d's landing buffer overflows", lbi);
+      if (sp_v & ~lb_drain[0])
+         $fatal(1, "smolrv64_core: the SYSQ fired without lane A's slot");
+      if (sy_wr & (sy_prd[RN_PBITS-1:RN_IDXB] != SH_IE))
+         $fatal(1, "smolrv64_core: the SYSQ wrote pr=%h, not lane A's shard", sy_prd);
+   end
    wire [RN_PBITS-1:0] wa_fe = fp_wb ? ft_prd : md_prd;
    always @(posedge clk) if (!reset) begin
       if (m_wb & ld_wb)
          $fatal(1, "smolrv64_core: LD shard written by both M and a landing load");
-      // M writes SH_LD alone (d_shard: memory ops and AMOs). An op reaching M with another
-      // shard would drop its result silently: we_ie and we_fe ignore M.
-      if (m_wb & (m_shard != SH_LD) & (m_shard < SH_F0))
-         $fatal(1, "smolrv64_core: M wrote shard %0d -- d_shard must route M's ops to SH_LD or an FP slice", m_shard);
+      // M's result (an AMO's) goes to its lane, an FP load's to its FP slice; SH_FE is not a
+      // landing's, so a result routed there would be dropped silently
+      if (ld_any & (ldw_sh == SH_FE))
+         $fatal(1, "smolrv64_core: the LD stream wrote SH_FE (pc %h)", m_pc);
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot
@@ -4169,7 +4281,7 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: two allocations into one memory queue");
       if (rn_valid_c & ~rn_valid_b)     $fatal(1, "smolrv64_core: slot C dispatched without slot B");
       // no two dispatched ops target the same memory or F/CTF pipe (each ALU lane has one slot).
-      if (c_to_ic & d3_rd_v & ~d3_gc[GC_LD] & (d3_shard != SH_IE3)) $fatal(1, "smolrv64_core: slot C's ALU op in shard %0d, not lane C's", d3_shard);
+      if (c_to_ic & d3_rd_v & ~d3_rd[5] & (d3_shard != SH_IE3)) $fatal(1, "smolrv64_core: slot C's ALU op in shard %0d, not lane C's", d3_shard);
       if ((f_slot0 + b_to_f + c_to_f) > 2'd1) $fatal(1, "smolrv64_core: swizzle put two ops on the F pipe");
    end
 

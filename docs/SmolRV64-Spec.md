@@ -890,6 +890,18 @@ set in the stage register.
   with an address still waiting for one, and reads that preg on M's port `ra2` (which reads the
   integer and FP files) the next cycle. A value produced later comes from the snoop, armed at
   allocation; the two never meet (asserted). `ra2` is the SQ's alone.
+- **A result lands in its lane's write slot (5.2d-c).** An integer load's, AMO's or CSR read's
+  destination is in its slot's lane shard; SH_LD has no writer and no bank. The value takes the
+  lane's write register -- its wake, pending clear, the store queue's snoop -- and the lane's ROB
+  completion port in a cycle the lane leaves both free (nothing executing that completes at
+  issue, no multiply in its slot). A load's or AMO's goes straight through when the lane is
+  free, so its latency is unchanged; otherwise it waits in the lane's 4-entry landing buffer,
+  which holds the lane's select (`unit_busy`) until it drains. It completes when it drains, so a
+  waiting entry is never a retired op's and a redirect empties the buffers. The SYSQ never
+  waits: a system op goes alone (lane A), lane A holds its select while one is the ROB head, and
+  the SYSQ fires only into a free lane A, so a redirecting op writes and completes in its fire
+  cycle. FP loads land on the LD port in their FP slices as before. Waking a load's consumers
+  from its D$ lookup (load-hit speculation, with replay on a miss) is a later step.
 - **The head ops run from the head-op register (5.2d-b step 3).** An AMO, LR/SC or CBO goes
   alone, so in slot A and lane A, whose adder generates its address and which reads its rs2 (an
   AMO's or SC's data). Both wait in the one-entry head-op register (`ho_*`), the op's record
@@ -1345,7 +1357,7 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | array | module | shape | width | bits | storage | ports |
 |---|---|---|---|---|---|---|
 | `mem_ie` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared (3 for the M/F port, 2 per ALU port), 1W |
-| `mem_ld` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W |
+| `lb_prd`, `lb_dat`, `lb_rob` | `smolrv64_core` | 3×4 | 10/64/5 | 948 | flops | the lanes' landing buffers (§8) |
 | `mem_fe` | `smolrv64_prf` | 64 | 64 | 4 096 | LUTRAM | 7R shared, 1W |
 | `fp[0..2].mem_l`, `fp[0..2].mem_f` | `smolrv64_prf` | 64 each | 64 | 24 576 | LUTRAM | 4R (`ra2`, `ra10-12`), 1W each: the FP file's load and F-stage banks |
 | `fp[0..2].lvt` | `smolrv64_prf` | 64 each | 1 | 192 | flops | which bank holds each FP register |

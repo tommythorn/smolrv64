@@ -164,6 +164,7 @@ module smolrv64_lq
 
     output wire [IDXB:0]         occupancy,
     output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
+    output wire [NENT*PBITS-1:0] e_dprd,      // each live entry's destination, 0 when free (the stall counters)
     output wire                  uf_any,      // an entry whose address has not arrived
     output wire [IDXB-1:0]       uf_idx,      // ...the oldest such, and its sequence number
     output wire [SEQW-1:0]       uf_seq,
@@ -218,6 +219,12 @@ module smolrv64_lq
    assign d_idx     = tail;
    assign occupancy = cnt;
    assign av_any    = |(v & av);
+   genvar gd;
+   generate
+      for (gd = 0; gd < NENT; gd = gd + 1) begin : g_dprd
+         assign e_dprd[gd*PBITS +: PBITS] = v[gd] ? prd[gd] : {PBITS{1'b0}};
+      end
+   endgenerate
    assign uf_any    = |(v & ~av);
    // every entry before the access candidate has its address, so the oldest unfilled entry is
    // the first one at or after it

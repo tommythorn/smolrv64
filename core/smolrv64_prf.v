@@ -13,7 +13,7 @@
 // THE INTEGER SHARDS, one writer each:
 //
 //   SH_IE, SH_IE2  the two ALUs        (SH_IE3, the third ALU's, has no writer)
-//   SH_LD          M: integer loads, AMOs, the SYSQ's CSR reads
+//   SH_LD          none: an integer load's, AMO's or CSR read's result lands in its lane's shard
 //   SH_FE          the F stage: the FP ops' integer results (fcvt.w.d, fmv.x.d, feq, fclass),
 //                  mul/div from the MD stage, the CTF link
 //
@@ -130,7 +130,6 @@ module smolrv64_prf
    localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE), AB_IE2 = $clog2(N_IE2), AB_IE3 = $clog2(N_IE3);
 
    reg [63:0] mem_ie [0:N_IE-1];
-   reg [63:0] mem_ld [0:N_LD-1];
    reg [63:0] mem_fe [0:N_FE-1];
    reg [63:0] mem_ie2 [0:N_IE2-1];
    reg [63:0] mem_ie3 [0:N_IE3-1];
@@ -165,13 +164,11 @@ module smolrv64_prf
    function automatic [63:0] rd_shard;
       input [2:0]      sh;
       input [IDXB-1:0] ix;
-      input [63:0]     m_ie, m_ld, m_fe, m_ie2, m_ie3;
+      input [63:0]     m_ie, m_fe, m_ie2, m_ie3;
       begin
          case (sh)
            SH_IE: rd_shard = (WRTHRU != 0 && we_ie && wa_ie[IDXB-1:0] == ix
                               && wa_ie[PBITS-1:IDXB] == SH_IE) ? wd_ie : m_ie;
-           SH_LD: rd_shard = (WRTHRU != 0 && we_ld && wa_ld[IDXB-1:0] == ix
-                              && wa_ld[PBITS-1:IDXB] == SH_LD) ? wd_ld : m_ld;
            SH_FE: rd_shard = (WRTHRU != 0 && we_fe && wa_fe[IDXB-1:0] == ix
                               && wa_fe[PBITS-1:IDXB] == SH_FE) ? wd_fe : m_fe;
            SH_IE2: rd_shard = (WRTHRU != 0 && we_ie2 && wa_ie2[IDXB-1:0] == ix
@@ -189,44 +186,44 @@ module smolrv64_prf
    // belong to is discarded by rd_shard's case, so a truncated index there is harmless --
    // but it must not be OUT OF RANGE, which for a smaller shard it otherwise would be.
    assign rd1 = (ra1 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh1, ix1, mem_ie[ix1[AB_IE-1:0]], mem_ld[ix1[AB_LD-1:0]],
+              : rd_shard(sh1, ix1, mem_ie[ix1[AB_IE-1:0]],
                          mem_fe[ix1[AB_FE-1:0]], mem_ie2[ix1[AB_IE2-1:0]], mem_ie3[ix1[AB_IE3-1:0]]);
    assign rd2 = (ra2 == {PBITS{1'b0}}) ? 64'd0
               : (sh2 >= SH_F0) ? (sh2 == SH_F0 ? fp_r2[0] : sh2 == SH_F1 ? fp_r2[1] : fp_r2[2])
-              : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]], mem_ld[ix2[AB_LD-1:0]],
+              : rd_shard(sh2, ix2, mem_ie[ix2[AB_IE-1:0]],
                          mem_fe[ix2[AB_FE-1:0]], mem_ie2[ix2[AB_IE2-1:0]], mem_ie3[ix2[AB_IE3-1:0]]);
    assign rd3 = (ra3 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]], mem_ld[ix3[AB_LD-1:0]],
+              : rd_shard(sh3, ix3, mem_ie[ix3[AB_IE-1:0]],
                          mem_fe[ix3[AB_FE-1:0]], mem_ie2[ix3[AB_IE2-1:0]], mem_ie3[ix3[AB_IE3-1:0]]);
    assign rd4 = (ra4 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh4, ix4, mem_ie[ix4[AB_IE-1:0]], mem_ld[ix4[AB_LD-1:0]],
+              : rd_shard(sh4, ix4, mem_ie[ix4[AB_IE-1:0]],
                          mem_fe[ix4[AB_FE-1:0]], mem_ie2[ix4[AB_IE2-1:0]], mem_ie3[ix4[AB_IE3-1:0]]);
    assign rd5 = (ra5 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh5, ix5, mem_ie[ix5[AB_IE-1:0]], mem_ld[ix5[AB_LD-1:0]],
+              : rd_shard(sh5, ix5, mem_ie[ix5[AB_IE-1:0]],
                          mem_fe[ix5[AB_FE-1:0]], mem_ie2[ix5[AB_IE2-1:0]], mem_ie3[ix5[AB_IE3-1:0]]);
    assign rd6 = (ra6 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh6, ix6, mem_ie[ix6[AB_IE-1:0]], mem_ld[ix6[AB_LD-1:0]],
+              : rd_shard(sh6, ix6, mem_ie[ix6[AB_IE-1:0]],
                          mem_fe[ix6[AB_FE-1:0]], mem_ie2[ix6[AB_IE2-1:0]], mem_ie3[ix6[AB_IE3-1:0]]);
    assign rd7 = (ra7 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh7, ix7, mem_ie[ix7[AB_IE-1:0]], mem_ld[ix7[AB_LD-1:0]],
+              : rd_shard(sh7, ix7, mem_ie[ix7[AB_IE-1:0]],
                          mem_fe[ix7[AB_FE-1:0]], mem_ie2[ix7[AB_IE2-1:0]], mem_ie3[ix7[AB_IE3-1:0]]);
    assign rd8 = (ra8 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh8, ix8, mem_ie[ix8[AB_IE-1:0]], mem_ld[ix8[AB_LD-1:0]],
+              : rd_shard(sh8, ix8, mem_ie[ix8[AB_IE-1:0]],
                          mem_fe[ix8[AB_FE-1:0]], mem_ie2[ix8[AB_IE2-1:0]], mem_ie3[ix8[AB_IE3-1:0]]);
    assign rd9 = (ra9 == {PBITS{1'b0}}) ? 64'd0
-              : rd_shard(sh9, ix9, mem_ie[ix9[AB_IE-1:0]], mem_ld[ix9[AB_LD-1:0]],
+              : rd_shard(sh9, ix9, mem_ie[ix9[AB_IE-1:0]],
                          mem_fe[ix9[AB_FE-1:0]], mem_ie2[ix9[AB_IE2-1:0]], mem_ie3[ix9[AB_IE3-1:0]]);
    assign rd10 = (ra10 == {PBITS{1'b0}}) ? 64'd0
               : (sh10 >= SH_F0) ? (sh10 == SH_F0 ? fp_r10[0] : sh10 == SH_F1 ? fp_r10[1] : fp_r10[2])
-              : rd_shard(sh10, ix10, mem_ie[ix10[AB_IE-1:0]], mem_ld[ix10[AB_LD-1:0]],
+              : rd_shard(sh10, ix10, mem_ie[ix10[AB_IE-1:0]],
                          mem_fe[ix10[AB_FE-1:0]], mem_ie2[ix10[AB_IE2-1:0]], mem_ie3[ix10[AB_IE3-1:0]]);
    assign rd11 = (ra11 == {PBITS{1'b0}}) ? 64'd0
               : (sh11 >= SH_F0) ? (sh11 == SH_F0 ? fp_r11[0] : sh11 == SH_F1 ? fp_r11[1] : fp_r11[2])
-              : rd_shard(sh11, ix11, mem_ie[ix11[AB_IE-1:0]], mem_ld[ix11[AB_LD-1:0]],
+              : rd_shard(sh11, ix11, mem_ie[ix11[AB_IE-1:0]],
                          mem_fe[ix11[AB_FE-1:0]], mem_ie2[ix11[AB_IE2-1:0]], mem_ie3[ix11[AB_IE3-1:0]]);
    assign rd12 = (ra12 == {PBITS{1'b0}}) ? 64'd0
               : (sh12 >= SH_F0) ? (sh12 == SH_F0 ? fp_r12[0] : sh12 == SH_F1 ? fp_r12[1] : fp_r12[2])
-              : rd_shard(sh12, ix12, mem_ie[ix12[AB_IE-1:0]], mem_ld[ix12[AB_LD-1:0]],
+              : rd_shard(sh12, ix12, mem_ie[ix12[AB_IE-1:0]],
                          mem_fe[ix12[AB_FE-1:0]], mem_ie2[ix12[AB_IE2-1:0]], mem_ie3[ix12[AB_IE3-1:0]]);
 
    // ---- the FP file: three slices, a bank per writer, a live-value bit per register ----
@@ -266,7 +263,6 @@ module smolrv64_prf
    integer j;
    initial begin
       for (j = 0; j < N_IE; j = j + 1) mem_ie[j] = 64'd0;
-      for (j = 0; j < N_LD; j = j + 1) mem_ld[j] = 64'd0;
       for (j = 0; j < N_FE; j = j + 1) mem_fe[j] = 64'd0;
       // Boot seed, mirroring rv_regfile's: a1 (x11) = the DTB pointer.  x11 maps to
       // {SH_IE, 11} at reset (see smolrv64_rename's reset arm), so the seed lands in mem_ie[11].
@@ -280,7 +276,6 @@ module smolrv64_prf
 
    always @(posedge clk) begin
       if (we_ie) mem_ie[wa_ie[AB_IE-1:0]] <= wd_ie;
-      if (we_ld & (wa_ld[PBITS-1:IDXB] == SH_LD)) mem_ld[wa_ld[AB_LD-1:0]] <= wd_ld;
       if (we_fe & (wa_fe[PBITS-1:IDXB] == SH_FE)) mem_fe[wa_fe[AB_FE-1:0]] <= wd_fe;
       if (we_ie2) mem_ie2[wa_ie2[AB_IE2-1:0]] <= wd_ie2;
       if (we_ie3) mem_ie3[wa_ie3[AB_IE3-1:0]] <= wd_ie3;
@@ -314,8 +309,9 @@ module smolrv64_prf
                 wa_ie3, wa_ie3[PBITS-1:IDXB]);
       if (we_ie && ({1'b0, wa_ie[IDXB-1:0]} >= N_IE[IDXB:0]))
          $fatal(1, "smolrv64_prf: int-exec write idx %0d >= N_IE %0d", wa_ie[IDXB-1:0], N_IE);
-      if (we_ld && (wa_ld[PBITS-1:IDXB] == SH_LD) && ({1'b0, wa_ld[IDXB-1:0]} >= N_LD[IDXB:0]))
-         $fatal(1, "smolrv64_prf: load write idx %0d >= N_LD %0d", wa_ld[IDXB-1:0], N_LD);
+      // SH_LD has no writer and no bank: a load's, AMO's or CSR read's integer result is its lane's
+      if (we_ld && (wa_ld[PBITS-1:IDXB] == SH_LD))
+         $fatal(1, "smolrv64_prf: a write to SH_LD, which has no bank (pr %h)", wa_ld);
       if (we_ie2 && ({1'b0, wa_ie2[IDXB-1:0]} >= N_IE2[IDXB:0]))
          $fatal(1, "smolrv64_prf: second int-exec write idx %0d >= N_IE2 %0d", wa_ie2[IDXB-1:0], N_IE2);
       if (we_ie3 && ({1'b0, wa_ie3[IDXB-1:0]} >= N_IE3[IDXB:0]))
