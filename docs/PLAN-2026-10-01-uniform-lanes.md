@@ -375,6 +375,86 @@ What stays in `u_iq_f` after 5.2: FP arithmetic, divide, and the SYSQ's system o
 integer results (FP compares and converts, CSR reads, the divide) cross into a lane's write
 slot.
 
+## Step 5.4: IW=4 (design, 2026-10-05)
+
+IW=4 is the fourth lane (D), the fourth slot through rename, dispatch and retire, and the FP
+file's fourth slice; then the sharded ROB and restart at resolve, which land together (the
+decision of 2026-10-01). With SH_LD and SH_FE gone, the eight shard numbers are exactly the
+four lanes and the four FP slices.
+
+**What a fourth slot needs, by structure:**
+
+- **Shards.** Renumbered: lanes 0-3, FP slices 4-7, so "an f-register" is one shard bit.
+  SH_LD's and SH_FE's free lists go (nothing renames into them since 5.2d-c and 5.2e).
+- **Front end.** The decoupling queue forms groups of up to `FW` = 4 at its head and decode
+  writes four records a cycle. The group rules are unchanged: at most one load, one store and
+  one FP/system op; a head op alone.
+- **Rename.** A fourth port: D's sources compare against A's, B's and C's destinations (the
+  intra-group bypass chain grows by one), a fourth SMAP and RMAP copy, a fourth commit port.
+  The free lists already have next_pow2(IW) = 4 banks.
+- **Pending.** A fourth set port and six more queries (D's two map candidates, three sources).
+- **ROB.** A fourth allocation and commit port (dense, 32 entries, through 5.4c; rows in 5.4d).
+- **Lane D.** Scheduler, dispatch stage, payload and tag arrays, select register, exec,
+  multiplier, address generation into the LQ/SQ arrival registers, landing buffer, write
+  register and resolve register; the oldest-mispredict pick and the training queue's ranking
+  go four-way. Its own PRF shard.
+- **PRF.** Each integer shard gains lane D's two read ports: 12 per shard (two per lane, the F
+  port's three, the store queue's one). The FP file gains slice F3: two banks and the
+  live-value bit, like F0-F2.
+- **Wakeup.** Six broadcasts at IW=4: the four lanes' write registers and the two FP streams
+  (LD and FE, which since 5.2e write only the FP slices). **A lane's scheduler needs only the
+  lanes' four**: a lane op never names an f-register (an FP store's rs2 is the store queue's
+  and is zeroed in the lane; the PRF asserts the lanes' ports never read an FP shard), so an
+  FP stream can never wake it. The FP scheduler and the store queue's snoop watch all six.
+
+**Increments**, each lockstep-gated:
+
+1. **5.4a: the lanes wake on the lanes (IW=3, bit-identical).** The three lane schedulers and
+   their dispatch-stage folds drop the LD and FE comparators: two of five per source per
+   entry, out of the scheduler, which is the critical path. The shards are renumbered in the
+   same step (retire-identical: the numbers are names).
+2. **5.4b: the lanes and slots as arrays (IW=3, cycle-identical).** The per-lane and per-slot
+   copies (`qa/qb/qc`, `a/a2/a3`, `mA/mB/mC`, `dA/dB/dC`, `d/d2/d3`, the rename and ROB ports
+   `_b/_c`) become generate loops over `IW`. Lane D is then a parameter rather than a fourth
+   copy of some 250 sites in the core. Gate: the same 60 M retire count and the same timing
+   at IW=3.
+3. **5.4c: IW=4 with the dense ROB.** `SMOLRV64_IW=4`: lane D, slot D, slice F3. Lockstep IPC
+   at 60 M and 300 M against IW=3 before timing is fought, as at Stage 3.
+4. **5.4d: the sharded ROB, 32 rows of four.** A group takes a row, slot k in column k; the
+   ROB's credit is a row; `{row, col}` is the age. Each lane completes its own column. The
+   ports that complete any column -- the FP landing, the store queue's irrevocable take, the
+   MD stage and M -- take the column from the slot carried in their tag. The landings already
+   go through their op's lane, with one exception to fix first: a landing picks its lane by
+   its register's shard, so a load to x0 (`prd` 0) lands in lane A whatever its slot. With
+   column-owned completion the landing carries its slot instead (two bits in the LQ entry and
+   the FP tag).
+5. **5.4e: restart at resolve (C6).** A mispredict recovers when it resolves, not when it
+   reaches the head. Fetch already restarts at resolve (`fr_set`); what moves is the squash.
+   Everything younger than the branch dies by age (`{row, col}` against the branch's) in the
+   schedulers, the dispatch stages, the LQ/SQ, the landing buffers, the FP and MD stages and
+   the ROB, and the rename map returns to its state just after the branch.
+
+   **The map's recovery is the open decision.** Rollback today is `lv := 0` onto the committed
+   map, correct only at the head. Two ways to the branch's state:
+
+   - **Walk back (the default).** Each ROB entry keeps the mapping its rename displaced
+     (`pold`, 10 bits). From the tail back to the branch, a row a cycle, rename rewrites
+     `SMAP[rd] := pold` through its own four write ports, which are idle because rename is
+     frozen while the restart's path fills the queue, and moves the free lists' speculative
+     heads back over the walked registers. No checkpoints and no wide restore. The walk
+     overlaps fetch's refill, which takes longer than a typical walk of a few rows.
+   - **Checkpoints.** A copy of SMAP and the free-list heads per unresolved branch (a credit),
+     restored in one cycle. The restore is the 640-flop parallel load the rename module's
+     header rejects for the head rollback on fanout, times the number of checkpoints.
+
+   The age kill is a compare per entry. It is registered (the kill vector is computed from
+   flops the cycle after resolve), so a doomed entry can still issue in between; its write is
+   harmless because it lands before the walk frees its register.
+
+**Defaults where the design forks:** the dense ROB stays through 5.4c, so IW=4's IPC is
+measured against one change; slice F3 rather than three FP slices shared by four slots (a
+partition per slot keeps each FP free list at one allocation a cycle); walk back for C6.
+
 ## The PRF in block RAM: built, measured, dropped (2026-10-03)
 
 Built on `wip/prf-r` (parked): a read stage on the lanes, a two-deep bypass, the lanes waking
