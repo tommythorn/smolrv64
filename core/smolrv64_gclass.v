@@ -45,8 +45,12 @@ module smolrv64_gclass
    // instruction that traps at dispatch: each serialises and fires at the ROB head from the SYSQ
    wire cls_s = (insn[6:2] == 5'b11100) | ((insn[6:2] == 5'b00011) & (insn[14:13] == 2'b00))
               | illegal | fault;
-   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s & ~mul_l;   // the ordered memory pipe (u_iq_l)
-   wire cls_i  = ~ord | cls_c | mul_l;                       // ALU op, control flow or multiply: the slot's lane
+   // a plain load (integer or FP) or an integer plain store generates its address in its slot's
+   // lane (5.2d-a); an FP store, an AMO, LR/SC and a CBO stay on the ordered memory pipe
+   wire mem_l = ((is_mem & ~is_store & ~is_amo & ~is_cbo) | (is_store & ~is_amo & ~is_cbo & ~is_fp))
+              & ~illegal & ~fault & ~irqop;
+   wire cls_l  = ord & ~cls_f & ~cls_c & ~cls_m & ~cls_s & ~mul_l & ~mem_l;   // the ordered memory pipe (u_iq_l)
+   wire cls_i  = ~ord | cls_c | mul_l | mem_l;               // ALU op, control flow, multiply, load or store: the slot's lane
    wire cls_fc = cls_f | cls_m | cls_s;                      // the FP/MD/SYS pipe (u_iq_f)
    // a serialising op, fence.i, CBO, AMO, CSR, a trap at dispatch or the irqop goes alone
    wire plain = ~(is_serialize | is_fencei | is_cbo | is_amo | is_csr | illegal | fault | irqop);

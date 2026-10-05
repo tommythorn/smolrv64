@@ -48,7 +48,7 @@ module smolrv64_frontend
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
     input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
-    input  wire [12:0]             crd,               // the dispatch credits (smolrv64_core CR_*)
+    input  wire [13:0]             crd,               // the dispatch credits (smolrv64_core CR_*)
     output wire                    hd_v,              // the queue head has an instruction...
     output wire                    hd_take,           // ...and pops it this cycle
     output wire [15:0]             hd_gc,             // its dispatch class (the stall accounting's)
@@ -593,8 +593,8 @@ module smolrv64_frontend
    // ------------------------------------------------------- the IR registers: one dispatch group
    // The queue head forms the group. Up to W = 1+two_wide+three_wide heads go together when the
    // dispatch class allows it (smolrv64_gclass, evaluated at decode): every member plain, at most
-   // one of the ordered memory pipe's class and one of the FP/MD/SYS pipe's, and nothing behind a
-   // CTI that redirects fetch at decode. The IR takes the group when it is empty or dispatching
+   // one of the ordered memory pipe's class, one of the FP/MD/SYS pipe's, one load and one store
+   // (the queues' single allocation ports), and nothing behind a CTI that redirects fetch at decode. The IR takes the group when it is empty or dispatching
    // whole this cycle, and dispatch takes a group whole or not at all: there are no survivors.
    assign mh[0] = `FE_IRV(m0_);  assign mh[1] = `FE_IRV(m1_);  assign mh[2] = `FE_IRV(m2_);   // the queue's write data
    assign mh[3] = {IRW{1'b0}};
@@ -606,17 +606,22 @@ module smolrv64_frontend
    // the rules: which heads may go together
    wire rule1 = ~q_empty;
    wire rule2 = rule1 & two_wide & q_have2 & g0[G_PLAIN] & g1[G_PLAIN] & ~g0[G_DCR]
-              & ~(g0[G_L] & g1[G_L]) & ~(g0[G_FC] & g1[G_FC]);
+              & ~(g0[G_L] & g1[G_L]) & ~(g0[G_FC] & g1[G_FC])
+              & ~(g0[G_LD] & g1[G_LD]) & ~(g0[G_ST] & g1[G_ST]);
    wire rule3 = rule2 & three_wide & q_have3 & g2[G_PLAIN] & ~g1[G_DCR]
-              & ~(g2[G_L] & (g0[G_L] | g1[G_L])) & ~(g2[G_FC] & (g0[G_FC] | g1[G_FC]));
+              & ~(g2[G_L] & (g0[G_L] | g1[G_L])) & ~(g2[G_FC] & (g0[G_FC] | g1[G_FC]))
+              & ~(g2[G_LD] & (g0[G_LD] | g1[G_LD])) & ~(g2[G_ST] & (g0[G_ST] | g1[G_ST]));
    // the credits: a member pops only with room for it in everything it allocates, counted
    // against what is already between here and there (smolrv64_core computes crd from flops)
    localparam integer CR_IA = 0, CR_IB = 1, CR_IC = 2, CR_L = 3, CR_F = 4, CR_LD = 5, CR_ST = 6,
-                      CR_ROB1 = 7, CR_ROB2 = 8, CR_ROB3 = 9, CR_POP = 10, CR_SER = 11, CR_CSR = 12;
+                      CR_ROB1 = 7, CR_ROB2 = 8, CR_ROB3 = 9, CR_POP = 10, CR_SER = 11, CR_CSR = 12,
+                      CR_CBO = 13;
    function automatic room(input [15:0] g, input lane, input l, input ld, input st, input f);
-      room = (~g[G_I] | lane) & (~g[G_L] | (l & (~g[G_LD] | ld) & (~g[G_ST] | st))) & (~g[G_FC] | f);
+      room = (~g[G_I] | lane) & (~g[G_L] | l) & (~g[G_LD] | ld) & (~g[G_ST] | st) & (~g[G_FC] | f);
    endfunction
-   wire head_go = g0[G_SER] ? crd[CR_SER] : g0[G_CSR] ? crd[CR_CSR] : 1'b1;
+   // a CBO is the ordered pipe's one op that is neither plain nor serialising (smolrv64_gclass)
+   wire g0_cbo  = g0[G_L] & ~g0[G_PLAIN] & ~g0[G_SER];
+   wire head_go = g0[G_SER] ? crd[CR_SER] : g0[G_CSR] ? crd[CR_CSR] : g0_cbo ? crd[CR_CBO] : 1'b1;
    wire take1 = rule1 & crd[CR_POP] & head_go & crd[CR_ROB1]
               & room(g0, crd[CR_IA], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F]);
    wire take2 = rule2 & take1 & crd[CR_ROB2] & room(g1, crd[CR_IB], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F]);

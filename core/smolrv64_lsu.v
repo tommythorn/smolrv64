@@ -219,7 +219,7 @@ module smolrv64_lsu
    // D$'s span path, the one this LSU exists to keep the cache from ever seeing).
    wire        pa_lram = (eff_pa[55:LRAM_LG2] == LRAM_BASE[55:LRAM_LG2]);
    wire        pa_mem  = pa_dram | pa_lram;
-   wire        xl_can = ~req_amo & ~eff_cbo & pa_mem;  // AMO pre-aligned; CBO is line-wide
+   wire        xl_can = ~eff_amo & ~eff_cbo & pa_mem;  // AMO pre-aligned; CBO is line-wide
    wire        xword  = xl_can & (wend > 5'd8);      // operand straddles two words
    reg         xword_q;
    reg  [2:0]  boff_q;
@@ -310,7 +310,10 @@ module smolrv64_lsu
    // so the head has moved on by the time the write is presented.
    reg  [63:0] st_data_q;
    wire [63:0] eff_st_data = src_pt ? st_data_q      : req_st_data;
+   // M's request fields describe the access only when it is M's: M may be empty, its fields left
+   // from an older op, while the port starts one of its own
    wire        eff_cbo     = sel_pt ? 1'b0           : req_cbo;
+   wire        eff_amo     = sel_pt ? 1'b0           : req_amo;
    wire        eff_signed  = sel_pt ? pt_signed      : req_signed;
    wire        eff_fp      = sel_pt ? pt_fp          : req_fp;
 
@@ -726,12 +729,11 @@ module smolrv64_lsu
                 mem_q         <= pa_mem;
                 mem_runcached <= eff_unc;
                 cos_pa        <= eff_pa;                      // exact, pre-alignment
-                cos_kind      <= ((pt_start & pt_store) | req_store) ? 2'd2
-                               : req_amo ? 2'd2 : 2'd1;
+                cos_kind      <= ((pt_start ? pt_store : req_store) | eff_amo) ? 2'd2 : 2'd1;
                 cos_data      <= pt_start ? pt_data : req_st_data;
                 // a cbo is a store class with no data of its own (cbo.zero: the reference sees eight
                 // 8-byte stores, the DUT one line operation of size field 0): not data-checked
-                cos_size      <= (((pt_start & pt_store) | req_store) & ~eff_cbo) ? {2'b0, eff_size} : 4'hF;
+                cos_size      <= ((pt_start ? pt_store : req_store) & ~eff_cbo) ? {2'b0, eff_size} : 4'hF;
                 xword_q <= xword;
                 nb_q    <= nb;  sgn_q <= eff_signed;  fp_q <= eff_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
@@ -740,7 +742,7 @@ module smolrv64_lsu
                 if (pt_start ? pt_store : req_store) begin
                    pa_q <= xl_can ? (eff_pa & ~56'd7) : eff_pa;
                    st   <= S_ST;
-                end else if (req_amo) begin
+                end else if (eff_amo) begin
                    // An atomic reads, modifies and writes the CONTAINING 8-BYTE WORD:
                    // a_wdata/a_wmask are built relative to that word (a_half = addr[2]
                    // picks the .W half). The memory port is byte-address-relative, so
@@ -816,6 +818,12 @@ module smolrv64_lsu
          $fatal(1, "smolrv64_lsu: req_early on an access that is not a translate-only load");
       if (e_m_spec)
          $fatal(1, "smolrv64_lsu: an AMO or CBO started off the ROB head: va=%h cbo=%b amo=%b", req_vaddr, req_cbo, req_amo);
+      // the port's access is a load or a store: M's fields never decide what it does
+      if (src_pt & ((st == S_ARD) | (st == S_AWR)))
+         $fatal(1, "smolrv64_lsu: the port's access runs an AMO's read-modify-write");
+      // a fast load's word is formatted by its byte offset, so its read is word-aligned
+      if (ld_fast_ok & ~xl_can)
+         $fatal(1, "smolrv64_lsu: a fast load starts unaligned (pa=%h)", eff_pa);
    end
 
    // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------

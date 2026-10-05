@@ -22,7 +22,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **three-wide** (`SMOLRV64_IW=3`, the RTL and build default; `SMOLRV64_IW=2` builds the two-wide machine); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
-| Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); memory, AMO, CSR and fences issue in program order from `u_iq_l` (§2.1, §6.1) |
+| Issue | **dynamic**: ALU ops, multiplies, branches and jumps issue in their slot's lane (three schedulers, three ALUs, three multipliers) and reorder freely; FP ops and divides reorder on the F/MD port (§7); plain loads and integer stores generate their address in their slot's lane and reach M through their LQ/SQ entry (§8); FP stores, AMOs and CBOs issue in program order from `u_iq_l` (§2.1, §6.1) |
 | Completion | **out of order** (non-blocking loads, tagged FP results, ALU at issue) |
 | Commit | in order, from the ROB head, up to `IW`/cycle |
 | Speculation | branch/jump prediction only; no memory speculation, no value speculation |
@@ -68,10 +68,10 @@ and FP arithmetic both reorder freely**, in `u_iq_i`/`u_iq_i2`/`u_iq_i3` and `u_
 respectively. **Slot k's ALU op goes to lane k** (lanes plan step 5.2a): three integer
 schedulers, each with its own ALU and shard, and no steering. An ALU op completes at issue; an FP op goes to stage F. Neither ever enters M.
 
-Everything else carries an `ord` bit; of those, memory, AMO, CSR, `fence.i`, cbo and
-anything already known to fault keep program order in `u_iq_l`, while FP, branches, jumps
-and divides are pulled out into the F/MD queue, multiplies into the lanes (§7). Only
-memory actually requires that ordering; the rest inherit it because they share M (§6.1).
+Everything else carries an `ord` bit; of those, FP stores, AMOs and CBOs keep program order
+in `u_iq_l`, while FP, divides and system ops are pulled out into the F/MD queue, and
+branches, jumps, multiplies, plain loads and integer stores run in the lanes (§7, §8). Memory
+ordering lives in the LQ and SQ, not in issue order.
 
 That split is what makes the rest unnecessary rather than merely deferred:
 
@@ -134,9 +134,10 @@ complements.
 Nothing after the decoupling queue holds. The queue head forms a dispatch group of up to three
 instructions that may go together: every member plain (a serialising op, `fence.i`, a CBO, an
 AMO, a CSR op, a trap at dispatch or the interrupt pseudo-op goes alone), at most one for the
-ordered memory pipe (`u_iq_l`, one LQ or SQ allocation) and one for the FP/MD/SYS pipe
-(`u_iq_f`), and nothing behind a CTI that redirects fetch at decode (`smolrv64_gclass`, read
-from the queue record). A member pops only with a **credit** for everything it allocates, from
+ordered memory pipe (`u_iq_l`), one for the FP/MD/SYS pipe (`u_iq_f`), one load and one store
+(the LQ's and SQ's single allocation ports), and nothing behind a CTI that redirects fetch at
+decode (`smolrv64_gclass`, read from the queue record). A load behind a store in its group
+takes the store-seqno after the store's. A member pops only with a **credit** for everything it allocates, from
 flops, counted against what is already between the head and there: the ROB against the IR
 group, the LQ and SQ against the IR's load or store, each scheduler against its dispatch-stage
 register and the IR's op (`crd`, `CR_*`; this cycle's frees are not credited). The IR loads
@@ -144,7 +145,11 @@ every cycle and dispatches the next, and a dispatch-stage register never waits f
 scheduler; both are always-on assertions. The head also pops nothing while dispatch is frozen
 (`redirect_q`, `fr_v`, `dec_red_q`: what the IR holds then is the wrong path and is dropped),
 while a rename shard is below `LOWAT` (4 covers two groups, each allocating at most one
-register per shard), or while a serialising op is in the IR or in flight.
+register per shard), or while a serialising op is in the IR or in flight. A CBO, which waits
+in M for the ROB head, pops only once every older load and store has its address (`CR_CBO`:
+no LQ or SQ entry unfilled, none in the IR), and no load or store pops while a CBO is in the
+IR or in flight (`cbo_n`): nothing can need M behind it, reach memory ahead of it, or fill
+the store queue it waits on.
 
 A dispatch stall is `hd_wait`, the head holding an instruction it has no credit for. In the
 60 M boot (`DISP-SIM`, 5.3c) it waits in 14.8 M cycles; the rules cut a group before slot B in
@@ -869,6 +874,27 @@ set in the stage register.
 
 ## 8. Load/store unit and MMU
 
+- **Address generation in the lanes; M is the fill stage (lanes 5.2d-a).** A plain load
+  (integer or FP) or an integer store is class I: it issues in its slot's lane when its address
+  operand is ready (a store's rs2 is not waited on), and the lane's adder generates the VA. The
+  lane writes no register, wakes nothing and completes nothing for it (`lane_late`, which also
+  keeps it out of the wake-at-select matrix). The VA, and a store's rs2 as the lane read it,
+  land in arrival registers indexed by the op's own LQ or SQ entry (`la_*`, `sa_*`); the rest of
+  the op is a record written at dispatch (`spl_ld`, `spl_st`: the payload, the ROB slot, and for
+  a store whether rs2 was ready at dispatch -- then the lane's read is the value, otherwise the
+  store queue's snoop, armed at allocation, takes it from the writeback). **M fills in program
+  order**: it takes the oldest load or store whose address has not arrived (`uf_idx`/`uf_seq`
+  from each queue, a sequence compare between the two) once its VA is in, or `i_*`'s op when
+  that is the oldest (an FP store) or nothing is unfilled (an AMO or CBO). An op M holds -- a
+  fault waits there for the ROB head -- therefore never has an older load or store waiting
+  behind it; a younger wrong-path fault taken ahead of an older arrival deadlocks the ROB head
+  on that older op. Everything M did for a load or store it still does: the dTLB lookup, the
+  LQ/SQ fill, a load's early start, the address-only faults with the full VA. FP stores, AMOs,
+  LR/SC and CBOs stay in `u_iq_l`.
+- **The LSU decides a port start from the port's fields only.** M's request fields describe the
+  access only when it is M's (`eff_amo`, `eff_cbo`): M can be empty with its fields left from an
+  older op while the LQ or SQ starts one. Asserted: the port's access never runs an AMO's states,
+  and a fast load's read is word-aligned.
 - **The D$ is non-blocking** (`rv_dcache.v`, 2026-09-27; its header is the full description).
   One lookup a cycle -- a released waiter, else the store-port op, else a load -- reads the
   banks at T and resolves at T+1; a load's answer is `rd_valid` at T+2, by its tag, and a hit
@@ -1319,7 +1345,9 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | `irr` | `smolrv64_rob` | 1 | 5 | 5 | flops | the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
 | `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
-| `u_iq_l` entry | `smolrv64_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1) |
+| `u_iq_l` entry | `smolrv64_iq` | 12 | 2+3×9 = 29 | 348 | flops | in-order, `NSRC`=3 (§6.1): FP stores, AMOs, LR/SC, CBOs |
+| `spl_ld`, `spl_st` | `smolrv64_core` | 8 each | 1+5+413 = 419 | 6 704 | LUTRAM | a lane load's or store's record by LQ/SQ entry: 1W dispatch, 1R at the oldest unfilled entry (§8) |
+| `la_va`, `sa_va`, `sa_dat`, `la_v`, `sa_v` | `smolrv64_core` | 8 each | 64/64/64/1/1 | 1 552 | flops | the lanes' arrivals: 3W (one per lane), read at the oldest unfilled entry (§8) |
 | `u_iq_f` entry | `smolrv64_iq` | 5 | 2+3×9 = 29 | 145 | flops | FP, reorders, `NSRC`=3 (§6.1) |
 | `plmem` (payload) | `smolrv64_core` | 37 (10+10+12+5) | 413 | 15 281 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each |
 | `pend` | `smolrv64_pending` | 512 | 1 | 512 | flops | 3R, 1 set + 3 clear, bulk-clear |
@@ -1534,9 +1562,9 @@ both), so they are depth under the `td` buckets, not a second partition; its *un
 line is what no event names. The simulator's `TOPDOWN-SIM` prints the same classifier for a
 whole simulated run, and `workloads/rvbench` (`make run B=<name>`) runs the bare-metal programs
 there; before reasoning from a surprising board number, look for the same shape in simulation.
-The board's reference run is `sha256sum` on `/usr/bin/emacs-nox`, five times: at c0f65e6d it
-dispatches 65.8% of cycles, IPC 2.03, with the back-end at 21.4% (no ROB room 14.7%) and the
-front-end at 12.1% (an instruction fetched while the queue is empty, `FE_QUE`, 9.9%).
+The board's reference run is `sha256sum` on `/usr/bin/emacs-nox`, five times: at 1c4ff06f (the
+lanes' multipliers, 5.2c) it dispatches 66.3% of cycles, IPC 2.07, with the back-end at 21.3%
+(no ROB room 14.8%, memory 4.4%), the front-end at 11.9% and bad speculation at 0.5%.
 
 ### 11.1 The integrity log (`rv_errlog`, 2026-09-20)
 

@@ -163,6 +163,9 @@ module smolrv64_lq
 
     output wire [IDXB:0]         occupancy,
     output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
+    output wire                  uf_any,      // an entry whose address has not arrived
+    output wire [IDXB-1:0]       uf_idx,      // ...the oldest such, and its sequence number
+    output wire [SEQW-1:0]       uf_seq,
     input  wire [ROBB-1:0]       rob_head,    // head-gate an uncached (device) load's access (non-speculative)
     input  wire                  flush);
 
@@ -214,6 +217,17 @@ module smolrv64_lq
    assign d_idx     = tail;
    assign occupancy = cnt;
    assign av_any    = |(v & av);
+   assign uf_any    = |(v & ~av);
+   // every entry before the access candidate has its address, so the oldest unfilled entry is
+   // the first one at or after it
+   reg [IDXB-1:0] uf_i;  integer ui;
+   always @* begin
+      uf_i = acc;
+      for (ui = NENT - 1; ui >= 0; ui = ui - 1)
+         if (v[acc + ui[IDXB-1:0]] & ~av[acc + ui[IDXB-1:0]]) uf_i = acc + ui[IDXB-1:0];
+   end
+   assign uf_idx    = uf_i;
+   assign uf_seq    = sqn[uf_i];
 
    // The candidate: the oldest entry not yet sent to memory. Its address must be known --
    // an entry still waiting for translation cannot be tested and must not be skipped, or

@@ -529,7 +529,7 @@ module tb;
    end
 
    reg [8*256-1:0] fw, dtb, initrd, disk;
-   reg [63:0] ncyc, c, nret;
+   reg [63:0] ncyc, c, nret, last_ret;
    wire       trace_on = (c >= trace_from) && (c < trace_to);   // the tb-side trace window
 
    // ---- per-cycle accounting: every cycle is exactly one of BADSPEC / FRONTEND / BACKEND /
@@ -1049,7 +1049,7 @@ module tb;
                   dut.core.rob_c_valid  && dut.core.cs_pc[dut.core.rob_head_idx]  == watch_pc);
    end
    initial begin
-      ncyc = 200000000; nret = 0;
+      ncyc = 200000000; nret = 0; last_ret = 0;
       n_inject = 0; n_uirq = 0; n_seip = 0;
       n_stmem = 0; n_recov = 0; n_bdep = 0; n_bmem = 0; n_bser = 0;
       n_nov = 0; n_nov_mmu = 0; n_nov_ic = 0; n_nov_qrdy = 0;
@@ -1083,6 +1083,12 @@ module tb;
       for (c = 0; ((ncyc == 0) || (c < ncyc)) && !tohost_done; c = c + 1) begin
          @(negedge clk);
                   nret = nret + retire + retire2 + retire3;   // all three commit ports (IW=3 undercounted before 2026-09-17)
+                  // A HANG IS A FAILURE AT ONCE: nothing in the machine waits a million cycles (WFI
+                  // completes, an idle kernel retires), so a run that stops retiring stops here.
+                  if (retire | retire2 | retire3) last_ret = c;
+                  else if (c - last_ret > 64'd1000000)
+                     $fatal(1, "tb: nothing retired for %0d cycles (retires=%0d, ROB head %0d, pc~%h)",
+                            c - last_ret, nret, dut.core.rob_head_idx, dut.imem_addr);
                   // B3 (2026-09-17): the CPI stack from the RTL's own event bus, so the same tool
                   // (tools/perf-cpi-stack.py) grades a simulation and a board run.
                   for (pe = 0; pe < 44; pe = pe + 1) if (dut.core.hpm_ev_q[pe]) pev[pe] = pev[pe] + 1;

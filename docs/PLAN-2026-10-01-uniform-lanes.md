@@ -282,14 +282,30 @@ timing is fought.
       They become class I (`smolrv64_gclass`), keep their LQ/SQ credit, and the group rule
       becomes "at most one load and one store" (the queues' single allocation ports) instead of
       "one ordered op". The lane treats one like a multiply: no write, wake or ROB completion at
-      issue, no wake at select (`e_long`). The lane's VA (and, for a store, its rs2 when that is
-      no longer pending) is registered and fills the entry the next cycle; the LQ and SQ take
-      up to three fills a cycle (their fields are flops). The `s_` port translates one of them,
-      a load first, in the fill cycle, keeping the early start; any other fill enters with
-      `tv=0` and the queue walker translates it, as it does M's misses today. Address-only
-      faults are decided at the fill and recorded in the entry with the full VA (a side array
-      read only at the trap), so they trap from the SYSQ like a page fault. The CBO's wait and
-      `l_older` get an explicit age compare. M keeps FP stores and the head-only ops.
+      issue, no wake at select (`e_long`). Built (2026-10-04) with M as the fill stage rather
+      than three fills a cycle: the lane's VA (and a store's rs2) lands in arrival registers by
+      LQ/SQ entry, the rest of the op in a record written at dispatch, and M fills in program
+      order -- the oldest unfilled load or store once its VA is in, or `i_*`'s op -- through the
+      translate, fill, early start and address-only faults it already had. In-order fills are
+      forced while a fault still waits in M for the ROB head: a younger wrong-path fault taken
+      ahead of an older arrival deadlocks the head on that older op (the first 60 M run, in
+      OpenSBI's memmove). Recording address-only faults in the entry (5.2d-b) lifts it. The CBO gets a
+      dispatch credit instead of an age compare: it dispatches once every older load and store
+      has its address, and no load or store dispatches while one is in flight, so `sq_av_any`
+      keeps meaning "an older store" and no younger load reaches memory first. M keeps FP stores
+      and the head-only ops. A lane's VA goes straight into M when its op is the oldest unfilled
+      one (the arrival registers hold it otherwise), so a load reaches M as soon as it did from
+      `u_iq_l`.
+
+      **Measured (2026-10-04): -3.7% at 60 M (41,939,504 retires), Dhrystone -5.9%.** It does what
+      it is for -- Dhrystone's M-on-memory stall falls from 19.4% to 4.1% of cycles and 3-wide
+      dispatch rises from 10.2% to 16.0% -- but memory issue now shares the three lanes with the
+      ALU ops, so the machine has three issue ports where it had four: ALU ops ready but waiting
+      rise 3.8 M -> 12.1 M cycles in the boot, and the ROB and both queues fill. The fourth lane
+      returns the port. **No tuning before the end state** (Tommy): the select policy is tuned
+      once the four lanes exist. The ideal there is branch, store, load, divide, multiply, the
+      rest, with age as the secondary key, costed against the scheduler's select path; a
+      long-latency-first select alone measured +0.7% on Dhrystone.
    2. **5.2d-b: FP stores and the head-only ops leave M.** The SQ gets one read port onto the
       PRF and the FP file (one store's data a cycle, for entries whose data was ready before
       the snoop armed), so every store issues in a lane. An AMO, LR/SC or CBO generates its

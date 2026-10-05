@@ -57,6 +57,9 @@ module smolrv64_sq
     // the occupancy: waiting for the occupancy is a deadlock, found on the board 2026-09-04
     // (Ubuntu's clear_page is cbo.zero; the tiny128 kernel never issues one). Rule C5.
     output wire                  av_any,
+    output wire                  uf_any,      // an entry whose address has not arrived
+    output wire [IDXB-1:0]       uf_idx,      // ...the oldest such, and its sequence number
+    output wire [SEQW-1:0]       uf_seq,
     output wire [IDXB:0]         d_tag,       // the STORE-SEQNO a load captures at dispatch: the
                                               // tail COUNTER, one bit wider than the index (below)
 
@@ -208,6 +211,17 @@ module smolrv64_sq
    assign d_idx     = tail;
    assign d_tag     = tailc;
    assign av_any    = |(v & av);
+   assign uf_any    = |(v & ~av);
+   // a committed entry has its address, so the oldest unfilled entry is the first one at or
+   // after the first uncommitted
+   reg [IDXB-1:0] uf_i;  integer ui;
+   always @* begin
+      uf_i = kc;
+      for (ui = NENT - 1; ui >= 0; ui = ui - 1)
+         if (v[kc + ui[IDXB-1:0]] & ~av[kc + ui[IDXB-1:0]]) uf_i = kc + ui[IDXB-1:0];
+   end
+   assign uf_idx    = uf_i;
+   assign uf_seq    = sqn[uf_i];
    assign occupancy = cnt;
    // THE WALKER AND THE TRAP READ THE FIRST UNCOMMITTED ENTRY. Stores commit in order, so an
    // untranslated store anywhere else waits behind this one anyway, and a store that faulted
