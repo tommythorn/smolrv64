@@ -605,8 +605,8 @@ module smolrv64_core
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
    // queue, M's port (which carries the landing loads)
-   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int), cf_red_fire, l_wv[2], l_wv[1],
-                                  sq_k_take, fp_land & ~(fp_wb & few_int), l_wv[0], rob_w_valid & ~ldw_int};
+   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int & ~(|by2)), cf_red_fire, l_wv[2], l_wv[1],
+                                  sq_k_take, fp_land & ~(fp_wb & few_int & ~(|by2)), l_wv[0], rob_w_valid & ~(ldw_int & ~(|by0))};
    wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, l_wix[2], l_wix[1], sq_kc_rob, ft_rob, l_wix[0], rob_w_idx};
    wire                lq_d_ready2, sq_d_ready2;
    wire [IBF:0]        rf_free;
@@ -796,8 +796,7 @@ module smolrv64_core
    localparam integer NF = 8,  IBF = 3;   // 8 since C1: mul/div share it (was 5)    // FP arith, three sources, its OWN unit. 5 since gate V4 (2026-09-05):
                                            // the two-wide core closed at exactly 0.000 ns and did not boot; FP gives first
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
-   localparam integer NWB_C   = NL + 2;    // writeback broadcasts: the lanes' and the two FP streams'
-   localparam integer NWB_L   = NL;        // ...of which a lane's scheduler watches the lanes' (see wkv_l)
+   localparam integer NWB_C   = NL + 2;    // writeback broadcasts: the lanes' ports and the two streams'
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
    localparam integer SQ_TB = SQ_IB + 1;         // ...and its seqno: the index plus a wrap bit
                                                  // (smolrv64_sq's head/tail counters), so that a load
@@ -918,13 +917,9 @@ module smolrv64_core
    wire d_plain = d_gc[GC_PLAIN];
    wire d2_plain = d2_gc[GC_PLAIN];
 
-   // A LANE OP NEVER NAMES AN F-REGISTER (an FP store's rs2 is the store queue's and is zeroed in
-   // the lane; smolrv64_prf asserts the lanes' read ports never address an FP slice), and the LD
-   // and FE streams write the FP slices alone, so they can never wake a lane's entry: the lane
-   // schedulers and their dispatch stages compare against the lanes' broadcasts only.
-   wire [NWB_L-1:0]          wkv_l;          // the lanes' write registers' issue-timed writes
-   wire [NWB_L*RN_PBITS-1:0] wkp_l;
-   wire [NWB_C-1:0]          wkv  = {we_fe, we_ld, wkv_l};
+   wire [NL-1:0]             wkv_l;          // the lanes' ports: their write registers' issue-timed writes
+   wire [NL*RN_PBITS-1:0]    wkp_l;
+   wire [NWB_C-1:0]          wkv  = {wk_fe, wk_ld, wkv_l};
    wire [NWB_C*RN_PBITS-1:0] wkp  = {wa_fe, wa_ld, wkp_l};
 
    wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
@@ -1182,25 +1177,21 @@ module smolrv64_core
    // The dispatch-cycle (T) writeback fold, computed PER SLOT from the early slot pregs so the
    // wkv compare parallels the accept chain and stays off the crossbar-mux->stg_r path. d_srdy
    // reflects writebacks up to T-1 (the pending read is pure); wk(p) contributes T's.
-   // wkl: the lanes' broadcasts (a lane's stage); wk: every broadcast (the F/CTF stage)
-   function automatic wkl;
+   // a broadcast names this register this cycle
+   function automatic wk;
       input [RN_PBITS-1:0] p;
       integer i;
       begin
-         wkl = 1'b0;
-         for (i = 0; i < NL; i = i + 1) wkl = wkl | (wkv_l[i] & (wkp_l[i*RN_PBITS +: RN_PBITS] == p));
+         wk = 1'b0;
+         for (i = 0; i < NWB_C; i = i + 1) wk = wk | (wkv[i] & (wkp[i*RN_PBITS +: RN_PBITS] == p));
       end
-   endfunction
-   function automatic wk;
-      input [RN_PBITS-1:0] p;
-      wk = wkl(p) | (we_ld & (wa_ld == p)) | (we_fe & (wa_fe == p));
    endfunction
    wire [2:0] srdy_hit0 = d_srdy  | {wk(rn_prs3),   wk(rn_prs2),   wk(rn_prs1)};
    wire [2:0] srdy_hit1 = d2_srdy | {wk(rn_prs3_b), wk(rn_prs2_b), wk(rn_prs1_b)};
    wire [2:0] srdy_hit2 = d3_srdy | {wk(rn_prs3_c), wk(rn_prs2_c), wk(rn_prs1_c)};
-   wire [1:0] srdy_l0 = d_srdy[1:0]  | {wkl(rn_prs2),   wkl(rn_prs1)};     // a lane's two sources
-   wire [1:0] srdy_l1 = d2_srdy[1:0] | {wkl(rn_prs2_b), wkl(rn_prs1_b)};
-   wire [1:0] srdy_l2 = d3_srdy[1:0] | {wkl(rn_prs2_c), wkl(rn_prs1_c)};
+   wire [1:0] srdy_l0 = srdy_hit0[1:0];       // a lane's two sources
+   wire [1:0] srdy_l1 = srdy_hit1[1:0];
+   wire [1:0] srdy_l2 = srdy_hit2[1:0];
    // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
@@ -1280,7 +1271,7 @@ module smolrv64_core
       wire [RN_PBITS-1:0]  blk_pr;
       wire [IBI:0]         occ, free;
       wire                 mv = stg_v & ready;
-      wire [1:0]           snp = {wkl(stg_ps[RN_PBITS +: RN_PBITS]), wkl(stg_ps[0 +: RN_PBITS])};
+      wire [1:0]           snp = {wk(stg_ps[RN_PBITS +: RN_PBITS]), wk(stg_ps[0 +: RN_PBITS])};
       always @(posedge clk) begin
          if (reset) stg_v <= 1'b0;
          else begin
@@ -1296,12 +1287,12 @@ module smolrv64_core
       reg                  m1;
       reg                  v;
       reg [IBI-1:0]        ent;
-      smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
+      smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
                 .FIXEDL(1),.INORDER(0)) u_iq
         (.clk(clk),.reset(reset),
          .d_valid(mv),.d_ready(ready),.d_rob(stg_rob),
          .d_ps(stg_ps[2*RN_PBITS-1:0]),.d_r(stg_r),.d_prd(stg_prd),.d_long(lane_late(stg_pl[PL_INSN +: 32])),.d_ent(d_ent),
-         .wb_v(wkv_l),.wb_preg(wkp_l),
+         .wb_v(wkv),.wb_preg(wkp),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
          .unit_busy(m1 | lb_any[gl] | ((gl == 0) & sy_at_head)),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
@@ -1398,8 +1389,10 @@ module smolrv64_core
       wire [63:0]          ddat;
       wire [ROB_IDXB-1:0]  drob;
       assign {dwr, dcm, dprd, ddat, drob} = lp[gl];
-      wire d  = lb_drain[gl] & dwr;    // ...writing a register
-      wire dc = lb_drain[gl] & dcm;    // ...completing its op
+      wire dp = lb_free[gl] & (lb_any[gl] | p1[gl]);   // the port takes the buffer's head or the SYSQ
+      wire d  = dp & dwr;              // ...writing a register
+      wire dc = dp & dcm;              // ...completing its op
+      wire bs = by0[gl] | by2[gl];     // a stream's landing straight through (its own port's wake and completion)
       // ---- the write register: one write slot a cycle, taken by the landing slot, the ALU op at
       // issue or the multiply in its reserved slot. The wake, the pending clear and the store
       // queue's snoop are issue-timed (we/wa/wb); the PRF write lands a cycle later from the
@@ -1414,13 +1407,16 @@ module smolrv64_core
       reg  [63:0]          qval;
       initial begin qv = 1'b0; qprd = {RN_PBITS{1'b0}}; qval = 64'd0; end
       always @(posedge clk) begin
-         qv <= ~reset & we;
-         if (we) begin qprd <= wa; qval <= wb; end
+         qv <= ~reset & (we | bs);
+         if (we | bs) begin
+            qprd <= bs ? (by0[gl] ? wa_ld : wa_fe) : wa;
+            qval <= bs ? (by0[gl] ? wb_ld : wb_fe) : wb;
+         end
       end
       // the lane's ROB completion port: its op at issue (a load or store never; a mispredicting
       // CTI at its squash), its multiply in the reserved slot, its landing at the drain
       assign l_wv[gl]  = (iss & ~mis & ~late) | m2 | dc;
-      assign l_wix[gl] = dc ? drob : m2 ? mrob2 : rob;
+      assign l_wix[gl] = dp ? drob : m2 ? mrob2 : rob;   // dp: registers and the SYSQ's fire
       assign l_v[gl] = v;          assign l_iss[gl] = iss;      assign l_late[gl] = late;
       assign l_m1[gl] = m1;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
       assign l_mres[gl] = mres;    assign l_rob[gl] = rob;      assign l_ps1[gl] = ps1;
@@ -3267,13 +3263,19 @@ module smolrv64_core
    wire ld_any = m_wb | ld_wb;
    wire [2:0] ldw_sh = wa_ld[RN_PBITS-1:RN_IDXB];
    assign ldw_int = ld_any & ~ldw_sh[2];
-   wire we_ld = ld_any & ~ldw_int;
+   wire we_ld = ld_any & ~ldw_int;                 // ...an FP slice's write
    // THE FE STREAM: the F stage's landing or the MD stage's result, one a cycle (the divide yields
    // to the FPU). An f-register's lands on the FE port in its FP slice; an integer one in its lane.
    wire fe_any = fp_wb | md_wr;
    wire [2:0] few_sh = wa_fe[RN_PBITS-1:RN_IDXB];
    assign few_int = fe_any & ~few_sh[2];
    wire we_fe = fe_any & ~few_int;
+   // Each stream broadcasts on its own port (wake, pending clear, the store queue's snoop) what
+   // it writes this cycle: an FP slice's register, or an integer one straight through a lane's
+   // write register. A landing that waits in a lane's buffer broadcasts on the lane's port when
+   // it drains.
+   wire wk_ld = we_ld | (|by0);
+   wire wk_fe = we_fe | (|by2);
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [ROB_IDXB-1:0] ldw_rob = ld_wb ? lq_l_rob : m_rob_idx;
 
@@ -3298,6 +3300,7 @@ module smolrv64_core
    wire          pl_v = ld_wb & ~ldw_sh[2];
    wire [ROB_IDXB-1:0] few_rob = fp_wb ? ft_rob : md_rob;
    wire          sp_v = sy_wr | sy_done;
+   wire          sp_f = sy_fire;                 // the SYSQ takes lane A's slot (registers and the ROB head)
    // each lane's: the LD stream's push (p0), a landing load's (pl), the SYSQ's (p1, lane A's) and
    // the FE stream's (p2); the lane's write and ROB ports are free (nothing executing that completes
    // at issue, no multiply in its reserved slot: registers only); an entry waits
@@ -3308,7 +3311,7 @@ module smolrv64_core
       assign p0[glk] = ldw_int & (ldw_sh == K);
       assign pl[glk] = pl_v & (ldw_sh == K);
       assign p2[glk] = few_int & (few_sh == K);
-      assign p1[glk] = (glk == 0) & sp_v;
+      assign p1[glk] = (glk == 0) & sp_f;
       assign lb_free[glk] = ~(l_v[glk] & ~l_late[glk]) & ~l_m2[glk];
       assign lb_any[glk] = lb_n[glk] != 0;
    end endgenerate
@@ -3327,9 +3330,7 @@ module smolrv64_core
       for (glp = 0; glp < NL; glp = glp + 1) begin : g_lp
          wire [LBB-1:0] hh = lb_h[glp];
          assign lp[glp] = lb_any[glp] ? {1'b1, 1'b1, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
-                        : p1[glp]     ? {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob}
-                        : pl[glp]     ? {1'b1, 1'b1, wa_ld, wb_ld, ldw_rob}
-                        :               {1'b1, 1'b1, wa_fe, wb_fe, few_rob};
+                        :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate

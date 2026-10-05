@@ -732,10 +732,13 @@ until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 `NSRC` is a parameter precisely so the integer scheduler does not pay for the third operand
 only `fmadd` has: 20 bits/entry against 29.
 
-- **Wakeup**: every PRF write broadcasts its destination: the three lanes' write registers
-  and the two FP streams (the load landing and the F stage, which write the FP slices alone).
-  The FP scheduler watches all five (`NWB`=5). A lane's scheduler watches the lanes' three
-  (`NWB`=3): a lane op never names an f-register, so an FP stream cannot wake it.
+- **Wakeup**: every PRF write broadcasts its destination on one of `NWB` = IW + 2 ports: each
+  lane's port (its ALU and multiply results, and what its landing buffer drains: a waiting
+  landing or the SYSQ's result) and the two streams' (the LD stream -- a landing load or M's
+  result -- and the FE stream -- the F stage's landing or a divide -- each an FP slice's
+  register or an integer one straight through a lane's write register). Every scheduler
+  watches all of them. A lane's port selects only on registers and the SYSQ's fire, so no
+  completion cone selects a lane's broadcast address.
   A source not yet ready is also compared against the live ports **in its dispatch cycle**,
   because a producer broadcasts exactly once and would otherwise be missed forever.
 - **Select**: **fixed priority**, lowest entry index first. Age is not stored, not
@@ -900,12 +903,14 @@ set in the stage register.
   allocation; the two never meet (asserted). `ra2` is the SQ's alone.
 - **A result lands in its lane's write slot (5.2d-c).** An integer load's, AMO's or CSR read's
   destination is in its slot's lane shard; SH_LD has no writer and no bank. The value takes the
-  lane's write register -- its wake, pending clear, the store queue's snoop -- and the lane's ROB
-  completion port in a cycle the lane leaves both free (nothing executing that completes at
-  issue, no multiply in its slot). A load's or AMO's goes straight through when the lane is
-  free, so its latency is unchanged; otherwise it waits in the lane's 4-entry landing buffer,
-  which holds the lane's select (`unit_busy`) until it drains. It completes when it drains, so a
-  waiting entry is never a retired op's and a redirect empties the buffers. The SYSQ never
+  lane's write register in a cycle the lane leaves it free (nothing executing that completes at
+  issue, no multiply in its slot). A landing load goes straight through when the lane is free,
+  so its latency is unchanged: it broadcasts (wake, pending clear, the store queue's snoop) and
+  completes on its stream's own port, and only its value enters the lane's write register.
+  Otherwise -- and always for M's own result (an AMO, LR or SC: the LSU's live completion) -- it
+  waits in the lane's 4-entry landing buffer, which holds the lane's select (`unit_busy`) until
+  it drains through the lane's port, where it broadcasts and completes. A waiting entry is
+  never a retired op's and a redirect empties the buffers. The SYSQ never
   waits: a system op goes alone (lane A), lane A holds its select while one is the ROB head, and
   the SYSQ fires only into a free lane A, so a redirecting op writes and completes in its fire
   cycle. FP loads land on the LD port in their FP slices as before. Waking a load's consumers
