@@ -486,8 +486,10 @@ module smolrv64_core
    // structure rather than a big-bang swap of the core's most load-bearing datapath.
    localparam integer RN_IDXB  = 7;
    localparam integer RN_PBITS = RN_IDXB + 3;   // 3 shard bits: room for a 5th shard (the 3rd ALU)
-   localparam [2:0]   SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
-                      SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;   // the FP file's slices, one per slot
+`include "smolrv64_shards.vh"
+   function automatic sh_used(input [2:0] sh);     // lanes 0..IW-1 and FP slices 4..4+IW-1
+      sh_used = ({1'b0, sh[1:0]} < IW[2:0]);
+   endfunction
 
    wire d_ord   = d_gc[GC_ORD];
    wire d2_is_irqop = d2_gc[GC_IRQOP];
@@ -500,8 +502,7 @@ module smolrv64_core
    // takes its slot's lane shard (SH_IE/IE2/IE3), whatever produces it: the lane's write
    // register is the shard's one writer, carrying its ALU and multiply results and the
    // landings of every other unit (loads, AMOs, CSR reads, the FP ops' integer results,
-   // divides). SH_LD and SH_FE take nothing. Assigned after the class wires below (d_cls_f is
-   // declared there).
+   // divides). Assigned after the class wires below (d_cls_f is declared there).
    wire [2:0] d_shard, d2_shard, d3_shard;
 
    wire [RN_PBITS-1:0] rn_prs1, rn_prs2, rn_prs3, rn_prd;
@@ -831,7 +832,8 @@ module smolrv64_core
    localparam integer NF = 8,  IBF = 3;   // 8 since C1: mul/div share it (was 5)    // FP arith, three sources, its OWN unit. 5 since gate V4 (2026-09-05):
                                            // the two-wide core closed at exactly 0.000 ns and did not boot; FP gives first
    localparam integer RS_IDXB = 4;         // widest per-class entry index (IBI)
-   localparam integer NWB_C   = 5;         // writeback ports watched: one per PRF shard (SH_IE3 since Stage 3)
+   localparam integer NWB_C   = 5;         // writeback broadcasts: the three lanes' and the two FP streams'
+   localparam integer NWB_L   = 3;         // ...of which a lane's scheduler watches the lanes' (see wkv_l)
    localparam integer SQ_N = 8, SQ_IB = 3;      // store buffer: entries, index width
    localparam integer SQ_TB = SQ_IB + 1;         // ...and its seqno: the index plus a wrap bit
                                                  // (smolrv64_sq's head/tail counters), so that a load
@@ -954,6 +956,12 @@ module smolrv64_core
 
    wire [NWB_C-1:0]        wkv  = {we_ie3, we_ie2, we_fe, we_ld, we_ie};
    wire [NWB_C*RN_PBITS-1:0] wkp = {wa_ie3, wa_ie2, wa_fe, wa_ld, wa_ie};
+   // A LANE OP NEVER NAMES AN F-REGISTER (an FP store's rs2 is the store queue's and is zeroed in
+   // the lane; smolrv64_prf asserts the lanes' read ports never address an FP slice), and the LD
+   // and FE streams write the FP slices alone, so they can never wake a lane's entry: the lane
+   // schedulers and their dispatch stages compare against the lanes' broadcasts only.
+   wire [NWB_L-1:0]          wkv_l = {we_ie3, we_ie2, we_ie};
+   wire [NWB_L*RN_PBITS-1:0] wkp_l = {wa_ie3, wa_ie2, wa_ie};
 
    wire ri_ready, ri_iss_v, ri_blk_v;  wire [IBI-1:0] ri_d_ent, ri_iss_ent;
    wire ri2_ready, ri2_iss_v, ri2_blk_v; wire [IBI-1:0] ri2_d_ent, ri2_iss_ent;
@@ -1039,35 +1047,35 @@ module smolrv64_core
       lane_late = is_mulop(i) | is_lmem(i) | is_hop(i);
    endfunction
    localparam integer PL_INSN = PLW - PCW - 32;   // the instruction's place in the payload (pl_in)
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
              .FIXEDL(1),.INORDER(0)) u_iq_i
      (.clk(clk),.reset(reset),
       .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
       .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_long(lane_late(stg_pl_ia[PL_INSN +: 32])),.d_ent(ri_d_ent),
-      .wb_v(wkv),.wb_preg(wkp),
+      .wb_v(wkv_l),.wb_preg(wkp_l),
       .unit_busy(mA_1 | lbA_any | sy_at_head),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
      .iss_take(ri_take),
       .hold_v(a_v),.hold_ent(a_ent),
       .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ),.free_n(ri_free));
    // THE SECOND INTEGER SCHEDULER (item 10d-ii): slot B's ALU ops, into the second ALU.
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
              .FIXEDL(1),.INORDER(0)) u_iq_i2
      (.clk(clk),.reset(reset),
       .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
       .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_long(lane_late(stg_pl_ib[PL_INSN +: 32])),.d_ent(ri2_d_ent),
-      .wb_v(wkv),.wb_preg(wkp),
+      .wb_v(wkv_l),.wb_preg(wkp_l),
       .unit_busy(mB_1 | lbB_any),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
      .iss_take(ri2_take),
       .hold_v(a2_v),.hold_ent(a2_ent),
       .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ),.free_n(ri2_free));
    // THE THIRD INTEGER SCHEDULER (Stage 3): slot C's ALU ops, into the third ALU. Dead at
    // IW=2 (rn_valid_c=0); the C4 dispatch step gives it the real slot-C route.
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
+   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
              .FIXEDL(1),.INORDER(0)) u_iq_i3
      (.clk(clk),.reset(reset),
       .d_valid(mv_ic),.d_ready(ri3_ready),.d_rob(stg_rob_ic),
       .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_long(lane_late(stg_pl_ic[PL_INSN +: 32])),.d_ent(ri3_d_ent),
-      .wb_v(wkv),.wb_preg(wkp),
+      .wb_v(wkv_l),.wb_preg(wkp_l),
       .unit_busy(mC_1 | lbC_any),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
      .iss_take(ri3_take),
       .hold_v(a3_v),.hold_ent(a3_ent),
@@ -1327,21 +1335,27 @@ module smolrv64_core
    // The dispatch-cycle (T) writeback fold, computed PER SLOT from the early slot pregs so the
    // wkv compare parallels the accept chain and stays off the crossbar-mux->stg_r path. d_srdy
    // reflects writebacks up to T-1 (the pending read is pure); wk(p) contributes T's.
+   // wkl: the lanes' broadcasts (a lane's stage); wk: every broadcast (the F/CTF stage)
+   function automatic wkl;
+      input [RN_PBITS-1:0] p;
+      wkl = (wkv_l[0] & (wkp_l[0*RN_PBITS +: RN_PBITS] == p))
+          | (wkv_l[1] & (wkp_l[1*RN_PBITS +: RN_PBITS] == p))
+          | (wkv_l[2] & (wkp_l[2*RN_PBITS +: RN_PBITS] == p));
+   endfunction
    function automatic wk;
       input [RN_PBITS-1:0] p;
-      wk = (wkv[0] & (wkp[0*RN_PBITS +: RN_PBITS] == p))
-         | (wkv[1] & (wkp[1*RN_PBITS +: RN_PBITS] == p))
-         | (wkv[2] & (wkp[2*RN_PBITS +: RN_PBITS] == p))
-         | (wkv[3] & (wkp[3*RN_PBITS +: RN_PBITS] == p))
-         | (wkv[4] & (wkp[4*RN_PBITS +: RN_PBITS] == p));
+      wk = wkl(p) | (we_ld & (wa_ld == p)) | (we_fe & (wa_fe == p));
    endfunction
    wire [2:0] srdy_hit0 = d_srdy  | {wk(rn_prs3),   wk(rn_prs2),   wk(rn_prs1)};
    wire [2:0] srdy_hit1 = d2_srdy | {wk(rn_prs3_b), wk(rn_prs2_b), wk(rn_prs1_b)};
    wire [2:0] srdy_hit2 = d3_srdy | {wk(rn_prs3_c), wk(rn_prs2_c), wk(rn_prs1_c)};
+   wire [1:0] srdy_l0 = d_srdy[1:0]  | {wkl(rn_prs2),   wkl(rn_prs1)};     // a lane's two sources
+   wire [1:0] srdy_l1 = d2_srdy[1:0] | {wkl(rn_prs2_b), wkl(rn_prs1_b)};
+   wire [1:0] srdy_l2 = d3_srdy[1:0] | {wkl(rn_prs2_c), wkl(rn_prs1_c)};
    // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
-   wire [1:0] snp_ia = {wk(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
-   wire [1:0] snp_ib = {wk(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
-   wire [1:0] snp_ic = {wk(stg_ps_ic[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_ic[0*RN_PBITS +: RN_PBITS])};
+   wire [1:0] snp_ia = {wkl(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
+   wire [1:0] snp_ib = {wkl(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
+   wire [1:0] snp_ic = {wkl(stg_ps_ic[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ic[0*RN_PBITS +: RN_PBITS])};
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
       if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_f<=1'b0; end
@@ -1353,7 +1367,7 @@ module smolrv64_core
             stg_v_ia   <= 1'b1;
             stg_rob_ia <= rob_d_idx;
             stg_ps_ia  <= d_st_nb ? {rn_prs3, {RN_PBITS{1'b0}}, rn_prs1} : ps_in;
-            stg_r_ia   <= srdy_hit0[1:0];
+            stg_r_ia   <= srdy_l0;
             stg_prd_ia <= d_prd_g;
             stg_pl_ia  <= pl_in;
          end else if (mv_ia) stg_v_ia <= 1'b0;
@@ -1362,7 +1376,7 @@ module smolrv64_core
             stg_v_ib   <= 1'b1;
             stg_rob_ib <= rob_d_idx2;
             stg_ps_ib  <= d2_st_nb ? {rn_prs3_b, {RN_PBITS{1'b0}}, rn_prs1_b} : ps_in_b;
-            stg_r_ib   <= srdy_hit1[1:0];
+            stg_r_ib   <= srdy_l1;
             stg_prd_ib <= d2_prd_g;
             stg_pl_ib  <= pl_in_b;
          end else if (mv_ib) stg_v_ib <= 1'b0;
@@ -1371,7 +1385,7 @@ module smolrv64_core
             stg_v_ic   <= 1'b1;
             stg_rob_ic <= rob_d_idx3;
             stg_ps_ic  <= d3_st_nb ? {rn_prs3_c, {RN_PBITS{1'b0}}, rn_prs1_c} : ps_in_c;
-            stg_r_ic   <= srdy_hit2[1:0];
+            stg_r_ic   <= srdy_l2;
             stg_prd_ic <= d3_prd_g;
             stg_pl_ic  <= pl_in_c;
          end else if (mv_ic) stg_v_ic <= 1'b0;
@@ -2628,8 +2642,8 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: F stage holds a non-FP op (insn %08x)", f_insn);
       if (m_valid & m_is_fp & ~m_is_mem)
          $fatal(1, "smolrv64_core: a non-memory FP op reached M (pc %h)", m_pc);
-      if (iss_f & ((qf_shard == SH_FE) | (qf_shard == SH_LD)))
-         $fatal(1, "smolrv64_core: F-class op is in shard %0d, neither a lane's nor an FP slice", qf_shard);
+      if (iss_f & ~sh_used(qf_shard))
+         $fatal(1, "smolrv64_core: F-class op is in shard %0d, which this width does not use", qf_shard);
       // ROUNDING MODE IS AN FP BARRIER, and out-of-order FP depends on it.
       //
       // Reordering FP is safe for the exception FLAGS because they accumulate: csr_file
@@ -3518,13 +3532,13 @@ module smolrv64_core
    // register's shard).
    wire ld_any = m_wb | ld_wb;
    wire [2:0] ldw_sh = wa_ld[RN_PBITS-1:RN_IDXB];
-   assign ldw_int = ld_any & ((ldw_sh == SH_IE) | (ldw_sh == SH_IE2) | (ldw_sh == SH_IE3));
+   assign ldw_int = ld_any & ~ldw_sh[2];
    wire we_ld = ld_any & ~ldw_int;
    // THE FE STREAM: the F stage's landing or the MD stage's result, one a cycle (the divide yields
    // to the FPU). An f-register's lands on the FE port in its FP slice; an integer one in its lane.
    wire fe_any = fp_wb | md_wr;
    wire [2:0] few_sh = wa_fe[RN_PBITS-1:RN_IDXB];
-   assign few_int = fe_any & ((few_sh == SH_IE) | (few_sh == SH_IE2) | (few_sh == SH_IE3));
+   assign few_int = fe_any & ~few_sh[2];
    wire we_fe = fe_any & ~few_int;
    wire [RN_PBITS-1:0] wa_ie = dA ? dA_prd : mA_2 ? mA_prd2 : qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
@@ -3613,10 +3627,11 @@ module smolrv64_core
    always @(posedge clk) if (!reset) begin
       if (m_wb & ld_wb)
          $fatal(1, "smolrv64_core: LD shard written by both M and a landing load");
-      // an integer result lands in its lane, an f-register's in its FP slice: SH_LD and SH_FE have
-      // no bank, so a result routed there would be dropped silently
-      if ((ld_any & ((ldw_sh == SH_FE) | (ldw_sh == SH_LD))) | (fe_any & ((few_sh == SH_FE) | (few_sh == SH_LD))))
-         $fatal(1, "smolrv64_core: a result routed to SH_LD or SH_FE (pc %h)", m_pc);
+      // an integer result lands in its lane, an f-register's in its FP slice, every one in a shard
+      // this width uses: an unused shard has no bank, and a result routed there would be dropped
+      if ((ld_any & ~sh_used(ldw_sh)) | (fe_any & ~sh_used(few_sh)))
+         $fatal(1, "smolrv64_core: a result routed to shard %0d, which this width does not use (pc %h)",
+                ld_any ? ldw_sh : few_sh, m_pc);
    end
 
    // The architectural shadow is written AT COMMIT, in order. It has no rename, so it cannot

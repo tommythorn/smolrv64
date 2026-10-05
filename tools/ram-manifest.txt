@@ -40,14 +40,12 @@ fp[*].mem_f x3 : PRF FP file, each slice's bank written by the F stage
 # One generate block per shard, fl[shard], each with FLNB=next_pow2(IW) banks (one muxed write per
 # bank: a cycle's frees land at tail, tail+1, tail+2). Two copies of each map since retire-two /
 # dispatch-two (items 10b/10c): one write per bank per cycle is all a LUTRAM has.
-fl[0].bank[*].mem x4 : free list, IE shard, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[1].bank[*].mem x4 : free list, LD shard, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[2].bank[*].mem x4 : free list, FE shard, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[3].bank[*].mem x4 : free list, IE2 shard, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[5].bank[*].mem x4 : free list, FP slice 0, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[6].bank[*].mem x4 : free list, FP slice 1, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[7].bank[*].mem x4 : free list, FP slice 2, 4 banks at IW=3 (circular FIFO, head read / tail write)
-fl[4].bank[*].mem x4 : free list, IE3 shard (lane C), 4 banks at IW=3
+fl[0].u.bank[*].mem x4 : free list, lane A's shard, 4 banks at IW=3 (circular FIFO, head read / tail write)
+fl[1].u.bank[*].mem x4 : free list, lane B's shard, 4 banks at IW=3
+fl[2].u.bank[*].mem x4 : free list, lane C's shard, 4 banks at IW=3
+fl[4].u.bank[*].mem x4 : free list, FP slice 0, 4 banks at IW=3
+fl[5].u.bank[*].mem x4 : free list, FP slice 1, 4 banks at IW=3
+fl[6].u.bank[*].mem x4 : free list, FP slice 2, 4 banks at IW=3
 rmap_a  : committed map, copy A; read at r_rs1/r_rs2/r_rs3 + c_rd, written at one index
 rmap_b  : committed map, copy B (the second commit port's write; `rnewer` picks)
 smap_a  : speculative map, copy A; flush clears `lv`, so no wholesale copy is ever needed

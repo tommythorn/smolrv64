@@ -409,6 +409,10 @@ them. Full OoO will need them back.
 Architectural registers are a **unified 64-entry space**: 0–31 integer, 32–63 FP, matching
 `decode_operands`' `{fp_bit, field}` encoding. The physical registers are not: f0–f31 rename
 only into the **FP file**, three slices SH_F0–SH_F2, and x1–x31 only into the integer shards.
+A physical register is `{shard[2:0], index}` (`core/smolrv64_shards.vh`): lane k's integer
+shard is k and slot k's FP slice is 4 + k, so an f-register is exactly one with `shard[2]` set.
+A width-IW core uses lanes 0..IW-1 and slices 4..4+IW-1; rename builds free lists for those
+alone, and a result routed to any other shard is asserted.
 
 `smolrv64_rename` carries a full speculative/committed split — SMAP/RMAP/lv for the map, and a
 per-shard free list with a speculative head and a committed head. Rollback is `h := hc` in
@@ -728,8 +732,10 @@ until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 `NSRC` is a parameter precisely so the integer scheduler does not pay for the third operand
 only `fmadd` has: 20 bits/entry against 29.
 
-- **Wakeup**: every PRF write broadcasts its destination; `NWB`=4 ports, one per shard
-  (IE2's since 10d-ii).
+- **Wakeup**: every PRF write broadcasts its destination: the three lanes' write registers
+  and the two FP streams (the load landing and the F stage, which write the FP slices alone).
+  The FP scheduler watches all five (`NWB`=5). A lane's scheduler watches the lanes' three
+  (`NWB`=3): a lane op never names an f-register, so an FP stream cannot wake it.
   A source not yet ready is also compared against the live ports **in its dispatch cycle**,
   because a producer broadcasts exactly once and would otherwise be missed forever.
 - **Select**: **fixed priority**, lowest entry index first. Age is not stored, not
@@ -1373,7 +1379,7 @@ shipping configuration (`SIZE_KB`=64, `SMOLRV64_HW`=8, `PAW`=64 into the caches)
 | `smap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 3R, 1W + bulk |
 | `rmap` | `smolrv64_rename` | 64 | 9 | 576 | LUTRAM | 4R, 1W |
 | `lv` | `smolrv64_rename` | 64 | 1 | 64 | flops | bulk-cleared on flush |
-| `fl[0..7].bank[*].mem` | `smolrv64_rename` | 64 per shard | 7 | 448 per shard | LUTRAM | one free list per shard (IE, LD, FE, IE2, IE3, F0-F2), `next_pow2(IW)` banks each |
+| `fl[*].u.bank[*].mem` | `smolrv64_rename` | 64 per shard | 7 | 448 per shard | LUTRAM | one free list per shard in use (lanes 0..IW-1, FP slices 4..4+IW-1), `next_pow2(IW)` banks each |
 | `ent0`, `ent1` | `smolrv64_rob` | 8 each | 16 | 256 | LUTRAM | entry parity: 1W dispatch each, read at head and head+1 |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
 | `v`, `done` | `smolrv64_rob` | 16 | 1 each | 32 | flops | bulk-clearable |

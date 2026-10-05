@@ -33,10 +33,8 @@
 
 module smolrv64_rename
   #(parameter IDXB  = 7,
-    parameter PBITS = IDXB + 3,               // 3 shard bits: room for a 5th shard (the 3rd ALU)
+    parameter PBITS = IDXB + 3,               // 3 shard bits (smolrv64_shards.vh)
     parameter N_IE  = 64,
-    parameter N_LD  = 64,                 // SH_LD: no destination renames into it
-    parameter N_FE  = 64,                 // SH_FE: no destination renames into it
     parameter N_FP  = 64,                 // each FP slice (SH_F0..SH_F2), one per rename slot
     parameter N_IE2 = 64,                 // the second ALU's shard (item 10d-ii)
     parameter N_IE3 = 64,                 // the third ALU's shard (Stage 3)
@@ -132,8 +130,10 @@ module smolrv64_rename
     output wire             stall,        // ANY shard low -- see the note below
     output wire [7:0]       shard_low);   // per shard, for the hpm counters
 
-   localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
-                    SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;
+`include "smolrv64_shards.vh"
+   function automatic sh_used(input integer sh);   // lanes 0..IW-1 and FP slices 4..4+IW-1
+      sh_used = (sh % 4) < IW;
+   endfunction
 
    // ---- the map -------------------------------------------------------------------
    // W COPIES OF THE SPECULATIVE MAP, one write port each: port A writes smap_a, B smap_b, C
@@ -232,8 +232,7 @@ module smolrv64_rename
    // A shard's size, and the first free index at reset: SH_IE and SH_F0 hold the reset
    // mappings of x0-x31 and f0-f31 at indices 0..31, so their lists start at 32.
    function automatic integer n_of(input integer sh);
-      n_of = (sh == SH_IE) ? N_IE : (sh == SH_LD) ? N_LD : (sh == SH_FE) ? N_FE
-           : (sh == SH_IE2) ? N_IE2 : (sh == SH_IE3) ? N_IE3 : N_FP;
+      n_of = (sh == SH_IE) ? N_IE : (sh == SH_IE2) ? N_IE2 : (sh == SH_IE3) ? N_IE3 : N_FP;
    endfunction
    function automatic integer base_of(input integer sh);
       base_of = (sh == SH_IE || sh == SH_F0) ? 32 : 0;
@@ -245,7 +244,7 @@ module smolrv64_rename
    // TWO INDEPENDENT SHARDS PER COMMIT, and conflating them was a bug.  c_prd's shard is where
    // the instruction ALLOCATED (so it says which head advanced), but the displaced register
    // c_pold belongs to whichever shard last wrote that architectural register -- x29 written
-   // by the ALU and then by a load displaces an SH_IE register while allocating an SH_LD
+   // by lane A and then by lane B displaces an SH_IE register while allocating an SH_IE2
    // one.  A register's shard is encoded in its number and never changes, so the free push
    // must be routed by c_pold's own shard.  Routing it by the allocation shard moves registers
    // between shards, which breaks the one-writer-per-bank property the whole design rests on.
@@ -296,11 +295,6 @@ module smolrv64_rename
 
    genvar gL, gB;
    generate for (gL = 0; gL < NSH; gL = gL + 1) begin: fl
-      localparam integer N  = n_of(gL);
-      localparam integer PW = $clog2(N) + 1;
-      localparam integer  NFREE = N - base_of(gL);   // the initially free entries: base..N-1
-      localparam [PW-1:0] T0 = NFREE[PW-1:0];
-
       assign sel_r_a[gL] = alloc_r   & (r_shard   == gL);
       assign sel_r_b[gL] = alloc_r_b & (r_shard_b == gL);
       assign sel_a[gL]   = alloc     & (r_shard   == gL);
@@ -312,6 +306,14 @@ module smolrv64_rename
       assign fre_a[gL]   = c1_w & (c_pold [PBITS-1:IDXB] == gL);  // free push: the register's shard
       assign fre_b[gL]   = c2_w & (c2_pold[PBITS-1:IDXB] == gL);
       assign fre_c[gL]   = c3_w & (c3_pold[PBITS-1:IDXB] == gL);
+    if (!sh_used(gL)) begin: none   // a shard this width does not use: no list, never low
+      assign rd_a[gL] = {IDXB{1'b0}};  assign rd_b[gL] = {IDXB{1'b0}};  assign rd_c[gL] = {IDXB{1'b0}};
+      assign low_n[gL] = 1'b0;
+    end else begin: u
+      localparam integer N  = n_of(gL);
+      localparam integer PW = $clog2(N) + 1;
+      localparam integer  NFREE = N - base_of(gL);   // the initially free entries: base..N-1
+      localparam [PW-1:0] T0 = NFREE[PW-1:0];
 
       reg [PW-1:0] h, hc, t;
       wire [PW-1:0] hc_n = hc + {{(PW-1){1'b0}}, cmt_a[gL]} + {{(PW-1){1'b0}}, cmt_b[gL]}
@@ -372,6 +374,7 @@ module smolrv64_rename
          if ((N & (N - 1)) != 0) $fatal(1, "smolrv64_rename: shard %0d size %0d is not a power of two", gL, N);
          if (N > (1 << IDXB))    $fatal(1, "smolrv64_rename: shard %0d size %0d exceeds IDXB=%0d", gL, N, IDXB);
       end
+    end
    end endgenerate
 
    always @(posedge clk) begin
@@ -509,12 +512,13 @@ module smolrv64_rename
          $fatal(1, "smolrv64_rename: slot B renames r%0d into shard %0d", r_rd_b, r_shard_b);
       if (alloc_c && (r_rd_c[5] != (r_shard_c >= SH_F0) || (r_shard_c >= SH_F0 && r_shard_c != SH_F2)))
          $fatal(1, "smolrv64_rename: slot C renames r%0d into shard %0d", r_rd_c, r_shard_c);
+      if ((alloc & ~sh_used(r_shard)) | (alloc_b & ~sh_used(r_shard_b)) | (alloc_c & ~sh_used(r_shard_c)))
+         $fatal(1, "smolrv64_rename: an allocation from a shard this width does not use (%0d %0d %0d)",
+                r_shard, r_shard_b, r_shard_c);
    end
 
    initial begin
       if (N_IE <= 32)  $fatal(1, "smolrv64_rename: N_IE=%0d must exceed 32", N_IE);
-      if (N_LD <= 32)  $fatal(1, "smolrv64_rename: N_LD=%0d must exceed 32", N_LD);
-      if (N_FE <= 32)  $fatal(1, "smolrv64_rename: N_FE=%0d must exceed 32", N_FE);
       if (N_FP <= 32)  $fatal(1, "smolrv64_rename: N_FP=%0d must exceed 32", N_FP);
       if (LOWAT < 1)   $fatal(1, "smolrv64_rename: LOWAT must be >= 1");
    end

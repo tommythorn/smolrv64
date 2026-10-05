@@ -413,6 +413,9 @@ four lanes and the four FP slices.
    their dispatch-stage folds drop the LD and FE comparators: two of five per source per
    entry, out of the scheduler, which is the critical path. The shards are renumbered in the
    same step (retire-identical: the numbers are names).
+   **Built (2026-10-05):** retire-identical at 60 M (40,883,141). The shard numbers live in
+   `core/smolrv64_shards.vh`; rename builds free lists for the shards the width uses (six at
+   IW=3: SH_LD's and SH_FE's eight LUTRAM banks are gone).
 2. **5.4b: the lanes and slots as arrays (IW=3, cycle-identical).** The per-lane and per-slot
    copies (`qa/qb/qc`, `a/a2/a3`, `mA/mB/mC`, `dA/dB/dC`, `d/d2/d3`, the rename and ROB ports
    `_b/_c`) become generate loops over `IW`. Lane D is then a parameter rather than a fourth

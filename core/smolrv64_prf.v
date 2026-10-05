@@ -15,8 +15,6 @@
 //   SH_IE, SH_IE2, SH_IE3  the lanes A, B, C: each lane's write register, which carries its ALU
 //                  and multiply results and the landings (loads, AMOs, CSR reads, the FP ops'
 //                  integer results, divides)
-//   SH_LD          none: an integer load's, AMO's or CSR read's result lands in its lane's shard
-//   SH_FE          none: an FP op's or divide's integer result lands in its lane's shard
 //
 // THE FP FILE holds f0-f31 and nothing else, in three slices SH_F0..SH_F2, one per rename slot
 // (smolrv64_rename). Its values have two writers, the load landing (FP loads) and the F
@@ -39,10 +37,8 @@
 
 module smolrv64_prf
   #(parameter IDXB  = 7,                   // index bits within a shard
-    parameter PBITS = IDXB + 3,            // physical register number width (3 shard bits: room for 5 shards)
+    parameter PBITS = IDXB + 3,            // physical register number width (3 shard bits)
     parameter N_IE  = 64,                  // > 32 (integer arch regs)
-    parameter N_LD  = 64,                   // > 32
-    parameter N_FE  = 64,                   // > 32
     parameter N_FP  = 64,                   // each FP slice: > 32 (fp arch regs)
     parameter N_IE2 = 64,                   // the SECOND ALU's shard (item 10d-ii): > 32 like SH_IE
     parameter N_IE3 = 64,                   // the THIRD ALU's shard (Stage 3): > 32 like SH_IE
@@ -115,8 +111,7 @@ module smolrv64_prf
     output wire [63:0]      rd11,
     output wire [63:0]      rd12);
 
-   localparam [2:0] SH_IE = 3'd0, SH_LD = 3'd1, SH_FE = 3'd2, SH_IE2 = 3'd3, SH_IE3 = 3'd4,
-                    SH_F0 = 3'd5, SH_F1 = 3'd6, SH_F2 = 3'd7;
+`include "smolrv64_shards.vh"
    localparam integer AB_FP = $clog2(N_FP);
 
    // Sized to the largest shard; the smaller shards simply never index above their
@@ -126,9 +121,9 @@ module smolrv64_prf
    // duly built it: "mem_ie_reg 128 x 64, RAM64M8 x 60", identical to the 128-entry shards.
    // Pure waste, and area is not free here: the 166 MHz build fails on ROUTING inside the
    // caches (83-85% route on sub-1 ns logic), so congestion costs slack somewhere else.
-   localparam integer NMAX  = (N_LD > N_IE) ? ((N_LD > N_FE) ? N_LD : N_FE)
-                                            : ((N_IE > N_FE) ? N_IE : N_FE);
-   localparam integer AB_IE = $clog2(N_IE), AB_LD = $clog2(N_LD), AB_FE = $clog2(N_FE), AB_IE2 = $clog2(N_IE2), AB_IE3 = $clog2(N_IE3);
+   localparam integer NMAX  = (N_IE > N_IE2) ? ((N_IE > N_IE3) ? N_IE : N_IE3)
+                                             : ((N_IE2 > N_IE3) ? N_IE2 : N_IE3);
+   localparam integer AB_IE = $clog2(N_IE), AB_IE2 = $clog2(N_IE2), AB_IE3 = $clog2(N_IE3);
 
    reg [63:0] mem_ie [0:N_IE-1];
    reg [63:0] mem_ie2 [0:N_IE2-1];
@@ -278,7 +273,7 @@ module smolrv64_prf
    end
 
    // ---- invariants: ALWAYS ON, per docs/rtl-rules.md ---------------------------------
-   // The bound is compared at IDXB+1 bits: N_LD=128 truncates to 0 in IDXB=7 bits, which
+   // The bound is compared at IDXB+1 bits: N_IE=128 truncates to 0 in IDXB=7 bits, which
    // silently turns the check into `idx >= 0` and fires on every write.
    // A write must name its own shard and stay inside that shard's capacity.  Either would
    // otherwise be a silent wrong-register write -- exactly the class of defect that costs
@@ -287,8 +282,7 @@ module smolrv64_prf
       if (we_ie && (wa_ie[PBITS-1:IDXB] != SH_IE))
          $fatal(1, "smolrv64_prf: int-exec write to pr=%h, shard %0d is not SH_IE",
                 wa_ie, wa_ie[PBITS-1:IDXB]);
-      // SH_LD and SH_FE have no bank: an integer result is its lane's, so the load and F-stage
-      // ports write the FP slices only
+      // an integer result is its lane's, so the load and F-stage ports write the FP slices only
       if (we_ld && (wa_ld[PBITS-1:IDXB] < SH_F0))
          $fatal(1, "smolrv64_prf: load write to pr=%h, shard %0d is not an FP slice",
                 wa_ld, wa_ld[PBITS-1:IDXB]);
@@ -319,8 +313,7 @@ module smolrv64_prf
    initial begin
       if (N_IE <= 32) $fatal(1, "smolrv64_prf: N_IE=%0d must exceed 32 integer arch regs", N_IE);
       if (N_IE3 <= 32) $fatal(1, "smolrv64_prf: N_IE3=%0d must exceed 32 integer arch regs", N_IE3);
-      if (N_FE <= 32) $fatal(1, "smolrv64_prf: N_FE=%0d must exceed 32 integer arch regs", N_FE);
-      if (N_LD <= 32) $fatal(1, "smolrv64_prf: N_LD=%0d must exceed 32 integer arch regs", N_LD);
+      if (N_IE2 <= 32) $fatal(1, "smolrv64_prf: N_IE2=%0d must exceed 32 integer arch regs", N_IE2);
       if (N_FP <= 32) $fatal(1, "smolrv64_prf: N_FP=%0d must exceed 32 fp arch regs", N_FP);
       if (NMAX > (1 << IDXB))
          $fatal(1, "smolrv64_prf: NMAX=%0d exceeds IDXB=%0d addressable", NMAX, IDXB);
