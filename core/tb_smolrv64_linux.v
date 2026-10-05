@@ -605,10 +605,10 @@ module tb;
       integer k, ak, as;
       begin
          older_ready = 0;
-         as = (which == 0 ? 32'(dut.core.u_iq_i.e_rob[sel]) : which == 1 ? 32'(dut.core.u_iq_i2.e_rob[sel]) : 32'(dut.core.u_iq_i3.e_rob[sel])) - 32'(dut.core.rob_head_idx);
+         as = (which == 0 ? 32'(dut.core.ln[0].u_iq.e_rob[sel]) : which == 1 ? 32'(dut.core.ln[1].u_iq.e_rob[sel]) : 32'(dut.core.ln[2].u_iq.e_rob[sel])) - 32'(dut.core.rob_head_idx);
          as = as & 31;
          for (k = 0; k < n; k = k + 1) if (rdy_v[k]) begin
-            ak = ((which == 0 ? 32'(dut.core.u_iq_i.e_rob[k]) : which == 1 ? 32'(dut.core.u_iq_i2.e_rob[k]) : 32'(dut.core.u_iq_i3.e_rob[k])) - 32'(dut.core.rob_head_idx)) & 31;
+            ak = ((which == 0 ? 32'(dut.core.ln[0].u_iq.e_rob[k]) : which == 1 ? 32'(dut.core.ln[1].u_iq.e_rob[k]) : 32'(dut.core.ln[2].u_iq.e_rob[k])) - 32'(dut.core.rob_head_idx)) & 31;
             if (ak < as) older_ready = 1;
          end
       end
@@ -628,17 +628,17 @@ module tb;
          else                                                                 ds_c_rule  = ds_c_rule + 1;
       end
       if (dut.core.fe.rule[0] & ~dut.core.fe.take[0] & dut.core.fe.crd[10]) ds_b_room = ds_b_room + 1;   // the head waits for a credit
-      na = $countones(dut.core.u_iq_i.rdy);   ia = dut.core.ri_iss_v  ? 1 : 0;
-      nb = $countones(dut.core.u_iq_i2.rdy);  ib = dut.core.ri2_iss_v ? 1 : 0;
-      nc = $countones(dut.core.u_iq_i3.rdy);  ic = dut.core.ri3_iss_v ? 1 : 0;
+      na = $countones(dut.core.ln[0].u_iq.rdy);   ia = dut.core.ln[0].iss_v  ? 1 : 0;
+      nb = $countones(dut.core.ln[1].u_iq.rdy);  ib = dut.core.ln[1].iss_v ? 1 : 0;
+      nc = $countones(dut.core.ln[2].u_iq.rdy);  ic = dut.core.ln[2].iss_v ? 1 : 0;
       al_wait = al_wait + 64'(na - ia) + 64'(nb - ib) + 64'(nc - ic);
       // ready ALU work waiting in one lane while another lane issued nothing
       if ((ib == 0) | (ic == 0)) al_wait_idle = al_wait_idle + 64'(na - ia);
       if ((ia == 0) | (ic == 0)) al_wait_idle = al_wait_idle + 64'(nb - ib);
       if ((ia == 0) | (ib == 0)) al_wait_idle = al_wait_idle + 64'(nc - ic);
-      if (ia != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i.rdy),  32'(dut.core.ri_iss_ent),  NI_SIM, 0));
-      if (ib != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i2.rdy), 32'(dut.core.ri2_iss_ent), NI_SIM, 1));
-      if (ic != 0) al_young = al_young + 64'(older_ready(32'(dut.core.u_iq_i3.rdy), 32'(dut.core.ri3_iss_ent), NI_SIM, 2));
+      if (ia != 0) al_young = al_young + 64'(older_ready(32'(dut.core.ln[0].u_iq.rdy),  32'(dut.core.ln[0].iss_ent),  NI_SIM, 0));
+      if (ib != 0) al_young = al_young + 64'(older_ready(32'(dut.core.ln[1].u_iq.rdy), 32'(dut.core.ln[1].iss_ent), NI_SIM, 1));
+      if (ic != 0) al_young = al_young + 64'(older_ready(32'(dut.core.ln[2].u_iq.rdy), 32'(dut.core.ln[2].iss_ent), NI_SIM, 2));
       if (dut.core.lsu_started) begin ls_st = ls_st + 1; if (ls_st_q) ls_b2b = ls_b2b + 1; end
       ls_st_q = dut.core.lsu_started;
       if (dut.core.u_lsu.mem_ren) begin ls_rd = ls_rd + 1; if (ls_rd_q) ls_rd_b2b = ls_rd_b2b + 1; end

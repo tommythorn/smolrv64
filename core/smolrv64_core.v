@@ -1,5 +1,25 @@
 `include "va_codec.vh"
 `include "smolrv64_irec.vh"
+// An issued op's payload, as dispatch packs it (pl_in) and an issue port unpacks it.
+// PL_DECL(P) declares the fields under prefix P; PL_REC(P) is their order in the payload.
+`define PL_DECL(P) wire [PCW-1:0] P``pc, P``pred_npc, P``fault_tval; wire [31:0] P``insn; \
+   wire [SQ_IB-1:0] P``sq_tag; wire [LQ_IB-1:0] P``lq_idx; \
+   wire P``rvc, P``rd_v, P``mem_signed, P``is_mem, P``is_store, P``is_amo; \
+   wire [SEQW-1:0] P``seq; wire [PDW-1:0] P``pdet; wire [5:0] P``rd, P``rs1; \
+   wire [RN_PBITS-1:0] P``prd; wire [2:0] P``shard; wire [1:0] P``mem_size; wire [63:0] P``imm; \
+   wire [4:0] P``amo_func; wire P``is_branch, P``is_jump, P``is_jalr, P``is_mul, P``is_csr; \
+   wire [2:0] P``csr_func; wire P``is_serialize, P``is_fp, P``is_fencei, P``is_cbo, P``cbo_zero; \
+   wire P``cbo_keep, P``illegal, P``fault; wire [3:0] P``fault_cause; wire [5:0] P``alu_op; \
+   wire P``alu_w, P``alu_uw, P``op2_imm, P``res_link, P``mis_taken, P``mis_nt; \
+   wire [1:0] P``op1_sel; wire [2:0] P``br_func; wire P``rs1_v, P``rs2_v, P``rs3_v, P``ord;
+`define PL_REC(P) {P``pc, P``insn, P``rvc, P``seq, P``pdet, P``pred_npc, P``rd, P``rd_v, P``prd, P``shard, \
+   P``rs1, P``imm, P``mem_size, P``mem_signed, P``is_mem, P``is_store, P``is_amo, \
+   P``amo_func, P``is_branch, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, \
+   P``is_serialize, P``is_fp, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, \
+   P``illegal, P``fault, P``fault_cause, P``fault_tval, \
+   P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, \
+   P``br_func, P``mis_taken, P``mis_nt, \
+   P``rs1_v, P``rs2_v, P``rs3_v, P``ord, P``sq_tag, P``lq_idx}
 `default_nettype none
 
 // In-order pipelined RVA22S64 core: F | X | M.
@@ -585,17 +605,8 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] rob_d_idx, rob_d_idx2, rob_d_idx3;
    wire                rob_ready, rob_ready2, rob_ready3, rob_empty;
    wire [ROB_IDXB:0]   rob_occ;
-   // a lane's landing slot (a landing load's or AMO's result, see the landing buffers): drained
-   // this cycle, its register, value and ROB slot
-   wire                dA, dB, dC;            // ...writing a register
-   wire                dAc, dBc, dCc;         // ...completing its op
-   wire                dA_w, dB_w, dC_w, dA_c, dB_c, dC_c;
-   wire [RN_PBITS-1:0] dA_prd, dB_prd, dC_prd;
-   wire [63:0]         dA_dat, dB_dat, dC_dat;
-   wire [ROB_IDXB-1:0] dA_rob, dB_rob, dC_rob;
    wire                ldw_int;            // the LD stream's write goes to a lane (completes at its drain)
    wire                few_int;            // ...and the FE stream's
-   wire                lbA_any, lbB_any, lbC_any;   // a landing waits for the lane's slot
    wire                sy_lane_ok;                   // lane A's slot is free for the SYSQ
    // the landing buffers (defined with the LD stream): per lane, LBN entries
    localparam integer LBN = 4, LBB = 2;
@@ -609,15 +620,10 @@ module smolrv64_core
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
    // queue, M's port (which carries the landing loads)
-   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int), cf_red_fire,
-                                  (iss_alu3 & ~lane_mis[2] & ~lane_late(qc_insn)) | mC_2 | dCc,
-                                  (iss_alu2 & ~lane_mis[1] & ~lane_late(qb_insn)) | mB_2 | dBc,
-                                  sq_k_take, fp_land & ~(fp_wb & few_int), (iss_alu & ~lane_mis[0] & ~lane_late(qa_insn)) | mA_2 | dAc,
-                                  rob_w_valid & ~ldw_int};
-   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, dCc ? dC_rob : mC_2 ? mC_rob2 : a3_rob, dBc ? dB_rob : mB_2 ? mB_rob2 : a2_rob,
-                                  sq_kc_rob, ft_rob, dAc ? dA_rob : mA_2 ? mA_rob2 : a_rob, rob_w_idx};
+   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int), cf_red_fire, l_wv[2], l_wv[1],
+                                  sq_k_take, fp_land & ~(fp_wb & few_int), l_wv[0], rob_w_valid & ~ldw_int};
+   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, l_wix[2], l_wix[1], sq_kc_rob, ft_rob, l_wix[0], rob_w_idx};
    wire                lq_d_ready2, sq_d_ready2;
-   wire [IBI:0]        ri_free, ri2_free, ri3_free;
    wire [IBF:0]        rf_free;
    wire [13:0]         crd;               // the dispatch credits (smolrv64_frontend CR_*)
    wire                fe_hd_v, fe_hd_take;   // the queue head: an instruction, and whether it pops
@@ -952,46 +958,13 @@ module smolrv64_core
    wire [NWB_L-1:0]          wkv_l = {we_ie3, we_ie2, we_ie};
    wire [NWB_L*RN_PBITS-1:0] wkp_l = {wa_ie3, wa_ie2, wa_ie};
 
-   wire ri_ready, ri_iss_v, ri_blk_v;  wire [IBI-1:0] ri_d_ent, ri_iss_ent;
-   wire ri2_ready, ri2_iss_v, ri2_blk_v; wire [IBI-1:0] ri2_d_ent, ri2_iss_ent;
-   wire [ROB_IDXB-1:0] ri2_iss_rob;  wire [RN_PBITS-1:0] ri2_blk_pr;  wire [IBI:0] ri2_occ;  wire ri2_take;
-   // 3rd integer scheduler (the third ALU, Stage 3): dead at IW=2 (rn_valid_c=0)
-   wire ri3_ready, ri3_iss_v, ri3_blk_v; wire [IBI-1:0] ri3_d_ent, ri3_iss_ent;
-   wire [ROB_IDXB-1:0] ri3_iss_rob;  wire [RN_PBITS-1:0] ri3_blk_pr;  wire [IBI:0] ri3_occ;  wire ri3_take;
-   wire [ROB_IDXB-1:0] ri_iss_rob;
-   wire [RN_PBITS-1:0] ri_blk_pr;      wire [IBI:0] ri_occ;
    wire rf_ready, rf_iss_v, rf_blk_v;  wire [IBF-1:0] rf_d_ent, rf_iss_ent;
    wire [ROB_IDXB-1:0] rf_iss_rob;
    wire [RN_PBITS-1:0] rf_blk_pr;      wire [IBF:0] rf_occ;
-   wire ri_take, rf_take;
+   wire rf_take;
    wire s_win;                         // M takes a lane's load or store this cycle
    wire f_advance;
 
-   // ---- THE ALU'S OWN ISSUE PORT (item 10d-i, 2026-09-05) -----------------------------
-   // One issue register served every scheduler, so the machine issued ONE instruction per
-   // cycle whatever dispatch and retire did, and the ALU waited whenever a load, store or
-   // branch went first. The integer scheduler now picks into its own register, beside the
-   // M/F one: an ALU op and a memory op issue in the same cycle. The ALU op completes in
-   // its issue cycle, so this port is free every cycle (unit_busy 0); it has two operand
-   // reads of its own (ra4/ra5), its own exec unit and the same one-deep forward.
-   reg                 a_v;
-   reg [IBI-1:0]       a_ent;
-   reg [ROB_IDXB-1:0]  a_rob;
-   reg [RN_PBITS-1:0]  a_ps1, a_ps2;
-   initial begin a_v = 1'b0; a_ent = {IBI{1'b0}}; a_rob = {ROB_IDXB{1'b0}}; a_ps1 = {RN_PBITS{1'b0}}; a_ps2 = {RN_PBITS{1'b0}}; end
-   wire   iss_alu = a_v & ~redirect;                      // completes here, always
-   reg                 a2_v;                               // the second ALU's port (10d-ii)
-   reg [IBI-1:0]       a2_ent;
-   reg [ROB_IDXB-1:0]  a2_rob;
-   reg [RN_PBITS-1:0]  a2_ps1, a2_ps2;
-   initial begin a2_v = 1'b0; a2_ent = {IBI{1'b0}}; a2_rob = {ROB_IDXB{1'b0}}; a2_ps1 = {RN_PBITS{1'b0}}; a2_ps2 = {RN_PBITS{1'b0}}; end
-   wire   iss_alu2 = a2_v & ~redirect;
-   reg                 a3_v;                               // the third ALU's port (Stage 3)
-   reg [IBI-1:0]       a3_ent;
-   reg [ROB_IDXB-1:0]  a3_rob;
-   reg [RN_PBITS-1:0]  a3_ps1, a3_ps2;
-   initial begin a3_v = 1'b0; a3_ent = {IBI{1'b0}}; a3_rob = {ROB_IDXB{1'b0}}; a3_ps1 = {RN_PBITS{1'b0}}; a3_ps2 = {RN_PBITS{1'b0}}; end
-   wire   iss_alu3 = a3_v & ~redirect;
 
    // ---- DISPATCH STAGE (cycle boundary) -------------------------------------------------
    // The swizzle crossbar (slot->pipe mux, selects gated by the deep d3_take accept chain)
@@ -1008,18 +981,14 @@ module smolrv64_core
    // below, computed from the early slot pregs so it stays off the mux->register path); every
    // later stuck cycle ORs a fresh wkv snoop of the stage's own pregs; and the move cycle is
    // caught by the scheduler's own fill hit(d_ps). See docs/SmolRV64-Spec.md 15.
-   reg              stg_v_ia, stg_v_ib, stg_v_ic, stg_v_f;
-   reg [ROB_IDXB-1:0] stg_rob_ia, stg_rob_ib, stg_rob_ic, stg_rob_f;
-   reg [3*RN_PBITS-1:0] stg_ps_ia, stg_ps_ib, stg_ps_ic, stg_ps_f;
-   reg [1:0]        stg_r_ia, stg_r_ib, stg_r_ic;
+   reg              stg_v_f;
+   reg [ROB_IDXB-1:0] stg_rob_f;
+   reg [3*RN_PBITS-1:0] stg_ps_f;
    reg [2:0]        stg_r_f;
-   reg [RN_PBITS-1:0] stg_prd_ia, stg_prd_ib, stg_prd_ic, stg_prd_f;
-   reg [PLW-1:0]    stg_pl_ia, stg_pl_ib, stg_pl_ic, stg_pl_f;
-   initial begin stg_v_ia=1'b0; stg_v_ib=1'b0; stg_v_ic=1'b0; stg_v_f=1'b0; end
+   reg [RN_PBITS-1:0] stg_prd_f;
+   reg [PLW-1:0]    stg_pl_f;
+   initial stg_v_f = 1'b0;
    // The scheduler accepts the stage op when it has room; back-pressure to the frontend below.
-   wire mv_ia = stg_v_ia & ri_ready;
-   wire mv_ib = stg_v_ib & ri2_ready;
-   wire mv_ic = stg_v_ic & ri3_ready;
    wire mv_f  = stg_v_f  & rf_ready;
 
    function automatic is_mulop(input [31:0] i);     // MUL, MULH*, MULW: OP or OP-32, M, funct3 < 4
@@ -1036,39 +1005,6 @@ module smolrv64_core
       lane_late = is_mulop(i) | is_lmem(i) | is_hop(i);
    endfunction
    localparam integer PL_INSN = PLW - PCW - 32;   // the instruction's place in the payload (pl_in)
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
-             .FIXEDL(1),.INORDER(0)) u_iq_i
-     (.clk(clk),.reset(reset),
-      .d_valid(mv_ia),.d_ready(ri_ready),.d_rob(stg_rob_ia),
-      .d_ps(stg_ps_ia[2*RN_PBITS-1:0]),.d_r(stg_r_ia),.d_prd(stg_prd_ia),.d_long(lane_late(stg_pl_ia[PL_INSN +: 32])),.d_ent(ri_d_ent),
-      .wb_v(wkv_l),.wb_preg(wkp_l),
-      .unit_busy(mA_1 | lbA_any | sy_at_head),.iss_v(ri_iss_v),.iss_ent(ri_iss_ent),.iss_rob(ri_iss_rob),
-     .iss_take(ri_take),
-      .hold_v(a_v),.hold_ent(a_ent),
-      .blk_v(ri_blk_v),.blk_pr(ri_blk_pr),.flush(redirect),.occupancy(ri_occ),.free_n(ri_free));
-   // THE SECOND INTEGER SCHEDULER (item 10d-ii): slot B's ALU ops, into the second ALU.
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
-             .FIXEDL(1),.INORDER(0)) u_iq_i2
-     (.clk(clk),.reset(reset),
-      .d_valid(mv_ib),.d_ready(ri2_ready),.d_rob(stg_rob_ib),
-      .d_ps(stg_ps_ib[2*RN_PBITS-1:0]),.d_r(stg_r_ib),.d_prd(stg_prd_ib),.d_long(lane_late(stg_pl_ib[PL_INSN +: 32])),.d_ent(ri2_d_ent),
-      .wb_v(wkv_l),.wb_preg(wkp_l),
-      .unit_busy(mB_1 | lbB_any),.iss_v(ri2_iss_v),.iss_ent(ri2_iss_ent),.iss_rob(ri2_iss_rob),
-     .iss_take(ri2_take),
-      .hold_v(a2_v),.hold_ent(a2_ent),
-      .blk_v(ri2_blk_v),.blk_pr(ri2_blk_pr),.flush(redirect),.occupancy(ri2_occ),.free_n(ri2_free));
-   // THE THIRD INTEGER SCHEDULER (Stage 3): slot C's ALU ops, into the third ALU. Dead at
-   // IW=2 (rn_valid_c=0); the C4 dispatch step gives it the real slot-C route.
-   smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
-             .FIXEDL(1),.INORDER(0)) u_iq_i3
-     (.clk(clk),.reset(reset),
-      .d_valid(mv_ic),.d_ready(ri3_ready),.d_rob(stg_rob_ic),
-      .d_ps(stg_ps_ic[2*RN_PBITS-1:0]),.d_r(stg_r_ic),.d_prd(stg_prd_ic),.d_long(lane_late(stg_pl_ic[PL_INSN +: 32])),.d_ent(ri3_d_ent),
-      .wb_v(wkv_l),.wb_preg(wkp_l),
-      .unit_busy(mC_1 | lbC_any),.iss_v(ri3_iss_v),.iss_ent(ri3_iss_ent),.iss_rob(ri3_iss_rob),
-     .iss_take(ri3_take),
-      .hold_v(a3_v),.hold_ent(a3_ent),
-      .blk_v(ri3_blk_v),.blk_pr(ri3_blk_pr),.flush(redirect),.occupancy(ri3_occ),.free_n(ri3_free));
 
 
    // INORDER(0): FP arith may reorder freely. It has no memory ordering to respect and
@@ -1110,15 +1046,10 @@ module smolrv64_core
    // slot-3's destination-scheduler ready (by class, NOT rn_valid_c -> no combinational loop
    // through d3_take): ALU->lane C, LS->M, FC->F.
    wire iq_ready_c = d3_cls_i ? aluc_room : f_room;
-   wire [RS_IDXB-1:0] iq_d_ent = d_cls_i ? {{(RS_IDXB-IBI){1'b0}}, ri_d_ent}
-                               :           {{(RS_IDXB-IBF){1'b0}}, rf_d_ent};
 
    // ISSUE ARBITRATION, one per cycle into the single issue register. Long-latency classes
    // win: they are gated on M being free anyway, so they only bid when they can make
    // progress, while an ALU op can always go next cycle instead.
-   wire pick_i = ri_iss_v;                                // its own port: never waits for M
-   wire pick_i2 = ri2_iss_v;                              // the second ALU's, likewise
-   wire pick_i3 = ri3_iss_v;                              // the third ALU's, likewise
    // The F scheduler no longer shares this port: it issues into its own select register
    // j_* (CTF-on-FP). i_* is M-only now, so no arbitration and no class mux here.
    // THE SCHEDULER'S JOB IS TO PRODUCE AN INDEX; everything else about the uop is looked up
@@ -1157,28 +1088,16 @@ module smolrv64_core
    // ONE ARRAY PER SCHEDULER (item 10b): slot A and slot B dispatch to different schedulers,
    // so each array keeps one write per cycle; the issue-side select on pick_* was already a
    // 3:1 mux, now on three reads instead of three indexes.
-   reg  [3*RN_PBITS-1:0] psmem_i [0:NI-1];
-   reg  [3*RN_PBITS-1:0] psmem_i2 [0:NI-1];
-   reg  [3*RN_PBITS-1:0] psmem_i3 [0:NI-1];
    reg  [3*RN_PBITS-1:0] psmem_f [0:NF-1];
    wire [3*RN_PBITS-1:0] ps_out_f = psmem_f[rf_iss_ent];   // FP/CTF source tags into j_*
-   wire [3*RN_PBITS-1:0] ps_out_a = psmem_i[ri_iss_ent];
-   wire [3*RN_PBITS-1:0] ps_out_a2 = psmem_i2[ri2_iss_ent];
-   wire [3*RN_PBITS-1:0] ps_out_a3 = psmem_i3[ri3_iss_ent];
    wire [3*RN_PBITS-1:0] ps_in   = {rn_prs3, rn_prs2, rn_prs1};
    wire [3*RN_PBITS-1:0] ps_in_b = {rn_prs3_b, rn_prs2_b, rn_prs1_b};
    wire [3*RN_PBITS-1:0] ps_in_c = {rn_prs3_c, rn_prs2_c, rn_prs1_c};
    always @(posedge clk) begin
       // Written when the stage op moves into its scheduler (T+1), at the entry that scheduler
       // allocates (*_d_ent), from the REGISTERED stage payload -- co-timed with the e_ps write.
-      if (mv_ia) psmem_i[ri_d_ent]  <= stg_ps_ia;
-      if (mv_ib) psmem_i2[ri2_d_ent] <= stg_ps_ib;
-      if (mv_ic) psmem_i3[ri3_d_ent] <= stg_ps_ic;
       if (mv_f)  psmem_f[rf_d_ent]  <= stg_ps_f;
    end
-   assign ri_take = pick_i;                              // the ALU port takes every cycle; a take in
-   assign ri2_take = pick_i2;                            // the redirect cycle dies in a_v/a2_v (cleared)
-   assign ri3_take = pick_i3;                            // lane C, likewise
    // The shared FP/CTF queue feeds j_* directly (single source). j_isctf, from the picked op's
    // payload, routes the drain: control flow to cf_*, FP to f_valid. (CTF-over-FP priority is a
    // later addition; for now the queue picks by its own policy.)
@@ -1230,36 +1149,6 @@ module smolrv64_core
    wire   iss_f       = j_needs_f & f_advance & ~redirect;    // j_* drains an FP op into f_valid
    wire   iss_md      = j_needs_m & md_advance & ~redirect;   // ...or a mul/div into the MD stage (C1)
    wire   iss_sys     = j_needs_s & sy_advance & ~redirect;   // ...or a system op into the SYSQ (C3 step 3)
-      always @(posedge clk) begin                            // the ALU port (see above)
-      if (reset | redirect) a_v <= 1'b0;
-      else begin
-         a_v <= ri_take;
-         if (ri_take) begin
-            a_ent <= ri_iss_ent;  a_rob <= ri_iss_rob;
-            a_ps1 <= ps_out_a[0 +: RN_PBITS];  a_ps2 <= ps_out_a[RN_PBITS +: RN_PBITS];
-         end
-      end
-   end
-   always @(posedge clk) begin                            // the second ALU port
-      if (reset | redirect) a2_v <= 1'b0;
-      else begin
-         a2_v <= ri2_take;
-         if (ri2_take) begin
-            a2_ent <= ri2_iss_ent;  a2_rob <= ri2_iss_rob;
-            a2_ps1 <= ps_out_a2[0 +: RN_PBITS];  a2_ps2 <= ps_out_a2[RN_PBITS +: RN_PBITS];
-         end
-      end
-   end
-   always @(posedge clk) begin                            // the third ALU port (Stage 3)
-      if (reset | redirect) a3_v <= 1'b0;
-      else begin
-         a3_v <= ri3_take;
-         if (ri3_take) begin
-            a3_ent <= ri3_iss_ent;  a3_rob <= ri3_iss_rob;
-            a3_ps1 <= ps_out_a3[0 +: RN_PBITS];  a3_ps2 <= ps_out_a3[RN_PBITS +: RN_PBITS];
-         end
-      end
-   end
 
 
    // j_* loads the FP/CTF queue's pick when it can accept (empty, or its op draining into
@@ -1342,43 +1231,10 @@ module smolrv64_core
    wire [1:0] srdy_l1 = d2_srdy[1:0] | {wkl(rn_prs2_b), wkl(rn_prs1_b)};
    wire [1:0] srdy_l2 = d3_srdy[1:0] | {wkl(rn_prs2_c), wkl(rn_prs1_c)};
    // Stuck-cycle snoop: fresh wkv match of the stage's OWN pregs, ORed into its ready bits.
-   wire [1:0] snp_ia = {wkl(stg_ps_ia[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ia[0*RN_PBITS +: RN_PBITS])};
-   wire [1:0] snp_ib = {wkl(stg_ps_ib[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ib[0*RN_PBITS +: RN_PBITS])};
-   wire [1:0] snp_ic = {wkl(stg_ps_ic[1*RN_PBITS +: RN_PBITS]), wkl(stg_ps_ic[0*RN_PBITS +: RN_PBITS])};
    wire [2:0] snp_f  = {wk(stg_ps_f[2*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[1*RN_PBITS +: RN_PBITS]), wk(stg_ps_f[0*RN_PBITS +: RN_PBITS])};
    always @(posedge clk) begin
-      if (reset) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_f<=1'b0; end
+      if (reset) stg_v_f <= 1'b0;
       else begin
-         // Lane k's stage takes slot k's ALU op. A store names no rs2 there: the lane generates
-         // its address only, and the store queue fetches its data (an FP store's rs2 is an FP
-         // register, which the lane's integer read ports do not read).
-         if (rn_valid & d_cls_i) begin
-            stg_v_ia   <= 1'b1;
-            stg_rob_ia <= rob_d_idx;
-            stg_ps_ia  <= d_st_nb ? {rn_prs3, {RN_PBITS{1'b0}}, rn_prs1} : ps_in;
-            stg_r_ia   <= srdy_l0;
-            stg_prd_ia <= d_prd_g;
-            stg_pl_ia  <= pl_in;
-         end else if (mv_ia) stg_v_ia <= 1'b0;
-         else if (stg_v_ia) stg_r_ia <= stg_r_ia | snp_ia;
-         if (b_to_i2) begin
-            stg_v_ib   <= 1'b1;
-            stg_rob_ib <= rob_d_idx2;
-            stg_ps_ib  <= d2_st_nb ? {rn_prs3_b, {RN_PBITS{1'b0}}, rn_prs1_b} : ps_in_b;
-            stg_r_ib   <= srdy_l1;
-            stg_prd_ib <= d2_prd_g;
-            stg_pl_ib  <= pl_in_b;
-         end else if (mv_ib) stg_v_ib <= 1'b0;
-         else if (stg_v_ib) stg_r_ib <= stg_r_ib | snp_ib;
-         if (c_to_ic) begin
-            stg_v_ic   <= 1'b1;
-            stg_rob_ic <= rob_d_idx3;
-            stg_ps_ic  <= d3_st_nb ? {rn_prs3_c, {RN_PBITS{1'b0}}, rn_prs1_c} : ps_in_c;
-            stg_r_ic   <= srdy_l2;
-            stg_prd_ic <= d3_prd_g;
-            stg_pl_ic  <= pl_in_c;
-         end else if (mv_ic) stg_v_ic <= 1'b0;
-         else if (stg_v_ic) stg_r_ic <= stg_r_ic | snp_ic;
          // F (FP/CTF): whichever slot is the (single) FC.
          if (f_slot0 | b_to_f | c_to_f) begin
             stg_v_f   <= 1'b1;
@@ -1390,16 +1246,249 @@ module smolrv64_core
          end else if (mv_f) stg_v_f <= 1'b0;
          else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
          // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
-         if (redirect) begin stg_v_ia<=1'b0; stg_v_ib<=1'b0; stg_v_ic<=1'b0; stg_v_f<=1'b0; end
+         if (redirect) stg_v_f <= 1'b0;
       end
    end
+
+   // =========================================================== THE LANES
+   // Lane k takes slot k's ALU-class ops (slot = lane): its own dispatch stage, scheduler,
+   // payload and tag arrays, select register, two PRF reads, exec unit, multiplier and write
+   // register, and the landing slot its landing buffer drains into (see the landing buffers).
+   localparam integer NL = IW;
+   // what each slot hands its lane at dispatch: a store's rs2 is zeroed (the store queue's), and
+   // the dispatch cycle's lane wakes are folded into the ready bits
+   wire                  sl_li  [0:NL-1];
+   wire [ROB_IDXB-1:0]   sl_rob [0:NL-1];
+   wire [3*RN_PBITS-1:0] sl_ps  [0:NL-1];
+   wire [1:0]            sl_rdy [0:NL-1];
+   wire [RN_PBITS-1:0]   sl_prd [0:NL-1];
+   wire [PLW-1:0]        sl_pl  [0:NL-1];
+   assign sl_li[0] = rn_valid & d_cls_i;  assign sl_rob[0] = rob_d_idx;   assign sl_rdy[0] = srdy_l0;
+   assign sl_ps[0] = d_st_nb ? {rn_prs3, {RN_PBITS{1'b0}}, rn_prs1} : ps_in;
+   assign sl_prd[0] = d_prd_g;  assign sl_pl[0] = pl_in;
+   assign sl_li[1] = b_to_i2;   assign sl_rob[1] = rob_d_idx2;  assign sl_rdy[1] = srdy_l1;
+   assign sl_ps[1] = d2_st_nb ? {rn_prs3_b, {RN_PBITS{1'b0}}, rn_prs1_b} : ps_in_b;
+   assign sl_prd[1] = d2_prd_g;  assign sl_pl[1] = pl_in_b;
+   assign sl_li[2] = c_to_ic;   assign sl_rob[2] = rob_d_idx3;  assign sl_rdy[2] = srdy_l2;
+   assign sl_ps[2] = d3_st_nb ? {rn_prs3_c, {RN_PBITS{1'b0}}, rn_prs1_c} : ps_in_c;
+   assign sl_prd[2] = d3_prd_g;  assign sl_pl[2] = pl_in_c;
+   // each lane's PRF reads (smolrv64_prf's ports ra4..ra9)
+   wire [63:0]           l_rd1  [0:NL-1], l_rd2 [0:NL-1];
+   assign l_rd1[0] = prf_a1;   assign l_rd2[0] = prf_a2;
+   assign l_rd1[1] = prf_a21;  assign l_rd2[1] = prf_a22;
+   assign l_rd1[2] = prf_a31;  assign l_rd2[2] = prf_a32;
+   // what each lane exports
+   wire                  l_v [0:NL-1], l_iss [0:NL-1], l_late [0:NL-1], l_m1 [0:NL-1], l_m2 [0:NL-1];
+   wire [ROB_IDXB-1:0]   l_rob [0:NL-1], l_mrob2 [0:NL-1], l_wix [0:NL-1];
+   wire [RN_PBITS-1:0]   l_ps1 [0:NL-1], l_ps2 [0:NL-1], l_wa [0:NL-1], l_qprd [0:NL-1], l_blk_pr [0:NL-1];
+   wire [63:0]           l_wb [0:NL-1], l_qval [0:NL-1], l_res [0:NL-1], l_mres [0:NL-1], l_rs2 [0:NL-1];
+   wire                  l_we [0:NL-1], l_qv [0:NL-1], l_wv [0:NL-1], l_cti [0:NL-1], l_mis [0:NL-1];
+   wire                  l_ready [0:NL-1], l_stg_v [0:NL-1], l_blk_v [0:NL-1];
+   wire [IBI:0]          l_free [0:NL-1];
+   wire [PLW-1:0]        l_pl [0:NL-1];
+   wire [63:0]           l_addr [0:NL-1], l_tgt [0:NL-1], l_ttgt [0:NL-1];
+   wire                  l_red [0:NL-1], l_taken [0:NL-1];
+   genvar gl;
+   generate for (gl = 0; gl < NL; gl = gl + 1) begin: ln
+      // ---- the dispatch stage: the slot's op, held until the scheduler takes it ----
+      reg                  stg_v;
+      reg [ROB_IDXB-1:0]   stg_rob;
+      reg [3*RN_PBITS-1:0] stg_ps;
+      reg [1:0]            stg_r;
+      reg [RN_PBITS-1:0]   stg_prd;
+      reg [PLW-1:0]        stg_pl;
+      initial stg_v = 1'b0;
+      wire                 ready, iss_v, blk_v;
+      wire [IBI-1:0]       d_ent, iss_ent;
+      wire [ROB_IDXB-1:0]  iss_rob;
+      wire [RN_PBITS-1:0]  blk_pr;
+      wire [IBI:0]         occ, free;
+      wire                 mv = stg_v & ready;
+      wire [1:0]           snp = {wkl(stg_ps[RN_PBITS +: RN_PBITS]), wkl(stg_ps[0 +: RN_PBITS])};
+      always @(posedge clk) begin
+         if (reset) stg_v <= 1'b0;
+         else begin
+            if (sl_li[gl]) begin
+               stg_v <= 1'b1;  stg_rob <= sl_rob[gl];  stg_ps <= sl_ps[gl];  stg_r <= sl_rdy[gl];
+               stg_prd <= sl_prd[gl];  stg_pl <= sl_pl[gl];
+            end else if (mv) stg_v <= 1'b0;
+            else if (stg_v) stg_r <= stg_r | snp;
+            if (redirect) stg_v <= 1'b0;   // flush last (rule I11)
+         end
+      end
+      // ---- the scheduler: an index into the lane's payload and tag arrays ----
+      reg                  m1;
+      reg                  v;
+      reg [IBI-1:0]        ent;
+      smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_L),
+                .FIXEDL(1),.INORDER(0)) u_iq
+        (.clk(clk),.reset(reset),
+         .d_valid(mv),.d_ready(ready),.d_rob(stg_rob),
+         .d_ps(stg_ps[2*RN_PBITS-1:0]),.d_r(stg_r),.d_prd(stg_prd),.d_long(lane_late(stg_pl[PL_INSN +: 32])),.d_ent(d_ent),
+         .wb_v(wkv_l),.wb_preg(wkp_l),
+         // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
+         .unit_busy(m1 | lb_any[gl] | ((gl == 0) & sy_at_head)),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
+         .iss_take(iss_v),
+         .hold_v(v),.hold_ent(ent),
+         .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.occupancy(occ),.free_n(free));
+      reg  [3*RN_PBITS-1:0] psmem [0:NI-1];
+      reg  [PLW-1:0]        plmem [0:NI-1];
+      // written as the stage's op moves into the scheduler (T+1), at the entry it allocates
+      always @(posedge clk) if (mv) psmem[d_ent] <= stg_ps;
+      always @(posedge clk) if (mv) plmem[d_ent] <= stg_pl;
+      wire [3*RN_PBITS-1:0] ps_out = psmem[iss_ent];
+      // ---- the select register: the picked op, executing the next cycle ----
+      reg [ROB_IDXB-1:0]   rob;
+      reg [RN_PBITS-1:0]   ps1, ps2;
+      reg [PLW-1:0]        pl;
+      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; end
+      always @(posedge clk) begin
+         if (reset | redirect) v <= 1'b0;
+         else begin
+            v <= iss_v;
+            if (iss_v) begin
+               ent <= iss_ent;  rob <= iss_rob;
+               ps1 <= ps_out[0 +: RN_PBITS];  ps2 <= ps_out[RN_PBITS +: RN_PBITS];
+            end
+         end
+      end
+      always @(posedge clk) if (iss_v) pl <= plmem[iss_ent];   // the payload, read at the pick
+      wire iss = v & ~redirect;                                  // completes here, always
+      `PL_DECL(q_)
+      assign `PL_REC(q_) = pl;
+      // ---- operands: the PRF, or a lane's write register landing this cycle ----
+      reg [63:0] rs1, rs2;
+      integer f;
+      always @* begin
+         rs1 = l_rd1[gl];  rs2 = l_rd2[gl];
+         for (f = NL - 1; f >= 0; f = f - 1) begin
+            if (l_qv[f] & (ps1 == l_qprd[f])) rs1 = l_qval[f];
+            if (l_qv[f] & (ps2 == l_qprd[f])) rs2 = l_qval[f];
+         end
+      end
+      wire [63:0] result, addr, target, taken_tgt;
+      wire        red, taken;
+      smolrv64_exec u_x
+        (.alu_op(q_alu_op), .alu_w(q_alu_w), .alu_uw(q_alu_uw), .op1_sel(q_op1_sel),
+         .op2_imm(q_op2_imm), .res_link(q_res_link), .is_rvc(q_rvc),
+         .is_branch(q_is_branch), .is_jump(q_is_jump), .is_jalr(q_is_jalr), .br_func(q_br_func),
+         .rs1_val(rs1), .rs2_val(rs2), .imm(q_imm), .pc(q_pc),
+         .pred_npc(q_pred_npc), .mis_taken(q_mis_taken), .mis_nt(q_mis_nt),
+         .result(result), .addr(addr), .redirect(red), .target(target),
+         .taken(taken), .taken_tgt(taken_tgt));
+      wire late = lane_late(q_insn);
+      wire cti  = iss & (q_is_branch | q_is_jump | q_is_jalr);
+      wire mis  = cti & red;
+      // ---- the multiplier (lanes step 5.2c) ----
+      // mul3 starts from the lane's forwarded operands in the execute cycle T, and the lane
+      // reserves its slot at T+2 for it: the scheduler selects nothing at T+1 (m1 is its
+      // unit_busy), so nothing else executes at T+2. That slot carries the multiply's wake (its
+      // consumers execute at T+3 off the write register), its ROB completion, and its result
+      // into the write register at the edge, which the PRF writes at T+3.
+      wire                 m_go = iss & is_mulop(q_insn);
+      reg                  m2, mrdv1, mrdv2;
+      reg [ROB_IDXB-1:0]   mrob1, mrob2;
+      reg [RN_PBITS-1:0]   mprd1, mprd2;
+      wire                 mpre;
+      wire [63:0]          mres;
+      initial begin m1 = 1'b0; m2 = 1'b0; end
+      mul3 u_mul
+        (.clk(clk), .reset(reset), .start(m_go), .abort(redirect),
+         .rs1(rs1), .rs2(rs2), .f3(q_insn[14:12]), .is_w(q_insn[6:2] == 5'b01110),
+         .busy(), .done(), .result(), .pre_done(mpre), .pre_result(mres));
+      always @(posedge clk) begin
+         m1 <= ~reset & ~redirect & m_go;
+         m2 <= ~reset & ~redirect & m1;
+         mrob1 <= rob;    mprd1 <= q_prd;  mrdv1 <= q_rd_v;
+         mrob2 <= mrob1;  mprd2 <= mprd1;  mrdv2 <= mrdv1;
+      end
+      wire m_wr = m2 & mrdv2;
+      always @(posedge clk) if (!reset) begin
+         if (m2 & v)    $fatal(1, "smolrv64_core: lane %0d executes an op in its multiply's reserved slot", gl);
+         if (m2 & ~mpre) $fatal(1, "smolrv64_core: lane %0d's multiply is not at mul3's stage B in its slot", gl);
+      end
+      // ---- the landing slot: the entry the lane's landing buffer drains this cycle ----
+      wire                 dwr, dcm;
+      wire [RN_PBITS-1:0]  dprd;
+      wire [63:0]          ddat;
+      wire [ROB_IDXB-1:0]  drob;
+      assign {dwr, dcm, dprd, ddat, drob} = lp[gl];
+      wire d  = lb_drain[gl] & dwr;    // ...writing a register
+      wire dc = lb_drain[gl] & dcm;    // ...completing its op
+      // ---- the write register: one write slot a cycle, taken by the landing slot, the ALU op at
+      // issue or the multiply in its reserved slot. The wake, the pending clear and the store
+      // queue's snoop are issue-timed (we/wa/wb); the PRF write lands a cycle later from the
+      // register, and the forward above covers that cycle. The enables do not read the live
+      // redirect (rule I11): a redirect fires at the ROB head, so the op executing then is younger
+      // and its write lands in a register the rollback frees before any producer of it dispatches.
+      wire                 we = (v & q_rd_v & ~late) | m_wr | d;
+      wire [RN_PBITS-1:0]  wa = d ? dprd : m2 ? mprd2 : q_prd;
+      wire [63:0]          wb = d ? ddat : m2 ? mres : result;
+      reg                  qv;
+      reg  [RN_PBITS-1:0]  qprd;
+      reg  [63:0]          qval;
+      initial begin qv = 1'b0; qprd = {RN_PBITS{1'b0}}; qval = 64'd0; end
+      always @(posedge clk) begin
+         qv <= ~reset & we;
+         if (we) begin qprd <= wa; qval <= wb; end
+      end
+      // the lane's ROB completion port: its op at issue (a load or store never; a mispredicting
+      // CTI at its squash), its multiply in the reserved slot, its landing at the drain
+      assign l_wv[gl]  = (iss & ~mis & ~late) | m2 | dc;
+      assign l_wix[gl] = dc ? drob : m2 ? mrob2 : rob;
+      assign l_v[gl] = v;          assign l_iss[gl] = iss;      assign l_late[gl] = late;
+      assign l_m1[gl] = m1;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
+      assign l_mres[gl] = mres;    assign l_rob[gl] = rob;      assign l_ps1[gl] = ps1;
+      assign l_ps2[gl] = ps2;      assign l_we[gl] = we;        assign l_wa[gl] = wa;
+      assign l_wb[gl] = wb;        assign l_qv[gl] = qv;        assign l_qprd[gl] = qprd;
+      assign l_qval[gl] = qval;    assign l_res[gl] = result;   assign l_rs2[gl] = rs2;
+      assign l_cti[gl] = cti;      assign l_mis[gl] = mis;      assign l_pl[gl] = pl;
+      assign l_ready[gl] = ready;  assign l_stg_v[gl] = stg_v;  assign l_blk_v[gl] = blk_v;
+      assign l_blk_pr[gl] = blk_pr;  assign l_free[gl] = free;
+      assign l_addr[gl] = addr;    assign l_tgt[gl] = target;   assign l_ttgt[gl] = taken_tgt;
+      assign l_red[gl] = red;      assign l_taken[gl] = taken;
+   end endgenerate
+   // ---- the lanes by name, for the code that is not a loop over them ----
+   wire a_v = l_v[0], a2_v = l_v[1], a3_v = l_v[2];
+   wire iss_alu = l_iss[0], iss_alu2 = l_iss[1], iss_alu3 = l_iss[2];
+   wire [ROB_IDXB-1:0] a_rob = l_rob[0], a2_rob = l_rob[1], a3_rob = l_rob[2];
+   wire [RN_PBITS-1:0] a_ps1 = l_ps1[0], a_ps2 = l_ps2[0], a2_ps1 = l_ps1[1], a2_ps2 = l_ps2[1],
+                       a3_ps1 = l_ps1[2], a3_ps2 = l_ps2[2];
+   `PL_DECL(qa_)
+   assign `PL_REC(qa_) = l_pl[0];
+   `PL_DECL(qb_)
+   assign `PL_REC(qb_) = l_pl[1];
+   `PL_DECL(qc_)
+   assign `PL_REC(qc_) = l_pl[2];
+   wire mA_1 = l_m1[0], mA_2 = l_m2[0], mB_1 = l_m1[1], mB_2 = l_m2[1], mC_1 = l_m1[2], mC_2 = l_m2[2];
+   wire [ROB_IDXB-1:0] mA_rob2 = l_mrob2[0], mB_rob2 = l_mrob2[1], mC_rob2 = l_mrob2[2];
+   wire [63:0] mA_res = l_mres[0], mB_res = l_mres[1], mC_res = l_mres[2];
+   wire [63:0] xa_result = l_res[0], xb_result = l_res[1], xc_result = l_res[2];
+   wire [63:0] xa_addr = l_addr[0], xb_addr = l_addr[1], xc_addr = l_addr[2];
+   wire [63:0] xa_rs2 = l_rs2[0];
+   wire [63:0] xa_target = l_tgt[0], xb_target = l_tgt[1], xc_target = l_tgt[2];
+   wire [63:0] xa_taken_tgt = l_ttgt[0], xb_taken_tgt = l_ttgt[1], xc_taken_tgt = l_ttgt[2];
+   wire xa_redirect = l_red[0], xb_redirect = l_red[1], xc_redirect = l_red[2];
+   wire xa_taken = l_taken[0], xb_taken = l_taken[1], xc_taken = l_taken[2];
+   wire alu_q_v = l_qv[0], alu2_q_v = l_qv[1], alu3_q_v = l_qv[2];
+   wire [RN_PBITS-1:0] alu_q_prd = l_qprd[0], alu2_q_prd = l_qprd[1], alu3_q_prd = l_qprd[2];
+   wire [63:0] alu_q_val = l_qval[0], alu2_q_val = l_qval[1], alu3_q_val = l_qval[2];
+   wire we_ie = l_we[0], we_ie2 = l_we[1], we_ie3 = l_we[2];
+   wire [RN_PBITS-1:0] wa_ie = l_wa[0], wa_ie2 = l_wa[1], wa_ie3 = l_wa[2];
+   wire [63:0] wb_ie2 = l_wb[1], wb_ie3 = l_wb[2];
+   assign wb_ie = l_wb[0];
+   wire ri_ready = l_ready[0], ri2_ready = l_ready[1], ri3_ready = l_ready[2];
+   wire stg_v_ia = l_stg_v[0], stg_v_ib = l_stg_v[1], stg_v_ic = l_stg_v[2];
+   wire ri_blk_v = l_blk_v[0], ri2_blk_v = l_blk_v[1], ri3_blk_v = l_blk_v[2];
+   wire [RN_PBITS-1:0] ri_blk_pr = l_blk_pr[0], ri2_blk_pr = l_blk_pr[1], ri3_blk_pr = l_blk_pr[2];
+   wire [IBI:0] ri_free = l_free[0], ri2_free = l_free[1], ri3_free = l_free[2];
+   wire [2:0] lane_cti = {l_cti[2], l_cti[1], l_cti[0]};
+   wire [2:0] lane_mis = {l_mis[2], l_mis[1], l_mis[0]};
+   initial if (IW != 3) $fatal(1, "smolrv64_core: IW=%0d: the lanes by name are three (5.4b in progress)", IW);
 
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
    // what stop them aliasing.
-   reg [PLW-1:0] plmem_i [0:NI-1];
-   reg [PLW-1:0] plmem_i2 [0:NI-1];
-   reg [PLW-1:0] plmem_i3 [0:NI-1];
    reg [PLW-1:0] plmem_f [0:NF-1];
    // THE PAYLOADS ARE READ AT PICK AND REGISTERED WITH THE TAGS (plan item T1, step 3,
    // 2026-09-06). They used to be read in the execute cycle at last cycle's entry, so every
@@ -1410,154 +1499,15 @@ module smolrv64_core
    // address is the scheduler's select, not the pick), and the port's load captures it. An
    // entry issues no earlier than the cycle after its dispatch, so a read never meets its
    // own write.
-   reg  [PLW-1:0] pla_q, pla2_q, pla3_q, plf_q;
-   always @(posedge clk) begin
-      if (ri_take)                 pla_q  <= plmem_i[ri_iss_ent];
-      if (ri2_take)                pla2_q <= plmem_i2[ri2_iss_ent];
-      if (ri3_take)                pla3_q <= plmem_i3[ri3_iss_ent];
-      if (rf_take)                 plf_q  <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
-   end
-   wire [PLW-1:0] pla_out  = pla_q;                         // the ALU port's payload
-   wire [PLW-1:0] pla2_out = pla2_q;                        // the second ALU port's
-   wire [PLW-1:0] pla3_out = pla3_q;                        // the third ALU port's
-   wire [PLW-1:0] plf_out  = plf_q;                         // the F/CTF port's
-   always @(posedge clk) begin
-      // Co-timed with the scheduler fill (T+1), from the REGISTERED stage payload.
-      if (mv_ia) plmem_i[ri_d_ent]  <= stg_pl_ia;
-      if (mv_ib) plmem_i2[ri2_d_ent] <= stg_pl_ib;
-      if (mv_ic) plmem_i3[ri3_d_ent] <= stg_pl_ic;
-      if (mv_f)  plmem_f[rf_d_ent]  <= stg_pl_f;
-   end
+   reg  [PLW-1:0] plf_q;
+   always @(posedge clk) if (rf_take) plf_q <= plmem_f[rf_iss_ent];   // the FP/CTF port's payload
+   wire [PLW-1:0] plf_out  = plf_q;
+   // Co-timed with the scheduler fill (T+1), from the REGISTERED stage payload.
+   always @(posedge clk) if (mv_f) plmem_f[rf_d_ent] <= stg_pl_f;
 
-   // the same unpack for the ALU port (unused fields fall away)
-   wire [PCW-1:0]      qa_pc, qa_pred_npc, qa_fault_tval;
-   wire [31:0]         qa_insn;
-   wire [SQ_IB-1:0]    qa_sq_tag;
-   wire [LQ_IB-1:0]    qa_lq_idx;
-   wire                qa_rvc, qa_rd_v, qa_mem_signed, qa_is_mem, qa_is_store, qa_is_amo;
-   wire [SEQW-1:0]     qa_seq;
-   wire [PDW-1:0]      qa_pdet;
-   wire [5:0]          qa_rd, qa_rs1;
-   wire [RN_PBITS-1:0] qa_prd;
-   wire [2:0]          qa_shard;
-   wire [1:0]          qa_mem_size;
-   wire [63:0]         qa_imm;
-   wire [4:0]          qa_amo_func;
-   wire                qa_is_branch, qa_is_jump, qa_is_jalr, qa_is_mul, qa_is_csr;
-   wire [2:0]          qa_csr_func;
-   wire                qa_is_serialize, qa_is_fp, qa_is_fencei, qa_is_cbo, qa_cbo_zero;
-   wire                qa_cbo_keep, qa_illegal, qa_fault;
-   wire [3:0]          qa_fault_cause;
-   wire [5:0]          qa_alu_op;
-   wire                qa_alu_w, qa_alu_uw, qa_op2_imm, qa_res_link, qa_mis_taken, qa_mis_nt;
-   wire [1:0]          qa_op1_sel;
-   wire [2:0]          qa_br_func;
-   wire                qa_rs1_v, qa_rs2_v, qa_rs3_v, qa_ord;
-   assign {qa_pc, qa_insn, qa_rvc, qa_seq, qa_pdet, qa_pred_npc, qa_rd, qa_rd_v, qa_prd, qa_shard,
-           qa_rs1, qa_imm, qa_mem_size, qa_mem_signed, qa_is_mem, qa_is_store, qa_is_amo,
-           qa_amo_func, qa_is_branch, qa_is_jump, qa_is_jalr, qa_is_mul, qa_is_csr, qa_csr_func,
-           qa_is_serialize, qa_is_fp, qa_is_fencei, qa_is_cbo, qa_cbo_zero, qa_cbo_keep,
-           qa_illegal, qa_fault, qa_fault_cause, qa_fault_tval,
-           qa_alu_op, qa_alu_w, qa_alu_uw, qa_op1_sel, qa_op2_imm, qa_res_link,
-           qa_br_func, qa_mis_taken, qa_mis_nt,
-           qa_rs1_v, qa_rs2_v, qa_rs3_v, qa_ord, qa_sq_tag, qa_lq_idx} = pla_out;
-   // ...and for the second ALU port
-   wire [PCW-1:0]      qb_pc, qb_pred_npc, qb_fault_tval;
-   wire [31:0]         qb_insn;
-   wire [SQ_IB-1:0]    qb_sq_tag;
-   wire [LQ_IB-1:0]    qb_lq_idx;
-   wire                qb_rvc, qb_rd_v, qb_mem_signed, qb_is_mem, qb_is_store, qb_is_amo;
-   wire [SEQW-1:0]     qb_seq;
-   wire [PDW-1:0]      qb_pdet;
-   wire [5:0]          qb_rd, qb_rs1;
-   wire [RN_PBITS-1:0] qb_prd;
-   wire [2:0]          qb_shard;
-   wire [1:0]          qb_mem_size;
-   wire [63:0]         qb_imm;
-   wire [4:0]          qb_amo_func;
-   wire                qb_is_branch, qb_is_jump, qb_is_jalr, qb_is_mul, qb_is_csr;
-   wire [2:0]          qb_csr_func;
-   wire                qb_is_serialize, qb_is_fp, qb_is_fencei, qb_is_cbo, qb_cbo_zero;
-   wire                qb_cbo_keep, qb_illegal, qb_fault;
-   wire [3:0]          qb_fault_cause;
-   wire [5:0]          qb_alu_op;
-   wire                qb_alu_w, qb_alu_uw, qb_op2_imm, qb_res_link, qb_mis_taken, qb_mis_nt;
-   wire [1:0]          qb_op1_sel;
-   wire [2:0]          qb_br_func;
-   wire                qb_rs1_v, qb_rs2_v, qb_rs3_v, qb_ord;
-   assign {qb_pc, qb_insn, qb_rvc, qb_seq, qb_pdet, qb_pred_npc, qb_rd, qb_rd_v, qb_prd, qb_shard,
-           qb_rs1, qb_imm, qb_mem_size, qb_mem_signed, qb_is_mem, qb_is_store, qb_is_amo,
-           qb_amo_func, qb_is_branch, qb_is_jump, qb_is_jalr, qb_is_mul, qb_is_csr, qb_csr_func,
-           qb_is_serialize, qb_is_fp, qb_is_fencei, qb_is_cbo, qb_cbo_zero, qb_cbo_keep,
-           qb_illegal, qb_fault, qb_fault_cause, qb_fault_tval,
-           qb_alu_op, qb_alu_w, qb_alu_uw, qb_op1_sel, qb_op2_imm, qb_res_link,
-           qb_br_func, qb_mis_taken, qb_mis_nt,
-           qb_rs1_v, qb_rs2_v, qb_rs3_v, qb_ord, qb_sq_tag, qb_lq_idx} = pla2_out;
-   // ...and for the third ALU port (Stage 3)
-   wire [PCW-1:0]      qc_pc, qc_pred_npc, qc_fault_tval;
-   wire [31:0]         qc_insn;
-   wire [SQ_IB-1:0]    qc_sq_tag;
-   wire [LQ_IB-1:0]    qc_lq_idx;
-   wire                qc_rvc, qc_rd_v, qc_mem_signed, qc_is_mem, qc_is_store, qc_is_amo;
-   wire [SEQW-1:0]     qc_seq;
-   wire [PDW-1:0]      qc_pdet;
-   wire [5:0]          qc_rd, qc_rs1;
-   wire [RN_PBITS-1:0] qc_prd;
-   wire [2:0]          qc_shard;
-   wire [1:0]          qc_mem_size;
-   wire [63:0]         qc_imm;
-   wire [4:0]          qc_amo_func;
-   wire                qc_is_branch, qc_is_jump, qc_is_jalr, qc_is_mul, qc_is_csr;
-   wire [2:0]          qc_csr_func;
-   wire                qc_is_serialize, qc_is_fp, qc_is_fencei, qc_is_cbo, qc_cbo_zero;
-   wire                qc_cbo_keep, qc_illegal, qc_fault;
-   wire [3:0]          qc_fault_cause;
-   wire [5:0]          qc_alu_op;
-   wire                qc_alu_w, qc_alu_uw, qc_op2_imm, qc_res_link, qc_mis_taken, qc_mis_nt;
-   wire [1:0]          qc_op1_sel;
-   wire [2:0]          qc_br_func;
-   wire                qc_rs1_v, qc_rs2_v, qc_rs3_v, qc_ord;
-   assign {qc_pc, qc_insn, qc_rvc, qc_seq, qc_pdet, qc_pred_npc, qc_rd, qc_rd_v, qc_prd, qc_shard,
-           qc_rs1, qc_imm, qc_mem_size, qc_mem_signed, qc_is_mem, qc_is_store, qc_is_amo,
-           qc_amo_func, qc_is_branch, qc_is_jump, qc_is_jalr, qc_is_mul, qc_is_csr, qc_csr_func,
-           qc_is_serialize, qc_is_fp, qc_is_fencei, qc_is_cbo, qc_cbo_zero, qc_cbo_keep,
-           qc_illegal, qc_fault, qc_fault_cause, qc_fault_tval,
-           qc_alu_op, qc_alu_w, qc_alu_uw, qc_op1_sel, qc_op2_imm, qc_res_link,
-           qc_br_func, qc_mis_taken, qc_mis_nt,
-           qc_rs1_v, qc_rs2_v, qc_rs3_v, qc_ord, qc_sq_tag, qc_lq_idx} = pla3_out;
-   // ...and for the independent F/CTF port (CTF-on-FP). Full unpack, same concatenation; the
-   // F stage uses insn/rd/rd_v/prd/shard today, the CTF exec will use the branch fields.
-   wire [PCW-1:0]      qf_pc, qf_pred_npc, qf_fault_tval;
-   wire [31:0]         qf_insn;
-   wire [SQ_IB-1:0]    qf_sq_tag;
-   wire [LQ_IB-1:0]    qf_lq_idx;
-   wire                qf_rvc, qf_rd_v, qf_mem_signed, qf_is_mem, qf_is_store, qf_is_amo;
-   wire [SEQW-1:0]     qf_seq;
-   wire [PDW-1:0]      qf_pdet;
-   wire [5:0]          qf_rd, qf_rs1;
-   wire [RN_PBITS-1:0] qf_prd;
-   wire [2:0]          qf_shard;
-   wire [1:0]          qf_mem_size;
-   wire [63:0]         qf_imm;
-   wire [4:0]          qf_amo_func;
-   wire                qf_is_branch, qf_is_jump, qf_is_jalr, qf_is_mul, qf_is_csr;
-   wire [2:0]          qf_csr_func;
-   wire                qf_is_serialize, qf_is_fp, qf_is_fencei, qf_is_cbo, qf_cbo_zero;
-   wire                qf_cbo_keep, qf_illegal, qf_fault;
-   wire [3:0]          qf_fault_cause;
-   wire [5:0]          qf_alu_op;
-   wire                qf_alu_w, qf_alu_uw, qf_op2_imm, qf_res_link, qf_mis_taken, qf_mis_nt;
-   wire [1:0]          qf_op1_sel;
-   wire [2:0]          qf_br_func;
-   wire                qf_rs1_v, qf_rs2_v, qf_rs3_v, qf_ord;
-   assign {qf_pc, qf_insn, qf_rvc, qf_seq, qf_pdet, qf_pred_npc, qf_rd, qf_rd_v, qf_prd, qf_shard,
-           qf_rs1, qf_imm, qf_mem_size, qf_mem_signed, qf_is_mem, qf_is_store, qf_is_amo,
-           qf_amo_func, qf_is_branch, qf_is_jump, qf_is_jalr, qf_is_mul, qf_is_csr, qf_csr_func,
-           qf_is_serialize, qf_is_fp, qf_is_fencei, qf_is_cbo, qf_cbo_zero, qf_cbo_keep,
-           qf_illegal, qf_fault, qf_fault_cause, qf_fault_tval,
-           qf_alu_op, qf_alu_w, qf_alu_uw, qf_op1_sel, qf_op2_imm, qf_res_link,
-           qf_br_func, qf_mis_taken, qf_mis_nt,
-           qf_rs1_v, qf_rs2_v, qf_rs3_v, qf_ord, qf_sq_tag, qf_lq_idx} = plf_out;
+   // the F/CTF port's payload, unpacked (unused fields fall away)
+   `PL_DECL(qf_)
+   assign `PL_REC(qf_) = plf_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
    // while BOTH were written from d_*. The payload is now the only source for m_*, so the
@@ -1944,151 +1894,24 @@ module smolrv64_core
    // squashed op's write still lands: it goes to a register rename rolled back and nothing
    // can have re-allocated before the edge after the flush, and its pending bit was
    // cleared at issue, as before.
-   reg                 alu_q_v;
-   reg  [RN_PBITS-1:0] alu_q_prd;
-   reg  [63:0]         alu_q_val;
-   initial begin alu_q_v = 1'b0; alu_q_prd = {RN_PBITS{1'b0}}; alu_q_val = 64'd0; end
-   // the second ALU's writeback register (10d-ii); its issue port is wired below
-   reg                 alu2_q_v;
-   reg  [RN_PBITS-1:0] alu2_q_prd;
-   reg  [63:0]         alu2_q_val;
-   initial begin alu2_q_v = 1'b0; alu2_q_prd = {RN_PBITS{1'b0}}; alu2_q_val = 64'd0; end
-   // the third ALU's writeback register (Stage 3); its issue port is wired below
-   reg                 alu3_q_v;
-   reg  [RN_PBITS-1:0] alu3_q_prd;
-   reg  [63:0]         alu3_q_val;
-   initial begin alu3_q_v = 1'b0; alu3_q_prd = {RN_PBITS{1'b0}}; alu3_q_val = 64'd0; end
 
    // 3-producer forward: a source can be waiting on any of the three ALUs' writeback registers.
    // A physical register has one writer, so at most one of {fwd,fwdb,fwdc} is true -- the mux
    // order is immaterial.
    // The F/CTF port's operands, forwarded from the ALUs exactly like M's x_rs* (an FP op with
    // an integer source, or a CTF op, may consume an ALU result produced the same cycle).
-   wire fwdf1 = alu_q_v & (j_ps1 == alu_q_prd), fwdf1b = alu2_q_v & (j_ps1 == alu2_q_prd), fwdf1c = alu3_q_v & (j_ps1 == alu3_q_prd);
-   wire fwdf2 = alu_q_v & (j_ps2 == alu_q_prd), fwdf2b = alu2_q_v & (j_ps2 == alu2_q_prd), fwdf2c = alu3_q_v & (j_ps2 == alu3_q_prd);
-   wire fwdf3 = alu_q_v & (j_ps3 == alu_q_prd), fwdf3b = alu2_q_v & (j_ps3 == alu2_q_prd), fwdf3c = alu3_q_v & (j_ps3 == alu3_q_prd);
-   wire [63:0] xf_rs1 = fwdf1 ? alu_q_val : fwdf1b ? alu2_q_val : fwdf1c ? alu3_q_val : prf_f1;
-   wire [63:0] xf_rs2 = fwdf2 ? alu_q_val : fwdf2b ? alu2_q_val : fwdf2c ? alu3_q_val : prf_f2;
-   wire [63:0] xf_rs3 = fwdf3 ? alu_q_val : fwdf3b ? alu2_q_val : fwdf3c ? alu3_q_val : prf_f3;
-   // the ALU port's operands, with the same forward
-   wire fwd_a1 = alu_q_v & (a_ps1 == alu_q_prd), fwd_a1b = alu2_q_v & (a_ps1 == alu2_q_prd), fwd_a1c = alu3_q_v & (a_ps1 == alu3_q_prd);
-   wire fwd_a2 = alu_q_v & (a_ps2 == alu_q_prd), fwd_a2b = alu2_q_v & (a_ps2 == alu2_q_prd), fwd_a2c = alu3_q_v & (a_ps2 == alu3_q_prd);
-   wire [63:0] xa_rs1 = fwd_a1 ? alu_q_val : fwd_a1b ? alu2_q_val : fwd_a1c ? alu3_q_val : prf_a1;
-   wire [63:0] xa_rs2 = fwd_a2 ? alu_q_val : fwd_a2b ? alu2_q_val : fwd_a2c ? alu3_q_val : prf_a2;
-   wire [63:0] xa_result, xa_addr, xb_addr, xc_addr;
-   wire [63:0] xa_target, xa_taken_tgt, xb_target, xb_taken_tgt, xc_target, xc_taken_tgt;
-   wire        xa_redirect, xa_taken, xb_redirect, xb_taken, xc_redirect, xc_taken;
-   // the second ALU port's operands and unit (10d-ii)
-   wire fwd_b1 = alu_q_v & (a2_ps1 == alu_q_prd), fwd_b1b = alu2_q_v & (a2_ps1 == alu2_q_prd), fwd_b1c = alu3_q_v & (a2_ps1 == alu3_q_prd);
-   wire fwd_b2 = alu_q_v & (a2_ps2 == alu_q_prd), fwd_b2b = alu2_q_v & (a2_ps2 == alu2_q_prd), fwd_b2c = alu3_q_v & (a2_ps2 == alu3_q_prd);
-   wire [63:0] xb_rs1 = fwd_b1 ? alu_q_val : fwd_b1b ? alu2_q_val : fwd_b1c ? alu3_q_val : prf_a21;
-   wire [63:0] xb_rs2 = fwd_b2 ? alu_q_val : fwd_b2b ? alu2_q_val : fwd_b2c ? alu3_q_val : prf_a22;
-   wire [63:0] xb_result;
-   smolrv64_exec u_xb
-     (.alu_op(qb_alu_op), .alu_w(qb_alu_w), .alu_uw(qb_alu_uw), .op1_sel(qb_op1_sel),
-      .op2_imm(qb_op2_imm), .res_link(qb_res_link), .is_rvc(qb_rvc),
-      .is_branch(qb_is_branch), .is_jump(qb_is_jump), .is_jalr(qb_is_jalr), .br_func(qb_br_func),
-      .rs1_val(xb_rs1), .rs2_val(xb_rs2), .imm(qb_imm), .pc(qb_pc),
-      .pred_npc(qb_pred_npc), .mis_taken(qb_mis_taken), .mis_nt(qb_mis_nt),
-      .result(xb_result), .addr(xb_addr), .redirect(xb_redirect), .target(xb_target),
-      .taken(xb_taken), .taken_tgt(xb_taken_tgt));
-   // the third ALU port's operands and unit (Stage 3)
-   wire fwd_c1 = alu_q_v & (a3_ps1 == alu_q_prd), fwd_c1b = alu2_q_v & (a3_ps1 == alu2_q_prd), fwd_c1c = alu3_q_v & (a3_ps1 == alu3_q_prd);
-   wire fwd_c2 = alu_q_v & (a3_ps2 == alu_q_prd), fwd_c2b = alu2_q_v & (a3_ps2 == alu2_q_prd), fwd_c2c = alu3_q_v & (a3_ps2 == alu3_q_prd);
-   wire [63:0] xc_rs1 = fwd_c1 ? alu_q_val : fwd_c1b ? alu2_q_val : fwd_c1c ? alu3_q_val : prf_a31;
-   wire [63:0] xc_rs2 = fwd_c2 ? alu_q_val : fwd_c2b ? alu2_q_val : fwd_c2c ? alu3_q_val : prf_a32;
-   wire [63:0] xc_result;
-   smolrv64_exec u_xc
-     (.alu_op(qc_alu_op), .alu_w(qc_alu_w), .alu_uw(qc_alu_uw), .op1_sel(qc_op1_sel),
-      .op2_imm(qc_op2_imm), .res_link(qc_res_link), .is_rvc(qc_rvc),
-      .is_branch(qc_is_branch), .is_jump(qc_is_jump), .is_jalr(qc_is_jalr), .br_func(qc_br_func),
-      .rs1_val(xc_rs1), .rs2_val(xc_rs2), .imm(qc_imm), .pc(qc_pc),
-      .pred_npc(qc_pred_npc), .mis_taken(qc_mis_taken), .mis_nt(qc_mis_nt),
-      .result(xc_result), .addr(xc_addr), .redirect(xc_redirect), .target(xc_target),
-      .taken(xc_taken), .taken_tgt(xc_taken_tgt));
-   smolrv64_exec u_xa
-     (.alu_op(qa_alu_op), .alu_w(qa_alu_w), .alu_uw(qa_alu_uw), .op1_sel(qa_op1_sel),
-      .op2_imm(qa_op2_imm), .res_link(qa_res_link), .is_rvc(qa_rvc),
-      .is_branch(qa_is_branch), .is_jump(qa_is_jump), .is_jalr(qa_is_jalr), .br_func(qa_br_func),
-      .rs1_val(xa_rs1), .rs2_val(xa_rs2), .imm(qa_imm), .pc(qa_pc),
-      .pred_npc(qa_pred_npc), .mis_taken(qa_mis_taken), .mis_nt(qa_mis_nt),
-      .result(xa_result), .addr(xa_addr), .redirect(xa_redirect), .target(xa_target),
-      .taken(xa_taken), .taken_tgt(xa_taken_tgt));
+   reg [63:0] xf_rs1, xf_rs2, xf_rs3;
+   integer xfl;
+   always @* begin
+      xf_rs1 = prf_f1;  xf_rs2 = prf_f2;  xf_rs3 = prf_f3;
+      for (xfl = NL - 1; xfl >= 0; xfl = xfl - 1) begin
+         if (l_qv[xfl] & (j_ps1 == l_qprd[xfl])) xf_rs1 = l_qval[xfl];
+         if (l_qv[xfl] & (j_ps2 == l_qprd[xfl])) xf_rs2 = l_qval[xfl];
+         if (l_qv[xfl] & (j_ps3 == l_qprd[xfl])) xf_rs3 = l_qval[xfl];
+      end
+   end
 
 
-   // ---- each lane's multiplier (lanes step 5.2c) ----
-   // A multiply runs in its slot's lane: mul3 starts from the lane's forwarded operands in the
-   // execute cycle T, and the lane reserves its slot at T+2 for it -- the scheduler selects
-   // nothing at T+1 (m*_1 is its unit_busy), so nothing else executes at T+2. That slot carries
-   // the multiply's wake (its consumers execute at T+3 off the write register), its ROB
-   // completion, and its result into the lane's write register at the edge, which the PRF
-   // writes at T+3. The multiplier takes one a cycle; the divide stays in the MD stage.
-   wire               mA_go = iss_alu & is_mulop(qa_insn);
-   reg                mA_1, mA_2, mA_rdv1, mA_rdv2;
-   reg [ROB_IDXB-1:0] mA_rob1, mA_rob2;
-   reg [RN_PBITS-1:0] mA_prd1, mA_prd2;
-   wire               mA_pre;
-   wire [63:0]        mA_res;
-   initial begin mA_1 = 1'b0; mA_2 = 1'b0; end
-   mul3 u_mulA
-     (.clk(clk), .reset(reset), .start(mA_go), .abort(redirect),
-      .rs1(xa_rs1), .rs2(xa_rs2), .f3(qa_insn[14:12]), .is_w(qa_insn[6:2] == 5'b01110),
-      .busy(), .done(), .result(), .pre_done(mA_pre), .pre_result(mA_res));
-   always @(posedge clk) begin
-      mA_1 <= ~reset & ~redirect & mA_go;
-      mA_2 <= ~reset & ~redirect & mA_1;
-      mA_rob1 <= a_rob;    mA_prd1 <= qa_prd;  mA_rdv1 <= qa_rd_v;
-      mA_rob2 <= mA_rob1; mA_prd2 <= mA_prd1; mA_rdv2 <= mA_rdv1;
-   end
-   wire               mA_wr = mA_2 & mA_rdv2;
-   always @(posedge clk) if (!reset) begin
-      if (mA_2 & a_v)   $fatal(1, "smolrv64_core: lane A executes an op in its multiply's reserved slot");
-      if (mA_2 & ~mA_pre) $fatal(1, "smolrv64_core: lane A's multiply is not at mul3's stage B in its slot");
-   end
-   wire               mB_go = iss_alu2 & is_mulop(qb_insn);
-   reg                mB_1, mB_2, mB_rdv1, mB_rdv2;
-   reg [ROB_IDXB-1:0] mB_rob1, mB_rob2;
-   reg [RN_PBITS-1:0] mB_prd1, mB_prd2;
-   wire               mB_pre;
-   wire [63:0]        mB_res;
-   initial begin mB_1 = 1'b0; mB_2 = 1'b0; end
-   mul3 u_mulB
-     (.clk(clk), .reset(reset), .start(mB_go), .abort(redirect),
-      .rs1(xb_rs1), .rs2(xb_rs2), .f3(qb_insn[14:12]), .is_w(qb_insn[6:2] == 5'b01110),
-      .busy(), .done(), .result(), .pre_done(mB_pre), .pre_result(mB_res));
-   always @(posedge clk) begin
-      mB_1 <= ~reset & ~redirect & mB_go;
-      mB_2 <= ~reset & ~redirect & mB_1;
-      mB_rob1 <= a2_rob;    mB_prd1 <= qb_prd;  mB_rdv1 <= qb_rd_v;
-      mB_rob2 <= mB_rob1; mB_prd2 <= mB_prd1; mB_rdv2 <= mB_rdv1;
-   end
-   wire               mB_wr = mB_2 & mB_rdv2;
-   always @(posedge clk) if (!reset) begin
-      if (mB_2 & a2_v)   $fatal(1, "smolrv64_core: lane B executes an op in its multiply's reserved slot");
-      if (mB_2 & ~mB_pre) $fatal(1, "smolrv64_core: lane B's multiply is not at mul3's stage B in its slot");
-   end
-   wire               mC_go = iss_alu3 & is_mulop(qc_insn);
-   reg                mC_1, mC_2, mC_rdv1, mC_rdv2;
-   reg [ROB_IDXB-1:0] mC_rob1, mC_rob2;
-   reg [RN_PBITS-1:0] mC_prd1, mC_prd2;
-   wire               mC_pre;
-   wire [63:0]        mC_res;
-   initial begin mC_1 = 1'b0; mC_2 = 1'b0; end
-   mul3 u_mulC
-     (.clk(clk), .reset(reset), .start(mC_go), .abort(redirect),
-      .rs1(xc_rs1), .rs2(xc_rs2), .f3(qc_insn[14:12]), .is_w(qc_insn[6:2] == 5'b01110),
-      .busy(), .done(), .result(), .pre_done(mC_pre), .pre_result(mC_res));
-   always @(posedge clk) begin
-      mC_1 <= ~reset & ~redirect & mC_go;
-      mC_2 <= ~reset & ~redirect & mC_1;
-      mC_rob1 <= a3_rob;    mC_prd1 <= qc_prd;  mC_rdv1 <= qc_rd_v;
-      mC_rob2 <= mC_rob1; mC_prd2 <= mC_prd1; mC_rdv2 <= mC_rdv1;
-   end
-   wire               mC_wr = mC_2 & mC_rdv2;
-   always @(posedge clk) if (!reset) begin
-      if (mC_2 & a3_v)   $fatal(1, "smolrv64_core: lane C executes an op in its multiply's reserved slot");
-      if (mC_2 & ~mC_pre) $fatal(1, "smolrv64_core: lane C's multiply is not at mul3's stage B in its slot");
-   end
 
 
    // ---- the lanes' loads and stores reach M through their queue entries (lanes step 5.2d-a) ----
@@ -2192,37 +2015,8 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: a head op waits beside an unfilled load or store (pc %h)", ho_rec[PL_INSN + 32 +: PCW]);
    end
    // the same unpack for the op M takes
-   wire [PCW-1:0]      qm_pc, qm_pred_npc, qm_fault_tval;
-   wire [31:0]         qm_insn;
-   wire [SQ_IB-1:0]    qm_sq_tag;
-   wire [LQ_IB-1:0]    qm_lq_idx;
-   wire                qm_rvc, qm_rd_v, qm_mem_signed, qm_is_mem, qm_is_store, qm_is_amo;
-   wire [SEQW-1:0]     qm_seq;
-   wire [PDW-1:0]      qm_pdet;
-   wire [5:0]          qm_rd, qm_rs1;
-   wire [RN_PBITS-1:0] qm_prd;
-   wire [2:0]          qm_shard;
-   wire [1:0]          qm_mem_size;
-   wire [63:0]         qm_imm;
-   wire [4:0]          qm_amo_func;
-   wire                qm_is_branch, qm_is_jump, qm_is_jalr, qm_is_mul, qm_is_csr;
-   wire [2:0]          qm_csr_func;
-   wire                qm_is_serialize, qm_is_fp, qm_is_fencei, qm_is_cbo, qm_cbo_zero;
-   wire                qm_cbo_keep, qm_illegal, qm_fault;
-   wire [3:0]          qm_fault_cause;
-   wire [5:0]          qm_alu_op;
-   wire                qm_alu_w, qm_alu_uw, qm_op2_imm, qm_res_link, qm_mis_taken, qm_mis_nt;
-   wire [1:0]          qm_op1_sel;
-   wire [2:0]          qm_br_func;
-   wire                qm_rs1_v, qm_rs2_v, qm_rs3_v, qm_ord;
-   assign {qm_pc, qm_insn, qm_rvc, qm_seq, qm_pdet, qm_pred_npc, qm_rd, qm_rd_v, qm_prd, qm_shard,
-           qm_rs1, qm_imm, qm_mem_size, qm_mem_signed, qm_is_mem, qm_is_store, qm_is_amo,
-           qm_amo_func, qm_is_branch, qm_is_jump, qm_is_jalr, qm_is_mul, qm_is_csr, qm_csr_func,
-           qm_is_serialize, qm_is_fp, qm_is_fencei, qm_is_cbo, qm_cbo_zero, qm_cbo_keep,
-           qm_illegal, qm_fault, qm_fault_cause, qm_fault_tval,
-           qm_alu_op, qm_alu_w, qm_alu_uw, qm_op1_sel, qm_op2_imm, qm_res_link,
-           qm_br_func, qm_mis_taken, qm_mis_nt,
-           qm_rs1_v, qm_rs2_v, qm_rs3_v, qm_ord, qm_sq_tag, qm_lq_idx} = pl_m;
+   `PL_DECL(qm_)
+   assign `PL_REC(qm_) = pl_m;
 
    // =========================================================== stage M
 `include "smolrv64_fp_ops.vh"           // fcmp_s/d, fclass_s/d (in-core FP ops)
@@ -2663,10 +2457,6 @@ module smolrv64_core
    // registers what it resolved (lr_*), so the restart and the training below read flops, never
    // an exec compare. A correctly predicted CTI completes at issue on its lane's ROB port; a
    // mispredict completes at its squash (cf_red_fire, by fr_rob), so the ROB head stops on it.
-   wire [2:0] lane_cti = {iss_alu3 & (qc_is_branch | qc_is_jump | qc_is_jalr),
-                          iss_alu2 & (qb_is_branch | qb_is_jump | qb_is_jalr),
-                          iss_alu  & (qa_is_branch | qa_is_jump | qa_is_jalr)};
-   wire [2:0] lane_mis = lane_cti & {xc_redirect, xb_redirect, xa_redirect};
    reg  [2:0]          lr_v, lr_mis, lr_br, lr_jmp, lr_jalr, lr_taken, lr_rvc, lr_rdv;
    reg  [SEQW-1:0]     lr_seq  [0:2];
    reg  [ROB_IDXB-1:0] lr_rob  [0:2];
@@ -2766,7 +2556,7 @@ module smolrv64_core
    wire [2:0] bsh_i3 = ri3_blk_pr[RN_PBITS-1:RN_IDXB];
    // Gated on "no lane issued", not on M: M busy with loads would mask an FP chain that is the
    // critical path.
-   wire no_issue  = ~(pick_i | pick_i2 | pick_i3);
+   wire no_issue  = ~(ln[0].iss_v | ln[1].iss_v | ln[2].iss_v);
    // A register a load, AMO or CSR read will write, all in a lane's shard: a live LQ entry's
    // destination, a landing waiting in a lane's buffer, M's AMO or the SYSQ's op. An FP load's is
    // an f-register, counted under dep_fp below.
@@ -3457,10 +3247,6 @@ module smolrv64_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   // each lane's broadcast value: its ALU op's at issue, or its multiply's in the reserved slot
-   assign wb_ie = dA ? dA_dat : mA_2 ? mA_res : xa_result;
-   wire [63:0] wb_ie2 = dB ? dB_dat : mB_2 ? mB_res : xb_result;
-   wire [63:0] wb_ie3 = dC ? dC_dat : mC_2 ? mC_res : xc_result;
    assign wb_ld = lsu_rd_val;              // a landing load's or M's AMO's (the SYSQ's goes to lane A)
    // the FE stream: the F stage's landing, else the MD stage's divide
    assign wb_fe = fp_wb         ? fp_wval
@@ -3496,26 +3282,6 @@ module smolrv64_core
    // fires at the ROB head, so the op executing in a lane then is younger and flushed everywhere
    // (each flush arm is ordered last); its write lands at T+1 in a register the rollback frees,
    // before any new producer of it can dispatch. A multiply writes in its reserved slot.
-   wire alu_wb = a_v & qa_rd_v & ~lane_late(qa_insn);
-   wire alu2_wb = a2_v & qb_rd_v & ~lane_late(qb_insn);
-   wire we_ie2 = alu2_wb | mB_wr | dB;
-   wire [RN_PBITS-1:0] wa_ie2 = dB ? dB_prd : mB_2 ? mB_prd2 : qb_prd;
-   always @(posedge clk) begin
-      alu2_q_v <= ~reset & we_ie2;
-      if (we_ie2) begin alu2_q_prd <= wa_ie2; alu2_q_val <= wb_ie2; end
-   end
-   wire alu3_wb = a3_v & qc_rd_v & ~lane_late(qc_insn);
-   wire we_ie3 = alu3_wb | mC_wr | dC;
-   wire [RN_PBITS-1:0] wa_ie3 = dC ? dC_prd : mC_2 ? mC_prd2 : qc_prd;
-   always @(posedge clk) begin
-      alu3_q_v <= ~reset & we_ie3;
-      if (we_ie3) begin alu3_q_prd <= wa_ie3; alu3_q_val <= wb_ie3; end
-   end
-   wire we_ie = alu_wb | mA_wr | dA;       // the ISSUE-timed event: wake, pending clear, snoop
-   always @(posedge clk) begin             // the write itself, a cycle later (see x_rs1)
-      alu_q_v <= ~reset & we_ie;
-      if (we_ie) begin alu_q_prd <= wa_ie; alu_q_val <= wb_ie; end
-   end
    // THE LD STREAM: a landing load or M's AMO result, one a cycle. An FP load's lands on the LD
    // port in its FP slice; an integer load's or AMO's in its lane (ldw_int, the lane by its
    // register's shard).
@@ -3529,7 +3295,6 @@ module smolrv64_core
    wire [2:0] few_sh = wa_fe[RN_PBITS-1:RN_IDXB];
    assign few_int = fe_any & ~few_sh[2];
    wire we_fe = fe_any & ~few_int;
-   wire [RN_PBITS-1:0] wa_ie = dA ? dA_prd : mA_2 ? mA_prd2 : qa_prd;
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [ROB_IDXB-1:0] ldw_rob = ld_wb ? lq_l_rob : m_rob_idx;
 
@@ -3564,7 +3329,6 @@ module smolrv64_core
                          ~(a2_v & ~lane_late(qb_insn)) & ~mB_2,
                          ~(a_v  & ~lane_late(qa_insn)) & ~mA_2};
    wire [2:0] lb_any = {lb_n[2] != 0, lb_n[1] != 0, lb_n[0] != 0};
-   assign lbA_any = lb_any[0];  assign lbB_any = lb_any[1];  assign lbC_any = lb_any[2];
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
    // each lane drains, in order, its oldest waiting entry, the SYSQ's, a landing load's, the FE's
    wire [2:0] lb_drain = lb_free & (lb_any | pl | p1 | p2);
@@ -3586,11 +3350,6 @@ module smolrv64_core
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate
-   assign {dA_w, dA_c, dA_prd, dA_dat, dA_rob} = lp[0];
-   assign {dB_w, dB_c, dB_prd, dB_dat, dB_rob} = lp[1];
-   assign {dC_w, dC_c, dC_prd, dC_dat, dC_rob} = lp[2];
-   assign dA = lb_drain[0] & dA_w;  assign dB = lb_drain[1] & dB_w;  assign dC = lb_drain[2] & dC_w;
-   assign dAc = lb_drain[0] & dA_c; assign dBc = lb_drain[1] & dB_c; assign dCc = lb_drain[2] & dC_c;
    always @(posedge clk) begin
       for (lbi = 0; lbi < 3; lbi = lbi + 1) begin
          if (en0[lbi]) begin
@@ -4363,4 +4122,6 @@ module smolrv64_core
                       {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev[38:0]};
 endmodule
 
+`undef PL_DECL
+`undef PL_REC
 `default_nettype wire
