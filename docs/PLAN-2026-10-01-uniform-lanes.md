@@ -329,7 +329,7 @@ timing is fought.
       the ROB completion and the result into the lane's write register. A landing has to be
       known two cycles ahead the same way; "a cycle ahead" is too late for a registered
       `unit_busy`. The fork:
-      - **A (recommended): the D$ lookup is the announce.** A load's data is `rd_valid` two
+      - **A: the D$ lookup is the announce.** A load's data is `rd_valid` two
         cycles after its lookup on a hit, and a miss lands through a released waiter's replay,
         which is again a lookup two cycles ahead. So every lookup of a lane's load reserves
         that lane's slot two cycles on, exactly like a multiply; the landing then is the
@@ -343,6 +343,12 @@ timing is fought.
         busy lane, and the buffer is a second write path into the lane's register.
       The head-op result and the SYSQ's CSR read are rare and serialised: they take the same
       buffer or reservation as the slot they dispatched in (always slot A for a head op).
+
+      **Decided (Tommy, 2026-10-04): B now, load-hit speculation later.** A is load-hit
+      speculation: dependents woken from the lookup must be rolled back when it misses, which is
+      the complicated part. It is postponed to its own step after the lanes, and it is
+      absolutely needed for good performance; 5.2d-c lands non-speculatively (B), the data known
+      before the lane's slot is taken.
 
    The defaults chosen where the design forks: fills from up to three lanes rather than one
    memory op per cycle (an issue-side limit would put cross-lane arbitration into select);
