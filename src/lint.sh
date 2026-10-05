@@ -55,6 +55,19 @@ lint_top() {                      # <label> <top-module> <sources...>
 [ "${1:-}" = "-v" ] && VERBOSE=1
 lint_top core rv_soc_top $(smolrv64_sources)
 
+# The benches reach into the core by hierarchical name, so a renamed signal breaks their build
+# minutes into a cosim. Elaborating them here fails in seconds. Errors only: a bench is not RTL.
+for tb in ../core/tb_smolrv64_linux.v ../core/tb_smolrv64_riscv.v; do
+   log=/tmp/smolrv64-lint-$(basename "$tb" .v).log
+   verilator --lint-only --timing -sv -Wno-fatal -Wno-lint -Wno-style ${VDEFS:-} \
+      -I. -I../core --top-module tb "$tb" $(smolrv64_sources) \
+      -f ./cvfpu_sources.f fp_unit.sv ./verilator.vlt > "$log" 2>&1 || {
+         echo "---- BENCH ELABORATION FAILED ($tb) ----"
+         grep -E '%Error' "$log" | head -20
+         fail=1
+      }
+done
+
 # docs/smolrv64-perf-events.json is generated from csr_file.v's event map. It is checked
 # HERE because a generated file nothing verifies is a file that drifts: this one had drifted
 # into describing a retired core, naming 0x0300..0x0304 as TLB events while the RTL counts

@@ -45,7 +45,7 @@ module smolrv64_frontend
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
     input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
-    input  wire [13:0]             crd,               // the dispatch credits (smolrv64_core CR_*)
+    input  wire [2*IW+7:0]         crd,               // the dispatch credits (smolrv64_credits.vh)
     output wire                    hd_v,              // the queue head has an instruction...
     output wire                    hd_take,           // ...and pops it this cycle
     output wire [15:0]             hd_gc,             // its dispatch class (the stall accounting's)
@@ -107,9 +107,8 @@ module smolrv64_frontend
    // followed by anything and slot 0 is never a CTI when slot 1 is valid: the bundle's
    // prediction (pnpc_kind, target, details) belongs to its LAST valid slot and slot 0
    // falls through.
-   localparam FW = IW;              // Stage 3: the width knob. The queue, decode and the IR
-   // compacting buffer below are width-generic (1..4); rename/exec widen in later increments.
-   initial if (FW < 2 || FW > 3) $fatal(1, "smolrv64_frontend: IW=%0d: the credits (CR_*) hold 2..3 lanes", FW);
+   localparam FW = IW;              // the width knob: the queue, decode and the group rules
+   initial if (FW < 2 || FW > 4) $fatal(1, "smolrv64_frontend: IW=%0d: the width is 2..4", FW);
    wire               dq_valid;
    wire [FW-1:0]      dq_sv;                      // per-slot valid
    wire [FW*32-1:0]   dq_inst;
@@ -363,8 +362,7 @@ module smolrv64_frontend
                       G_LD = 12, G_ST = 13, G_CSR = 14, G_SER = 15;
    // the credits: a member pops only with room for it in everything it allocates, counted
    // against what is already between here and there (smolrv64_core computes crd from flops)
-   localparam integer CR_IA = 0, CR_L = 3, CR_F = 4, CR_LD = 5, CR_ST = 6,
-                      CR_ROB1 = 7, CR_POP = 10, CR_SER = 11, CR_CSR = 12, CR_CBO = 13;
+`include "smolrv64_credits.vh"
    function automatic room(input [15:0] gc, input lane, input l, input ld, input st, input f);
       room = (~gc[G_I] | lane) & (~gc[G_L] | l) & (~gc[G_LD] | ld) & (~gc[G_ST] | st) & (~gc[G_FC] | f);
    endfunction

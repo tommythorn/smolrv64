@@ -480,13 +480,19 @@ module smolrv64_core
 
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
-   // queue, M's port (which carries the landing loads)
-   wire [7:0]          rob_wv  = {md_wb & ~(md_wr & few_int & ~(|by2)), cf_red_fire, l_wv[2], l_wv[1],
-                                  sq_k_take, fp_land & ~(fp_wb & few_int & ~(|by2)), l_wv[0], rob_w_valid & ~(ldw_int & ~(|by0))};
-   wire [8*ROB_IDXB-1:0] rob_wix = {md_rob, fr_rob, l_wix[2], l_wix[1], sq_kc_rob, ft_rob, l_wix[0], rob_w_idx};
+   // queue, M's port (which carries the landing loads). Lanes 1.. take ports 4.. (the lane
+   // generate assigns them).
+   localparam integer ROB_NW = NL + 5;
+   wire [ROB_NW-1:0]          rob_wv;
+   wire [ROB_NW*ROB_IDXB-1:0] rob_wix;
+   assign rob_wv[3:0] = {sq_k_take, fp_land & ~(fp_wb & few_int & ~(|by2)), l_wv[0], rob_w_valid & ~(ldw_int & ~(|by0))};
+   assign rob_wix[4*ROB_IDXB-1:0] = {sq_kc_rob, ft_rob, l_wix[0], rob_w_idx};
+   assign rob_wv[ROB_NW-1 -: 2] = {md_wb & ~(md_wr & few_int & ~(|by2)), cf_red_fire};
+   assign rob_wix[ROB_NW*ROB_IDXB-1 -: 2*ROB_IDXB] = {md_rob, fr_rob};
    wire                lq_d_ready2, sq_d_ready2;
    wire [IBF:0]        rf_free;
-   wire [13:0]         crd;               // the dispatch credits (smolrv64_frontend CR_*)
+`include "smolrv64_credits.vh"
+   wire [CRW-1:0]      crd;               // the dispatch credits
    wire                fe_hd_v, fe_hd_take;   // the queue head: an instruction, and whether it pops
    wire [15:0]         fe_hd_gc;
    // Whether the M instruction is the OLDEST in flight. Once M stops blocking, a trap or a
@@ -959,8 +965,7 @@ module smolrv64_core
                   : (j_needs_f ? f_advance : 1'b1);
    wire j_ready   = ~j_v | j_adv;
    assign rf_take = rf_iss_v;   // rf_iss_v is already gated by unit_busy = j_v & ~j_adv
-   wire iq_blk_v = rf_blk_v | ri_blk_v;
-   wire [RN_PBITS-1:0] iq_blk_pr = rf_blk_v ? rf_blk_pr : ri_blk_pr;
+   wire iq_blk_v = rf_blk_v | l_blk_v[0];
 
    // ---- SELECT GETS ITS OWN STAGE -------------------------------------------------
    // Select, payload read, register read, execute and writeback in ONE cycle was 50 logic
@@ -1250,6 +1255,9 @@ module smolrv64_core
       // CTI at its squash), its multiply in the reserved slot, its landing at the drain
       assign l_wv[gl]  = (iss & ~mis & ~late) | m2 | dc;
       assign l_wix[gl] = dp ? drob : m2 ? mrob2 : rob;   // dp: registers and the SYSQ's fire
+      if (gl > 0) begin: rw
+         assign rob_wv[3 + gl] = l_wv[gl];  assign rob_wix[(3 + gl)*ROB_IDXB +: ROB_IDXB] = l_wix[gl];
+      end
       assign l_v[gl] = v;          assign l_iss[gl] = iss;      assign l_late[gl] = late;
       assign l_m1[gl] = m1;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
       assign l_mres[gl] = mres;    assign l_rob[gl] = rob;      assign l_ps1[gl] = ps1;
@@ -1271,11 +1279,6 @@ module smolrv64_core
       assign l_lqi[gl] = q_lq_idx;  assign l_sqt[gl] = q_sq_tag;
       assign wkv_l[gl] = we;  assign wkp_l[gl*RN_PBITS +: RN_PBITS] = wa;  assign l_wbv[gl*64 +: 64] = wb;
    end endgenerate
-   wire ri_ready = l_ready[0], ri2_ready = l_ready[1], ri3_ready = l_ready[2];
-   wire stg_v_ia = l_stg_v[0], stg_v_ib = l_stg_v[1], stg_v_ic = l_stg_v[2];
-   wire ri_blk_v = l_blk_v[0];
-   wire [RN_PBITS-1:0] ri_blk_pr = l_blk_pr[0];
-   initial if (IW != 3) $fatal(1, "smolrv64_core: IW=%0d: the lanes by name are three (5.4b in progress)", IW);
 
    // ONE payload array across all three schedulers, indexed by a flat slot number with a
    // per-class offset -- each scheduler has its own entry-number space, and the offsets are
@@ -1585,7 +1588,7 @@ module smolrv64_core
          assign rc_kill[gs] = m_valid & (m_rob_idx == rc_idx[gs]);
       end
    end endgenerate
-   smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(8), .IRR_FWD(8'b0000_1000)) u_rob   // w_v[3]: sq_k_take
+   smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(ROB_NW), .IRR_FWD({{(ROB_NW-4){1'b0}}, 4'b1000})) u_rob   // w_v[3]: sq_k_take
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
@@ -2472,7 +2475,7 @@ module smolrv64_core
    // blocks RETIREMENT rather than issue, so it never appears as a dependency stall and
    // ST_FPU correctly reads 0%. Without this bit that workload's real limiter is invisible
    // in the CPI stack.
-   wire st_rob = hd_wait & ~cr_rob1;
+   wire st_rob = hd_wait & ~cr_rob[0];
    // The mispredict DRAIN (plan item 5, 2026-09-05): a redirect resolved in M waits for the
    // ROB head (head_block) before it fires. These are the cycles P7's rename walk-back
    // would recover; on the stack they show what the drain costs before it is built.
@@ -3677,15 +3680,14 @@ module smolrv64_core
    wire cr_ld = ~cbo_any & (ir_ld ? lq_d_ready2 : lq_d_ready);
    wire cr_st = ~cbo_any & (ir_st ? sq_d_ready2 : sq_d_ready);
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & ~ir_ld & ~ir_st;
-   wire cr_rob1 = rob_inflt + 1 <= ROB_DEPTH;         // room for the group's slots 1, 2, 3
-   wire cr_rob2 = rob_inflt + 2 <= ROB_DEPTH;
-   wire cr_rob3 = rob_inflt + 3 <= ROB_DEPTH;
+   reg  [IW-1:0] cr_rob;                              // room for the group's slots 0..k
+   always @* for (crk = 0; crk < IW; crk = crk + 1) cr_rob[crk] = rob_inflt + crk + 1 <= ROB_DEPTH;
    // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
    // is dropped), while a rename shard is low, or while a serialising op is in flight or in the IR
    wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser);
    wire cr_ser = drained & ~d_valid & ~csr_infl;            // a serialising op drains first, alone
    wire cr_csr = ~csr_infl & ~(d_valid & d_csr_op);         // a CSR op waits for the one before it
-   assign crd = {cr_cbo, cr_csr, cr_ser, cr_pop, cr_rob3, cr_rob2, cr_rob1, cr_st, cr_ld, cr_f, cr_l, cr_i};
+   assign crd = {cr_cbo, cr_csr, cr_ser, cr_pop, cr_rob, cr_st, cr_ld, cr_f, cr_l, cr_i};
    // what the credits guarantee, checked where it is used
    reg  [IW-1:0] s_noroom;                           // a slot's op has no room in what it allocates
    integer       snk;

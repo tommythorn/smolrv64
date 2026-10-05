@@ -898,11 +898,11 @@ module tb;
    endtask
    // completion is shown the cycle after the ROB's write port fires (an ALU op issues and
    // completes in one cycle, and would otherwise have no visible execute stage)
-   reg [7:0]  kan_wv_q;  reg [8*5-1:0] kan_wix_q;
+   reg [`SMOLRV64_IW+4:0] kan_wv_q;  reg [(`SMOLRV64_IW+5)*5-1:0] kan_wix_q;   // the ROB's completion ports
    integer    kw;
    always @(posedge clk) if (!reset && kan_on) begin
       // 1. completions registered last cycle, then this cycle's issues
-      for (kw = 0; kw < 8; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
+      for (kw = 0; kw < `SMOLRV64_IW+5; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
       for (kw = 0; kw < dut.core.NL; kw = kw + 1)
          if (dut.core.l_iss[kw]) kan_stage(5'(dut.core.l_rob[kw]), kw == 0 ? "Xa" : kw == 1 ? "Xb" : kw == 2 ? "Xc" : "Xd");
       if (dut.core.m_go)     kan_stage(5'(dut.core.m_go_rob), "M");

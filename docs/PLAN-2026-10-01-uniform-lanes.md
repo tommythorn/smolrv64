@@ -425,7 +425,9 @@ four lanes and the four FP slices.
    the ROB and rename take per-lane and per-slot vectors; the core's slots are one generate
    (`sl[k]`), its lanes another (`ln[k]`), and its commit side is per port (`rc_*`; the core's
    and the SoC's `retire` is a bit per commit port). The architectural shadow register file
-   (`rv_regfile`), which nothing read, is gone.
+   (`rv_regfile`), which nothing read, is gone. The credits' layout follows IW
+   (`smolrv64_credits.vh`), lane k > 0 completes on ROB port 3 + k, and nothing in the core
+   names a lane or a slot past the arrays.
 3. **5.4c: IW=4 with the dense ROB.** `SMOLRV64_IW=4`: lane D, slot D, slice F3. Lockstep IPC
    at 60 M and 300 M against IW=3 before timing is fought, as at Stage 3.
 4. **5.4d: the sharded ROB, 32 rows of four.** A group takes a row, slot k in column k; the
