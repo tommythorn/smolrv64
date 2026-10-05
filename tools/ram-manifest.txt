@@ -81,7 +81,6 @@ bank[5].yc  : YAGS corrector, halfword bank 5 of 8, 256 x 10 -- read as the fetc
 bank[6].yc  : YAGS corrector, halfword bank 6 of 8, 256 x 10 -- read as the fetch stream moves
 bank[7].yc  : YAGS corrector, halfword bank 7 of 8, 256 x 10 -- read as the fetch stream moves
 pq      : the predictor's queue of predictions, one per fetch-ring mark
-prd     : load queue destination tag
 rdn     : load queue
 tlb_tag : iTLB/dTLB
 tlb_ppn : iTLB/dTLB
