@@ -157,6 +157,8 @@ The core sits in an IPC trough whose causes the traces and the counters show dir
       lane;
    3. the rigid front end with credits: the fetch queue the only elastic stage;
    4. IW=4: four lanes, the sharded ROB at 32 rows, and branches restarting at resolve (C6).
+   5. load-hit speculation: a load's dependents woken from its D$ lookup, replayed when it
+      misses (Tommy: needed for good performance; postponed from 5.2d-c).
 6. **The pipe trace**, built for the pipeline the lanes leave (its stages, its credits, its block
    reasons). Until then the steps use today's trace and counters.
 7. **The predictor:** path history, blocks cut at the first predicted-taken transfer.
