@@ -592,17 +592,25 @@ ports, not 12.** Integer registers are read only by the four lanes, two ports ea
 registers only in the FP pipe, three ports (a 3R1W FP file).
 
 **Today** every integer shard has `2*NL + 4` read ports (10 at IW=3, 12 at IW=4): the lanes'
-two each, the store queue's data read, and the F/CTF port's three, which read the integer
+two each, the store queue's data read, and the shared FP/MD/SYS port's three (named "F/CTF"
+in places, though control flow resolves in the lanes since 5.2), which read the integer
 operands of divides, of the FP ops with an integer source (`fcvt.*.w/l`, `fmv.*.x`) and of
-system ops (a CSR's `rs1`, `sfence.vma`). Each FP slice has four reads (the F port's three, the
-store queue's) and two write banks behind a live-value table (FP loads, the F stage).
+system ops (a CSR's `rs1`, `sfence.vma`). The FP file is IW slices, one per rename slot (5.1),
+each with four reads (the port's three, the store queue's) and two write banks behind a
+live-value table (FP loads, the F stage).
+
+**Stores already issue on their address alone** (the lane's issue check exempts a store's
+`rs2`), and data produced later reaches the store queue entry through its snoop, armed at
+allocation: the snoop is the store-data op, with no read port. The queue's read port serves
+only data already in a register file at dispatch.
 
 **The moves**, each a lockstep increment, measured at IW=3 and IW=4:
 
 1. **Store data from the lane.** The store's lane already reads `rs2` at its address
-   generation; it hands the value to the store queue entry with the address when `rs2` is ready
-   (the queue's snoop, armed at allocation, covers a later write). The store queue's read port
-   goes. An FP store's data becomes a store-data op in the FP pipe, one of its three reads.
+   generation; when the value was in the register file it hands it to the store queue entry
+   with the address, and the snoop covers a later write as it does today. The store queue's
+   read port goes. An FP store whose data is already in the FP file at dispatch gets a
+   store-data op in the FP pipe, one of its three reads.
 2. **Divides issue in their slot's lane**, which reads both operands and hands them to the one
    MD stage (one divide in flight stays a dispatch credit); the result lands through the lane's
    landing buffer as today.
@@ -610,12 +618,17 @@ store queue's) and two write banks behind a live-value table (FP loads, the F st
    it to the F stage (the F stage takes its scheduler's pick or a lane's handoff).
 4. **System ops read their operands in lane A**, which already carries them (a head op goes
    alone), and hand them to the SYSQ.
-5. **The FP write side:** an FP load's result takes its slice's one write port through a landing
-   buffer, as an integer load takes its lane's, and the second bank and the live-value table go.
+5. **One FP slice, 3R1W** (Tommy, 2026-10-06): one 64-register FP file and one free list in
+   place of a slice per slot (its banks already hand out several registers a cycle: a group
+   can hold an FP op and an FP load); an FP load's result takes the file's one write port
+   through a landing buffer, as an integer load takes its lane's, and the second bank and the
+   live-value table go.
 
-Then the F port reads FP registers only, the integer shards are 2R per lane, and the FP slices
-3R1W. **After 5.4f:** the IW=4 timing build, the default flipped to IW=4 (board gate, GB5),
-then 5.5.
+The names follow: the shared port is the FP/MD/SYS port, and no comment or document calls it
+the CTF's. Then it reads FP registers only, the integer shards are 2R per lane, and the FP
+file 3R1W. **After 5.4f:** the IW=4 timing build and the default flipped to IW=4 (board gate,
+GB5), then the pipe trace (step 6, moved ahead of 5.5: Tommy wants to see the front end
+first), then 5.5.
 
 ## Step 5.5 in detail: load-hit speculation (design, 2026-10-05)
 
