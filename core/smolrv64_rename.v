@@ -64,6 +64,9 @@ module smolrv64_rename
     output wire [IW-1:0]         r_lv1, r_lv2, r_lv3,         // lv[rs]: 1 = take the speculative
     output wire [IW-1:0]         r_byp1, r_byp2, r_byp3,      // slot 0's are 0
     output wire [IW*PBITS-1:0]   r_prd,        // the newly allocated physical register
+    // the mapping slot k's destination displaces (an earlier slot's new register when the group
+    // writes it twice): the ROB keeps it, and the walk below puts it back
+    output wire [IW*PBITS-1:0]   r_pold,
 
     // ---- commit: the head and the entries behind it, in order ----
     input  wire [IW-1:0]         c_valid,
@@ -73,6 +76,16 @@ module smolrv64_rename
 
     // ---- recovery ----
     input  wire                  flush,        // total squash: everything uncommitted dies
+    // The walk: a ROB row a cycle from the tail back to a mispredicted branch, column k on [k].
+    // Each entry it names had renamed rd into prd and displaced pold; the map takes pold back
+    // (the oldest column winning in a row) and prd's free list steps its head back over prd.
+    // Rename is frozen while it runs, so the map's write ports and the heads are idle.
+    input  wire [IW-1:0]         w_v,
+    input  wire [IW*6-1:0]       w_rd,
+    input  wire [IW*PBITS-1:0]   w_pold, w_prd,
+    // the walk has ended and the branch is committing with the flush: the speculative map and
+    // heads must be the committed ones after this cycle's commits (checked, then flushed)
+    input  wire                  w_chk,
 
     // ---- back pressure and instrumentation ----
     output wire                  stall,        // ANY shard low -- see the note below
@@ -84,6 +97,7 @@ module smolrv64_rename
    endfunction
    localparam integer NB = (IW > 1) ? $clog2(IW) : 1;   // a copy number: which slot wrote it
    localparam integer NS = 3 * IW;                       // the map's source reads
+   localparam integer NR = NS + IW;                      // ...and each slot's destination
 
    // ---- the map -------------------------------------------------------------------
    // IW COPIES OF THE SPECULATIVE MAP, one write port each: slot k writes copy k, and
@@ -94,18 +108,38 @@ module smolrv64_rename
    reg [63:0]      lv;
    reg [NB-1:0]    newer  [0:63];
    reg [NB-1:0]    rnewer [0:63];
-   // every source read: slot k's rs1, rs2, rs3 at [3k], [3k+1], [3k+2]; and every commit's
-   // displaced mapping, rmap[c_rd[k]], read before the commit's own write lands
-   wire [5:0]       sa [0:NS-1];
-   wire [PBITS-1:0] sv [0:IW*NS-1];          // copy c's speculative mapping of source p
-   wire [PBITS-1:0] mv [0:IW*NS-1];          // ...and its committed one
+   // every source read: slot k's rs1, rs2, rs3 at [3k], [3k+1], [3k+2] and its rd at [NS+k];
+   // and every commit's displaced mapping, rmap[c_rd[k]], read before the commit's own write lands
+   wire [5:0]       sa [0:NR-1];
+   wire [PBITS-1:0] sv [0:IW*NR-1];          // copy c's speculative mapping of read p
+   wire [PBITS-1:0] mv [0:IW*NR-1];          // ...and its committed one
    wire [PBITS-1:0] pv [0:IW*IW-1];          // copy c's committed mapping of commit k's rd
    genvar gk, gc, gp;
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: src
       assign sa[3*gk]     = r_rs1[gk*6 +: 6];
       assign sa[3*gk + 1] = r_rs2[gk*6 +: 6];
       assign sa[3*gk + 2] = r_rs3[gk*6 +: 6];
+      assign sa[NS + gk]  = r_rd[gk*6 +: 6];
    end endgenerate
+`ifndef SYNTHESIS
+   // The walk's check (w_chk): a flat copy of the committed map, and r's committed mapping after
+   // this cycle's commits (the last commit of r wins, as rnewer's).
+   reg [PBITS-1:0] cm [0:63];
+   integer cmi;
+   initial for (cmi = 0; cmi < 32; cmi = cmi + 1) begin
+      cm[cmi] = {SH_IE, cmi[IDXB-1:0]};  cm[32 + cmi] = {SH_F0, cmi[IDXB-1:0]};
+   end
+   reg [PBITS-1:0] cm_after [0:63];
+   integer cmr, cmq;
+   always @* for (cmr = 0; cmr < 64; cmr = cmr + 1) begin
+      cm_after[cmr] = cm[cmr];
+      for (cmq = 0; cmq < IW; cmq = cmq + 1)
+         if (c_valid[cmq] & c_rd_v[cmq] & (c_rd[cmq*6 +: 6] == cmr[5:0])) cm_after[cmr] = c_prd[cmq*PBITS +: PBITS];
+   end
+   always @(posedge clk) if (!reset)
+      for (cmi = 0; cmi < IW; cmi = cmi + 1)
+         if (c_valid[cmi] & c_rd_v[cmi]) cm[c_rd[cmi*6 +: 6]] <= c_prd[cmi*PBITS +: PBITS];
+`endif
    generate for (gc = 0; gc < IW; gc = gc + 1) begin: cp
       (* ram_style = "distributed" *) reg [PBITS-1:0] smap [0:63];
       (* ram_style = "distributed" *) reg [PBITS-1:0] rmap [0:63];
@@ -118,22 +152,39 @@ module smolrv64_rename
       end
       wire sw = r_valid[gc] & r_rd_v[gc] & ~stall;   // this slot's allocation
       wire cw = c_valid[gc] & c_rd_v[gc];
-      always @(posedge clk) if (!reset & sw) smap[r_rd[gc*6 +: 6]] <= r_prd[gc*PBITS +: PBITS];
+      // one write statement: this slot's rename, or the walk's column gc (never both: rename is
+      // frozen while the walk runs, asserted)
+      wire [5:0]       sw_a = sw ? r_rd[gc*6 +: 6] : w_rd[gc*6 +: 6];
+      wire [PBITS-1:0] sw_d = sw ? r_prd[gc*PBITS +: PBITS] : w_pold[gc*PBITS +: PBITS];
+      always @(posedge clk) if (!reset & (sw | w_v[gc])) smap[sw_a] <= sw_d;
       always @(posedge clk) if (!reset & cw) rmap[c_rd[gc*6 +: 6]] <= c_prd[gc*PBITS +: PBITS];
-      for (gp = 0; gp < NS; gp = gp + 1) begin: rd
-         assign sv[gc*NS + gp] = smap[sa[gp]];
-         assign mv[gc*NS + gp] = rmap[sa[gp]];
+      always @(posedge clk) if (!reset & sw & w_v[gc])
+         $fatal(1, "smolrv64_rename: slot %0d renames while the walk writes its map copy", gc);
+`ifndef SYNTHESIS
+      // every register this copy holds the current mapping of, against the committed map
+      integer ck;
+      always @(posedge clk) if (!reset & w_chk)
+         for (ck = 0; ck < 64; ck = ck + 1) begin
+            if (rnewer[ck] == gc && rmap[ck] != cm[ck])
+               $fatal(1, "smolrv64_rename: rmap copy %0d holds %h for r%0d, the committed map %h", gc, rmap[ck], ck, cm[ck]);
+            if (lv[ck] && newer[ck] == gc && smap[ck] != cm_after[ck])
+               $fatal(1, "smolrv64_rename: after the walk r%0d maps to %h (copy %0d), committed %h", ck, smap[ck], gc, cm_after[ck]);
+         end
+`endif
+      for (gp = 0; gp < NR; gp = gp + 1) begin: rd
+         assign sv[gc*NR + gp] = smap[sa[gp]];
+         assign mv[gc*NR + gp] = rmap[sa[gp]];
       end
       for (gp = 0; gp < IW; gp = gp + 1) begin: pd
          assign pv[gc*IW + gp] = rmap[c_rd[gp*6 +: 6]];
       end
    end endgenerate
    // each source's candidates: the copy newer/rnewer names (a wire per read: rule F4)
-   wire [PBITS-1:0] sp [0:NS-1], mp [0:NS-1];
-   wire [NS-1:0]    lvs;
-   generate for (gp = 0; gp < NS; gp = gp + 1) begin: sel
-      assign sp[gp]  = sv[newer[sa[gp]] * NS + gp];
-      assign mp[gp]  = mv[rnewer[sa[gp]] * NS + gp];
+   wire [PBITS-1:0] sp [0:NR-1], mp [0:NR-1];
+   wire [NR-1:0]    lvs;
+   generate for (gp = 0; gp < NR; gp = gp + 1) begin: sel
+      assign sp[gp]  = sv[newer[sa[gp]] * NR + gp];
+      assign mp[gp]  = mv[rnewer[sa[gp]] * NR + gp];
       assign lvs[gp] = lv[sa[gp]];
    end endgenerate
    // Reads are of the PRE-rename mapping, including a source equal to the slot's own
@@ -163,6 +214,16 @@ module smolrv64_rename
       assign r_prs1[gk*PBITS +: PBITS] = byp[3*gk]     ? np[3*gk]     : lvs[3*gk]     ? sp[3*gk]     : mp[3*gk];
       assign r_prs2[gk*PBITS +: PBITS] = byp[3*gk + 1] ? np[3*gk + 1] : lvs[3*gk + 1] ? sp[3*gk + 1] : mp[3*gk + 1];
       assign r_prs3[gk*PBITS +: PBITS] = byp[3*gk + 2] ? np[3*gk + 2] : lvs[3*gk + 2] ? sp[3*gk + 2] : mp[3*gk + 2];
+      // the destination's displaced mapping: the youngest earlier slot writing it, else the map's
+      reg              db;
+      reg [PBITS-1:0]  dn;
+      integer          dj;
+      always @* begin
+         db = 1'b0;  dn = {PBITS{1'b0}};
+         for (dj = 0; dj < gk; dj = dj + 1)
+            if (writes[dj] & (r_rd[dj*6 +: 6] == r_rd[gk*6 +: 6])) begin db = 1'b1;  dn = r_prd[dj*PBITS +: PBITS]; end
+      end
+      assign r_pold[gk*PBITS +: PBITS] = db ? dn : lvs[NS + gk] ? sp[NS + gk] : mp[NS + gk];
    end endgenerate
 
    // ---- free lists, one per shard ---------------------------------------------------
@@ -244,10 +305,11 @@ module smolrv64_rename
    genvar gL, gB;
    generate for (gL = 0; gL < NSH; gL = gL + 1) begin: fl
       localparam [2:0] SHL = gL;
-      wire [IW-1:0] sel_r, sel, cmt;
+      wire [IW-1:0] sel_r, sel, cmt, wsel;
       for (gk = 0; gk < IW; gk = gk + 1) begin: s
          assign sel_r[gk] = alloc_r[gk] & (r_shard[gk*3 +: 3] == SHL);
          assign sel[gk]   = alloc[gk]   & (r_shard[gk*3 +: 3] == SHL);
+         assign wsel[gk]  = w_v[gk] & (w_prd[gk*PBITS + IDXB +: 3] == SHL);   // the walk returns prd
          assign cmt[gk]   = c_w[gk] & (c_prd[gk*PBITS + IDXB +: 3] == SHL);   // head advance: the allocation's shard
          assign fre_n[gk][gL] = c_w[gk] & (c_pold[gk][PBITS-1:IDXB] == SHL);   // free push: the register's shard
       end
@@ -276,7 +338,7 @@ module smolrv64_rename
       wire [PW-1:0] avail = t - h;
       // The pointers' next values, so the low-water flag can be a register (see `stall`).
       wire [PW-1:0] t_n = reset ? t : t + cnt(fq);
-      wire [PW-1:0] h_n = reset ? hc : flush ? hc_n : h + cnt(sel);
+      wire [PW-1:0] h_n = reset ? hc : flush ? hc_n : h + cnt(sel) - cnt(wsel);
       assign low_n[gL] = (t_n - h_n) < LOWAT[PW-1:0];
 
       wire [IDXB-1:0]  flrd [0:FLNB-1];
@@ -327,6 +389,10 @@ module smolrv64_rename
             $fatal(1, "smolrv64_rename: shard %0d allocated past its free list (%0d free)", gL, avail);
          if (avail > N[PW-1:0])
             $fatal(1, "smolrv64_rename: shard %0d has %0d free of %0d", gL, avail, N);
+         if (cnt(wsel) > 1)
+            $fatal(1, "smolrv64_rename: the walk returns %0d registers of shard %0d in one row", cnt(wsel), gL);
+         if (w_chk && (h != hc_n))
+            $fatal(1, "smolrv64_rename: after the walk shard %0d's head is %0d, its committed head %0d", gL, h, hc_n);
       end
       // Sizes MUST be powers of two: the pointers index with their low bits, which only wraps
       // correctly at a power of two.
@@ -402,6 +468,10 @@ module smolrv64_rename
          // the group; lv is cleared wholesale so the map write becomes invisible either way.
          for (j = 0; j < IW; j = j + 1)
             if (alloc[j]) begin newer[r_rd[j*6 +: 6]] <= j[NB-1:0];  lv[r_rd[j*6 +: 6]] <= 1'b1; end
+         // ---- the walk: pold is speculative state like any rename (lv set), the oldest
+         // column's winning within a row (the loop runs youngest first)
+         for (j = IW - 1; j >= 0; j = j - 1)
+            if (w_v[j]) begin newer[w_rd[j*6 +: 6]] <= j[NB-1:0];  lv[w_rd[j*6 +: 6]] <= 1'b1; end
          // ---- rollback
          if (flush) lv <= 64'd0;
       end

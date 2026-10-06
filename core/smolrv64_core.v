@@ -403,7 +403,13 @@ module smolrv64_core
 
    // rename's ports, a field per slot (slot k at [k])
    wire [IW*RN_PBITS-1:0] rn_prs1v, rn_prs2v, rn_prs3v, rn_sprs1v, rn_sprs2v, rn_sprs3v;
-   wire [IW*RN_PBITS-1:0] rn_mprs1v, rn_mprs2v, rn_mprs3v, rn_prdv;
+   wire [IW*RN_PBITS-1:0] rn_mprs1v, rn_mprs2v, rn_mprs3v, rn_prdv, rn_poldv;
+   // the walk (5.4e): the ROB's dead rows, a row a cycle, into rename
+   wire [IW-1:0]          rob_wl_v;
+   wire [IW*6-1:0]        rob_wl_rd;
+   wire [IW*RN_PBITS-1:0] rob_wl_prd, rob_wl_pold;
+   wire                   rob_wl_done;
+   wire                   cf_red_fire;
    wire [IW-1:0]          rn_lv1v, rn_lv2v, rn_lv3v, rn_byp1v, rn_byp2v, rn_byp3v;
    wire [IW*6-1:0]        s_rs1v, s_rs2v, s_rs3v, s_rdv;
    wire [IW-1:0]          s_rd_vv, s_takev;
@@ -426,10 +432,12 @@ module smolrv64_core
       .r_mprs1(rn_mprs1v), .r_mprs2(rn_mprs2v), .r_mprs3(rn_mprs3v),
       .r_lv1(rn_lv1v), .r_lv2(rn_lv2v), .r_lv3(rn_lv3v),
       .r_byp1(rn_byp1v), .r_byp2(rn_byp2v), .r_byp3(rn_byp3v),
-      .r_prd(rn_prdv),
+      .r_prd(rn_prdv), .r_pold(rn_poldv),
       // commit comes from the ROB head and the entries behind it
       .c_valid(rc_v), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd),
       .flush(redirect),
+      .w_v(rob_wl_v), .w_rd(rob_wl_rd), .w_pold(rob_wl_pold), .w_prd(rob_wl_prd),
+      .w_chk(cf_red_fire & rob_wl_done),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
    wire [63:0]            prf_sq;                     // the store queue's data read
@@ -1607,7 +1615,11 @@ module smolrv64_core
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
       .c_kill(rc_kill), .c_valid(rc_v), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd), .c_noret(rc_noret),
       .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx),
-      .irr_idx(rob_irr_idx), .irr_v(rob_irr_v));
+      .irr_idx(rob_irr_idx), .irr_v(rob_irr_v),
+      .d_pold(rn_poldv),
+      // the walk starts the cycle after the resolve, from the registered branch
+      .k_v(fr_set_q), .k_idx(fr_rob),
+      .wl_v(rob_wl_v), .wl_rd(rob_wl_rd), .wl_prd(rob_wl_prd), .wl_pold(rob_wl_pold), .wl_done(rob_wl_done));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
    // and by construction: it said the ROB's commit equals what M would have done in the same
@@ -2762,6 +2774,7 @@ module smolrv64_core
    // gating them through csr_red would close a combinational loop. Every term here is either
    // registered or decoded from m_insn.
    reg  fr_v;   initial fr_v = 1'b0;
+   reg  fr_set_q;   initial fr_set_q = 1'b0;   // the resolve, registered: the walk's start
    reg  fr_br, fr_jalr;      // the tracked restart's kind, for the redirect counters
    reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
    reg [ROB_IDXB-1:0] fr_rob;   // its ROB slot: the backend squash fires when this reaches head
@@ -2878,7 +2891,7 @@ module smolrv64_core
    wire m_red_ref  = m_valid & m_done     & csr_red;
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
-   wire cf_red_fire = fr_v & (rob_head_idx == fr_rob);
+   assign cf_red_fire = fr_v & (rob_head_idx == fr_rob);
    assign redirect = m_red_fire | sy_red | cf_red_fire;
    always @(posedge clk) if (!reset) begin
       if (m_red_fire != m_red_ref)
@@ -2919,7 +2932,18 @@ module smolrv64_core
       if (reset)         fr_v <= 1'b0;
       else if (redirect) fr_v <= 1'b0;      // the squash consumes it
       else if (fr_set)   begin fr_v <= 1'b1; fr_seq <= cf_seq; fr_rob <= cf_rob; fr_br <= cf_is_branch; fr_jalr <= cf_is_jalr; end
+      fr_set_q <= ~reset & fr_set;
    end
+`ifndef SYNTHESIS
+   // the walk's coverage (WALK-SIM): squashes at the head, those the walk had reached and the
+   // map was checked at, and the rows walked
+   reg [31:0] wk_sq = 0, wk_chk = 0, wk_rows = 0;
+   always @(posedge clk) if (!reset) begin
+      if (cf_red_fire) wk_sq <= wk_sq + 1;
+      if (cf_red_fire & rob_wl_done) wk_chk <= wk_chk + 1;
+      if (u_rob.wl_run) wk_rows <= wk_rows + 1;
+   end
+`endif
    // The tracked restart's CTI trains the predictor before its squash fires (rule D16): in its
    // resolve cycle, or for a jal/jalr once its link is written.
    reg  fr_trn;

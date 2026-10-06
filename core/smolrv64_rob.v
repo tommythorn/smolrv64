@@ -40,6 +40,7 @@ module smolrv64_rob
     // its trap not firing, so c_kill does not cover it and minstret would gain an
     // instruction that architecturally does not exist.
     input  wire [IW-1:0]          d_noret,
+    input  wire [IW*PBITS-1:0]    d_pold,       // the mapping rd's rename displaced (the walk's)
     output wire [IW-1:0]          d_ready,      // a row is free (every bit)
     output wire [IW*IDXB-1:0]     d_idx,        // the entry each takes, {row, k}; ride it with the op
 
@@ -79,12 +80,24 @@ module smolrv64_rob
     // entry that is done can no longer restart, and everything older than the first not-done
     // entry is settled. A store is committable exactly when this pointer reaches it.
     output wire [IDXB-1:0]        irr_idx,
-    output wire                   irr_v);       // ...and that entry exists
+    output wire                   irr_v,        // ...and that entry exists
+
+    // ---- the walk: from the tail back to a mispredicted branch, a row a cycle ----
+    // k_v names the branch (a later k_v names an older one: the walk goes on to it). Each cycle
+    // the walk names the dead entries of one row that write a register, column k on [k], with
+    // their rd, prd and displaced mapping, for smolrv64_rename to undo. wl_done: the walk has
+    // reached its branch (until the flush).
+    input  wire                   k_v,
+    input  wire [IDXB-1:0]        k_idx,
+    output wire [IW-1:0]          wl_v,
+    output wire [IW*6-1:0]        wl_rd,
+    output wire [IW*PBITS-1:0]    wl_prd, wl_pold,
+    output wire                   wl_done);
 
    // {noret, rd, prd} and nothing else. rd_v is `|prd`; the destination SHARD is the top bits
    // of prd; and the DISPLACED register is not carried at all, because smolrv64_rename reads
    // rmap[c_rd] at commit and that still holds it.
-   localparam EW    = 1 + 6 + PBITS;              // {noret, rd, prd}
+   localparam EW    = PBITS + 1 + 6 + PBITS;      // {pold, noret, rd, prd}
    localparam NCOL  = 1 << CB;                    // columns; those at IW and above are never valid
    localparam DEPTH = ROWS * NCOL;                // the index space
    localparam RB    = IDXB - CB;                  // row bits
@@ -148,7 +161,45 @@ module smolrv64_rob
       end
    endfunction
 
-   // ---- the columns: one write (slot k) and one read (the head row) each ----
+   // ---- the walk ----
+   // The next row to walk (wl_row) and the columns of it still to walk (those below wl_lim);
+   // the branch is {k_row, k_col}, and only its younger columns die in its own row. When the
+   // walk reaches the branch's row it stops there with wl_lim = k_col + 1, so a later, older
+   // branch walks on from exactly the entries not yet walked, the old branch included.
+   reg            wl_run, wl_end;
+   reg [RB-1:0]   wl_row;
+   reg [CB:0]     wl_lim;
+   reg [RB-1:0]   k_row;
+   reg [CB-1:0]   k_col;
+   initial begin wl_run = 1'b0; wl_end = 1'b0; wl_row = 0; wl_lim = 0; k_row = 0; k_col = 0; end
+   assign wl_done = wl_end & ~wl_run & ~k_v;      // not in a cycle that names a new, older branch
+   localparam [CB:0] NCOL_S = NCOL;
+   always @(posedge clk) begin
+      if (reset | flush) begin
+         wl_run <= 1'b0;  wl_end <= 1'b0;
+      end else begin
+         if (wl_run) begin
+            if (wl_row == k_row) begin wl_run <= 1'b0;  wl_end <= 1'b1;  wl_lim <= {1'b0, k_col} + 1'b1; end
+            else begin wl_row <= wl_row - 1'b1;  wl_lim <= NCOL_S; end
+         end
+         if (k_v) begin
+            k_row <= k_idx[IDXB-1:CB];  k_col <= k_idx[CB-1:0];  wl_run <= 1'b1;
+            if (~wl_run & ~wl_end) begin wl_row <= trow - 1'b1;  wl_lim <= NCOL_S; end
+         end
+      end
+   end
+   // a later branch is older than the one walked to; nothing allocates while the walk runs
+   wire [RB-1:0] k_rel  = k_idx[IDXB-1:CB] - hrow, kq_rel = k_row - hrow;
+   always @(posedge clk) if (!reset) begin
+      if (k_v & (wl_run | wl_end) & ~flush & ~({k_rel, k_idx[CB-1:0]} < {kq_rel, k_col}))
+         $fatal(1, "smolrv64_rob: a walk to entry %0d after one to the older or same entry %0d", k_idx, {k_row, k_col});
+      if (k_v & ~flush & (~v[k_idx] | empty))
+         $fatal(1, "smolrv64_rob: a walk to entry %0d, which holds no live op", k_idx);
+      if ((wl_run | k_v) & (|do_alloc))
+         $fatal(1, "smolrv64_rob: an allocation while the walk runs");
+   end
+
+   // ---- the columns: one write (slot k) and two reads (the head row, the walk's row) each ----
    // c_kill on the head's column: the head is trapping. It must NOT commit -- a trap does not
    // write rd -- and the redirect that follows flushes it, which returns its allocation through
    // the free list's own pointer rollback. A column behind it retires with every one before it,
@@ -158,8 +209,15 @@ module smolrv64_rob
       localparam [CB-1:0] K = gk;
       reg [EW-1:0] mem [0:ROWS-1];
       integer bi; initial for (bi = 0; bi < ROWS; bi = bi + 1) mem[bi] = {EW{1'b0}};
-      always @(posedge clk) if (do_alloc[gk]) mem[trow] <= {d_noret[gk], d_rd[gk*6 +: 6], d_prd[gk*PBITS +: PBITS]};
+      always @(posedge clk) if (do_alloc[gk]) mem[trow] <= {d_pold[gk*PBITS +: PBITS], d_noret[gk], d_rd[gk*6 +: 6], d_prd[gk*PBITS +: PBITS]};
       wire [EW-1:0]   e  = mem[hrow];
+      wire [EW-1:0]   we = mem[wl_row];           // the walk's read port
+      wire [IDXB-1:0] wx = {wl_row, K};
+      assign wl_v[gk] = wl_run & v[wx] & ({1'b0, K} < wl_lim) & ((wl_row != k_row) | (K > k_col))
+                      & (we[PBITS-1:0] != {PBITS{1'b0}});
+      assign wl_prd[gk*PBITS +: PBITS]  = we[PBITS-1:0];
+      assign wl_rd[gk*6 +: 6]           = we[PBITS +: 6];
+      assign wl_pold[gk*PBITS +: PBITS] = we[EW-1 -: PBITS];
       wire [IDXB-1:0] ix = {hrow, K};
       if (gk == 0) begin: h
          assign cv[0] = (hcol == K) & head_done & ~c_kill[0];

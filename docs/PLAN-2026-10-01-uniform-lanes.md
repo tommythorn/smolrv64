@@ -475,6 +475,94 @@ four lanes and the four FP slices.
 measured against one change; slice F3 rather than three FP slices shared by four slots (a
 partition per slot keeps each FP free list at one allocation a cycle); walk back for C6.
 
+## Step 5.4e in detail: restart at resolve (2026-10-05)
+
+**What it buys.** In the 60 M boot `bs:drain` is 3.84% of cycles: a mispredict has resolved,
+fetch has restarted on the right path, and rename sits frozen until the branch reaches the ROB
+head (`fr_v` gates `cr_pop` and `d_take`). That is the ceiling; the walk below costs a cycle
+per row of wrong path.
+
+**What holds a younger op today, and how the flush clears it.** Every structure clears
+wholesale on `redirect`, which fires only at the head:
+
+| holds | names its op by | in program order? | partial kill |
+|---|---|---|---|
+| ROB `v`/`done`, head/tail/irr | its own `{row, col}` | yes | tail back to the row after the branch's; the branch row's younger columns' `v` cleared |
+| rename `lv`, SMAP, free-list `h` | -- | allocation order | **the walk** (below) |
+| pending table | physical register | -- | none: a walked register's bit stays set until it is renamed again |
+| lane schedulers, `u_iq_f` | `e_rob` | no | per entry, by age |
+| dispatch stages `stg_v`, select `j_v`/lane `v`, `m1`/`m2` | their `rob` | -- | by age |
+| landing buffers `lb_*` | `lb_rob` | arrival order | a dead entry drains as a bubble (no write, no wake, no completion) |
+| M, `ho_v`, `la_v`/`sa_v`, SYSQ `sy_v`, `qfr_v`, `lr_v`, MD `md_v` (divider abort), F `f_valid`, `icr_v` | `rob` | -- | by age |
+| LQ | `rob` | allocated in order, frees out of order | dead entries are the youngest: `v` cleared, tail back to the oldest dead; the LSU's `o_kill` takes the dead entries' tags (it already drops a killed tag's response and holds the tag until it returns) |
+| SQ | `rob`, `sqn` | yes | the flush already keeps the committed part; it keeps everything older than the branch instead |
+| training queue | `tq_rob`, `tq_seq` | resolve order | by age (the restarted path reuses the dead ops' sequence numbers) |
+| FPU (fpnew, 4 in flight) | its tag, which holds `rob` | no | **no per-op kill in fpnew**: the landing is filtered (below) |
+| `csr_infl`, `ho_inf` | -- | -- | cleared when the op that set them dies |
+| `wk_n` (weak branches in flight) | -- | -- | zeroed: it only holds walks back, and a low count costs nothing but a walk |
+
+`ser_inflight` needs nothing: a serialising op dispatches only into an empty ROB, so no
+unresolved branch is older than it. `inject_inflight` already clears on `fr_v`.
+
+**The age kill, computed once (rule: one precondition, one site).** At resolve (`fr_set`) the
+branch's `{row, col}` is registered; the cycle after, a central block turns it, the head row
+and the tail into `k_v`, a one-hot **dead-row vector** (rows strictly after the branch's, up to
+the tail) and `{k_row, k_col}`. An entry is dead when `dead_row[e_row] | (e_row == k_row &
+e_col > k_col)`: a 32:1 mux and a 2-bit compare per entry, from flops, nothing from the
+resolve cone. Everything above applies the same function.
+
+**The FPU's landing is filtered by a generation bit.** fpnew has one global flush. Each ROB
+entry gets a generation bit that flips at each allocation of that entry; the FP tag carries the
+bit its op was allocated with, and the landing (one site) drops a result whose entry is not
+valid or whose generation differs: no write, no wake, no completion. The tag names its op by
+the slot and the generation the requester allocated (rule: a slot name captured now and
+dereferenced later carries its tag). The MD stage holds one op and aborts it by age.
+
+**The walk restores the rename map.** Each ROB entry keeps `pold`, the mapping its rename
+displaced (`lv[rd] ? SMAP[rd] : RMAP[rd]`, or an earlier slot's new register when the group
+writes `rd` twice): 10 bits per column, and rename reads each slot's `rd` as it reads its
+sources. From the cycle after resolve a cursor walks the ROB from the tail back to the
+branch, a row a cycle, on a second read port of each column array. For each dead entry with a
+destination it writes `SMAP[rd] := pold` through that column's own copy (`newer[rd] := k`,
+the oldest column winning within a row) and sets `lv[rd]`; and its shard's speculative
+free-list head steps back one. A column maps to two shards (lane k, FP slice k), so no shard
+steps back twice in a row. Restoring `lv[rd] := 1` over a `pold` that came from RMAP is sound:
+`lv[rd] = 0` meant no op in flight wrote `rd`, so RMAP keeps that mapping until a younger
+writer commits, and the younger writers are the dead ones. Rename's write ports are idle:
+rename is frozen for the walk. Commits go on at the head meanwhile (RMAP and the free-list
+tails are theirs, the walk touches neither).
+
+An older mispredict resolving during the walk moves the walk's target back; the cursor goes
+on. A younger one is dead. A trap or system redirect at the head is the full flush as today
+and ends any walk.
+
+**The increments**, each in lockstep (60 M, 300 M, glibc, sysd, storm):
+
+1. **5.4e-1: the walk, checked at the head.** `pold` in the ROB, the cursor, the walk's map
+   and free-list writes. Rename stays frozen until the branch reaches the head and the full
+   flush still runs there, so the machine is cycle-identical. Checked in that cycle: every
+   register's speculative mapping equals its committed one after the branch's commit, and
+   every shard's speculative head equals its committed head. A walk that is wrong anywhere
+   fails at the first mispredict.
+   **Built (2026-10-05):** cycle-identical at 60 M (41,106,564 at IW=3, 41,464,991 at IW=4).
+   Of the 482,239 squashes at the head in the IW=3 boot, 123,380 come after the walk has ended
+   and are checked; the rest reach the head first (from resolve to head is about 5 cycles on
+   average, `bs:drain` 2.3 M cycles over 482 K squashes).
+2. **5.4e-2: the age kill, checked at the head.** The central dead-row block, the kill in
+   every row of the table, the generation bit and the FPU filter, `o_kill` by tag. Rename is
+   still frozen to the head, so killing early only frees the wrong path's resources sooner.
+   Checked when the squash fires at the head: no live op anywhere in the backend (schedulers,
+   stages, landing buffers, LQ, uncommitted SQ, M, SYSQ, MD, F), so the kill missed nothing.
+3. **5.4e-3: release at the walk's end.** `fr_v` drops when the cursor reaches the branch and
+   the kill has applied; the branch then commits like any op (`cf_red_fire` goes). The
+   restarted path dispatches with sequence numbers the dead ops held, which is why every
+   seq-compared structure (LQ, SQ, training queue) is in the kill. IPC is measured here, at
+   IW=3 and IW=4, against 5.4d.
+
+**Cost.** `pold` is 10 bits per ROB entry (the 16-bit entry becomes 26: +960 bits of LUTRAM at
+IW=3) and a second read port per column; one read per slot on each SMAP and RMAP copy; the
+dead-row compare per scheduler, LQ and landing-buffer entry; one generation bit per ROB entry.
+
 ## The PRF in block RAM: built, measured, dropped (2026-10-03)
 
 Built on `wip/prf-r` (parked): a read stage on the lanes, a two-deep bypass, the lanes waking
