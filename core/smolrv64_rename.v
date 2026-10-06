@@ -150,7 +150,7 @@ module smolrv64_rename
          rmap[j] = {SH_IE, j[IDXB-1:0]};       smap[j] = {SH_IE, j[IDXB-1:0]};
          rmap[32 + j] = {SH_F0, j[IDXB-1:0]};  smap[32 + j] = {SH_F0, j[IDXB-1:0]};
       end
-      wire sw = r_valid[gc] & r_rd_v[gc] & ~stall;   // this slot's allocation
+      wire sw = r_valid[gc] & r_rd_v[gc];            // this slot's allocation
       wire cw = c_valid[gc] & c_rd_v[gc];
       // one write statement: this slot's rename, or the walk's column gc (never both: rename is
       // frozen while the walk runs, asserted)
@@ -190,7 +190,7 @@ module smolrv64_rename
    // Reads are of the PRE-rename mapping, including a source equal to the slot's own
    // destination: rd is written at the clock edge, so the reads see the old value. An earlier
    // slot's destination is bypassed in: the youngest earlier slot naming the source wins.
-   wire [IW-1:0] writes = r_cand & r_rd_v & {IW{~stall}};   // candidates, not takes
+   wire [IW-1:0] writes = r_cand & r_rd_v;   // candidates, not takes
    wire [PBITS-1:0] np [0:NS-1];               // the youngest earlier slot's new register
    wire [NS-1:0]    byp;
    generate for (gp = 0; gp < NS; gp = gp + 1) begin: by
@@ -238,8 +238,7 @@ module smolrv64_rename
    // slot allocates from which shard (the class decode) selects among the banks' OUTPUTS, not
    // their addresses, and the stall never reaches an address: with it there, the whole rename
    // decision sat in front of the LUTRAM read, and the read's data in front of the dispatch
-   // stage and the store queue. A stall holds every slot, so entries read and not consumed are
-   // simply read again.
+   // stage and the store queue. Entries read and not consumed are simply read again.
    //
    // NO FUNCTION READS THESE ARRAYS (rule F4): Vivado keeps one read port for a function that
    // reads a RAM, the last call site's, and folds the earlier calls to 0.
@@ -296,7 +295,7 @@ module smolrv64_rename
 
    // THE FREE-LIST READ ADDRESSES DO NOT SEE THE STALL (alloc_r addresses; alloc advances).
    wire [IW-1:0] alloc_r = r_cand & r_rd_v;
-   wire [IW-1:0] alloc   = r_valid & r_rd_v & {IW{~stall}};
+   wire [IW-1:0] alloc   = r_valid & r_rd_v;
 
    wire [IDXB-1:0] rdx [0:IW*NSH-1];   // each list's register for slot k at [k*NSH + list]
    wire [NSH-1:0]  low_n;              // each list's low-water flag for next cycle
@@ -414,9 +413,11 @@ module smolrv64_rename
    // the minimum is what actually prevents the stall; throttling per-destination only
    // discovers it one instruction too late.  The cost is that the stall probability is the
    // union across shards -- the argument for sizing them unequally rather than adding more.
-   // THE STALL IS A REGISTER: next cycle's low-water flags, from the pointers' next values. It
-   // equals the flags of the pointers it is used with, exactly, but no pointer's adder or
-   // compare stands in front of the dispatch take.
+   // THE STALL IS A REGISTER: next cycle's low-water flags, from the pointers' next values, so no
+   // pointer's adder or compare stands in front of the dispatch take. It holds the queue's POP;
+   // a group already popped dispatches the next cycle whatever the stall says, and rename
+   // allocates for every slot that dispatches (LOWAT covers that group and the one dispatching).
+   // An allocation the stall suppressed would hand the next group the same registers.
    reg [NSH-1:0] low;
    initial low = {NSH{1'b0}};
    always @(posedge clk) low <= low_n;

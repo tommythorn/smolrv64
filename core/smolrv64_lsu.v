@@ -116,9 +116,8 @@ module smolrv64_lsu
     input  wire            xl_flush,
     input  wire            flush,          // a backend redirect: squash a speculative LOAD in flight
     // the kill: these load-queue entries' loads are younger than a mispredicted branch (by tag on
-    // the fast path, including one starting now), and the slow path's load in flight is one
+    // the fast path, including one starting now; the slow path's by the tag it started with)
     input  wire [(1 << LDTW)-1:0] kill,
-    input  wire            kill_slow,
     input  wire [LDTW-1:0] pt_tag,         // the load-queue entry the port's candidate is (C4a)
     input  wire [LDTW-1:0] req_tag,        // ...and the one M's own load (req_early) is
     output wire [LDTW-1:0] pt_rtag,        // the entry whose data lands this cycle (fast path)
@@ -705,12 +704,19 @@ module smolrv64_lsu
    // commit) sat in front of every scheduler's wakeup: mideleg -> redirect -> ld_land ->
    // we_ld -> e_r, 25 levels, the IW=3 wall. Verilator saw the same loop as UNOPTFLAT.
    wire ld_inflight = own_pt & ~own_pt_st;
+   // The slow path's load names its entry by the tag it started with: fast starts go on meanwhile,
+   // so nothing outside the LSU names it reliably. A slow start replaces it: the FSM starts one
+   // only once the last has finished, and nothing dead starts (a dead entry is not live).
+   wire slow_go = (pt_start | xl_early) & ~ld_fast_ok;
+   reg  [LDTW-1:0] sl_tag;
    reg  ld_sq;  initial ld_sq = 1'b0;
-   always @(posedge clk)
-      if (reset)                    ld_sq <= 1'b0;
-      else if (flush)               ld_sq <= 1'b1;   // a redirect: any load already in flight is wrong-path
-      else if (kill_slow)           ld_sq <= 1'b1;   // ...or the kill names it
-      else if (pt_start | xl_early) ld_sq <= 1'b0;   // a fresh access start (incl. the early path) is correct-path
+   always @(posedge clk) begin
+      if (slow_go) sl_tag <= ld_tag;
+      if (reset)                         ld_sq <= 1'b0;
+      else if (flush)                    ld_sq <= 1'b1;   // a redirect: any load already in flight is wrong-path
+      else if (slow_go)                  ld_sq <= 1'b0;   // a fresh slow start (incl. the early path) is correct-path
+      else if (ld_inflight & kill[sl_tag]) ld_sq <= 1'b1; // ...or the kill names the one in flight
+   end
    assign pt_ld_kill = ld_inflight & ld_sq;
    assign pt_ack  = pt_start | take_next;
    assign rd_val = pt_fast_done ? ld_fast_val

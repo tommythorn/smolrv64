@@ -606,7 +606,7 @@ module smolrv64_core
    smolrv64_pending #(.PBITS(RN_PBITS), .NS(IW), .NWB(NWB_C), .NQ(NQ)) u_pend
      (.clk(clk), .reset(reset),
       // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT: the set enable is the slot's own
-      // valid and destination and the registered rename stall, never the dispatch take, whose
+      // valid and destination, never the dispatch take, whose
       // late terms (mstatus.FS through the illegal decode, the queues' room, the redirect) fanned
       // into all 1,024 pending flops. A candidate is the head of its free list (the stall keeps
       // the group inside the free set), so an untaken one is a free register no source names,
@@ -816,7 +816,7 @@ module smolrv64_core
              {rn_mprs3v[gs*RN_PBITS +: RN_PBITS], rn_mprs2v[gs*RN_PBITS +: RN_PBITS], rn_mprs1v[gs*RN_PBITS +: RN_PBITS],
               rn_sprs3v[gs*RN_PBITS +: RN_PBITS], rn_sprs2v[gs*RN_PBITS +: RN_PBITS], rn_sprs1v[gs*RN_PBITS +: RN_PBITS]};
       // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT (see u_pend)
-      assign pnd_av[gs] = fe_dv[gs] & q_rd_v & ~rn_stall;
+      assign pnd_av[gs] = fe_dv[gs] & q_rd_v;
       assign s_srdy_hit[gs] = srdy | {wk(prs3), wk(prs2), wk(prs1)};
       assign s_prd_g[gs] = prd_g;  assign s_prd_gv[gs*RN_PBITS +: RN_PBITS] = prd_g;
       assign s_prs2[gs] = prs2;    assign s_r2rdy[gs] = pr2 | ~q_rs2_v;
@@ -1948,7 +1948,7 @@ module smolrv64_core
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush_q), .flush(redirect), .m_head(m_at_head),
-      .kill(lq_kmask), .kill_slow(lsu_ld_busy & lq_kmask[ld_inflight_idx]),
+      .kill(lq_kmask),
       // A committed store, or the LQ's candidate at head: the LSU asserts every non-DRAM start
       // is non-speculative against ITS OWN region decode (rule D12). The head compare alone is
       // exact: a live index is unique, a flush empties the queue, and a candidate whose ROB
