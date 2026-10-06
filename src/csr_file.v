@@ -192,7 +192,7 @@ module csr_file
                       HPMEV_INSTRET= 16'h0002,   // Instructions retired
                       HPMEV_LOAD   = 16'h0003,   // Load completions (LSU)
                       HPMEV_STORE  = 16'h0004,   // Store completions (LSU)
-                      HPMEV_REDIR  = 16'h0005,   // Pipeline redirect (branch mispredict / flush)
+                      HPMEV_REDIR  = 16'h0005,   // Pipeline restart: a squash at the ROB head, or a mispredict's release
                       HPMEV_DCACC  = 16'h0100,   // D$ line lookups resolved (hit or miss)
                       HPMEV_DCMISS = 16'h0102,   // D$ line lookups that missed
                       HPMEV_ICACC  = 16'h0110,   // I$ line lookups resolved (hit or miss)
@@ -216,7 +216,7 @@ module csr_file
                       HPMEV_RED_BR = 16'h0006,   // Redirect: conditional branch mispredict
                       HPMEV_RED_JLR= 16'h0007,   // Redirect: indirect jump (jalr) target
                       HPMEV_RED_TRP= 16'h0008,   // Redirect: trap / exception / system op
-                      HPMEV_RD_WAIT= 16'h0317,   // Redirect resolved in M, waiting for the ROB head (the mispredict drain)
+                      HPMEV_RD_WAIT= 16'h0317,   // A mispredict's restart: from its resolve to its release or its squash at the ROB head
                      HPMEV_DT_WALK= 16'h0318,   // Data MMU walking (cycles; inside ST_MEM)
                      HPMEV_DTLB_MISS=16'h0104,  // dTLB miss: a data page-table walk began
                      // The memory buckets (2026-09-17): what ST_MEM is made of. Cycles unless noted.

@@ -183,7 +183,7 @@ latched or they are lost.
 
 | source | condition | cost |
 |---|---|---|
-| branch/jump mispredict | `m_redirect`, must be ROB head | full frontend refill |
+| branch/jump mispredict | fetch restarts at the resolve; rename resumes at the release (§6: the walk back and the kill) or at the squash when the branch reaches the ROB head first | the frontend refill, overlapping the walk |
 | trap / interrupt | `xtrap_v`, must be ROB head | full refill |
 | CSR-induced redirect | `sret`/`mret`/`sfence`, serializing | full refill |
 | `fence.i` | `ifence`, must be ROB head | full refill; the I$ is invalidated only after a device write |
@@ -191,39 +191,23 @@ latched or they are lost.
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
 
-**Measured mispredict cost (`workloads/brbench`, re-measured on the VHPR I$, 43fbcfce,
-2026-09-14, L1-resident, the two-wide core).** The branch's path is fetch
-(the alignment window serves the aligner; decode reads the bundle register and writes the decoupling queue)
--> dispatch the next cycle (the queue head is an asynchronous LUTRAM
-read) -> select in `u_iq_l` -> the issue register (`i_v`, the payload read) -> M, where
-`redirect` is combinational and steers `pc_q` at that edge: five cycles from the branch's
-fetch to the target's, when the branch is the ROB head and its operands are ready. A loop
-with one random-direction branch per iteration (xorshift64, so no 12-bit history predicts
-it) against the same loop with the branch always not taken:
+**Measured mispredict cost (`workloads/brbench`, the lanes core at IW=3 with restart at
+resolve, 5.4e-3, 2026-10-05, L1-resident).** A loop with one random-direction branch per
+iteration (xorshift64, so no history predicts it) against the same loop with the branch always
+not taken; `drain` puts an older D$-missing load in flight ahead of the branch:
 
-| loop | cyc/iter | redirects/iter | FE_BUB/iter | RD_WAIT/iter | per mispredict |
-|---|---:|---:|---:|---:|---:|
-| `pred`, never taken | 12.00 | 0 | 6.00 | 0 | -- |
-| `near`, target a few bytes away (inside the 2-chunk window) | 19.73 | 0.50 | 12.23 | 0 | **15.5 cycles** |
-| `far`, target 1 KiB away (outside the window, I$ hit, the jump back the same) | 25.28 | 0.50 | 18.03 | 0 | 26.6 cycles |
-| `drain`, an older D$-missing load in flight | 52.83 | 0.50 | 4.72 | 19.44 | the resolved branch waits **~39 cycles** for the ROB head |
+| loop | cyc/iter | redirects/iter | FE_BUB/iter | RD_WAIT/iter |
+|---|---:|---:|---:|---:|
+| `pred`, never taken | 6.73 | 0 | 1.82 | 0 |
+| `near`, target a few bytes away | 15.15 | 0.50 | 4.05 | 0 |
+| `far`, target 1 KiB away (I$ hit, the jump back the same) | 15.46 | 0.50 | 5.66 | 0 |
+| `drain`, an older D$-missing load in flight | **17.05** | 0.50 | 5.85 | 4.47 |
 
-The VHPR alignment adapter costs MORE per mispredict than the deleted run-ahead buffer did
-(`near` 12.0 -> 15.5, `far` 19.7 -> 26.6 cycles, the pre-VHPR figures): its two-chunk window
-carries less run-ahead than the buffer's three chunks, so a taken target refetches more slowly
--- the same reduced memory-level parallelism as the boot's -8.6% (§4.1), tracked as the
-recoverable IPC follow-up. `drain` (dominated by the D$-miss wait for the ROB head, plan item 5)
-is unchanged. The 2026-09-10 corrector-tag and solo-op aligner fixes (which took the pre-VHPR
-`near` 20.37 -> 18.32 and `drain` 83.7 -> 78.5, so the back edge no longer mispredicts) are in
-the current numbers.
-
-The 6.00 bubble cycles per iteration of the never-mispredicting loop are the loop's own
-back edge: the alignment window runs FORWARD only (the PC's chunk and the next), so a
-predicted-taken backward branch whose target chunk is no longer held refetches through the I$
-every iteration, three to four cycles a time. A loop buffer, or keeping the chunk the PC just
-left, would take that off every short loop (`FB_RHIT`, which counted buffer-served redirects,
-is retired to 0 with the buffer -- §11). The `drain` row is plan item 5: a mispredict resolved
-behind a miss waits the whole miss for the head while the wrong path keeps fetching.
+A mispredict costs about 17 cycles (`near`). Without the release (5.4e-2, the squash waiting
+for the ROB head) `drain` is 32.26 cycles per iteration with `RD_WAIT` 19.38 and `FE_BUB`
+20.41: the resolved branch waited the whole miss for the head while the right path sat fetched
+in the decoupling queue. With it the walk and the kill end the restart a few cycles after the
+resolve, and the miss overlaps the right path.
 
 A restart drops the store queue's uncommitted tail only: stores the ROB has committed at
 the irrevocable pointer (§6) are architecturally done and drain after the flush.
@@ -523,8 +507,9 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 - The irrevocable pointer reads the store queue's completion port (`IRR_FWD`) in its own
   cycle as well as `done`: without it a store leaves the SQ a cycle later, and the boot loses
   another 2.8% to `be:sq-full`.
-- Squash is **pointer-only**; there is nothing to walk. A flush leaves the head, the tail
-  and `irr` at the next row boundary (the head's own row if nothing of it has committed).
+- A flush is **pointer-only**: it leaves the head, the tail and `irr` at the next row boundary
+  (the head's own row if nothing of it has committed). A mispredict's restart is not a flush
+  (below).
 - `noret` exists because an injected `OP_IRQ` can commit with its trap not firing, and
   `minstret` must not count an instruction that architecturally does not exist.
 
@@ -548,6 +533,38 @@ one `{wrap, row, column}` pointer, one `done` lookup, one index compare in `smol
 
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
+
+**Restart at resolve (lanes 5.4e).** A mispredict restarts fetch in the cycle after it resolves
+(`fr_set`, the oldest restart winning) and freezes dispatch (`fr_v`); the backend recovers
+without waiting for the branch to reach the head:
+
+- **The walk.** Each entry keeps `pold`, the mapping its rename displaced. From the cycle after
+  the resolve a cursor walks from the tail back to the branch, a row a cycle, on a second read
+  port of each column: every dead entry with a destination writes `SMAP[rd] := pold` through
+  its column's map copy (the oldest column winning in a row, `lv` set) and steps its shard's
+  speculative free-list head back over its register. An older mispredict resolving meanwhile
+  moves the target back and the cursor goes on.
+- **The kill.** The cycle after the resolve the ROB turns the branch into a dead-entry vector
+  (`kd`, from flops: the rows after the branch's and its row's later columns), and every
+  structure that holds an op clears its dead ones each cycle the kill holds: the schedulers,
+  dispatch stages, multiplies, landing buffers (a dead entry drains as a bubble), F, MD (the
+  divider aborts), the SYSQ, M and the head-op register, the arrival flags, the walker lock,
+  the resolve registers and the training queue. The load and store queues drop their dead
+  entries, their youngest, and step their tails back; the LSU drops a dead load's response by
+  tag. fpnew has no per-op kill: a table of its ops in flight (by ROB index) holds the release
+  until no dead one is left.
+- **The release** (`fr_rel`): once the walk has reached the branch, the kill has held for
+  `KREL` = 6 cycles (an op in transit dies at its next register) and the FPU holds no dead op,
+  the dead entries leave the ROB, the tail returns to the row after the branch's, the branch
+  completes (before it, it is not done, so `irr` cannot reach a dead store) and dispatch
+  resumes, with the right path already in the decoupling queue. A branch that reaches the ROB
+  head first takes the squash there instead (`cf_red_fire`, the full flush), whichever comes
+  first; in the 60 M boot about one restart in five ends at its release.
+
+Checks: at a squash at the head after the walk has ended, every register's speculative mapping
+equals its committed one and every shard's speculative head its committed head; at one after
+the kill has held four cycles, no live op is left in the backend; at a release, no dead op is
+(all asserted, `WALK-SIM` counts them).
 
 ### 6.1 Scheduler (`smolrv64_iq`) — LIVE
 
@@ -1570,7 +1587,7 @@ never a partition:
 | `RED_BR` / `RED_JLR` / `RED_TRP` | r0006 / r0007 / r0008 | redirects by cause: conditional branch / jalr / trap or system op |
 | `ST_ROB` | r0305 | the queue head waits for ROB room (`hd_wait & ~cr_rob1`) |
 | `ST_IQ` / `ST_RN` / `ST_SQ` / `ST_LQ` / `ST_SRZ` | r0306 / r0307 / r0308 / r0309 / r030a | `ST_DSP` by cause, disjoint, in this order: the head's scheduler has no credit / a rename shard is below `LOWAT` / no store-queue credit / no load-queue credit / the rest, a serializing op draining or one in flight |
-| `RD_WAIT` | r0317 | a redirect resolved in M, waiting for the ROB head: the mispredict drain (plan item 5; P7 would recover it) |
+| `RD_WAIT` | r0317 | a mispredict's restart in progress: from its resolve to its release (the walk and the kill, §6) or its squash at the ROB head |
 | `DT_WALK` / `DTLB_MISS` | r0318 / r0104 | cycles the data MMU is walking (a subset of `ST_MEM`) / walks begun. The dTLB is 2048 entries direct-mapped on VPN[10:0]; two hot pages 8 MiB apart share an index and cost a walk per load and no D$ miss |
 | `ST_MUL` / `ST_DIV` | r0302 / r0301 | occupancy, not stalls: cycles a multiply is in flight in any lane (`m*_1`, `m*_2`) / the MD stage holds a divide |
 | `MEM_HITSER` | r0319 | a ready load candidate the LSU door did not take (hit serialization) |
@@ -1607,7 +1624,7 @@ The `td` report, top to bottom:
   *front-end*, *back-end*. It sums to 100% by construction; if it does not, the event map is
   wrong and the script stops.
 - **bad speculation** splits into the redirect itself and *a resolved restart waiting*
-  (`RD_WAIT`, the mispredict drain to the ROB head). The per-1k redirect counts beneath say
+  (`RD_WAIT`, a mispredict's restart from its resolve to its release or its squash). The per-1k redirect counts beneath say
   which kind: conditional branches and jalr point at the predictor, traps at the program.
 - **front-end**: the queue head had nothing. *latency* is the iMMU walking or no fetch bytes
   (the I$; see `I$ misses` per 1k); the rest is alignment and the queue refilling after a

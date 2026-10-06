@@ -497,7 +497,7 @@ wholesale on `redirect`, which fires only at the head:
 | LQ | `rob` | allocated in order, frees out of order | dead entries are the youngest: `v` cleared, tail back to the oldest dead; the LSU's `o_kill` takes the dead entries' tags (it already drops a killed tag's response and holds the tag until it returns) |
 | SQ | `rob`, `sqn` | yes | the flush already keeps the committed part; it keeps everything older than the branch instead |
 | training queue | `tq_rob`, `tq_seq` | resolve order | by age (the restarted path reuses the dead ops' sequence numbers) |
-| FPU (fpnew, 4 in flight) | its tag, which holds `rob` | no | **no per-op kill in fpnew**: the landing is filtered (below) |
+| FPU (fpnew, 4 in flight) | its tag, which holds `rob` | no | **no per-op kill in fpnew**: the release waits for its dead ops (below) |
 | `csr_infl`, `ho_inf` | -- | -- | cleared when the op that set them dies |
 | `wk_n` (weak branches in flight) | -- | -- | zeroed: it only holds walks back, and a low count costs nothing but a walk |
 
@@ -511,12 +511,12 @@ the tail) and `{k_row, k_col}`. An entry is dead when `dead_row[e_row] | (e_row 
 e_col > k_col)`: a 32:1 mux and a 2-bit compare per entry, from flops, nothing from the
 resolve cone. Everything above applies the same function.
 
-**The FPU's landing is filtered by a generation bit.** fpnew has one global flush. Each ROB
-entry gets a generation bit that flips at each allocation of that entry; the FP tag carries the
-bit its op was allocated with, and the landing (one site) drops a result whose entry is not
-valid or whose generation differs: no write, no wake, no completion. The tag names its op by
-the slot and the generation the requester allocated (rule: a slot name captured now and
-dereferenced later carries its tag). The MD stage holds one op and aborts it by age.
+**The FPU holds the release.** fpnew has one global flush and no per-op kill, so a dead op in
+it must land before its register and ROB index are handed out again. A table of the FPU's ops
+in flight (by ROB index, added as the unit accepts one, removed as its result lands) says
+whether a dead one is left; the release waits for none. (A generation bit per ROB entry,
+filtering the landing, was the alternative; the table is exact and needs no lookup at the
+landing.) The MD stage holds one op and aborts it by age.
 
 **The walk restores the rename map.** Each ROB entry keeps `pold`, the mapping its rename
 displaced (`lv[rd] ? SMAP[rd] : RMAP[rd]`, or an earlier slot's new register when the group
@@ -549,13 +549,13 @@ and ends any walk.
    and are checked; the rest reach the head first (from resolve to head is about 5 cycles on
    average, `bs:drain` 2.3 M cycles over 482 K squashes).
 2. **5.4e-2: the age kill, checked at the head.** The central dead-row block, the kill in
-   every row of the table, the generation bit and the FPU filter, `o_kill` by tag. Rename is
+   every row of the table, `o_kill` by tag. Rename is
    still frozen to the head, so killing early only frees the wrong path's resources sooner.
    Checked when the squash fires at the head: no live op anywhere in the backend (schedulers,
    stages, landing buffers, LQ, uncommitted SQ, M, SYSQ, MD, F), so the kill missed nothing.
    **Built (2026-10-05):** the dead-entry vector (`kd`) is the ROB's, from flops, and every
    structure clears its dead ops from it each cycle the kill holds; the kill itself is the
-   check's subject, so the FPU's late results and the generation bit move to 5.4e-3. 60 M:
+   check's subject, so holding the release for the FPU's dead ops is 5.4e-3's. 60 M:
    41,190,896 at IW=3 (+0.21%: the wrong path leaves the queues sooner), 41,498,079 at IW=4;
    the check holds at 136,512 squashes. Its first runs found four real faults, each now an
    assertion or fixed by construction: a dead store delivering its address after its entry
@@ -565,14 +565,25 @@ and ends any walk.
    load; every waiting load lies in acc..tail, asserted), and the walker locking an entry that
    dies in that cycle (it never takes a dead one).
 3. **5.4e-3: release at the walk's end.** `fr_v` drops when the cursor reaches the branch and
-   the kill has applied; the branch then commits like any op (`cf_red_fire` goes). The
-   restarted path dispatches with sequence numbers the dead ops held, which is why every
-   seq-compared structure (LQ, SQ, training queue) is in the kill. IPC is measured here, at
-   IW=3 and IW=4, against 5.4d.
+   the kill has applied; the branch then commits like any op. The restarted path dispatches
+   with sequence numbers the dead ops held, which is why every seq-compared structure (LQ, SQ,
+   training queue, the resolve registers) is in the kill. IPC is measured here, at IW=3 and
+   IW=4, against 5.4d.
+   **Built (2026-10-05):** the release (`fr_rel`) needs the walk at its branch, the kill held
+   for `KREL` = 6 cycles (an op in transit dies at its next register) and no dead op in the
+   FPU; it drops the dead entries, returns the tail to the row after the branch's and completes
+   the branch. The squash at the head stays as the fast path for a branch that reaches the head
+   first, so the 5.4e-1 and 5.4e-2 checks keep their meaning; in the 60 M boot 104,841
+   restarts end at their release and 396,756 at the head. The weak-branch count (the I$ fill
+   hold) is a bit per ROB entry, cleared for the dead at the release. 60 M: 41,509,274 at IW=3
+   (+0.98% on 5.4d), 41,764,026 at IW=4 (+0.72%); `workloads/brbench`'s `drain` (a mispredict
+   behind a D$ miss) 32.26 -> 17.05 cycles per iteration. A release in the cycle an older
+   restart resolves would lose that restart (asserted, and the release waits a cycle).
 
 **Cost.** `pold` is 10 bits per ROB entry (the 16-bit entry becomes 26: +960 bits of LUTRAM at
 IW=3) and a second read port per column; one read per slot on each SMAP and RMAP copy; the
-dead-row compare per scheduler, LQ and landing-buffer entry; one generation bit per ROB entry.
+dead-row compare per scheduler, LQ and landing-buffer entry; the FPU's in-flight table (8
+entries of a ROB index).
 
 ## The PRF in block RAM: built, measured, dropped (2026-10-03)
 

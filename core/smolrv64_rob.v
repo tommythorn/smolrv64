@@ -97,7 +97,10 @@ module smolrv64_rob
     // every structure that holds an op to look its own up in (kd_v & kd[its rob]). Valid from
     // the second cycle after k_v until the flush.
     output reg                    kd_v,
-    output reg  [(1 << IDXB)-1:0] kd);
+    output reg  [(1 << IDXB)-1:0] kd,
+    // THE RELEASE: the walk has reached the branch and every dead op is gone, so the dead entries
+    // leave and the tail returns to the row after the branch's; dispatch resumes behind it
+    input  wire                   rel);
 
    // {noret, rd, prd} and nothing else. rd_v is `|prd`; the destination SHARD is the top bits
    // of prd; and the DISPLACED register is not carried at all, because smolrv64_rename reads
@@ -180,7 +183,7 @@ module smolrv64_rob
    assign wl_done = wl_end & ~wl_run & ~k_v;      // not in a cycle that names a new, older branch
    localparam [CB:0] NCOL_S = NCOL;
    always @(posedge clk) begin
-      if (reset | flush) begin
+      if (reset | flush | rel) begin
          wl_run <= 1'b0;  wl_end <= 1'b0;
       end else begin
          if (wl_run) begin
@@ -205,7 +208,7 @@ module smolrv64_rob
    initial begin kd_v = 1'b0; kd = {DEPTH{1'b0}}; end
    always @(posedge clk) begin
       if (k_v) kd <= kd_n;
-      kd_v <= ~reset & ~flush & (kd_v | k_v);
+      kd_v <= ~reset & ~flush & ~rel & (kd_v | k_v);
    end
    // a later branch is older than the one walked to; nothing allocates while the walk runs
    wire [RB-1:0] k_rel  = k_idx[IDXB-1:CB] - hrow, kq_rel = k_row - hrow;
@@ -216,6 +219,10 @@ module smolrv64_rob
          $fatal(1, "smolrv64_rob: a walk to entry %0d, which holds no live op", k_idx);
       if ((wl_run | k_v) & (|do_alloc))
          $fatal(1, "smolrv64_rob: an allocation while the walk runs");
+      if (rel & ~(kd_v & wl_done))
+         $fatal(1, "smolrv64_rob: a release before the walk reached its branch or with no kill");
+      if (rel & (|do_alloc))
+         $fatal(1, "smolrv64_rob: an allocation in the release's cycle");
    end
 
    // ---- the columns: one write (slot k) and two reads (the head row, the walk's row) each ----
@@ -284,6 +291,12 @@ module smolrv64_rob
             if (cvv[ri]) v[{hrow, ri[CB-1:0]}] <= 1'b0;
          head <= head_n;
          irr <= irr_n;
+         // the release, before the flush (a flush in its cycle wins): the dead entries go and
+         // the tail steps back to the row after the branch's
+         if (rel) begin
+            for (rj = 0; rj < DEPTH; rj = rj + 1) if (kd[rj]) begin v[rj] <= 1'b0;  done[rj] <= 1'b0; end
+            tail <= {head[IDXB:CB] + {1'b0, kq_rel} + 1'b1, {CB{1'b0}}};
+         end
          // A flush kills everything YOUNGER than the entry committing this cycle -- the
          // redirecting instruction is itself older and must still commit. Ordered after the
          // commit arm above so the head's own retirement stands.

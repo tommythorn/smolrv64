@@ -914,6 +914,8 @@ module tb;
       // retire in the same cycle.
       for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.rc_v[kw]) kan_end(8'(dut.core.rc_idx[kw]), 1'b0);
       if (dut.core.redirect) for (kw = 0; kw < 256; kw = kw + 1) kan_end(kw[7:0], 1'b1);
+      // ...and the entries a release drops (the kill's)
+      if (dut.core.fr_rel) for (kw = 0; kw < dut.core.ROB_DEPTH; kw = kw + 1) if (dut.core.rob_kd[kw]) kan_end(kw[7:0], 1'b1);
       // 3. the frontend: last cycle's queue pushes, the instruction register, then dispatch
       for (kw = 0; kw < 3; kw = kw + 1) if (psh_v[kw]) kq_stage(psh_seq[kw], "Dq");
       for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.s_v[kw]) kq_stage(dut.core.s_seq[kw], "Ir");
@@ -1058,9 +1060,14 @@ module tb;
                   // A HANG IS A FAILURE AT ONCE: nothing in the machine waits a million cycles (WFI
                   // completes, an idle kernel retires), so a run that stops retiring stops here.
                   if (|retire) last_ret = c;
-                  else if (c - last_ret > 64'd1000000)
+                  else if (c - last_ret > 64'd1000000) begin
+                     // the restart's state: a wedge with one pending names its branch and what holds it
+                     $display("tb: restart fr_v=%b fr_rob=%0d walk run=%b end=%b kill=%b age=%0d fpu_dead=%b rob v[head]=%b done[head]=%b",
+                              dut.core.fr_v, dut.core.fr_rob, dut.core.u_rob.wl_run, dut.core.u_rob.wl_end, dut.core.rob_kd_v,
+                              dut.core.kd_age, dut.core.fpu_dead, dut.core.u_rob.v[dut.core.rob_head_idx], dut.core.u_rob.done[dut.core.rob_head_idx]);
                      $fatal(1, "tb: nothing retired for %0d cycles (retires=%0d, ROB head %0d, pc~%h)",
                             c - last_ret, nret, dut.core.rob_head_idx, dut.imem_addr);
+                  end
                   // B3 (2026-09-17): the CPI stack from the RTL's own event bus, so the same tool
                   // (tools/perf-cpi-stack.py) grades a simulation and a board run.
                   for (pe = 0; pe < 44; pe = pe + 1) if (dut.core.hpm_ev_q[pe]) pev[pe] = pev[pe] + 1;
@@ -1106,7 +1113,7 @@ module tb;
       $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d dropped=%0d", tr_n, tr_ret, tr_n - tr_ret, tr_drops);
-      $display("WALK-SIM squashes=%0d checked-after-the-walk=%0d rows-walked=%0d checked-after-the-kill=%0d", dut.core.wk_sq, dut.core.wk_chk, dut.core.wk_rows, dut.core.wk_kchk);
+      $display("WALK-SIM squashes-at-the-head=%0d checked-after-the-walk=%0d rows-walked=%0d checked-after-the-kill=%0d releases=%0d", dut.core.wk_sq, dut.core.wk_chk, dut.core.wk_rows, dut.core.wk_kchk, dut.core.wk_rel);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
                ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,
                ms_stmem, ms_stmem_fill, ms_stmem_park);

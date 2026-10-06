@@ -22,7 +22,7 @@
   {
     "EventName": "REDIR",
     "EventCode": "0x0005",
-    "BriefDescription": "Pipeline redirect (branch mispredict / flush)"
+    "BriefDescription": "Pipeline restart: a squash at the ROB head, or a mispredict's release"
   },
   {
     "EventName": "DCACC",
@@ -142,7 +142,7 @@
   {
     "EventName": "RD_WAIT",
     "EventCode": "0x0317",
-    "BriefDescription": "Redirect resolved in M, waiting for the ROB head (the mispredict drain)"
+    "BriefDescription": "A mispredict's restart: from its resolve to its release or its squash at the ROB head"
   },
   {
     "EventName": "DT_WALK",
