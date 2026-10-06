@@ -20,7 +20,8 @@ ln[*].plmem x3 : issue payload, each lane's scheduler; read at the selected entr
 plmem_f : issue payload, the FP scheduler
 ln[*].psmem x3 : source tags, each lane's scheduler (e_ps itself is read by the wakeup broadcast)
 psmem_f : source tags, the FP scheduler
-e_rob   : issue-queue ROB index, read only at [sel]
+# e_rob is flops: the kill (lanes 5.4e) looks every entry's ROB index up in the dead-entry vector
+# each cycle it holds.
 
 # ---- the physical register file: the largest array in the design ------------------------
 ish[*].mem x3 : PRF integer shards, one per lane; sharded by WRITER so each has ONE write port
@@ -44,12 +45,11 @@ cp[*].rmap x3 : committed map, one copy per commit port; read at the sources + c
 cp[*].smap x3 : speculative map, one copy per rename port; flush clears `lv`, so no wholesale copy is needed (`newer` picks)
 
 # ---- reorder buffer, frontend, predictor, MMU -------------------------------------------
-rob     : ROB status
-# NBANKS = next_pow2(IW) generate banks since Stage 3 inc 2 (was the two parity banks
-# ent0/ent1, q_dat0/q_dat1). At the shipping IW=2 that is 2 banks each; at IW=3 add bank[2..3].mem
-# and qbank[2..3].mem here in the same commit that flips the width.
-bank[0].mem  : ROB entries, bank 0 (of NBANKS=next_pow2(IW))
-bank[1].mem  : ROB entries, bank 1
+# The ROB holds a row per dispatch group: column k is one array, written by slot k, read by commit
+# port k and by the walk (lanes 5.4d/e). The load and store queues' ROB indexes (`rob`) are flops:
+# the kill looks every entry's up each cycle it holds.
+col[*].mem x3 : ROB entries, one column per slot {pold, noret, rd, prd}
+# The fetch queue keeps NBANKS = next_pow2(IW) banks.
 qbank[0].mem : fetch queue data, bank 0 (of NBANKS=next_pow2(IW))
 qbank[1].mem : fetch queue data, bank 1
 ras     : return address stack
