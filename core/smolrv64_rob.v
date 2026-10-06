@@ -9,15 +9,22 @@
 //
 // docs/Area-Efficient-Scalar-OoO.md 2: "The reorder buffer holds status, not data." An entry
 // is {noret, rd, prd}, which is exactly what `smolrv64_rename`'s commit port consumes.
+//
+// ROWS: a dispatch group takes a row, slot k in column k, so an entry's index is {row, column}
+// and column k is written only by slot k and read only by commit port k. The head commits
+// along its row from its first uncommitted column; a row may take several cycles to commit,
+// and the head moves to the next row when the row's last valid column commits. Positions
+// (head, tail, irr) are {wrap, row, column}, ordered as numbers; the tail is always column 0.
 module smolrv64_rob
-  #(parameter DEPTH = 16,
-    parameter IDXB  = 4,              // $clog2(DEPTH)
+  #(parameter ROWS  = 32,
+    parameter IDXB  = 7,              // $clog2(ROWS) + CB: an entry is {row, column}
     parameter PBITS = 9,
     parameter IW    = 2,              // the group width: IW allocations and IW commits a cycle
     parameter NW    = 3,              // simultaneous completion ports
     // the completion ports the irrevocable pointer reads in their own cycle (the store
     // queue's): a store passes `irr` the cycle it completes and leaves the queue a cycle sooner
-    parameter [NW-1:0] IRR_FWD = {NW{1'b0}})
+    parameter [NW-1:0] IRR_FWD = {NW{1'b0}},
+    parameter CB    = (IW > 1) ? $clog2(IW) : 1)   // column bits
    (input  wire                   clk,
     input  wire                   reset,
 
@@ -33,8 +40,8 @@ module smolrv64_rob
     // its trap not firing, so c_kill does not cover it and minstret would gain an
     // instruction that architecturally does not exist.
     input  wire [IW-1:0]          d_noret,
-    output wire [IW-1:0]          d_ready,      // [k]: room for k+1
-    output wire [IW*IDXB-1:0]     d_idx,        // the slot each takes; ride it with the op
+    output wire [IW-1:0]          d_ready,      // a row is free (every bit)
+    output wire [IW*IDXB-1:0]     d_idx,        // the entry each takes, {row, k}; ride it with the op
 
     // ---- completion: out of order, names its slot by the tag it was given ----
     input  wire [NW-1:0]          w_v,
@@ -44,11 +51,12 @@ module smolrv64_rob
     // `done` a cycle later, which keeps the completion cones out of retire.
     input  wire                   h_fin,
 
-    // ---- commit: the head and the entries behind it, in order, into smolrv64_rename ----
-    // c_kill[0]: the head is trapping (retire nothing, free nothing). c_kill[k], k > 0: entry k
-    // may not retire this cycle -- an entry behind the head retires only with every one before
-    // it, and never while M still holds its op (a trap or redirect resolved in M waits there for
-    // the head with done set; retiring it from behind the head retires the wrong path).
+    // ---- commit: column k of the head row on port k, in order, into smolrv64_rename ----
+    // c_kill[k] for the head's column: the head is trapping (retire nothing, free nothing). For
+    // a column behind it: that entry may not retire this cycle -- it retires only with every
+    // one before it, and never while M still holds its op (a trap or redirect resolved in M
+    // waits there for the head with done set; retiring it from behind the head retires the
+    // wrong path).
     input  wire [IW-1:0]          c_kill,
     output wire [IW-1:0]          c_valid,
     output wire [IW*6-1:0]        c_rd,
@@ -61,7 +69,7 @@ module smolrv64_rob
     // rollback: there is nothing to walk because rename never wrote the free-list array.
     input  wire                   flush,
     output wire                   empty,
-    output wire [IDXB:0]          occ_n,        // entries allocated now: the dispatch credit
+    output wire [IDXB-CB:0]       occ_n,        // rows allocated now: the dispatch credit
     // Which slot is oldest. An instruction that does anything beyond writing its own
     // register -- trap, redirect -- may act only when it IS this slot, or it would squash an
     // older op still in flight ahead of it.
@@ -76,71 +84,36 @@ module smolrv64_rob
    // {noret, rd, prd} and nothing else. rd_v is `|prd`; the destination SHARD is the top bits
    // of prd; and the DISPLACED register is not carried at all, because smolrv64_rename reads
    // rmap[c_rd] at commit and that still holds it.
-   localparam EW = 1 + 6 + PBITS;                  // {noret, rd, prd}
-   localparam [IDXB:0] DEPTH_S = DEPTH[IDXB:0];   // sized, so the occupancy check cannot truncate
-
-   // N-BANK ENTRY STORE: NBANKS = next_pow2(IW), so the <= IW consecutive allocations always
-   // land in DISTINCT banks (bank = pos[LB-1:0], index = pos[IDXB-1:LB]) -- ONE muxed
-   // {we,addr,data} per bank (one write statement per LUTRAM bank, else Vivado demotes it).
-   localparam integer NBANKS = 1 << $clog2(IW);
-   localparam integer LB     = $clog2(NBANKS);
-   localparam integer BD     = DEPTH / NBANKS;
-   localparam integer CB     = $clog2(IW + 1);    // a count of 0..IW
-   wire [EW-1:0] bank_brd [0:NBANKS-1];            // each bank's entry at the head-relative index
+   localparam EW    = 1 + 6 + PBITS;              // {noret, rd, prd}
+   localparam NCOL  = 1 << CB;                    // columns; those at IW and above are never valid
+   localparam DEPTH = ROWS * NCOL;                // the index space
+   localparam RB    = IDXB - CB;                  // row bits
+   localparam [RB:0] ROWS_S = ROWS[RB:0];         // sized, so the occupancy check cannot truncate
+   localparam [IDXB:0] ROW1 = NCOL[IDXB:0];       // one row, as a position step
    reg [DEPTH-1:0] v, done;                     // bulk-cleared on flush, so flops by necessity
-   reg [IDXB:0]    head, tail;                  // one extra MSB: full and empty differ by it
-   reg [IDXB:0]    irr;                         // head <= irr <= tail, same width
+   reg [IDXB:0]    head, tail, irr;             // {wrap, row, column}; head <= irr <= tail
    integer         ri, rj;
    initial begin
       v = {DEPTH{1'b0}}; done = {DEPTH{1'b0}}; head = 0; tail = 0; irr = 0;
    end
 
    wire [IDXB-1:0] hidx = head[IDXB-1:0];
-   wire [IDXB-1:0] tidx = tail[IDXB-1:0];
-   wire [IDXB:0]   occ  = tail - head;
+   wire [RB-1:0]   hrow = head[IDXB-1:CB];
+   wire [CB-1:0]   hcol = head[CB-1:0];
+   wire [RB-1:0]   trow = tail[IDXB-1:CB];
+   wire [RB:0]     occ  = tail[IDXB:CB] - head[IDXB:CB];   // rows, the head's counting
    assign empty    = (head == tail);
    assign occ_n    = occ;
    assign head_idx = hidx;
-   // the group's slots (tail + k) and the entries behind the head (head + k)
-   wire [IDXB-1:0] ti [0:IW-1];
-   wire [IDXB-1:0] hi [0:IW-1];
+   wire ready = (occ < ROWS_S);
    // slot k reads slot k-1: per-bit variables, so the chains are not loops to the simulator
-   wire [IW-1:0]   do_alloc /*verilator split_var*/, cv /*verilator split_var*/, do_commit;
-   wire [IW-1:0]   alloc_q = do_alloc;        // the same, read by the loops below
+   wire [IW-1:0]   cv /*verilator split_var*/;
+   wire [IW-1:0]   do_alloc = d_valid & {IW{ready}};
    genvar gk;
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: sl
-      localparam [IDXB:0] K1 = gk + 1;
-      assign ti[gk] = tidx + gk[IDXB-1:0];
-      assign hi[gk] = hidx + gk[IDXB-1:0];
-      assign d_idx[gk*IDXB +: IDXB] = ti[gk];
-      assign d_ready[gk] = (occ <= DEPTH_S - K1);
-      // in a flush cycle too: the flush arm below wins
-      assign do_alloc[gk] = d_valid[gk] & d_ready[gk] & ((gk == 0) ? 1'b1 : do_alloc[(gk == 0) ? 0 : gk - 1]);
-   end endgenerate
-
-   // ---- N-bank entry storage: one muxed write per bank, one read per head position ----
-   genvar gb;
-   generate for (gb = 0; gb < NBANKS; gb = gb + 1) begin: bank
-      reg [EW-1:0] mem [0:BD-1];
-      integer bi; initial for (bi = 0; bi < BD; bi = bi + 1) mem[bi] = {EW{1'b0}};
-      // write: whichever of the (<= IW) allocations targets this bank -- the positions are
-      // distinct mod NBANKS, so at most one does, hence a single write statement
-      reg              wen;
-      reg [IDXB-1:0]   wpos;
-      reg [EW-1:0]     wd;
-      integer j;
-      always @* begin
-         wen = 1'b0;  wpos = tidx;  wd = {d_noret[0], d_rd[0 +: 6], d_prd[0 +: PBITS]};
-         for (j = IW - 1; j >= 0; j = j - 1)
-            if (alloc_q[j] & (ti[j][LB-1:0] == gb[LB-1:0])) begin
-               wen = 1'b1;  wpos = ti[j];  wd = {d_noret[j], d_rd[j*6 +: 6], d_prd[j*PBITS +: PBITS]};
-            end
-      end
-      always @(posedge clk) if (wen) mem[wpos[IDXB-1:LB]] <= wd;
-      // read: the head-relative position in this bank (head, head+1, ...)
-      wire [LB-1:0]   roff = gb[LB-1:0] - hidx[LB-1:0];
-      wire [IDXB-1:0] rpos = hidx + {{(IDXB-LB){1'b0}}, roff};
-      assign bank_brd[gb] = mem[rpos[IDXB-1:LB]];
+      localparam [CB-1:0] K = gk;
+      assign d_idx[gk*IDXB +: IDXB] = {trow, K};
+      assign d_ready[gk] = ready;
    end endgenerate
 
    function automatic w_hits;          // (the h_fin assertion's)
@@ -166,19 +139,33 @@ module smolrv64_rob
             if (IRR_FWD[q] && w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) irr_hits = 1'b1;
       end
    endfunction
-   wire irr_done  = (irr != tail) & v[iidx] & (done[iidx] | irr_hits(iidx));
+   wire irr_done = (irr != tail) & v[iidx] & (done[iidx] | irr_hits(iidx));
+   // the entry after a position: the next column of its row while that is valid, else the next row
+   function automatic [IDXB:0] next_pos(input [IDXB:0] p);
+      begin
+         if ((p[CB-1:0] != NCOL - 1) && v[p[IDXB-1:0] + 1'b1]) next_pos = p + 1'b1;
+         else next_pos = {p[IDXB:CB] + 1'b1, {CB{1'b0}}};
+      end
+   endfunction
 
-   // c_kill[0]: the head is trapping. It must NOT commit -- a trap does not write rd -- and the
-   // redirect that follows flushes it, which returns its allocation through the free list's
-   // own pointer rollback. An entry behind the head retires with every one before it, and never
-   // in a flush cycle: a mispredicted branch COMMITS and redirects in the same cycle, and the
-   // entry behind it is the wrong path.
-   generate for (gk = 0; gk < IW; gk = gk + 1) begin: cm
-      wire [EW-1:0] e = bank_brd[hi[gk][LB-1:0]];
+   // ---- the columns: one write (slot k) and one read (the head row) each ----
+   // c_kill on the head's column: the head is trapping. It must NOT commit -- a trap does not
+   // write rd -- and the redirect that follows flushes it, which returns its allocation through
+   // the free list's own pointer rollback. A column behind it retires with every one before it,
+   // and never in a flush cycle: a mispredicted branch COMMITS and redirects in the same cycle,
+   // and the entry behind it is the wrong path.
+   generate for (gk = 0; gk < IW; gk = gk + 1) begin: col
+      localparam [CB-1:0] K = gk;
+      reg [EW-1:0] mem [0:ROWS-1];
+      integer bi; initial for (bi = 0; bi < ROWS; bi = bi + 1) mem[bi] = {EW{1'b0}};
+      always @(posedge clk) if (do_alloc[gk]) mem[trow] <= {d_noret[gk], d_rd[gk*6 +: 6], d_prd[gk*PBITS +: PBITS]};
+      wire [EW-1:0]   e  = mem[hrow];
+      wire [IDXB-1:0] ix = {hrow, K};
       if (gk == 0) begin: h
-         assign cv[0] = head_done & ~c_kill[0];
+         assign cv[0] = (hcol == K) & head_done & ~c_kill[0];
       end else begin: b
-         assign cv[gk] = cv[gk-1] & v[hi[gk]] & done[hi[gk]] & ~c_kill[gk] & ~flush;
+         assign cv[gk] = (hcol == K) ? (head_done & ~c_kill[gk])
+                       : (hcol < K) & cv[gk-1] & v[ix] & done[ix] & ~c_kill[gk] & ~flush;
       end
       assign c_prd[gk*PBITS +: PBITS] = e[PBITS-1:0];
       assign c_rd[gk*6 +: 6]          = e[PBITS +: 6];
@@ -186,25 +173,22 @@ module smolrv64_rob
       assign c_rd_v[gk]               = |e[PBITS-1:0];
    end endgenerate
    assign c_valid = cv;
-   assign do_commit = cv;
+   wire [IW-1:0] cvv = cv;                          // the same, read by the loops below
 
-   function automatic [CB-1:0] cnt(input [IW-1:0] x);
-      integer i;
-      begin cnt = {CB{1'b0}}; for (i = 0; i < IW; i = i + 1) cnt = cnt + {{(CB-1){1'b0}}, x[i]}; end
-   endfunction
-   wire [IDXB:0] head_n = head + {{(IDXB+1-CB){1'b0}}, cnt(do_commit)};
-   // the irrevocable pointer never falls behind the head: entries retiring together are all
-   // done, so the pointer is at least past them
-   wire [IDXB:0] irr_step = irr_done ? irr + 1'b1 : irr;
-   reg  [IDXB:0] irr_n;
-   integer       ik, im;
+   // the head after this cycle's commits: past the last committing column, or the next row
+   reg  [IDXB:0] head_n;
+   integer       hk;
    always @* begin
-      irr_n = irr_step;
-      for (ik = 1; ik < IW; ik = ik + 1)
-         if (do_commit[ik])
-            for (im = 0; im <= ik; im = im + 1)
-               if (irr_step == head + im[IDXB:0]) irr_n = head + ik[IDXB:0] + 1'b1;
+      head_n = head;
+      for (hk = 0; hk < IW; hk = hk + 1)
+         if (cvv[hk]) head_n = next_pos({head[IDXB:CB], hk[CB-1:0]});
    end
+   // the irrevocable pointer steps one entry and never falls behind the head
+   wire [IDXB:0] irr_step = irr_done ? next_pos(irr) : irr;
+   wire [IDXB:0] irr_lag  = head_n - irr_step;            // > 0 and < half the space: behind
+   wire [IDXB:0] irr_n    = ((irr_lag != 0) & ~irr_lag[IDXB]) ? head_n : irr_step;
+   // a flush empties the ROB at a row boundary: the head's row if nothing of it has committed
+   wire [IDXB:0] flush_pos = (head_n[CB-1:0] == {CB{1'b0}}) ? head_n : {head_n[IDXB:CB] + 1'b1, {CB{1'b0}}};
    always @(posedge clk) if (!reset)
       for (ri = 1; ri < IW; ri = ri + 1)
          if (d_valid[ri] && !d_valid[ri-1])
@@ -212,15 +196,15 @@ module smolrv64_rob
 
    always @(posedge clk) begin
       if (reset) begin
-         v <= {DEPTH{1'b0}}; done <= {DEPTH{1'b0}}; head <= 0; tail <= 0;
+         v <= {DEPTH{1'b0}}; done <= {DEPTH{1'b0}}; head <= 0; tail <= 0; irr <= 0;
       end else begin
          for (ri = 0; ri < IW; ri = ri + 1)
-            if (alloc_q[ri]) begin v[ti[ri]] <= 1'b1;  done[ti[ri]] <= 1'b0; end
-         tail <= tail + {{(IDXB+1-CB){1'b0}}, cnt(alloc_q)};
+            if (do_alloc[ri]) begin v[{trow, ri[CB-1:0]}] <= 1'b1;  done[{trow, ri[CB-1:0]}] <= 1'b0; end
+         if (|do_alloc) tail <= tail + ROW1;
          for (ri = 0; ri < NW; ri = ri + 1)
             if (w_v[ri]) done[w_ix[ri*IDXB +: IDXB]] <= 1'b1;
          for (ri = 0; ri < IW; ri = ri + 1)
-            if (do_commit[ri]) v[hi[ri]] <= 1'b0;
+            if (cvv[ri]) v[{hrow, ri[CB-1:0]}] <= 1'b0;
          head <= head_n;
          irr <= irr_n;
          // A flush kills everything YOUNGER than the entry committing this cycle -- the
@@ -229,9 +213,9 @@ module smolrv64_rob
          if (flush) begin
             v    <= {DEPTH{1'b0}};
             done <= {DEPTH{1'b0}};
-            tail <= head_n;
-            irr  <= head_n;
-            head <= head_n;
+            tail <= flush_pos;
+            irr  <= flush_pos;
+            head <= flush_pos;
          end
       end
    end
@@ -243,27 +227,29 @@ module smolrv64_rob
 
    // ---- invariants (always on: docs/rtl-rules.md A1) --------------------------------
    always @(posedge clk) if (!reset) begin
-      if (d_valid[0] & ~d_ready[0])
+      if (d_valid[0] & ~ready)
          $fatal(1, "smolrv64_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
       if (h_fin & ~w_hits(hidx))
-         $fatal(1, "smolrv64_rob: h_fin without a completion of the head (slot %0d)", hidx);
+         $fatal(1, "smolrv64_rob: h_fin without a completion of the head (entry %0d)", hidx);
       for (ri = 0; ri < NW; ri = ri + 1) if (w_v[ri]) begin
          if (~v[w_ix[ri*IDXB +: IDXB]])
-            $fatal(1, "smolrv64_rob: completion for slot %0d, which holds no live entry",
+            $fatal(1, "smolrv64_rob: completion for entry %0d, which holds no live op",
                    w_ix[ri*IDXB +: IDXB]);
          if (done[w_ix[ri*IDXB +: IDXB]])
-            $fatal(1, "smolrv64_rob: slot %0d completed twice", w_ix[ri*IDXB +: IDXB]);
+            $fatal(1, "smolrv64_rob: entry %0d completed twice", w_ix[ri*IDXB +: IDXB]);
          for (rj = 0; rj < NW; rj = rj + 1)
             if (rj > ri && w_v[rj] && (w_ix[rj*IDXB +: IDXB] == w_ix[ri*IDXB +: IDXB]))
-               $fatal(1, "smolrv64_rob: two ports completing slot %0d in one cycle",
+               $fatal(1, "smolrv64_rob: two ports completing entry %0d in one cycle",
                       w_ix[ri*IDXB +: IDXB]);
       end
-      if (c_valid[0] & ~v[hidx])
-         $fatal(1, "smolrv64_rob: committing an invalid head (head=%0d)", head);
+      if (~empty & ~v[hidx])
+         $fatal(1, "smolrv64_rob: the head (%0d) holds no live op", head);
+      if (tail[CB-1:0] != {CB{1'b0}})
+         $fatal(1, "smolrv64_rob: the tail is not at a row's first column (%0d)", tail);
       // Occupancy can never exceed the array. Catches a lost commit or a double allocate at
       // the moment it happens rather than as a wedge thousands of cycles later.
-      if ((tail - head) > DEPTH_S)
-         $fatal(1, "smolrv64_rob: occupancy %0d exceeds DEPTH %0d", tail - head, DEPTH);
+      if (occ > ROWS_S)
+         $fatal(1, "smolrv64_rob: occupancy %0d rows exceeds %0d", occ, ROWS);
    end
 endmodule
 

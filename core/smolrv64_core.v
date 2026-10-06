@@ -461,11 +461,13 @@ module smolrv64_core
    // free list with separate speculative and committed heads, where rollback is a pointer
    // restore. That already supports N uncommitted instructions; N is only ever 1 today
    // because M blocks. So the ROB holds the commit RECORD and re-orders it, nothing else.
-   localparam integer ROB_DEPTH = 32, ROB_IDXB = 5;
-   wire [IW*ROB_IDXB-1:0] rob_d_idxv;           // the ROB slot each slot takes
-   wire [IW-1:0]          rob_readyv;           // [k]: room for k+1
+   // 32 rows of a group each: an entry is {row, column}, slot k's in column k (smolrv64_rob).
+   localparam integer ROB_ROWS = 32, ROB_CB = (IW > 1) ? $clog2(IW) : 1, ROB_IDXB = 5 + ROB_CB;
+   localparam integer ROB_DEPTH = ROB_ROWS << ROB_CB;   // the index space
+   wire [IW*ROB_IDXB-1:0] rob_d_idxv;           // the entry each slot takes
+   wire [IW-1:0]          rob_readyv;           // a row is free
    wire                   rob_empty;
-   wire [ROB_IDXB:0]   rob_occ;
+   wire [5:0]             rob_occ;              // rows
    wire                ldw_int;            // the LD stream's write goes to a lane (completes at its drain)
    wire                few_int;            // ...and the FE stream's
    wire                sy_lane_ok;                   // lane A's slot is free for the SYSQ
@@ -1254,8 +1256,15 @@ module smolrv64_core
       end
       // the lane's ROB completion port: its op at issue (a load or store never; a mispredicting
       // CTI at its squash), its multiply in the reserved slot, its landing at the drain
+      // -- in its own ROB column: every op a lane runs or lands is its slot's (an integer register
+      // is renamed in its slot's lane), so the column is a constant and the ROB's other columns
+      // never compare this port
+      localparam [ROB_CB-1:0] COL = gl;
       assign l_wv[gl]  = (iss & ~mis & ~late) | m2 | dc;
-      assign l_wix[gl] = dp ? drob : m2 ? mrob2 : rob;   // dp: registers and the SYSQ's fire
+      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : rob;   // dp: registers and the SYSQ's fire
+      assign l_wix[gl] = {wix[ROB_IDXB-1:ROB_CB], COL};
+      always @(posedge clk) if (!reset && l_wv[gl] && wix[ROB_CB-1:0] != COL)
+         $fatal(1, "smolrv64_core: lane %0d completes ROB entry %0d, outside its column", gl, wix);
       if (gl > 0) begin: rw
          assign rob_wv[3 + gl] = l_wv[gl];  assign rob_wix[(3 + gl)*ROB_IDXB +: ROB_IDXB] = l_wix[gl];
       end
@@ -1578,18 +1587,16 @@ module smolrv64_core
    // NW=4: the store's ROB slot completes when the BUFFER writes it, not when it executes.
    // Routed through the existing completion mechanism (rule C2), which is parameterised on
    // exactly this -- not a private path to the ROB.
-   // The head's kill: a trap's done is latched (no live dTLB here). Behind the head, M's op
-   // retires only from the head.
-   assign rc_kill[0] = (m_valid & m_done_red & m_trap) | sy_trap;
+   // Commit port k is column k of the head row. The head's kill: a trap's done is latched (no
+   // live dTLB here). Behind the head, M's op retires only from the head.
+   wire rc_tkill = (m_valid & m_done_red & m_trap) | sy_trap;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc
-      localparam [ROB_IDXB-1:0] K = gs;
-      assign rc_idx[gs] = rob_head_idx + K;
-      assign rc_f[gs]   = rc_rdv[gs] & rc_rd[gs*6+5];     // writes an f-register
-      if (gs > 0) begin: kb
-         assign rc_kill[gs] = m_valid & (m_rob_idx == rc_idx[gs]);
-      end
+      localparam [ROB_CB-1:0] K = gs;
+      assign rc_idx[gs]  = {rob_head_idx[ROB_IDXB-1:ROB_CB], K};
+      assign rc_f[gs]    = rc_rdv[gs] & rc_rd[gs*6+5];     // writes an f-register
+      assign rc_kill[gs] = (rob_head_idx[ROB_CB-1:0] == K) ? rc_tkill : m_valid & (m_rob_idx == rc_idx[gs]);
    end endgenerate
-   smolrv64_rob #(.DEPTH(ROB_DEPTH), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(ROB_NW), .IRR_FWD({{(ROB_NW-4){1'b0}}, 4'b1000})) u_rob   // w_v[3]: sq_k_take
+   smolrv64_rob #(.ROWS(ROB_ROWS), .IDXB(ROB_IDXB), .PBITS(RN_PBITS), .IW(IW), .NW(ROB_NW), .IRR_FWD({{(ROB_NW-4){1'b0}}, 4'b1000})) u_rob   // w_v[3]: sq_k_take
      (.clk(clk), .reset(reset),
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
@@ -3575,7 +3582,7 @@ module smolrv64_core
             e_prv <= u_csr.priv;                  // privilege BEFORE the trap
             e_mkind[0] <= 2'd0;  e_mpa[0] <= 56'd0;     // a trap performed no data access
             e_mdata[0] <= 64'd0; e_msz[0] <= 4'hF;
-         end else if (retire[0]) begin
+         end else if (|retire) begin
             e_trap <= 1'b0;  e_cause <= 64'd0;  e_tval <= 64'd0;
             e_prv <= u_csr.priv;
          end
@@ -3684,7 +3691,7 @@ module smolrv64_core
    wire       ir_ld = |(s_v & s_ld_nb);
    wire       ir_st = |(s_v & s_st_nb);
    wire [3:0] ir_n  = ones_nl(s_v);
-   wire [ROB_IDXB+1:0] rob_inflt = {1'b0, rob_occ} + {{(ROB_IDXB-2){1'b0}}, ir_n};
+   wire [6:0]  rob_inflt = {1'b0, rob_occ} + {6'd0, |s_v};          // rows: the ROB's and the IR group's
    reg  [NL-1:0] cr_i;                                 // ...and lane k has room for one more
    integer crk;
    always @* for (crk = 0; crk < NL; crk = crk + 1)
@@ -3712,8 +3719,8 @@ module smolrv64_core
    wire cr_ld = ~cbo_any & (ir_ld ? lq_d_ready2 : lq_d_ready);
    wire cr_st = ~cbo_any & (ir_st ? sq_d_ready2 : sq_d_ready);
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & ~ir_ld & ~ir_st;
-   reg  [IW-1:0] cr_rob;                              // room for the group's slots 0..k
-   always @* for (crk = 0; crk < IW; crk = crk + 1) cr_rob[crk] = rob_inflt + crk + 1 <= ROB_DEPTH;
+   reg  [IW-1:0] cr_rob;                              // a ROB row for the group (every bit)
+   always @* for (crk = 0; crk < IW; crk = crk + 1) cr_rob[crk] = rob_inflt < ROB_ROWS;   // a row for the group
    // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
    // is dropped), while a rename shard is low, or while a serialising op is in flight or in the IR
    wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser);
@@ -3874,16 +3881,16 @@ module smolrv64_core
       end
    end
    // ---- core_dbg: the state that says what the pipe waits on, for the board's wedge ILA ----
-   // [127:112] the FPU's state (fp_unit dbg), [111:90] flags, [89:84] SQ occupancy, [83:78] LQ occupancy, [77:72] ROB head index,
+   // [127:112] the FPU's state (fp_unit dbg), [111:91] flags, [90:85] SQ occupancy, [84:79] LQ occupancy, [78:72] ROB head index,
    // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev[38:0] (this cycle's event and stall
    // attribution, the counters' bus; the top-down depth bits above 38 stay off this ILA).
    wire [15:0] fpu_dbg;
-   assign core_dbg = {fpu_dbg, rob_empty, rc_v[0], m_valid, m_done, m_at_head, head_block, m_needs_head,
+   assign core_dbg = {fpu_dbg, rob_empty, m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,
                       {(6-SQ_IB-1){1'b0}}, sq_occ, {(6-LQ_IB-1){1'b0}}, lq_occ,
-                      {(6-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev[38:0]};
+                      {(7-ROB_IDXB){1'b0}}, rob_head_idx, m_insn, fpu_busy, hpm_ev[38:0]};
 endmodule
 
 `undef PL_DECL

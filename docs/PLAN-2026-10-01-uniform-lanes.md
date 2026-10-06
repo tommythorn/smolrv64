@@ -439,10 +439,15 @@ four lanes and the four FP slices.
    ROB's credit is a row; `{row, col}` is the age. Each lane completes its own column. The
    ports that complete any column -- the FP landing, the store queue's irrevocable take, the
    MD stage and M -- take the column from the slot carried in their tag. The landings already
-   go through their op's lane, with one exception to fix first: a landing picks its lane by
-   its register's shard, so a load to x0 (`prd` 0) lands in lane A whatever its slot. With
-   column-owned completion the landing carries its slot instead (two bits in the LQ entry and
-   the FP tag).
+   go through their op's lane.
+   **Built (2026-10-05):** `smolrv64_rob` keeps a row per group: column k is one LUTRAM written
+   by slot k and read by commit port k, the head commits along its row from its first
+   uncommitted column, and the ROB's credit is a free row. A lane's completion port carries its
+   column as a constant (asserted): every integer register is renamed in its slot's lane, and a
+   load without a destination never lands (it completes on M's port), so the expected x0
+   exception does not arise and the LQ carries nothing new. 60 M: 41,106,564 at IW=3 (+0.78% on
+   the dense ROB's 40,786,470), 41,464,991 at IW=4 (+0.86% on its dense 41,109,903); 300 M at
+   IW=4 +3.35% on the dense ROB.
 5. **5.4e: restart at resolve (C6).** A mispredict recovers when it resolves, not when it
    reaches the head. Fetch already restarts at resolve (`fr_set`); what moves is the squash.
    Everything younger than the branch dies by age (`{row, col}` against the branch's) in the

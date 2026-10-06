@@ -415,8 +415,9 @@ module smolrv64_rename
          // push above); what must hold is that the shards exist, so a register is never dropped.
          if (c_w[ik] && !(|fre_n[ik]))
             $fatal(1, "smolrv64_rename: commit %0d frees pr=%h of no shard", ik, c_pold[ik]);
-         if (ik > 0 && c_valid[ik] && !c_valid[ik-1])
-            $fatal(1, "smolrv64_rename: commit %0d without the one before it", ik);
+         // the commits are one run of ports (a ROB row from its head's column)
+         if (ik > 1 && c_valid[ik] && !c_valid[ik-1] && |(c_valid & ((1 << (ik - 1)) - 1)))
+            $fatal(1, "smolrv64_rename: commit %0d is not in one run with the commits before it", ik);
          // x0 must never be renamed: it has no value to hold and freeing it would inject
          // physical register 0 into a free list.
          if (alloc[ik] && r_rd[ik*6 +: 6] == 6'd0)

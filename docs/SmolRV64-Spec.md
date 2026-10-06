@@ -159,7 +159,7 @@ held a group until its room appeared and dispatched it in that cycle.
 | cause | meaning |
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
-| `~cr_rob1..3` | no ROB room (32 entries) beyond the IR group (`st_rob`) |
+| `~cr_rob1..3` | no free ROB row (32 rows) beyond the IR group's (`st_rob`) |
 | `~cr_ia/ib/ic/l/f` | the member's scheduler has no entry beyond its dispatch-stage register and the IR's op — integer 10 each, in-order 12, FP 8 (§6.1); `~cr_ld`/`~cr_st`, no LQ or SQ entry beyond the IR's (`st_iq`, `st_lq`, `st_sq`) |
 | `rn_stall` | any rename shard below `LOWAT`=4 free registers (`st_rn`) |
 | `cr_ser`, `cr_csr` | a serializing op -- a fence, `fence.i`, an AMO, an xret, `ecall`/`ebreak`/`wfi`/`sfence.vma`, a trap from dispatch -- is **alone in flight**: it pops only when the ROB AND the store queue have drained (`drained`, rule C5) and the IR is empty, and nothing pops behind it until it commits. A CSR op does not drain: it waits only for the CSR op before it (`csr_infl`, or one in the IR) (`st_srz`) |
@@ -478,7 +478,13 @@ A physical register's shard is encoded in its number and never changes, so a com
 
 ## 6. Reorder buffer
 
-- **32 entries**, status only — no result values, no PC, no operands.
+- **32 rows of a group**, status only — no result values, no PC, no operands. A dispatch
+  group takes a row, slot k in column k, so an entry's index is `{row, column}` and that index
+  is its age. A row has 2^⌈log2 `IW`⌉ columns (at IW=3 the fourth is never valid); the
+  dispatch credit is a free row.
+- Column k is one array, written only by slot k and read only by commit port k. Commit runs
+  along the head's row from its first uncommitted column; a row may take several cycles, and
+  the head moves to the next row when the row's last valid column commits.
 
 **Entry format — 16 bits.** `ent[]` is `{noret, rd, prd}`, plus `v` and `done` as separate
 bulk-clearable bit vectors.
@@ -488,8 +494,8 @@ bulk-clearable bit vectors.
 | `noret` | 1 | commits but must not be counted (see below) |
 | `rd` | 6 | architectural destination, unified numbering (0–31 int, 32–63 FP) |
 | `prd` | `PBITS`=9 | physical register allocated; **0 when none** |
-| | **16** | × `DEPTH`=16 = **256 bits** |
-| `v[16]`, `done[16]` | 32 | separate flops — both are bulk-cleared on flush |
+| | **16** | × 32 rows × `IW` columns = **1,536 bits** at IW=3 |
+| `v`, `done` | 2 × 32 × 2^⌈log2 `IW`⌉ | separate flops — both are bulk-cleared on flush |
 
 **Three fields are deliberately absent**, each recoverable from state the design already
 keeps. The ROB is sized by the *window*; the scheduler that needs execute detail is sized by
@@ -500,7 +506,12 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 | `rd_v` | `\|prd` | physical register 0 is architectural x0's permanent mapping and is never freed, so it is never allocated |
 | `shard` | `prd[PBITS-1:IDXB]` | a physical register's shard is the top bits of its number and never changes |
 | `pold` | `rmap[c_rd]`, read at commit | `rmap` holds committed state, so in the cycle an entry commits its architectural register still maps to what that entry displaced; the commit write is what replaces it |
-- Completion is by **slot index**, allocated at rename and carried with the op.
+- Completion is by **index**, allocated at rename and carried with the op. Lane k completes
+  only column k: every op a lane runs or lands is its slot's (an integer register is renamed
+  in its slot's lane), so the lane's port carries its column as a constant (asserted) and the
+  other columns never compare it. The shared ports -- M's (with the landing loads), the FP
+  landing, the store queue's commit, the MD stage and a mispredict's squash -- complete any
+  column.
 - Commit reads `done`, a register: an op completes in one cycle and commits in a later one.
   The one exception is the head completing in a flush cycle (`h_fin`: a mispredict at its
   squash, M's or the SYSQ's redirecting op), which commits in that cycle, before the flush.
@@ -512,7 +523,8 @@ keeps. The ROB is sized by the *window*; the scheduler that needs execute detail
 - The irrevocable pointer reads the store queue's completion port (`IRR_FWD`) in its own
   cycle as well as `done`: without it a store leaves the SQ a cycle later, and the boot loses
   another 2.8% to `be:sq-full`.
-- Squash is **pointer-only**; there is nothing to walk.
+- Squash is **pointer-only**; there is nothing to walk. A flush leaves the head, the tail
+  and `irr` at the next row boundary (the head's own row if nothing of it has committed).
 - `noret` exists because an injected `OP_IRQ` can commit with its trap not firing, and
   `minstret` must not count an instruction that architecturally does not exist.
 
@@ -530,10 +542,9 @@ longer sits on every store for the ~6 cycles the cache takes. The pointer is con
 on purpose: it stops at ANY not-done entry, a load in flight or an FP op included, although
 neither can restart -- letting a store commit past an older load that has not read yet
 needs a write-after-read check in the load queue (the store's drain must not pass the
-load's read), and that is the next step, measured separately. On a flush the pointer
-returns to the head (`head + 1` when the head commits in that cycle);
-`(irr - head) > (tail - head)` is fatal. Cost: one 5-bit pointer, one `done` lookup, one
-4-bit compare in `smolrv64_core`.
+load's read), and that is the next step, measured separately. It steps like the head, along a row and then to the next.
+On a flush it returns with the head (above); `(irr - head) > (tail - head)` is fatal. Cost:
+one `{wrap, row, column}` pointer, one `done` lookup, one index compare in `smolrv64_core`.
 
 Simulation-only side arrays (`cs_pc`, `cs_insn`, `cs_val`, `cs_mkind`, `cs_mpa`) hold the
 cosim payload per slot so the ROB stays status-only in hardware.
@@ -725,7 +736,7 @@ until this one's adds had issued. Reordering: **29.44 cycles/pixel, -25%**.
 | field | bits | meaning |
 |---|---|---|
 | `v` | 1 | entry live |
-| `e_rob` | `ROBB`=5 | ROB slot, carried to completion |
+| `e_rob` | `ROBB`=7 | ROB entry `{row, column}`, carried to completion |
 | `e_ps[NSRC]` | `NSRC` × `PBITS`=9 | source **physical** registers |
 | `e_r[NSRC]` | `NSRC` | per-source ready bits |
 

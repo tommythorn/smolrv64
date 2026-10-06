@@ -750,7 +750,7 @@ module tb;
    // Trainings, and how many of them came from an instruction that never retired (a wrong-path
    // CTI resolves out of order and trains before the older mispredict squashes it): resolve marks
    // the ROB entry, dispatch into it clears the mark, a commit of a marked entry counts.
-   reg [31:0] tr_mk;
+   reg [255:0] tr_mk;          // by ROB entry
    integer    tmk;
    reg [63:0] tr_n, tr_ret;
    reg [63:0] tr_drops;
@@ -793,13 +793,13 @@ module tb;
    // disassembly from the ELF.
    integer    kf;  reg kan_on;  reg [63:0] kan_last, kan_next, kan_rid;
    // sized for a ROB of up to 32 entries; ROB indices are zero-extended to 5 bits
-   reg [63:0] kan_id [0:31];  reg kan_live [0:31];  reg [8*2-1:0] kan_stg [0:31];
+   reg [63:0] kan_id [0:255];  reg kan_live [0:255];  reg [8*2-1:0] kan_stg [0:255];   // by ROB entry
    reg [63:0] kan_sid;  reg kan_sopen;  reg [4:0] kan_sk;
    reg [8*256-1:0] kan_path;
    initial begin
       kan_on = $value$plusargs("kanata=%s", kan_path);
       kan_last = 64'd0; kan_next = 64'd0; kan_rid = 64'd0; kan_sopen = 1'b0; kan_sk = 5'd0; kan_sid = 64'd0;
-      for (tdi = 0; tdi < 32; tdi = tdi + 1) begin kan_live[tdi] = 1'b0; kan_id[tdi] = 64'd0; kan_stg[tdi] = "--"; end
+      for (tdi = 0; tdi < 256; tdi = tdi + 1) begin kan_live[tdi] = 1'b0; kan_id[tdi] = 64'd0; kan_stg[tdi] = "--"; end
       if (kan_on) begin
          kf = $fopen(kan_path, "w");
          if (kf == 0) begin $display("FATAL: cannot open +kanata=%0s", kan_path); $finish; end
@@ -812,7 +812,7 @@ module tb;
       end
    endtask
    task kan_stage;                // an instruction moves to a new stage
-      input [4:0] ix; input [8*2-1:0] stg;
+      input [7:0] ix; input [8*2-1:0] stg;
       begin
          if (kan_live[ix] && kan_stg[ix] != stg) begin
             kan_tick;
@@ -823,7 +823,7 @@ module tb;
       end
    endtask
    task kan_end;                  // retire (0) or flush (1)
-      input [4:0] ix; input flushed;
+      input [7:0] ix; input flushed;
       begin
          if (kan_live[ix]) begin
             kan_tick;
@@ -881,7 +881,7 @@ module tb;
       end
    endtask
    task kan_new;                  // a dispatched instruction: continues its fetch-side row if it has one
-      input [4:0] ix; input [63:0] pc; input [31:0] insn; input [7:0] sq;
+      input [7:0] ix; input [63:0] pc; input [31:0] insn; input [7:0] sq;
       begin
          kan_tick;
          kan_live[ix] = 1'b1;  kan_stg[ix] = "Ds";
@@ -904,22 +904,22 @@ module tb;
       // 1. completions registered last cycle, then this cycle's issues
       for (kw = 0; kw < `SMOLRV64_IW+5; kw = kw + 1) if (kan_wv_q[kw]) kan_stage(kan_wix_q[kw*5 +: 5], "Cm");
       for (kw = 0; kw < dut.core.NL; kw = kw + 1)
-         if (dut.core.l_iss[kw]) kan_stage(5'(dut.core.l_rob[kw]), kw == 0 ? "Xa" : kw == 1 ? "Xb" : kw == 2 ? "Xc" : "Xd");
-      if (dut.core.m_go)     kan_stage(5'(dut.core.m_go_rob), "M");
-      if (dut.core.iss_f)    kan_stage(5'(dut.core.j_rob),  "F");
+         if (dut.core.l_iss[kw]) kan_stage(8'(dut.core.l_rob[kw]), kw == 0 ? "Xa" : kw == 1 ? "Xb" : kw == 2 ? "Xc" : "Xd");
+      if (dut.core.m_go)     kan_stage(8'(dut.core.m_go_rob), "M");
+      if (dut.core.iss_f)    kan_stage(8'(dut.core.j_rob),  "F");
       kan_wv_q  <= dut.core.rob_wv;
       kan_wix_q <= dut.core.rob_wix;
       // 2. retire (up to IW), then flush every live entry a backend redirect squashes. After
       // the issues: the ROB write-forwards a writeback to the head, so an ALU op can issue and
       // retire in the same cycle.
-      for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.rc_v[kw]) kan_end(5'(dut.core.rc_idx[kw]), 1'b0);
-      if (dut.core.redirect) for (kw = 0; kw < 32; kw = kw + 1) kan_end(kw[4:0], 1'b1);
+      for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.rc_v[kw]) kan_end(8'(dut.core.rc_idx[kw]), 1'b0);
+      if (dut.core.redirect) for (kw = 0; kw < 256; kw = kw + 1) kan_end(kw[7:0], 1'b1);
       // 3. the frontend: last cycle's queue pushes, the instruction register, then dispatch
       for (kw = 0; kw < 3; kw = kw + 1) if (psh_v[kw]) kq_stage(psh_seq[kw], "Dq");
       for (kw = 0; kw < dut.core.IW; kw = kw + 1) if (dut.core.s_v[kw]) kq_stage(dut.core.s_seq[kw], "Ir");
       if (trace_on) begin
          for (kw = 0; kw < dut.core.IW; kw = kw + 1)
-            if (dut.core.s_takev[kw]) kan_new(5'(dut.core.s_rob[kw]), dut.core.s_pc[kw], dut.core.s_insn[kw], dut.core.s_seq[kw]);
+            if (dut.core.s_takev[kw]) kan_new(8'(dut.core.s_rob[kw]), dut.core.s_pc[kw], dut.core.s_insn[kw], dut.core.s_seq[kw]);
       end
       // ...a frontend redirect clears the bundle register, the queue and the IR; else this
       // cycle's push is recorded (it shows next cycle) and a fetched bundle opens its rows
