@@ -585,6 +585,38 @@ IW=3) and a second read port per column; one read per slot on each SMAP and RMAP
 dead-row compare per scheduler, LQ and landing-buffer entry; the FPU's in-flight table (8
 entries of a ROB index).
 
+## Step 5.4f: two read ports per lane, three in the FP pipe (design, 2026-10-06)
+
+**Decided (Tommy, 2026-10-06): IW=4 as soon as it times, before 5.5, and with 8 integer read
+ports, not 12.** Integer registers are read only by the four lanes, two ports each; FP
+registers only in the FP pipe, three ports (a 3R1W FP file).
+
+**Today** every integer shard has `2*NL + 4` read ports (10 at IW=3, 12 at IW=4): the lanes'
+two each, the store queue's data read, and the F/CTF port's three, which read the integer
+operands of divides, of the FP ops with an integer source (`fcvt.*.w/l`, `fmv.*.x`) and of
+system ops (a CSR's `rs1`, `sfence.vma`). Each FP slice has four reads (the F port's three, the
+store queue's) and two write banks behind a live-value table (FP loads, the F stage).
+
+**The moves**, each a lockstep increment, measured at IW=3 and IW=4:
+
+1. **Store data from the lane.** The store's lane already reads `rs2` at its address
+   generation; it hands the value to the store queue entry with the address when `rs2` is ready
+   (the queue's snoop, armed at allocation, covers a later write). The store queue's read port
+   goes. An FP store's data becomes a store-data op in the FP pipe, one of its three reads.
+2. **Divides issue in their slot's lane**, which reads both operands and hands them to the one
+   MD stage (one divide in flight stays a dispatch credit); the result lands through the lane's
+   landing buffer as today.
+3. **The FP ops with an integer source issue in their slot's lane**, which reads `rs1` and hands
+   it to the F stage (the F stage takes its scheduler's pick or a lane's handoff).
+4. **System ops read their operands in lane A**, which already carries them (a head op goes
+   alone), and hand them to the SYSQ.
+5. **The FP write side:** an FP load's result takes its slice's one write port through a landing
+   buffer, as an integer load takes its lane's, and the second bank and the live-value table go.
+
+Then the F port reads FP registers only, the integer shards are 2R per lane, and the FP slices
+3R1W. **After 5.4f:** the IW=4 timing build, the default flipped to IW=4 (board gate, GB5),
+then 5.5.
+
 ## Step 5.5 in detail: load-hit speculation (design, 2026-10-05)
 
 **Today, a hit.** X is the load's execute cycle in its lane (address generation); M fills and
