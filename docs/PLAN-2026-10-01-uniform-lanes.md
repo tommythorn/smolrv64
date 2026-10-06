@@ -618,15 +618,18 @@ only data already in a register file at dispatch.
    it to the F stage (the F stage takes its scheduler's pick or a lane's handoff).
 4. **System ops read their operands in lane A**, which already carries them (a head op goes
    alone), and hand them to the SYSQ.
-5. **One FP slice, 3R1W** (Tommy, 2026-10-06): one 64-register FP file and one free list in
-   place of a slice per slot (its banks already hand out several registers a cycle: a group
-   can hold an FP op and an FP load); an FP load's result takes the file's one write port
-   through a landing buffer, as an integer load takes its lane's, and the second bank and the
-   live-value table go.
+5. **The FP file as two 3R1W shards, sharded by writer** (Tommy, 2026-10-06): shard 4 written
+   by the FP pipe, shard 5 by FP loads, each 64 registers with one free list (a shard must hold
+   all 32 FP architectural registers and one more), in place of a slice per slot with two
+   banks and a live-value table each. Rename picks an FP destination's shard by its producer
+   (a load or not), as `shard_of` does for the integer lanes; the FP pipe's three operands take
+   their value from the shard their number names. The two writers never meet, so an FP load
+   lands at once and needs no landing buffer. The fallback, if FP must give way for timing:
+   one shard, FP loads through its one write port behind a landing buffer.
 
 The names follow: the shared port is the FP/MD/SYS port, and no comment or document calls it
 the CTF's. Then it reads FP registers only, the integer shards are 2R per lane, and the FP
-file 3R1W. **After 5.4f:** the IW=4 timing build and the default flipped to IW=4 (board gate,
+shards 3R1W each. **After 5.4f:** the IW=4 timing build and the default flipped to IW=4 (board gate,
 GB5), then the pipe trace (step 6, moved ahead of 5.5: Tommy wants to see the front end
 first), then 5.5.
 
