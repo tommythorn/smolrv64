@@ -929,10 +929,10 @@ module rv_soc_top #(
 `endif
    wire [LAW-1:0] l_line = m_q_addr - LLBASE;    // local line index
    reg            l_busy, l_rd, l_wd;           // taken; a read's beats / a write's done owed
-   reg            l_ld;                          // the line is being read out of lmem this cycle
+   reg            l_ld, l_ld2;                   // the line is read out of lmem / into l_q2 this cycle
    reg  [MIDW-1:0] l_id;
    reg  [1:0]     l_beat;
-   reg  [511:0]   l_q;
+   reg  [511:0]   l_q, l_q2;                     // the line, and the block RAM's output register
    wire           l_take   = m_q_valid & m_is_local & ~l_busy;
    wire           l_r_go   = l_rd & ~ddr_r_valid;               // a beat leaves this cycle
    wire           l_w_go   = l_wd & ~ddr_w_valid;
@@ -949,11 +949,13 @@ module rv_soc_top #(
          else        l_q <= lmem[l_line[LLW-1:0]];
          l_id <= m_q_id;
       end
-      if (reset) begin l_busy <= 1'b0; l_rd <= 1'b0; l_wd <= 1'b0; l_ld <= 1'b0; end
+      l_q2 <= l_q;
+      if (reset) begin l_busy <= 1'b0; l_rd <= 1'b0; l_wd <= 1'b0; l_ld <= 1'b0; l_ld2 <= 1'b0; end
       else begin
          l_ld <= l_take & ~m_q_we;
+         l_ld2 <= l_ld;
          if (l_take) begin l_busy <= 1'b1; l_beat <= 2'd0; l_wd <= m_q_we; end
-         if (l_ld) l_rd <= 1'b1;
+         if (l_ld2) l_rd <= 1'b1;
          if (l_r_go) begin
             l_beat <= l_beat + 2'd1;
             if (l_beat == 2'd3) begin l_rd <= 1'b0; l_busy <= 1'b0; end
@@ -978,7 +980,7 @@ module rv_soc_top #(
    assign m_r_id    = ddr_r_valid ? ddr_r_id   : l_id;
    assign m_r_beat  = ddr_r_valid ? ddr_r_beat : l_beat;
    assign m_r_last  = ddr_r_valid ? ddr_r_last : (l_beat == 2'd3);
-   assign m_r_data  = ddr_r_valid ? ddr_r_data : l_q[l_beat*128 +: 128];
+   assign m_r_data  = ddr_r_valid ? ddr_r_data : l_q2[l_beat*128 +: 128];
    assign m_w_valid = ddr_w_valid | l_w_go;
    assign m_w_id    = ddr_w_valid ? ddr_w_id : l_id;
 

@@ -136,17 +136,20 @@ module fp_unit #(parameter TAGW = 24,
    assign res_tag    = tag_q;
    assign busy       = req_v_q | (nflight_q != '0) | out_valid_q;
 
+   // The held request's fields load on every hand-over (none can come while one is held), so
+   // their enable is `fire` alone: neither the flush nor fpnew's ready is in it.
+   always_ff @(posedge clk) if (fire) begin
+      req_ops_q <= iss_operands; req_op_q  <= iss_op;
+      req_mod_q <= iss_op_mod; req_sf_q <= iss_src_fmt; req_df_q <= iss_dst_fmt;
+      req_if_q  <= iss_int_fmt; req_rnd_q <= iss_rnd;  req_tag_q <= iss_tag;
+   end
    always_ff @(posedge clk) begin
       if (reset | flush) begin
          req_v_q <= 1'b0; nflight_q <= '0; out_valid_q <= 1'b0;
       end else begin
          if (out_valid_q & res_ready) out_valid_q <= 1'b0;
          if (fpn_take) req_v_q <= 1'b0;
-         if (fire & ~fpn_in_ready) begin        // fpnew declined: hold it here
-            req_v_q   <= 1'b1;    req_ops_q <= iss_operands; req_op_q  <= iss_op;
-            req_mod_q <= iss_op_mod; req_sf_q <= iss_src_fmt; req_df_q <= iss_dst_fmt;
-            req_if_q  <= iss_int_fmt; req_rnd_q <= iss_rnd;  req_tag_q <= iss_tag;
-         end
+         if (fire & ~fpn_in_ready) req_v_q <= 1'b1;   // fpnew declined: hold it here
          // NOT ALL OPS ARE PIPELINED. NONCOMP (MINMAX/SGNJ/CMP/CLASSIFY) and parts of CONV
          // come back COMBINATIONALLY -- fpnew asserts out_valid in the very cycle it accepts
          // the op, PipeRegs notwithstanding. The old FSM had an explicit branch for this in

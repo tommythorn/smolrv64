@@ -1570,7 +1570,9 @@ never a partition:
 `ST_MEM` and `ST_FPU` deliberately include the *dependent* wait, charged to the unit that
 owns the register being waited on: when a unit stopped blocking M, the wait did not go away,
 it moved to X, and charging it to `ST_SER` made a data dependency read as a serializing op.
-A consumer waiting on both a load and an FP result is charged to `ST_MEM`.
+A consumer waiting on both a load and an FP result is charged to `ST_MEM`. The schedulers'
+"blocked on" reports are registered before they are classified, so the dependent wait is the
+one the schedulers reported the cycle before.
 
 **Reading the report.** On the board (once, `tools/perf-smol-setup.sh` lowers
 `perf_event_paranoid` so no `sudo` is needed; copy `docs/smolrv64-perf-events.json` beside

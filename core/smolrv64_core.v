@@ -1998,7 +1998,7 @@ module smolrv64_core
    reg [3:0]          sy_xcause;
    reg [63:0]         sy_xtval;
    reg                sy_qf;     // the trap is a queue entry's translation fault (the op is a load or store)
-   initial begin sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; sy_qf = 1'b0; end
+   initial begin sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; sy_qf = 1'b0; sy_instret = 1'b0; end
    // A QUEUE ENTRY WHOSE TRANSLATION FAULTED TRAPS FROM HERE. It never completes (a load is never
    // sent, a store never commits), so its op reaches the ROB head and stays; its record then loads
    // the SYSQ as a trap from dispatch does, and fires through sy_fire, the one trap gate. The SYSQ
@@ -2035,7 +2035,7 @@ module smolrv64_core
    // head) is younger and dies at the trap's redirect: the record takes the SYSQ from it.
    wire sy_at_head = sy_v & (sy_rob == rob_head_idx);
    wire qf_in = qfr_v & ~sy_at_head;
-   wire sy_instret = sy_is_csr & ((sy_addr == 12'hC02) | (sy_addr == 12'hB02));
+   reg  sy_instret;                     // a CSR op on instret/minstret, decoded as it enters
    wire sy_fire    = sy_at_head & sy_lane_ok & (~sy_instret | sy_head_q);   // its result takes lane A's slot
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
@@ -2053,6 +2053,7 @@ module smolrv64_core
       if (iss_sys) begin
          sy_v <= 1'b1; sy_rob <= j_rob; sy_prd <= qf_prd; sy_rd_v <= qf_rd_v;
          sy_is_csr <= qf_is_csr; sy_func <= qf_csr_func; sy_addr <= qf_imm[11:0];
+         sy_instret <= qf_is_csr & ((qf_imm[11:0] == 12'hC02) | (qf_imm[11:0] == 12'hB02));
          sy_src <= qf_csr_func[2] ? {59'b0, qf_imm[16:12]} : xf_rs1;
          sy_pc <= qf_pc; sy_seq <= qf_seq; sy_insn <= qf_insn;
          sy_xt <= j_istrap;
@@ -2065,6 +2066,7 @@ module smolrv64_core
       if (qf_in) begin
          sy_v <= 1'b1;  sy_rob <= qfr_rob;  sy_prd <= {RN_PBITS{1'b0}};  sy_rd_v <= 1'b0;
          sy_is_csr <= 1'b0;  sy_func <= 3'd0;  sy_addr <= 12'd0;  sy_src <= 64'd0;  sy_insn <= 32'd0;
+         sy_instret <= 1'b0;
          sy_pc  <= {{(PCW-39){qfr_pc[38]}}, qfr_pc};
          sy_seq <= qfr_seq;
          sy_xt <= 1'b1;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;
@@ -2374,9 +2376,21 @@ module smolrv64_core
    // both -- and matches how these events already behaved (the stack sums past 100%).
    // Gated on "no lane issued", not on M: M busy with loads would mask an FP chain that is the
    // critical path.
-   reg  no_issue;
+   // The schedulers' blocking reports are registered first: classified a cycle later, they keep
+   // the wake and select out of the event bus.
+   reg  no_issue, rf_blk_vq;
+   reg  [RN_PBITS-1:0] rf_blk_pq;
+   reg  [NL-1:0] l_blk_vq;
+   reg  [RN_PBITS-1:0] l_blk_pq [0:NL-1];
    integer nik;
-   always @* begin no_issue = 1'b1; for (nik = 0; nik < NL; nik = nik + 1) no_issue = no_issue & ~l_pick[nik]; end
+   always @(posedge clk) begin
+      no_issue <= 1'b1;
+      for (nik = 0; nik < NL; nik = nik + 1) begin
+         if (l_pick[nik]) no_issue <= 1'b0;
+         l_blk_vq[nik] <= l_blk_v[nik];  l_blk_pq[nik] <= l_blk_pr[nik];
+      end
+      rf_blk_vq <= rf_blk_v;  rf_blk_pq <= rf_blk_pr;
+   end
    // A register a load, AMO or CSR read will write, all in a lane's shard: a live LQ entry's
    // destination, a landing waiting in a lane's buffer, M's AMO or the SYSQ's op. An FP load's is
    // an f-register, counted under dep_fp below.
@@ -2407,11 +2421,11 @@ module smolrv64_core
    always @* begin
       dep_ld_l = 1'b0;  dep_fp_l = 1'b0;
       for (dpk = 0; dpk < NL; dpk = dpk + 1) begin
-         dep_ld_l = dep_ld_l | (l_blk_v[dpk] & ld_dst(l_blk_pr[dpk]));
-         dep_fp_l = dep_fp_l | (l_blk_v[dpk] & fe_dst(l_blk_pr[dpk]));
+         dep_ld_l = dep_ld_l | (l_blk_vq[dpk] & ld_dst(l_blk_pq[dpk]));
+         dep_fp_l = dep_fp_l | (l_blk_vq[dpk] & fe_dst(l_blk_pq[dpk]));
       end
    end
-   wire dep_ld    = no_issue & ((rf_blk_v & ld_dst(rf_blk_pr)) | dep_ld_l);
+   wire dep_ld    = no_issue & ((rf_blk_vq & ld_dst(rf_blk_pq)) | dep_ld_l);
    // An f-register (FP slices: an FP op's or an FP load's), or an FP op's or divide's integer
    // result: in the F stage, in the MD stage, or waiting in a lane's landing buffer.
    function automatic fe_dst(input [RN_PBITS-1:0] p);
@@ -2423,7 +2437,7 @@ module smolrv64_core
             if ((lb_live_fe[k*RN_PBITS +: RN_PBITS] == p) & (p != {RN_PBITS{1'b0}})) fe_dst = 1'b1;
       end
    endfunction
-   wire dep_fp    = no_issue & ((rf_blk_v & fe_dst(rf_blk_pr)) | dep_fp_l);
+   wire dep_fp    = no_issue & ((rf_blk_vq & fe_dst(rf_blk_pq)) | dep_fp_l);
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v;                           // the MD stage holds a divide (occupancy, not a stall)
    reg  st_mul;                                     // a multiply in flight in a lane
