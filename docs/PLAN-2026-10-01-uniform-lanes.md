@@ -585,6 +585,69 @@ IW=3) and a second read port per column; one read per slot on each SMAP and RMAP
 dead-row compare per scheduler, LQ and landing-buffer entry; the FPU's in-flight table (8
 entries of a ROB index).
 
+## Step 5.5 in detail: load-hit speculation (design, 2026-10-05)
+
+**Today, a hit.** X is the load's execute cycle in its lane (address generation); M fills and
+starts it at X+1; the D$ accepts it at T = X+2, compares at T+1 and answers at T+2 (`rd_valid`,
+registered); the landing broadcasts the wake in T+2, a dependent is selected then and executes
+at T+3 = X+5, reading the value from the landing lane's write register. A miss answers at B+5
+(B the fill's last beat) through the D$'s own waiter replay, which is again a lookup two cycles
+ahead of its data. The core sees no tagged lookup and no hit or miss before the data.
+
+**What it would buy.** In the 60 M boot at 5.4e-3, `be:dep-load` is 10.62% of all cycles
+(6.37 M), the largest back-end bucket after `be:sq-full` (11.66%), now that restart at resolve
+has emptied `be:rob-full` (10.19% -> 0.05%). Speculation moves the dependent's execute to T+2,
+the data's own cycle: one cycle of every load-to-use, about a fifth of it.
+
+**The hard part is the rollback, and three facts shape it.**
+
+1. *A speculative wake cannot latch.* A dependent woken at T but not selected at T+1 would
+   execute later with nothing in the register if the load missed, or before a buffered landing
+   writes it. So the speculative wake is a separate, non-latching wake port (`srdy` sees it in
+   T+1 only); an entry not selected then waits for the real wake as today.
+2. *The landing must be in a known cycle.* A consumer executing at T+2 reads the data from the
+   D$ response; later consumers read the landing lane's write register and the PRF, so a hit
+   must land at T+2 exactly, never in the landing buffer. That is the 5.2d-c fork's option A:
+   every lookup of a lane's load reserves the landing lane's write slot two cycles on, as a
+   multiply reserves its slot (`unit_busy` at T+1); a miss wastes the slot, and the replay's
+   lookup reserves again.
+3. *A cancelled op must not have woken anyone.* A dependent issued at T+1 on the speculative
+   wake learns the hit at T+2 (`rd_valid`, a register). If it woke its own dependents at its
+   select (the lanes' dependency matrix) or at its execute (the broadcast), a miss would have to
+   reach them too, and those wakes latch: the rollback would cascade. So an op issued on the
+   speculative wake wakes nobody until its load is confirmed: its broadcast comes from its
+   write register a cycle late (T+3, where `rd_valid` can gate it from flops) and its matrix
+   wake is suppressed. Its own dependents then run exactly as they do today; the gain is the
+   first consumer's cycle, which is every load whose consumer is an address (pointer chasing),
+   a store's data, a branch or the end of a chain.
+
+**The rollback.** At T+2 a lane executing an op whose source is the speculated register (one
+registered tag a cycle, compared in the execute stage, off the scheduler) and whose load did not
+answer cancels it: no write, no wake, no ROB completion, no resolve, no multiply start, no
+address delivery; and its scheduler entry, still held by the select register, comes back
+(`v` set, that source's ready bit cleared). Nothing else saw the op.
+
+**The cost on the scheduler, the critical path:** one more wake comparator per source per entry
+(the 5.4a step removed two), the suppression of the matrix wake for an entry issued on the
+speculative port (a select-path term), and the restore write. The suppression is the term to
+measure first; the default if it does not close is to give speculatively issued ops no matrix
+wake at all only in the lane that took them.
+
+**The increments**, each in lockstep:
+
+1. **5.5a: the lookup announces and reserves.** `rv_dcache` exports each lookup of a
+   fast-path load (a new accept or a waiter's replay) with its tag at T; the LSU names the LQ
+   entry, hence the landing lane, and reserves that lane's write slot at T+2 (`unit_busy` at
+   T+1). A hit then lands in its reserved slot, never in the buffer. No speculation yet: the
+   wake is the landing's, as today. Measured alone (it can lose: a reserved slot that misses is
+   a lost lane cycle).
+2. **5.5b: the speculative wake and the D$ bypass.** The non-latching wake port at T, the
+   D$ response bypassed into every lane's operands at T+2, the late broadcast and suppressed
+   matrix wake for speculatively issued ops, the cancel-and-restore on a miss. Integer loads
+   only; FP loads keep the landing's wake.
+3. **5.5c: chains,** only if 5.5b's numbers say the first consumer is not enough: a confirmed
+   speculative op's dependents woken at T+2 instead of T+3.
+
 ## The PRF in block RAM: built, measured, dropped (2026-10-03)
 
 Built on `wip/prf-r` (parked): a read stage on the lanes, a two-deep bypass, the lanes waking
