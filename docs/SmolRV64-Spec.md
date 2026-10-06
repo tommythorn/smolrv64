@@ -940,6 +940,10 @@ set in the stage register.
   (`fva_l`, `fva_s`, since the entries hold VA[38:0]). M holds only its own accesses' faults
   (AMO, LR/SC, CBO) -- asserted -- and a faulted entry never reaches memory, so the page-offset
   alias test need not be exact for it.
+- **cbo.clean, cbo.flush and cbo.inval translate as loads** (the CMO specification permits them
+  wherever a load or a store is, and W without R is a reserved PTE) and fault as stores
+  (`cbo_fc`: 13 to 15, 5 to 7); cbo.zero translates and faults as a store
+  (`core/directed/cboperm.S`).
 - **The LSU decides a port start from the port's fields only.** M's request fields describe the
   access only when it is M's (`eff_amo`, `eff_cbo`): M can be empty with its fields left from an
   older op while the LQ or SQ starts one. Asserted: the port's access never runs an AMO's states,

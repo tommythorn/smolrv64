@@ -349,7 +349,15 @@ module smolrv64_lsu
    wire        wk_own  = ~pm_q;                  // the port's request this cycle is the queue's
    wire        xl_fp   = xl_f & pm_q;            // M's op, and the port is its
    wire [63:0] mm_va   = pm_q ? req_vaddr : {{25{wk_va[38]}}, wk_va};
-   wire [1:0]  mm_acc  = pm_q ? (is_lr ? 2'd1 : req_amo ? 2'd3 : req_store ? 2'd2 : 2'd1)
+   // cbo.clean, cbo.flush and cbo.inval are permitted wherever a load or a store is (the CMO
+   // specification); W without R is a reserved PTE, so that is exactly a load's permission. They
+   // translate as loads, and a fault reports as a store's (cbo_fc). cbo.zero writes: a store.
+   wire        cbo_mgmt = req_cbo & ~req_cbo_zero;
+   wire        mm_st    = req_store & ~cbo_mgmt;
+   function [3:0] cbo_fc(input [3:0] c);         // a load's fault cause as the store's
+      cbo_fc = (c == 4'd13) ? 4'd15 : (c == 4'd5) ? 4'd7 : c;
+   endfunction
+   wire [1:0]  mm_acc  = pm_q ? (is_lr ? 2'd1 : req_amo ? 2'd3 : mm_st ? 2'd2 : 2'd1)
                               : (wk_st ? 2'd2 : 2'd1);
 
    // The dTLB: 2048 entries, direct-mapped on the VPN's low bits, 8 MiB of 4 KiB pages -- the
@@ -363,7 +371,7 @@ module smolrv64_lsu
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
       .walking(mmu_walking), .t_ready(t_ready), .t_paddr(t_paddr), .t_fault(t_fault), .t_cause(t_cause),
       .t_lvl(), .t_uncached(t_uncached), .t_ok(), .t_fault_raw(),
-      .s_vaddr(req_vaddr), .s_access(req_store ? 2'd2 : 2'd1),
+      .s_vaddr(req_vaddr), .s_access(mm_st ? 2'd2 : 2'd1),
       .s_ok(s_ok), .s_flt(s_flt), .s_cause(s_cause), .s_paddr(s_paddr), .s_nc(s_nc));
    assign wk_done = wk_v & wk_own & t_ready;
    assign wk_pa   = t_paddr;
@@ -392,10 +400,10 @@ module smolrv64_lsu
    wire xl_flt  = xl_fp & t_ready & t_fault;
 
    assign fault       = req_valid & (mis_flt | xl_flt);
-   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : t_cause;
+   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(t_cause) : t_cause;
    assign fault_tval  = req_vaddr;
    assign xo_flt      = xl_x & (xpage | s_flt);
-   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : s_cause;
+   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause) : s_cause;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
    wire xl_ok_f  = xl_fp & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
