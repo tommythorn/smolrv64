@@ -157,7 +157,14 @@ module smolrv64_sq
     output wire [SEQW-1:0]       f_seq,
 
     output wire [IDXB:0]         occupancy,
-    input  wire                  flush);
+    input  wire                  flush,
+    // the kill (smolrv64_rob kd): an uncommitted entry whose store is younger than a mispredicted
+    // branch dies. They are the youngest, so the tail steps back past them, as the flush cuts
+    // at the first uncommitted entry. kmask names every such slot while the kill holds, live or
+    // not (nothing allocates meanwhile), so an address a dead store delivers late is dropped too.
+    input  wire                  kd_v,
+    input  wire [(1 << ROBB)-1:0] kd,
+    output wire [NENT-1:0]       kmask);
 
    reg [NENT-1:0]        v, av, dv;          // live / address known / data known
    reg [PAW-1:0]         addr [0:NENT-1];
@@ -188,6 +195,20 @@ module smolrv64_sq
    wire [IDXB-1:0]       head = headc[IDXB-1:0], tail = tailc[IDXB-1:0];
    reg [IDXB:0]          cnt;
    integer               k, w;
+   // the kill's entries, and how many
+   reg  [NENT-1:0]       kmk, kds;
+   reg  [IDXB:0]         k_n;
+   integer               kq;
+   always @* begin
+      k_n = {(IDXB+1){1'b0}};
+      for (kq = 0; kq < NENT; kq = kq + 1) begin
+         kds[kq] = kd_v & ~cmt[kq] & kd[rob[kq]];
+         kmk[kq] = kds[kq] & v[kq];
+         k_n = k_n + {{IDXB{1'b0}}, kmk[kq]};
+      end
+   end
+   assign kmask = kds;
+   wire uncommitted = (kcc != tailc);           // an uncommitted entry (the kill's check)
    reg                   sn_live;         // snoop scratch, see the writeback loop
    reg [PBITS-1:0]       sn_dpr;
 
@@ -499,6 +520,18 @@ module smolrv64_sq
       wb_q <= wb_data;
       for (k = 0; k < NENT; k = k + 1)
          if (ld_v[k]) data[k] <= wb_q[ld_w[k]*64 +: 64];
+      // THE KILL, after every other arm (the snoop above included). A flush in its cycle (a trap
+      // at the head, which also ends the kill) wins: it cuts at the first uncommitted entry.
+      if (!reset & (|kmk) & ~flush) begin
+         for (k = 0; k < NENT; k = k + 1)
+            if (kmk[k]) begin v[k] <= 1'b0;  av[k] <= 1'b0;  dv[k] <= 1'b0;  ld_v[k] <= 1'b0; end
+         // per cell: a whole-row write would drop this cycle's column and row updates for the live
+         for (li = 0; li < LQN; li = li + 1)
+            for (k = 0; k < NENT; k = k + 1) if (kmk[k]) conf[li][k] <= 1'b0;
+         if (rq_v & kmk[rq_idx]) rq_v <= 1'b0;
+         tailc <= tailc - k_n;
+         cnt   <= cnt - k_n - {{IDXB{1'b0}}, (c_v & c_take)};
+      end
    end
 
    // Invariants (docs/rtl-rules.md A1): anything the design would otherwise drop silently.
@@ -525,6 +558,14 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: commit with no uncommitted, ready entry");
       if (k_take & flush)
          $fatal(1, "smolrv64_sq: a store committed in a redirect cycle (the redirecting op is at the irrevocable point)");
+      if (|kmk & d_alloc & ~flush)
+         $fatal(1, "smolrv64_sq: a kill in a cycle that allocates");
+      if (k_take & kmk[kc])
+         $fatal(1, "smolrv64_sq: a dead store committed");
+      // the dead entries are the youngest: the ones just behind the tail, contiguously
+      for (k = 0; k < NENT; k = k + 1)
+         if (kmk[k] & ({1'b0, tail - 1'b1 - k[IDXB-1:0]} >= k_n))
+            $fatal(1, "smolrv64_sq: dead entry %0d is not among the %0d youngest", k, k_n);
       if ((kcc - headc) > cnt)
          $fatal(1, "smolrv64_sq: committed count %0d exceeds occupancy %0d", kcc - headc, cnt);
       // The walker answers the entry it asked for, which is still the untranslated first

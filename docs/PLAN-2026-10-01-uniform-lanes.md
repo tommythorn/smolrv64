@@ -553,6 +553,17 @@ and ends any walk.
    still frozen to the head, so killing early only frees the wrong path's resources sooner.
    Checked when the squash fires at the head: no live op anywhere in the backend (schedulers,
    stages, landing buffers, LQ, uncommitted SQ, M, SYSQ, MD, F), so the kill missed nothing.
+   **Built (2026-10-05):** the dead-entry vector (`kd`) is the ROB's, from flops, and every
+   structure clears its dead ops from it each cycle the kill holds; the kill itself is the
+   check's subject, so the FPU's late results and the generation bit move to 5.4e-3. 60 M:
+   41,190,896 at IW=3 (+0.21%: the wrong path leaves the queues sooner), 41,498,079 at IW=4;
+   the check holds at 136,512 squashes. Its first runs found four real faults, each now an
+   assertion or fixed by construction: a dead store delivering its address after its entry
+   died (the queues' kill masks name every dead slot while the kill holds), the store queue's
+   conflict rows written whole over the same cycle's cell updates (per cell now), the load
+   queue's candidate pointer left past the rolled-back tail (it stays only on a waiting live
+   load; every waiting load lies in acc..tail, asserted), and the walker locking an entry that
+   dies in that cycle (it never takes a dead one).
 3. **5.4e-3: release at the walk's end.** `fr_v` drops when the cursor reaches the branch and
    the kill has applied; the branch then commits like any op (`cf_red_fire` goes). The
    restarted path dispatches with sequence numbers the dead ops held, which is why every

@@ -92,7 +92,12 @@ module smolrv64_rob
     output wire [IW-1:0]          wl_v,
     output wire [IW*6-1:0]        wl_rd,
     output wire [IW*PBITS-1:0]    wl_prd, wl_pold,
-    output wire                   wl_done);
+    output wire                   wl_done,
+    // THE KILL: every entry younger than the branch, one bit per entry index, from flops, for
+    // every structure that holds an op to look its own up in (kd_v & kd[its rob]). Valid from
+    // the second cycle after k_v until the flush.
+    output reg                    kd_v,
+    output reg  [(1 << IDXB)-1:0] kd);
 
    // {noret, rd, prd} and nothing else. rd_v is `|prd`; the destination SHARD is the top bits
    // of prd; and the DISPLACED register is not carried at all, because smolrv64_rename reads
@@ -187,6 +192,20 @@ module smolrv64_rob
             if (~wl_run & ~wl_end) begin wl_row <= trow - 1'b1;  wl_lim <= NCOL_S; end
          end
       end
+   end
+   // the kill vector: a row after the branch's (in ring order from the head) dies whole, and in
+   // the branch's own row the columns after it; computed from flops the cycle k_v arrives
+   wire [RB-1:0] kb_rel = k_idx[IDXB-1:CB] - hrow;
+   reg  [DEPTH-1:0] kd_n;
+   integer kr, kc;
+   always @* for (kr = 0; kr < ROWS; kr = kr + 1)
+      for (kc = 0; kc < NCOL; kc = kc + 1)
+         kd_n[kr*NCOL + kc] = ((kr[RB-1:0] - hrow) > kb_rel)
+                            | ((kr[RB-1:0] == k_idx[IDXB-1:CB]) & (kc[CB-1:0] > k_idx[CB-1:0]));
+   initial begin kd_v = 1'b0; kd = {DEPTH{1'b0}}; end
+   always @(posedge clk) begin
+      if (k_v) kd <= kd_n;
+      kd_v <= ~reset & ~flush & (kd_v | k_v);
    end
    // a later branch is older than the one walked to; nothing allocates while the walk runs
    wire [RB-1:0] k_rel  = k_idx[IDXB-1:CB] - hrow, kq_rel = k_row - hrow;

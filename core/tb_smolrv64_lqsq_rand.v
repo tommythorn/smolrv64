@@ -73,6 +73,7 @@ module tb;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
    wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
 
+   wire [NENT-1:0] lq_kmask_nc, sq_kmask_nc;   // the kill is not exercised here
    smolrv64_lq #(.DRAM_BASE(56'd0),.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.SQIB(IDXB+1)) u_lq
      (.clk(clk),.reset(reset),
       .d_alloc(lq_d_alloc),.d_pc(39'd0),.d_seq(8'd0),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd(lq_d_rd),.d_rd_v(lq_d_rd_v),
@@ -84,7 +85,7 @@ module tb;
       .x_v(lq_x_v),.x_idx(lq_x_idx),.x_pa(lq_x_pa),.x_size(lq_x_size),.x_signed(lq_x_signed),
       .x_fp(lq_x_fp),.x_unc(lq_x_unc),.x_head(lq_x_head),.x_devwait(lq_x_devwait),.x_take(lq_x_take),
       .l_v(lq_l_v),.l_idx(lq_l_idx),.l_prd(lq_l_prd),.l_rd(lq_l_rd),.l_rd_v(lq_l_rd_v),.l_rob(lq_l_rob),
-      .l_pa(lq_l_pa),.k_v(lk_v),.k_idx(lk_idx),.k_va(lk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(lf_v),.f_rob(lf_rob),.f_fc(lf_fc),.f_pc(lf_pc),.f_seq(lf_seq),.occupancy(lq_occ), .av_any(lq_av_any),.e_dprd(lq_e_dprd),.uf_any(lq_uf_any),.uf_idx(lq_uf_idx),.uf_seq(lq_uf_seq),.flush(flush),
+      .l_pa(lq_l_pa),.k_v(lk_v),.k_idx(lk_idx),.k_va(lk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(lf_v),.f_rob(lf_rob),.f_fc(lf_fc),.f_pc(lf_pc),.f_seq(lf_seq),.occupancy(lq_occ), .av_any(lq_av_any),.e_dprd(lq_e_dprd),.uf_any(lq_uf_any),.uf_idx(lq_uf_idx),.uf_seq(lq_uf_seq),.flush(flush),.kd_v(1'b0),.kd({(1 << ROBB){1'b0}}),.kmask(lq_kmask_nc),
       // every bench address is DRAM (speculates freely), so the device head-gate is never taken
       .a_mem(1'b1),.rob_head({ROBB{1'b0}}));
 
@@ -100,7 +101,7 @@ module tb;
       .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
-      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush));
+      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(1'b0),.kd({(1 << ROBB){1'b0}}),.kmask(sq_kmask_nc));
 
    // ------------------------------------------------------------- the program-order model
    // st: 0 dispatched (no address) | 1 address known (store: uncommitted; load: waiting)

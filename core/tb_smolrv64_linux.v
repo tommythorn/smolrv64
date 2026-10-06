@@ -1106,7 +1106,7 @@ module tb;
       $display("DISP-SIM d$ reads=%0d back-to-back=%0d held-only-by-the-request-pulse=%0d", ls_rd, ls_rd_b2b, ls_pulse_held);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d by-retired=%0d by-squashed=%0d dropped=%0d", tr_n, tr_ret, tr_n - tr_ret, tr_drops);
-      $display("WALK-SIM squashes=%0d checked-after-the-walk=%0d rows-walked=%0d", dut.core.wk_sq, dut.core.wk_chk, dut.core.wk_rows);
+      $display("WALK-SIM squashes=%0d checked-after-the-walk=%0d rows-walked=%0d checked-after-the-kill=%0d", dut.core.wk_sq, dut.core.wk_chk, dut.core.wk_rows, dut.core.wk_kchk);
       $display("MEM-SIM dcache fill-cycles=%0d fills=%0d mean-mshrs=%0.2f waiting=%0d wb-full=%0d cleans=%0d clean-cycles=%0d | st_mem=%0d with-fill=%0d with-waiting=%0d",
                ms_fill, ms_fills, (ms_fill != 0) ? $itor(ms_live) / $itor(ms_fill) : 0.0, ms_park, ms_wbfull, ms_cln, ms_clnc,
                ms_stmem, ms_stmem_fill, ms_stmem_park);

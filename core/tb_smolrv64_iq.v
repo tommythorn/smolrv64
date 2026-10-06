@@ -34,7 +34,7 @@ module tb;
       .unit_busy(unit_busy),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
       .iss_take(iss_take),
       .hold_v(hold_v),.hold_ent(hold_ent),
-      .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.occupancy(occupancy),.free_n(free_n));
+      .blk_v(blk_v),.blk_pr(blk_pr),.flush(flush),.kd_v(1'b0),.kd({(1 << ROBB){1'b0}}),.occupancy(occupancy),.free_n(free_n));
 
    // Second instance in INORDER mode -- the load scheduler's configuration.
    reg io_d_valid=0, io_take=0, io_hold=0;
@@ -53,7 +53,7 @@ module tb;
       .unit_busy(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
       .iss_take(io_take),
       .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),
-      .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.occupancy(io_occ),.free_n(io_free_n));
+      .blk_v(io_blk_v),.blk_pr(io_blk_pr),.flush(flush),.kd_v(1'b0),.kd({(1 << ROBB){1'b0}}),.occupancy(io_occ),.free_n(io_free_n));
 
    task disp(input [ROBB-1:0] rob, input [PBITS-1:0] p0, input r0, input [PBITS-1:0] prd);
       begin

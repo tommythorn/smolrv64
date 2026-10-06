@@ -472,6 +472,19 @@ module smolrv64_core
    // 32 rows of a group each: an entry is {row, column}, slot k's in column k (smolrv64_rob).
    localparam integer ROB_ROWS = 32, ROB_CB = (IW > 1) ? $clog2(IW) : 1, ROB_IDXB = 5 + ROB_CB;
    localparam integer ROB_DEPTH = ROB_ROWS << ROB_CB;   // the index space
+   // THE KILL (5.4e): every entry younger than the walked-to branch, from the ROB's flops. Each
+   // structure holding an op clears it when dead(its rob); the kill holds until the flush.
+   wire                   rob_kd_v;
+   wire [ROB_DEPTH-1:0]   rob_kd;
+   function automatic dead(input [ROB_IDXB-1:0] x);
+      dead = rob_kd_v & rob_kd[x];
+   endfunction
+   // The kill's check: when the squash fires at the head with the kill in force for KCHK cycles,
+   // everything older has committed and everything younger is dead, so the backend holds no
+   // live op (asserted per structure where it lives). The FPU may still hold dead ops.
+   localparam integer KCHK = 4;
+   reg  [2:0] kd_age;  initial kd_age = 3'd0;
+   wire       kchk;
    wire [IW*ROB_IDXB-1:0] rob_d_idxv;           // the entry each slot takes
    wire [IW-1:0]          rob_readyv;           // a row is free
    wire                   rob_empty;
@@ -484,6 +497,8 @@ module smolrv64_core
    reg  [RN_PBITS-1:0] lb_prd [0:NL*LBN-1];
    reg  [63:0]         lb_dat [0:NL*LBN-1];
    reg  [ROB_IDXB-1:0] lb_rob [0:NL*LBN-1];
+   reg  [NL*LBN-1:0]   lb_dk;               // the entry's op is dead (the kill): it drains as a bubble
+   initial lb_dk = {(NL*LBN){1'b0}};
    reg  [LBB-1:0]      lb_h [0:NL-1], lb_t [0:NL-1];
    reg  [LBB:0]        lb_n [0:NL-1];
    reg                 lb_fe [0:NL*LBN-1];  // the entry is the FE stream's (the stall counters)
@@ -536,8 +551,9 @@ module smolrv64_core
    // A plain store leaves M with no result AND no memory effect yet -- the buffer owns both.
    // Its ROB slot is completed by sq_c_take above, in the cycle memory is actually written.
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
-   wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
-   wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
+   wire m_dead    = dead(m_rob_idx);             // the kill: M's op is younger than a mispredict
+   wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v & ~m_dead;
+   wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v & ~m_dead;
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land;
    wire [ROB_IDXB-1:0] rob_w_idx = ld_land ? lq_l_rob : m_rob_idx;
 
@@ -888,7 +904,7 @@ module smolrv64_core
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
      .iss_take(rf_take),
       .hold_v(j_v),.hold_ent(j_ent),
-      .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.occupancy(rf_occ),.free_n(rf_free));
+      .blk_v(rf_blk_v),.blk_pr(rf_blk_pr),.flush(redirect),.kd_v(rob_kd_v),.kd(rob_kd),.occupancy(rf_occ),.free_n(rf_free));
 
    // Dispatch back-pressure comes from whichever scheduler this instruction is routed to.
    // Stage-aware: a slot may dispatch iff its target pipe's dispatch stage is empty OR drains
@@ -1024,6 +1040,8 @@ module smolrv64_core
             j_ps3 <= ps_out_f[2*RN_PBITS +: RN_PBITS];
          end
       end
+      // the kill: a dead op held here goes; one draining now is killed where it lands
+      if (j_v & ~j_ready & dead(j_rob)) j_v <= 1'b0;
    end
 
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
@@ -1064,6 +1082,7 @@ module smolrv64_core
             stg_pl_f  <= f_pl_in;
          end else if (mv_f) stg_v_f <= 1'b0;
          else if (stg_v_f) stg_r_f <= stg_r_f | snp_f;
+         if (dead(stg_rob_f)) stg_v_f <= 1'b0;                // the kill
          // Flush LAST (rule I11: redirect never gates an enable; flush arm wins on order).
          if (redirect) stg_v_f <= 1'b0;
       end
@@ -1128,6 +1147,7 @@ module smolrv64_core
                stg_prd <= sl_prd[gl];  stg_pl <= sl_pl[gl];
             end else if (mv) stg_v <= 1'b0;
             else if (stg_v) stg_r <= stg_r | snp;
+            if (dead(stg_rob)) stg_v <= 1'b0;
             if (redirect) stg_v <= 1'b0;   // flush last (rule I11)
          end
       end
@@ -1145,7 +1165,7 @@ module smolrv64_core
          .unit_busy(m1 | lb_any[gl] | ((gl == 0) & sy_at_head)),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
          .hold_v(v),.hold_ent(ent),
-         .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.occupancy(occ),.free_n(free));
+         .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.kd_v(rob_kd_v),.kd(rob_kd),.occupancy(occ),.free_n(free));
       // the tags, and whether the op completes later than its issue (lane_late), read at the pick
       reg  [3*RN_PBITS:0]   psmem [0:NI-1];
       reg  [PLW-1:0]        plmem [0:NI-1];
@@ -1162,7 +1182,7 @@ module smolrv64_core
       always @(posedge clk) begin
          if (reset | redirect) v <= 1'b0;
          else begin
-            v <= iss_v;
+            v <= iss_v;      // a dead op picked as the kill lands executes once, in its own register
             if (iss_v) begin
                ent <= iss_ent;  rob <= iss_rob;
                ps1 <= ps_out[0 +: RN_PBITS];  ps2 <= ps_out[RN_PBITS +: RN_PBITS];  late <= ps_out[3*RN_PBITS];
@@ -1222,12 +1242,14 @@ module smolrv64_core
          .rs1(rs1), .rs2(rs2), .f3(q_insn[14:12]), .is_w(q_insn[6:2] == 5'b01110),
          .busy(), .done(), .result(), .pre_done(mpre), .pre_result(mres));
       always @(posedge clk) begin
-         m1 <= ~reset & ~redirect & m_go;
-         m2 <= ~reset & ~redirect & m1;
+         m1 <= ~reset & ~redirect & m_go & ~dead(rob);
+         m2 <= ~reset & ~redirect & m1 & ~dead(mrob1);
          mrob1 <= rob;    mprd1 <= q_prd;  mrdv1 <= q_rd_v;
          mrob2 <= mrob1;  mprd2 <= mprd1;  mrdv2 <= mrdv1;
       end
       wire m_wr = m2 & mrdv2;
+      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | v | m1 | m2))
+         $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d select %b mul %b%b", gl, stg_v, occ, v, m1, m2);
       always @(posedge clk) if (!reset) begin
          if (m2 & v)    $fatal(1, "smolrv64_core: lane %0d executes an op in its multiply's reserved slot", gl);
          if (m2 & ~mpre) $fatal(1, "smolrv64_core: lane %0d's multiply is not at mul3's stage B in its slot", gl);
@@ -1408,6 +1430,8 @@ module smolrv64_core
    // waited on first). Once taken, an entry keeps the walker until it answers -- a store filling
    // meanwhile does not take the walk over -- or a redirect ends the walk with the entry.
    wire                sq_k_v, lq_k_v, sq_f_v, lq_f_v;
+   wire [SQ_N-1:0]     sq_kmask;          // the kill's entries this cycle (smolrv64_sq/lq kmask)
+   wire [LQ_N-1:0]     lq_kmask;
    wire [SQ_IB-1:0]    sq_k_idx;
    wire [LQ_IB-1:0]    lq_k_idx;
    wire [38:0]         sq_k_va, lq_k_va, sq_f_pc, lq_f_pc;
@@ -1426,16 +1450,20 @@ module smolrv64_core
    reg [38:0]          wk_lk_va;
    initial begin wk_lk = 1'b0; wk_lk_st = 1'b0; end
    wire                wk_v  = wk_lk;
+   // the kill names the entry the walker holds, or the one it would take (each by its own queue)
+   wire                wk_new_dead = sq_k_v ? sq_kmask[sq_k_idx] : lq_kmask[lq_k_idx];
+   wire                wk_cur_dead = wk_lk_st ? sq_kmask[sq_k_idx] : lq_kmask[lq_k_idx];
    wire                wk_st = wk_lk_st;
    wire [38:0]         wk_va = wk_lk_va;
    always @(posedge clk) begin
       // the payload follows the choice while the walker is free; only the lock bit sees the flush
       // (rule I11: the redirect gates no enable)
       if (~wk_lk) begin wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va; end
-      if (~wk_lk & (sq_k_v | lq_k_v)) wk_lk <= 1'b1;
+      if (~wk_lk & (sq_k_v | lq_k_v) & ~wk_new_dead) wk_lk <= 1'b1;   // never a dead entry
       if (lsu_wk_done)                wk_lk <= 1'b0;
+      if (wk_lk & wk_cur_dead)        wk_lk <= 1'b0;   // its entry dies
       if (reset | redirect)           wk_lk <= 1'b0;
-      if (!reset && !redirect && wk_lk && (wk_lk_st ? ~sq_k_v : ~lq_k_v))
+      if (!reset && !redirect && wk_lk && !wk_cur_dead && (wk_lk_st ? ~sq_k_v : ~lq_k_v))
          $fatal(1, "smolrv64_core: the walker's entry (%0s) is no longer the untranslated one", wk_lk_st ? "store" : "load");
    end
 
@@ -1465,7 +1493,7 @@ module smolrv64_core
       .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
       .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
-      .occupancy(sq_occ), .flush(redirect));
+      .occupancy(sq_occ), .flush(redirect), .kd_v(rob_kd_v), .kd(rob_kd), .kmask(sq_kmask));
 
    // Instrumentation for "did a load actually get reordered past a store". A load STARTS
    // its access only when ~ld_block, so a start with an older store still live is exactly
@@ -1516,7 +1544,8 @@ module smolrv64_core
       .w_v(lsu_wk_done & ~wk_st), .w_idx(lq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
       .f_v(lq_f_v), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
-      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .uf_idx(lq_uf_idx), .uf_seq(lq_uf_seq), .rob_head(rob_head_idx), .flush(redirect));
+      .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .uf_idx(lq_uf_idx), .uf_seq(lq_uf_seq), .rob_head(rob_head_idx), .flush(redirect),
+      .kd_v(rob_kd_v), .kd(rob_kd), .kmask(lq_kmask));
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // The queue costs a load two cycles -- one to register the address, one to select the
@@ -1619,7 +1648,8 @@ module smolrv64_core
       .d_pold(rn_poldv),
       // the walk starts the cycle after the resolve, from the registered branch
       .k_v(fr_set_q), .k_idx(fr_rob),
-      .wl_v(rob_wl_v), .wl_rd(rob_wl_rd), .wl_prd(rob_wl_prd), .wl_pold(rob_wl_pold), .wl_done(rob_wl_done));
+      .wl_v(rob_wl_v), .wl_rd(rob_wl_rd), .wl_prd(rob_wl_prd), .wl_pold(rob_wl_pold), .wl_done(rob_wl_done),
+      .kd_v(rob_kd_v), .kd(rob_kd));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
    // and by construction: it said the ROB's commit equals what M would have done in the same
@@ -1796,6 +1826,7 @@ module smolrv64_core
       if (rn_valid & d_cls_l) ho_rec <= {s_rob[0], s_pl_in[0]};   // a head op goes alone: slot A
       if (hA) begin ho_v <= 1'b1; ho_va <= l_addr[0]; ho_dat <= l_rs2[0]; end
       if (h_go) ho_v <= 1'b0;
+      if (dead(ho_rec[PLW +: ROB_IDXB])) ho_v <= 1'b0;   // the kill
       if (reset | redirect) ho_v <= 1'b0;                 // flush last (rule I11)
    end
    wire [PLW-1:0]    pl_m  = s_win ? s_rec[PLW-1:0] : ho_rec[PLW-1:0];   // the op M takes
@@ -1810,6 +1841,8 @@ module smolrv64_core
          if (l_lm[ak] &  l_st[ak]) begin sa_v[l_sqt[ak]] <= 1'b1; sa_va[l_sqt[ak]] <= l_addr[ak]; end
       if (s_go &  u_ld) la_v[lq_uf_idx] <= 1'b0;   // after the arrival: a bypassed one is not left set
       if (s_go & ~u_ld) sa_v[sq_uf_idx] <= 1'b0;
+      for (ak = 0; ak < LQ_N; ak = ak + 1) if (lq_kmask[ak]) la_v[ak] <= 1'b0;   // the kill's entries,
+      for (ak = 0; ak < SQ_N; ak = ak + 1) if (sq_kmask[ak]) sa_v[ak] <= 1'b0;   // after the arms above
       if (reset | redirect) begin la_v <= {LQ_N{1'b0}}; sa_v <= {SQ_N{1'b0}}; end   // flush last (rule I11)
    end
    always @(posedge clk) if (!reset) begin
@@ -1905,6 +1938,7 @@ module smolrv64_core
       .req_fp(m_is_fp), .req_st_data(m_st_data),
       .xl_satp(satp_data), .xl_priv(mmu_dpriv), .xl_sum(mmu_sum), .xl_mxr(mmu_mxr),
       .xl_flush(mmu_flush_q), .flush(redirect), .m_head(m_at_head),
+      .kill(lq_kmask), .kill_slow(lsu_ld_busy & lq_kmask[ld_inflight_idx]),
       // A committed store, or the LQ's candidate at head: the LSU asserts every non-DRAM start
       // is non-speculative against ITS OWN region decode (rule D12). The head compare alone is
       // exact: a live index is unique, a flush empties the queue, and a candidate whose ROB
@@ -1943,6 +1977,7 @@ module smolrv64_core
    wire        md_f3_2 = qf_insn[14];                     // funct3[2]: div/rem
    // The result is LATCHED on the unit's done pulse (mul3's persists, the divider's is one cycle)
    // and leaves when the FPU is not landing: the FPU cannot hold its result, this can.
+   wire        md_kill = md_v & dead(md_rob);           // the kill: the divide is aborted
    wire        md_done = md_v & ~md_pend & div_done;
    wire        md_wb   = md_pend & (~md_rd_v | ~fp_wb);   // the op completes (ROB)
    wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes its register
@@ -1959,7 +1994,7 @@ module smolrv64_core
       dv_a <= xf_rs1;  dv_b <= xf_rs2;  dv_f3 <= qf_insn[14:12];  dv_w <= qf_insn[6:2] == 5'b01110;
    end
    divider u_div
-     (.clk(clk), .reset(reset), .start(dv_go), .abort(redirect),
+     (.clk(clk), .reset(reset), .start(dv_go), .abort(redirect | md_kill),
       .rs1(dv_a), .rs2(dv_b), .f3(dv_f3), .is_w(dv_w),
       .busy(div_busy), .done(div_done), .result(div_result));
    always @(posedge clk) begin
@@ -1968,6 +2003,7 @@ module smolrv64_core
       // issue starts into a busy multiplier, which ignores it -- rv64um-p-mul hung at retire 111.
       if (md_done) begin md_pend <= 1'b1; md_res_q <= div_result; end
       if (md_wb)   begin md_v <= 1'b0; md_pend <= 1'b0; end
+      if (md_kill) begin md_v <= 1'b0; md_pend <= 1'b0; end   // before the issue arm: a new op wins
       if (iss_md) begin
          md_v <= 1'b1; md_div <= md_f3_2; md_rob <= j_rob; md_prd <= qf_prd; md_rd_v <= qf_rd_v; md_pend <= 1'b0;
       end
@@ -2069,6 +2105,7 @@ module smolrv64_core
    always @(posedge clk) begin
       sy_head_q <= ~reset & sy_at_head & ~sy_fire;
       if (sy_fire) sy_v <= 1'b0;
+      if (dead(sy_rob)) sy_v <= 1'b0;                   // the kill, before the load arms: a new op wins
       if (iss_sys) begin
          sy_v <= 1'b1; sy_rob <= j_rob; sy_prd <= qf_prd; sy_rd_v <= qf_rd_v;
          sy_is_csr <= qf_is_csr; sy_func <= qf_csr_func; sy_addr <= qf_imm[11:0];
@@ -2237,6 +2274,7 @@ module smolrv64_core
    end
    always @(posedge clk) begin
       if (icr_land) icr_v <= 1'b0;
+      if (dead(icr_tag[RN_PBITS +: ROB_IDXB])) icr_v <= 1'b0;   // the kill (before the take: a new one wins)
       if (icr_take) begin
          icr_v <= 1'b1;  icr_data <= fi_res;
          icr_tag <= {1'b0, f_rd_v, f_rd, f_rob, f_prd};   // the FPU's tag layout, never re-boxed
@@ -2254,6 +2292,7 @@ module smolrv64_core
          f_prd     <= qf_prd;   f_rob   <= j_rob;
          f_rs1_val <= xf_rs1;   f_rs2_val <= xf_rs2; f_rs3_val <= xf_rs3;
       end
+      if (f_valid & ~f_advance & dead(f_rob)) f_valid <= 1'b0;   // the kill: a stuck dead op goes
    end
 
    always @(posedge clk) if (!reset) begin
@@ -2892,6 +2931,20 @@ module smolrv64_core
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
    assign cf_red_fire = fr_v & (rob_head_idx == fr_rob);
+   // the kill's age, restarting at each branch it is computed for (a later, older one included)
+   always @(posedge clk) kd_age <= (reset | ~rob_kd_v | fr_set_q) ? 3'd0 : (kd_age == 3'd7) ? kd_age : kd_age + 3'd1;
+   assign kchk = cf_red_fire & (kd_age >= KCHK) & ~fr_set_q;
+   always @(posedge clk) if (!reset && kchk) begin
+      if (stg_v_f | (rf_occ != 0) | j_v | f_valid | icr_v | md_v | sy_v | ho_v | m_valid | (|la_v) | (|sa_v))
+         $fatal(1, "smolrv64_core: the kill left a live op: stg_f %b iq_f %0d j %b f %b icr %b md %b sy %b ho %b m %b la %b sa %b",
+                stg_v_f, rf_occ, j_v, f_valid, icr_v, md_v, sy_v, ho_v, m_valid, la_v, sa_v);
+      if (lq_occ != 0)
+         $fatal(1, "smolrv64_core: the kill left %0d live loads", lq_occ);
+`ifndef SYNTHESIS
+      if (u_sq.uncommitted)
+         $fatal(1, "smolrv64_core: the kill left an uncommitted store");
+`endif
+   end
    assign redirect = m_red_fire | sy_red | cf_red_fire;
    always @(posedge clk) if (!reset) begin
       if (m_red_fire != m_red_ref)
@@ -2937,11 +2990,12 @@ module smolrv64_core
 `ifndef SYNTHESIS
    // the walk's coverage (WALK-SIM): squashes at the head, those the walk had reached and the
    // map was checked at, and the rows walked
-   reg [31:0] wk_sq = 0, wk_chk = 0, wk_rows = 0;
+   reg [31:0] wk_sq = 0, wk_chk = 0, wk_rows = 0, wk_kchk = 0;
    always @(posedge clk) if (!reset) begin
       if (cf_red_fire) wk_sq <= wk_sq + 1;
       if (cf_red_fire & rob_wl_done) wk_chk <= wk_chk + 1;
       if (u_rob.wl_run) wk_rows <= wk_rows + 1;
+      if (kchk) wk_kchk <= wk_kchk + 1;
    end
 `endif
    // The tracked restart's CTI trains the predictor before its squash fires (rule D16): in its
@@ -3192,7 +3246,7 @@ module smolrv64_core
    // fires only when lane A is free and nothing waits there (lane A holds its select while a
    // system op is the ROB head), so its write and completion are in its fire cycle, as its
    // redirect needs. Load-hit speculation (waking the consumers from the D$ lookup) is a later step.
-   integer             lbi;
+   integer             lbi, lbk;
    initial for (lbi = 0; lbi < NL; lbi = lbi + 1) begin lb_h[lbi] = 0; lb_t[lbi] = 0; lb_n[lbi] = 0; end
    // the LD and FE streams' pushes into their lanes; the SYSQ's goes through lane A in its fire cycle.
    // M's own result (an AMO, LR or SC: the LSU's live completion) always waits a cycle here, so
@@ -3233,20 +3287,27 @@ module smolrv64_core
    generate
       for (glp = 0; glp < NL; glp = glp + 1) begin : g_lp
          wire [LBB-1:0] hh = lb_h[glp];
-         assign lp[glp] = lb_any[glp] ? {1'b1, 1'b1, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
+         // an entry the kill marked drains as a bubble: no write, wake or completion
+         wire lv_ = ~lb_dk[glp*LBN + hh];
+         assign lp[glp] = lb_any[glp] ? {lv_, lv_, lb_prd[glp*LBN + hh], lb_dat[glp*LBN + hh], lb_rob[glp*LBN + hh]}
                         :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate
+   // THE KILL marks a waiting entry whose op is dead (lb_dk): it drains as a bubble. Marked, not
+   // removed, because the buffer is in arrival order, not program order.
    always @(posedge clk) begin
+      for (lbi = 0; lbi < NL*LBN; lbi = lbi + 1) if (dead(lb_rob[lbi])) lb_dk[lbi] <= 1'b1;
       for (lbi = 0; lbi < NL; lbi = lbi + 1) begin
          if (en0[lbi]) begin
             lb_prd[lbi*LBN + lb_t[lbi]] <= wa_ld;  lb_dat[lbi*LBN + lb_t[lbi]] <= wb_ld;
             lb_rob[lbi*LBN + lb_t[lbi]] <= ldw_rob;  lb_fe[lbi*LBN + lb_t[lbi]] <= 1'b0;
+            lb_dk[lbi*LBN + lb_t[lbi]] <= dead(ldw_rob);
          end
          if (en2[lbi]) begin
             lb_prd[lbi*LBN + lb_t2[lbi]] <= wa_fe;  lb_dat[lbi*LBN + lb_t2[lbi]] <= wb_fe;
             lb_rob[lbi*LBN + lb_t2[lbi]] <= few_rob;  lb_fe[lbi*LBN + lb_t2[lbi]] <= 1'b1;
+            lb_dk[lbi*LBN + lb_t2[lbi]] <= dead(few_rob);
          end
          lb_t[lbi] <= lb_t[lbi] + {{(LBB-1){1'b0}}, en0[lbi]} + {{(LBB-1){1'b0}}, en2[lbi]};
          if (lb_drain[lbi] & lb_any[lbi]) lb_h[lbi] <= lb_h[lbi] + 1'b1;
@@ -3261,6 +3322,10 @@ module smolrv64_core
             $fatal(1, "smolrv64_core: lane %0d's landing buffer overflows", lbi);
       if (sp_v & ~lb_drain[0])
          $fatal(1, "smolrv64_core: the SYSQ fired without lane A's slot");
+      if (kchk)
+         for (lbk = 0; lbk < LBN; lbk = lbk + 1)
+            if ((((lbk[LBB-1:0] - lb_h[lbi]) & (LBN - 1)) < lb_n[lbi]) & ~lb_dk[lbi*LBN + lbk])
+               $fatal(1, "smolrv64_core: the kill left a live landing in lane %0d's buffer (entry %0d)", lbi, lbk);
       if (sy_wr & (sy_prd[RN_PBITS-1:RN_IDXB] != SH_IE))
          $fatal(1, "smolrv64_core: the SYSQ wrote pr=%h, not lane A's shard", sy_prd);
    end
@@ -3668,11 +3733,15 @@ module smolrv64_core
       else if (rn_valid & d_ser) ser_inflight <= 1'b1;
       else if (drained)          ser_inflight <= 1'b0;
    reg  csr_infl;
+   reg  [ROB_IDXB-1:0] csr_rob;                      // the CSR op in flight (it goes alone: slot A)
    initial csr_infl = 1'b0;
-   always @(posedge clk)
+   always @(posedge clk) begin
+      if (rn_valid & d_csr_op) csr_rob <= s_rob[0];
       if (reset | redirect)        csr_infl <= 1'b0;
       else if (rn_valid & d_csr_op) csr_infl <= 1'b1;
       else if (sy_fire & sy_is_csr) csr_infl <= 1'b0;
+      else if (dead(csr_rob))       csr_infl <= 1'b0;   // the kill took it
+   end
    wire ser_block = ser_inflight | (d_valid & d_ser & ~drained) | (d_valid & (d_csr_op | d_ser) & csr_infl);
 
    // An instruction may not enter M while it reads the in-flight load's destination. Compared
@@ -3733,6 +3802,7 @@ module smolrv64_core
    always @(posedge clk) begin
       if (rn_valid & d_cls_l) ho_inf <= 1'b1;
       else if (ho_end)        ho_inf <= 1'b0;
+      else if (dead(ho_rec[PLW +: ROB_IDXB])) ho_inf <= 1'b0;   // the kill took it
       if (reset | redirect)   ho_inf <= 1'b0;
    end
    always @(posedge clk) if (!reset) begin
@@ -3876,6 +3946,7 @@ module smolrv64_core
          // op that is not the redirecting op is younger, hence wrong-path. (m_red_fire retires
          // its own op via the m_advance path below, as before.)
          if (~m_advance & redirect) m_valid <= 1'b0;
+         if (~m_advance & m_dead)   m_valid <= 1'b0;   // ...or the kill names it
 
          if (m_advance) begin
             m_valid       <= m_go;

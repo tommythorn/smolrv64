@@ -80,6 +80,9 @@ module smolrv64_iq
     output wire [PBITS-1:0]      blk_pr,
 
     input  wire                  flush,
+    // the kill (smolrv64_rob kd): an entry whose op is younger than a mispredicted branch dies
+    input  wire                  kd_v,
+    input  wire [(1 << ROBB)-1:0] kd,
     output wire [IDXB:0]         occupancy,
     output wire [IDXB:0]         free_n);    // entries free now (not valid, not held): the dispatch credit
 
@@ -265,6 +268,9 @@ module smolrv64_iq
          // alone -- masking it by the select put the load-landing cone (D$ response tag ->
          // wakeup -> select) on 359 dep endpoints.
          if (do_iss) for (k = 0; k < NENT*NSRC; k = k + 1) dep[k][isel] <= 1'b0;
+         // the kill: a dead entry's dependents are dead too (a source is an older op's), so
+         // no live row keeps a bit for it
+         if (kd_v) for (k = 0; k < NENT; k = k + 1) if (kd[e_rob[k]]) v[k] <= 1'b0;
          if (flush) begin                                  // last: wins over the dispatch above
             v <= {NENT{1'b0}};
             qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
@@ -286,6 +292,8 @@ module smolrv64_iq
          $fatal(1, "smolrv64_iq: the registered ready promised a free entry and there is none");
       if (d_valid & ~d_ready & ~flush)
          $fatal(1, "smolrv64_iq: dispatch into a full scheduler");
+      if (kd_v & (INORDER != 0))
+         $fatal(1, "smolrv64_iq: a kill in an in-order scheduler, whose ring cannot drop an entry");
       if (do_disp & v[fsel])
          $fatal(1, "smolrv64_iq: dispatch into occupied entry %0d", fsel);
       if (do_disp & held[fsel])

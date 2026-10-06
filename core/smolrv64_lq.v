@@ -169,7 +169,14 @@ module smolrv64_lq
     output wire [IDXB-1:0]       uf_idx,      // ...the oldest such, and its sequence number
     output wire [SEQW-1:0]       uf_seq,
     input  wire [ROBB-1:0]       rob_head,    // head-gate an uncached (device) load's access (non-speculative)
-    input  wire                  flush);
+    input  wire                  flush,
+    // the kill (smolrv64_rob kd): the entries of ops younger than a mispredicted branch die.
+    // They are the youngest, so the tail steps back to the oldest of them. kmask names every
+    // slot whose op is dead while the kill holds, live or not (nothing allocates meanwhile): the
+    // LSU drops their responses by tag, a load among them starting now included.
+    input  wire                  kd_v,
+    input  wire [(1 << ROBB)-1:0] kd,
+    output wire [NENT-1:0]       kmask);
 
    // Two pointers and a per-entry `sent` bit. acc..tail are waiting to go to memory; what
    // is behind acc is outstanding or already landed. Pointers are what make flush a reset.
@@ -295,6 +302,32 @@ module smolrv64_lq
    assign l_pa   = pa[l_idx];
 
 
+   // THE KILL. The dead entries are the youngest live ones (the ring is program order), so the
+   // tail steps back to the oldest of them, kd0: the slots after it are dead or landed. The
+   // candidate pointer goes there too unless it names a live, unsent entry that survives (an
+   // older load still waiting): at the tail with nothing waiting it can name an earlier lap's
+   // load in flight, which is not one.
+   reg  [NENT-1:0] kmk, kds;
+   reg  [IDXB-1:0] kd0, kd0d;
+   integer         kq, kw;
+   always @* begin
+      kd0 = tail;  kd0d = {IDXB{1'b0}};
+      for (kq = 0; kq < NENT; kq = kq + 1) begin
+         kds[kq] = kd_v & kd[rob[kq]];
+         kmk[kq] = kds[kq] & v[kq];
+         // the oldest: the largest distance back from the tail
+         if (kmk[kq] & ((tail - 1'b1 - kq[IDXB-1:0]) >= kd0d)) begin kd0 = kq[IDXB-1:0];  kd0d = tail - 1'b1 - kq[IDXB-1:0]; end
+      end
+   end
+   assign kmask = kds;
+   wire          k_any = |kmk;
+   reg  [IDXB:0] k_n;
+   integer       kn;
+   always @* begin
+      k_n = {(IDXB+1){1'b0}};
+      for (kn = 0; kn < NENT; kn = kn + 1) k_n = k_n + {{IDXB{1'b0}}, kmk[kn] & ~(l_v & (l_idx == kn[IDXB-1:0]))};
+   end
+
    always @(posedge clk) begin
       if (reset) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; sent <= {NENT{1'b0}};
@@ -327,6 +360,16 @@ module smolrv64_lq
          // Filled AND already gone. It cannot collide with x_take above: that one needs
          // av[acc], and a_sent is asserted only while b_ok says ~av[acc].
          if (a_v & a_sent) begin sent[a_idx] <= 1'b1; acc <= acc + 1'b1; end
+         // The kill, after every other arm (a dead entry landing, filled or sent now dies all the
+         // same; a dead entry landing now is counted once) and before the flush. Nothing
+         // allocates while it holds (asserted).
+         if (k_any) begin
+            for (kw = 0; kw < NENT; kw = kw + 1)
+               if (kmk[kw]) begin v[kw] <= 1'b0;  av[kw] <= 1'b0;  sent[kw] <= 1'b0; end
+            tail <= kd0;
+            if (~(v[acc] & ~sent[acc]) | kmk[acc]) acc <= kd0;
+            cnt <= cnt - k_n - {{IDXB{1'b0}}, l_v};
+         end
          // The flush, ordered LAST: it wins over an allocation made in its cycle (dispatch
          // is not gated on the redirect since gate V3, 2026-09-05). Nothing older than the
          // redirecting op is in flight, so every entry is younger and dies.
@@ -357,9 +400,16 @@ module smolrv64_lq
 
    // Invariants (docs/rtl-rules.md A1). Every one of these is something the queue would
    // otherwise do silently and wrongly.
+   integer ia;
    always @(posedge clk) if (!reset) begin
       if (d_alloc & ~d_ready)
          $fatal(1, "smolrv64_lq: allocate into a full queue");
+      if (d_alloc & kd_v & ~flush)
+         $fatal(1, "smolrv64_lq: an allocation while the kill holds");
+      // every live entry not yet sent waits in acc..tail: the candidate pointer never passes one
+      for (ia = 0; ia < NENT; ia = ia + 1)
+         if (v[ia] & ~sent[ia] & ~(((ia[IDXB-1:0] - acc) < (tail - acc)) | ((tail == acc) & (cnt == NENT[IDXB:0]))))
+            $fatal(1, "smolrv64_lq: entry %0d waits outside acc..tail (acc %0d tail %0d)", ia, acc, tail);
       if (d_alloc & d_ready & v[tail])
          $fatal(1, "smolrv64_lq: allocate into slot %0d while its load is in flight", tail);
       if (a_v & ~v[a_idx])

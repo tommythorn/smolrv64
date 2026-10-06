@@ -115,6 +115,10 @@ module smolrv64_lsu
     input  wire            xl_mxr,
     input  wire            xl_flush,
     input  wire            flush,          // a backend redirect: squash a speculative LOAD in flight
+    // the kill: these load-queue entries' loads are younger than a mispredicted branch (by tag on
+    // the fast path, including one starting now), and the slow path's load in flight is one
+    input  wire [(1 << LDTW)-1:0] kill,
+    input  wire            kill_slow,
     input  wire [LDTW-1:0] pt_tag,         // the load-queue entry the port's candidate is (C4a)
     input  wire [LDTW-1:0] req_tag,        // ...and the one M's own load (req_early) is
     output wire [LDTW-1:0] pt_rtag,        // the entry whose data lands this cycle (fast path)
@@ -575,6 +579,7 @@ module smolrv64_lsu
                               & ~xword & ~eff_unc & pa_mem;
    reg  [3:0]      o_nb   [0:NLD-1];             // per tag: how to format the word
    reg  [NLD-1:0]  o_sgn, o_fp, o_kill;          // o_kill: the load was squashed while in flight
+   integer         kt;
    reg  [2:0]      o_boff [0:NLD-1];
    integer         oi;
    initial begin o_v = {NLD{1'b0}}; o_sgn = {NLD{1'b0}}; o_fp = {NLD{1'b0}}; o_kill = {NLD{1'b0}};
@@ -616,6 +621,9 @@ module smolrv64_lsu
          // head too; the slow path's ld_sq kills that case the same way). The response still
          // comes (the tag stays allocated until then) and is dropped.
          if (flush) o_kill <= o_kill | o_v | (ld_fast_ok ? ({{(NLD-1){1'b0}}, 1'b1} << ld_tag) : {NLD{1'b0}});
+         // the kill, per tag, after the start arm (a dead load starting now is killed with it)
+         for (kt = 0; kt < NLD; kt = kt + 1)
+            if (kill[kt] & (o_v[kt] | (ld_fast_ok & (ld_tag == kt[LDTW-1:0])))) o_kill[kt] <= 1'b1;
       end
    end
    // B-rule protocol: a response is matched by a tag the requester allocated. These three
@@ -701,6 +709,7 @@ module smolrv64_lsu
    always @(posedge clk)
       if (reset)                    ld_sq <= 1'b0;
       else if (flush)               ld_sq <= 1'b1;   // a redirect: any load already in flight is wrong-path
+      else if (kill_slow)           ld_sq <= 1'b1;   // ...or the kill names it
       else if (pt_start | xl_early) ld_sq <= 1'b0;   // a fresh access start (incl. the early path) is correct-path
    assign pt_ld_kill = ld_inflight & ld_sq;
    assign pt_ack  = pt_start | take_next;
