@@ -93,6 +93,18 @@ if [ -z "${FORCE_PROGRAM:-}" ]; then
       fi
    done
 fi
+# Halt the board's Linux before programming: reconfiguring the FPGA under a running system cuts
+# the SD card off mid-transfer, and a card left that way answers commands but sends no data until
+# it is power-cycled. Board peers only: a Simmerv guest on the same NFS root reports "SmooolRV64".
+for c in $(ss -tan 2>/dev/null | awk '$1=="ESTAB" && $4 ~ /:2049$/ {print $5}' | grep -o '192\.168\.1\.[0-9]*' | sort -u); do
+   m=$(timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no tommy@$c 'tr -d "\0" < /proc/device-tree/model' 2>/dev/null)
+   case "$m" in "SmolRV64 "*)
+      echo "halting $c ($m)"
+      timeout 15 ssh -o BatchMode=yes tommy@$c 'sudo halt' >/dev/null 2>&1
+      for i in $(seq 90); do tail -c +$((PRE+1)) "$CON" | tr -d '\0' | grep -aq "reboot: System halted" && break; sleep 1; done
+      PRE=$(wc -c < "$CON");;
+   esac
+done
 ( cd "$PLAT" && timeout 900 make program ${BIT:+BIT=$BIT} ) > "$RES/program.log" 2>&1
 grep -qi "programmed successfully" "$RES/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$RES/program.log"; exit 1; }
 echo "programmed ${BIT:-impl_1}"
