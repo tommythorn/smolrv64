@@ -152,8 +152,9 @@
 			status = "okay";
 		};
 
-		/* The keyboard of the graphics console, simmerv's virtio-input device at its address
-		 * and interrupt. Fed from the serial line when key[3] selects it (virtio_input.v). */
+		/* The keyboard and mouse, simmerv's virtio-input device at its address and interrupt.
+		 * Fed by USB keyboards and mice through a Pico (tools/hid-bridge), and from the serial
+		 * line when key[3] selects it (virtio_input.v). */
 		virtio_kbd: virtio@10004000 {
 			compatible = "virtio,mmio";
 			reg = <0 0x10004000 0 0x1000>;

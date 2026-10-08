@@ -90,6 +90,10 @@ module rk_xcku5p(
     output wire [1:0] vga_g,
     output wire [1:0] vga_b,
 
+    // USB keyboards and mice through a Raspberry Pi Pico (tools/hid-bridge): its UART TX on the
+    // 40-pin header, IO1_P. virtio_input's HID line.
+    input  wire       hid_rxd,
+
     // DDR4 physical ports
     output wire        c0_ddr4_act_n,
     output wire [16:0] c0_ddr4_adr,
@@ -1482,7 +1486,7 @@ module rk_xcku5p(
    assign vga_axi_awvalid = 1'b0; assign vga_axi_wdata = 64'd0;   assign vga_axi_wstrb = 8'd0;
    assign vga_axi_wlast = 1'b0;   assign vga_axi_wvalid = 1'b0;   assign vga_axi_bready = 1'b1;
 
-   // ===== The virtio keyboard (simmerv's --graphics keyboard), fed from the serial line =====
+   // ===== The virtio keyboard and mouse: the Pico's HID line, and the serial line =====
    // key[1] steers UART RX: each press toggles it between the console (the 16550, as always)
    // and this keyboard, whose bytes are translated into key presses (virtio_input's header).
    // It starts on the console at every reset, so loading over the UART is never affected.
@@ -1492,7 +1496,7 @@ module rk_xcku5p(
       .clock(ui_clk), .reset(ui_cpu_reset),
       .address(ui_mmio_address[11:0]), .read(ui_mmio_read && kbd_sel), .read_data(kbd_mmio_rdata),
       .write(ui_mmio_write && kbd_sel), .write_data(ui_mmio_writedata), .byteenable(ui_mmio_byteenable),
-      .irq(kbd_irq), .key_valid(kbd_byte_valid), .key_byte(kbd_byte),
+      .irq(kbd_irq), .key_valid(kbd_byte_valid), .key_byte(kbd_byte), .hid_rxd(hid_rxd),
       .m_axi_awid(kbd_axi_awid), .m_axi_awaddr(kbd_axi_awaddr), .m_axi_awlen(kbd_axi_awlen),
       .m_axi_awsize(kbd_axi_awsize), .m_axi_awburst(kbd_axi_awburst), .m_axi_awlock(kbd_axi_awlock),
       .m_axi_awcache(kbd_axi_awcache), .m_axi_awprot(kbd_axi_awprot), .m_axi_awqos(kbd_axi_awqos),

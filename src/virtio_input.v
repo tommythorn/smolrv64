@@ -1,15 +1,27 @@
 `timescale 1ns / 1ps
 `default_nettype none
-// virtio_input -- the keyboard of simmerv's `--graphics`, fed from the serial line.
+// virtio_input -- the keyboard and mouse: USB HID through a Pico, and terminal bytes.
 //
-// A virtio-mmio v2 input device (ID 18) at 0x1000_4000, PLIC source 4, exactly as simmerv's
-// src/device/virtio_input.rs presents it: the same config space (name "simmerv keyboard",
-// devids, the EV_KEY bitmap, EV_REP so the guest autorepeats), two queues -- eventq (0), which
-// the device fills with 8-byte virtio_input_events, and statusq (1), whose LED updates it only
-// returns. Its DMA is non-coherent, like virtio-blk's (dma-noncoherent in the DTS).
+// A virtio-mmio v2 input device (ID 18) at 0x1000_4000, PLIC source 4, as simmerv's
+// src/device/virtio_input.rs presents it (name "simmerv keyboard", devids, EV_REP so the guest
+// autorepeats), with a config space that adds a mouse: every key code 1-255, BTN_LEFT through
+// BTN_EXTRA, and REL_X, REL_Y, REL_WHEEL. Two queues -- eventq (0), which the device fills with
+// 8-byte virtio_input_events, and statusq (1), whose LED updates it only returns. Its DMA is
+// non-coherent, like virtio-blk's (dma-noncoherent in the DTS).
 //
-// The board has no keyboard: its keys arrive as terminal bytes on the UART, and the platform
-// steers them here when the operator selects the graphics console (key[3]). They are turned
+// Events have two sources, taken one event at a time, the HID line first (it cannot wait):
+//
+// The HID line (hid_rxd, 8N1 at HID_BAUD): a Raspberry Pi Pico is the USB host for any number of
+// keyboards and mice (tools/hid-bridge) and sends finished Linux input events, SYN_REPORT
+// included, so this side translates nothing. An event is 28 bits, {type[1:0], code[9:0],
+// value[15:0]} with the value sign-extended to 32, sent as four bytes of 7 bits, most
+// significant first; bit 7 marks the first byte, so the framer resynchronizes on the next event
+// after any lost or corrupt byte. Events wait in a 64-deep FIFO and are taken only while the
+// driver is running (DRIVER_OK): with no reader there is nothing to deliver, and a backlog would
+// be stale. A full FIFO and a malformed frame are counted (0x1000_4F00/4F04), never lost silently.
+//
+// Terminal bytes: keys can also arrive as terminal bytes on the UART, which the platform steers
+// here when the operator selects the graphics console (key[3]). They are turned
 // back into key presses as simmerv's sim/src/term_keys.rs does when its display is a terminal:
 // printable ASCII (US layout), control characters, xterm escape sequences with modifiers, and
 // ESC + byte = Alt. The one difference is the lone ESC: simmerv calls an ESC that ends a host
@@ -22,7 +34,9 @@
 // SYN_REPORT. Events wait while the driver has no buffer posted; bytes wait in a 512-byte FIFO
 // (a paste); a byte that finds it full is counted (0x1000_4F00), never silently lost.
 module virtio_input #(
-    parameter integer ESC_TIMEOUT = 333_333        // ui_clk cycles: 1 ms at 333.33 MHz
+    parameter integer ESC_TIMEOUT = 333_333,       // ui_clk cycles: 1 ms at 333.33 MHz
+    parameter integer CLK_HZ      = 333_333_333,   // ui_clk
+    parameter integer HID_BAUD    = 1_000_000
 )(
     input  wire        clock,
     input  wire        reset,
@@ -37,6 +51,7 @@ module virtio_input #(
 
     input  wire        key_valid,      // one terminal byte
     input  wire [ 7:0] key_byte,
+    input  wire        hid_rxd,        // the Pico's UART TX
 
     output wire [ 2:0] m_axi_awid,
     output wire [30:0] m_axi_awaddr,
@@ -121,14 +136,14 @@ module virtio_input #(
       end
 
    localparam [127:0] NAME  = "draobyek vremmis";   // "simmerv keyboard", byte 0 first
-   localparam [127:0] EVKEY = 128'he080ffdf01cffffffffffffffffffffe;
    localparam [63:0]  DEVIDS = 64'h0001_0001_0627_0006; // bustype BUS_VIRTUAL, vendor, product, version
    reg [7:0] cfg_size;
    always @* begin
       case (cfg_select)
          8'h01:   cfg_size = 8'd16;                                   // ID_NAME
          8'h03:   cfg_size = 8'd8;                                    // ID_DEVIDS
-         8'h11:   cfg_size = cfg_subsel == 8'h01 ? 8'd16 :            // EV_BITS / EV_KEY
+         8'h11:   cfg_size = cfg_subsel == 8'h01 ? 8'd35 :            // EV_BITS / EV_KEY: to BTN_EXTRA
+                             cfg_subsel == 8'h02 ? 8'd2  :            // EV_BITS / EV_REL: to REL_WHEEL
                              cfg_subsel == 8'h14 ? 8'd1  : 8'd0;      // EV_BITS / EV_REP
          default: cfg_size = 8'd0;
       endcase
@@ -144,7 +159,12 @@ module virtio_input #(
          else case (cfg_select)
             8'h01:   cfg_byte = NAME[{j[3:0], 3'd0} +: 8];
             8'h03:   cfg_byte = DEVIDS[{j[2:0], 3'd0} +: 8];
-            8'h11:   cfg_byte = cfg_subsel == 8'h01 ? EVKEY[{j[3:0], 3'd0} +: 8] : 8'h01;
+            8'h11:   case (cfg_subsel)
+                        8'h01:   cfg_byte = j == 8'd0 ? 8'hfe : j < 8'd32 ? 8'hff :     // keys 1-255
+                                            j == 8'd34 ? 8'h1f : 8'h00;                // BTN_LEFT..BTN_EXTRA
+                        8'h02:   cfg_byte = j == 8'd0 ? 8'h03 : 8'h01;                 // REL_X, REL_Y; REL_WHEEL
+                        default: cfg_byte = 8'h01;                                     // EV_REP
+                     endcase
             default: cfg_byte = 8'd0;
          endcase
       end
@@ -152,11 +172,13 @@ module virtio_input #(
    wire [7:0] cfg_k = address[7:0];   // offset within the config space (it starts at 0x100)
    assign cfg_rdata = {cfg_byte(cfg_k + 8'd3), cfg_byte(cfg_k + 8'd2), cfg_byte(cfg_k + 8'd1), cfg_byte(cfg_k)};
 
-   // Diagnostics at 0x1000_4F00 (not part of the virtio device): bytes lost to a full FIFO,
-   // events delivered.
-   reg [15:0] bytes_lost, events_done;
-   assign read_data = address[11:8] == 4'hf ? (address[2] ? {16'd0, events_done} : {16'd0, bytes_lost})
+   // Diagnostics at 0x1000_4F00 (not part of the virtio device): {HID events lost to a full
+   // FIFO, terminal bytes lost to a full FIFO}; at 0x1000_4F04: {HID framing errors, events
+   // delivered}.
+   reg [15:0] bytes_lost, events_done, hid_lost, hid_bad;
+   assign read_data = address[11:8] == 4'hf ? (address[2] ? {hid_bad, events_done} : {hid_lost, bytes_lost})
                                             : mmio_rdata;
+   wire driver_ok = dev_status[2];
 
    // ================================ byte FIFO, 512 deep ================================
    reg  [7:0] bq [0:511];
@@ -173,6 +195,35 @@ module virtio_input #(
          if (b_take) bq_r <= bq_r + 10'd1;
       end
    end
+
+   // ================== the HID line: bytes -> events, 64 deep ==================
+   wire       hid_v;  wire [7:0] hid_b;
+   rs232rx #(.CLK_FREQ(CLK_HZ), .BAUD(HID_BAUD)) hid_rx (
+      .clk(clock), .rst_n(!reset), .data(hid_b), .valid(hid_v), .ready(1'b1), .rxd(hid_rxd), .overflow());
+   reg  [1:0]  hn;                 // bytes of the current event received; 0: waiting for a first byte
+   reg  [20:0] hacc;
+   reg  [27:0] hq [0:63];
+   reg  [6:0]  hq_w, hq_r;
+   wire        hq_v    = hq_w != hq_r;
+   wire        hq_full = hq_w == {~hq_r[6], hq_r[5:0]};
+   wire [27:0] h       = hq[hq_r[5:0]];
+   wire        hid_pop;
+   wire        h_done  = hid_v && !hid_b[7] && hn == 2'd3;
+   always @(posedge clock) begin
+      if (reset) begin hn <= 2'd0;  hq_w <= 7'd0;  hq_r <= 7'd0;  hid_lost <= 16'd0;  hid_bad <= 16'd0; end
+      else begin
+         if (hid_v) begin
+            hacc <= {hacc[13:0], hid_b[6:0]};
+            hn   <= hid_b[7] ? 2'd1 : hn == 2'd0 || hn == 2'd3 ? 2'd0 : hn + 2'd1;
+            if (hid_b[7] == (hn != 2'd0)) hid_bad <= hid_bad + 16'd1;   // a cut-off event, or a stray byte
+         end
+         if (h_done && driver_ok && !hq_full) begin hq[hq_w[5:0]] <= {hacc, hid_b[6:0]};  hq_w <= hq_w + 7'd1; end
+         if (h_done && driver_ok && hq_full) hid_lost <= hid_lost + 16'd1;
+         if (!driver_ok) hq_r <= hq_w;
+         else if (hid_pop) hq_r <= hq_r + 7'd1;
+      end
+   end
+   wire [63:0] ev_hid = {{16{h[15]}}, h[15:0], 6'd0, h[25:16], 14'd0, h[27:26]};   // value, code, type
 
    // ========================= translator: bytes -> key presses =========================
    // byte_key: simmerv's term_keys::byte_key, every byte but ESC -- {valid, keycode, mods}.
@@ -279,14 +330,14 @@ module virtio_input #(
          if (kv[10]) begin st_v <= 1'b1;  st_key <= kv[9:3];  st_mods <= kv[2:0] | extra;  st_step <= 4'd0; end
       end
    endtask
-   wire        ev_pop;
+   wire        term_pop;
    wire [2:0]  n_mods = {2'b00, st_mods[2]} + {2'b00, st_mods[0]} + {2'b00, st_mods[1]};
    wire [3:0]  n_ev   = {n_mods[1:0], 2'b00} + 4'd3;   // 2*(2*mods + 2) events, minus one: the last index
    always @(posedge clock) begin
       if (reset) begin
          ts <= T_IDLE;  st_v <= 1'b0;  tmo <= 19'd0;
       end else begin
-         if (ev_pop) begin
+         if (term_pop) begin
             if (st_step == n_ev) st_v <= 1'b0;
             st_step <= st_step + 4'd1;
          end
@@ -335,9 +386,9 @@ module virtio_input #(
       else if (t == {1'b0, n} + 3'd1)       begin t_code = st_key;                          t_down = 1'b0; end
       else begin ri = 3'd2 * {1'b0, n} + 3'd1 - t;  t_code = mods_l[ri[1:0]];  t_down = 1'b0; end
    end
-   wire        ev_v = st_v;
-   wire [63:0] ev   = st_step[0] ? 64'd0                                           // SYN_REPORT
-                                 : {31'd0, t_down, 9'd0, t_code, EV_KEY};          // value, code, type
+   wire [63:0] ev_term = st_step[0] ? 64'd0                                        // SYN_REPORT
+                                    : {31'd0, t_down, 9'd0, t_code, EV_KEY};       // value, code, type
+   wire        ev_v    = st_v || hq_v;
 
    // ================================ the DMA engine ================================
    wire        dma_cmd_ready, dma_rsp_valid, dma_rsp_error;
@@ -366,7 +417,6 @@ module virtio_input #(
       .m_axi_rid(m_axi_rid), .m_axi_rdata(m_axi_rdata), .m_axi_rresp(m_axi_rresp),
       .m_axi_rlast(m_axi_rlast), .m_axi_rvalid(m_axi_rvalid), .m_axi_rready(m_axi_rready));
 
-   wire driver_ok = dev_status[2];
    function q_ok(input ready, input [31:0] num, input [63:0] d, input [63:0] a, input [63:0] u);
       q_ok = ready && num != 32'd0 && d[63:32] == 32'd0 && a[63:32] == 32'd0 && u[63:32] == 32'd0;
    endfunction
@@ -387,6 +437,7 @@ module virtio_input #(
    // buffer that read may have missed: waiting for the NEXT notify would be a lost wakeup.
    reg        notified0;
    reg [15:0] head;
+   reg        ev_from_hid;        // the event being written is the HID line's (else the terminal's)
    reg [63:0] buf_addr;
    reg [30:0] buf_axi;
    // The queue being served, latched as the engine picks it, in AXI address bits: q_ok has
@@ -416,7 +467,12 @@ module virtio_input #(
          q_mask   <= (which ? q1_num[15:0] : q0_num[15:0]) - 16'd1;
       end
    endtask
-   assign ev_pop = es == E_EVENT && issued && dma_rsp_valid;
+   wire ev_pop = es == E_EVENT && issued && dma_rsp_valid;
+   assign hid_pop  = ev_pop &&  ev_from_hid;
+   assign term_pop = ev_pop && !ev_from_hid;
+   always @(posedge clock)
+      if (!reset && ev_pop && !(ev_from_hid ? hq_v : st_v))
+         $fatal(1, "virtio_input: event delivered from an empty %0s source", ev_from_hid ? "HID" : "terminal");
 
    always @(posedge clock) begin
       dma_cmd_valid <= 1'b0;
@@ -491,8 +547,8 @@ module virtio_input #(
             E_EVENT: if (!issued) begin
                         if (dma_cmd_ready) begin
                            dma_cmd_valid <= 1'b1;  dma_cmd_write <= 1'b1;  dma_cmd_addr <= buf_axi;
-                           dma_cmd_wdata <= ev;  dma_cmd_wstrb <= 8'hff;
-                           issued <= 1'b1;
+                           dma_cmd_wdata <= hq_v ? ev_hid : ev_term;  dma_cmd_wstrb <= 8'hff;
+                           ev_from_hid <= hq_v;  issued <= 1'b1;
                         end
                      end else if (dma_rsp_valid) begin
                         issued <= 1'b0;  events_done <= events_done + 16'd1;  es <= E_USED_ID;

@@ -113,7 +113,8 @@ is read off the RTL or measured with the workload named):
 
 **An SoC that runs the real thing.** CLINT, PLIC, an NS16550A UART hardwired to 3 Mbaud,
 virtio-blk backed by an SD card over SPI, virtio-net over RGMII with an eight-slot receive
-ring and word-wide DMA, a 256 KiB boot SRAM holding a ROM monitor that autoboots from the SD
+ring and word-wide DMA, a virtio keyboard and mouse fed by USB devices through a Pico (see
+[Virtio devices](#virtio-devices)), a 256 KiB boot SRAM holding a ROM monitor that autoboots from the SD
 card or takes an XMODEM upload and has a memory-integrity command set, and one 512-bit line port into DDR4 with a hardware latency
 monitor on it. Ubuntu boots to `login:` over an NFS root; the board has run for days at a
 time.
@@ -170,6 +171,45 @@ ROB full and a full scheduler or queue, and the front-end's latency cycles apart
 events count it, so a `perf stat` run is a Top-Down report that closes to the cycle count.
 The simulator prints the same classifier's finer causes. The same counters, sampled every
 10 s across a Geekbench run, give a breakdown per subtest.
+
+## Virtio devices
+
+All I/O beyond the console UART is virtio-mmio (transport version 2, not legacy). Each device
+has its own 4 KiB page in the memory controller's 333 MHz domain and its own PLIC source.
+Its DMA master reaches DDR without snooping the core's caches. The device tree therefore marks
+every device `dma-noncoherent`, and Linux keeps the rings coherent with Zicbom cache
+operations. Every device offers `VIRTIO_F_VERSION_1` and `VIRTIO_F_ACCESS_PLATFORM`.
+
+| Device | Address | PLIC source | Queues | Backend |
+|---|---|---|---|---|
+| virtio-blk (ID 2) | `0x1000_2000` | 11 | one, 8 entries | an SD card over SPI at 23.8 MHz |
+| virtio-net (ID 1) | `0x1000_3000` | 12 | receive and transmit, 256 entries each | an RTL8211F gigabit PHY over RGMII |
+| virtio-input (ID 18) | `0x1000_4000` | 4 | eventq and statusq, 64 entries each | USB keyboards and mice through a Pico, and the UART |
+
+**virtio-blk** (`src/virtio_blk.v`) walks Linux's three-descriptor request (header, data,
+status). It moves the data one 512-byte sector at a time between the guest's buffer and the
+card. The data segment must be one descriptor, 8-byte aligned and a whole number of sectors,
+which Linux's block layer always provides. The capacity comes from the card's CSD. The SPI
+clock divider is writable at `0x1000_1100`, and a debug word at `0x1000_2F00` reads the
+capacity, the backend's state, or the last read's R1 and timeout.
+
+**virtio-net** (`src/virtio_net.v`, `src/eth_*.v`) has no device-specific features, so the
+guest picks its own MAC address. Received frames wait in an eight-slot ring, which absorbs a
+back-to-back gigabit burst, and both directions DMA 8-byte words. Ubuntu's NFS root runs
+through it.
+
+**virtio-input** (`src/virtio_input.v`) is one device that is both keyboard and mouse:
+- **Config space:** every key code 1-255, `BTN_LEFT` through `BTN_EXTRA`, and `REL_X`,
+  `REL_Y` and `REL_WHEEL`. It also offers `EV_REP`, so the guest autorepeats.
+- **Event sources:**
+  - The HID line comes from a Raspberry Pi Pico running [tools/hid-bridge](tools/hid-bridge).
+    The Pico is the USB host for any number of keyboards and mice and sends finished Linux input
+    events at 1 Mbps on header J1 pin 4. The bridge's README has the wiring and the line format.
+  - The serial console is the second source, once key[1] steers UART RX to the keyboard. Its
+    bytes, including xterm escape sequences, are translated into key presses.
+- **Delivery:** events are delivered only while the driver runs, and up to 64 wait for a
+  posted buffer. A full queue and a malformed frame are counted at `0x1000_4F00` and
+  `0x1000_4F04`, never lost silently.
 
 ## Performance
 

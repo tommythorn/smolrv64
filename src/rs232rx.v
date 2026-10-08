@@ -48,8 +48,8 @@ module rs232rx
    reg  [TTYCLK_SIGN:0] ttyclk      = 0; // [-4096; 4095]
    reg  [COUNT_SIGN:0]  count       = 0; // [-16; 15]
    reg  [ 7:0]          shift_in    = 0;
-   reg                  rxd_s       = 0;
-   reg                  rxd2_s      = 0;
+   reg                  rxd_s       = 1; // the idle line: 0 is a start bit
+   reg                  rxd2_s      = 1;
 
    /*
     * The theory: look for a negedge, then wait 1.5 bit period to skip

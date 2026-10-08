@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 `default_nettype none
-// tb_virtio_input -- virtio_input as Linux's virtio_input driver sees it, and its translation of
-// terminal bytes against simmerv's own.
+// tb_virtio_input -- virtio_input as Linux's virtio_input driver sees it, its translation of
+// terminal bytes against simmerv's own, and the HID line's framing.
 //
 // The bench is the driver: it probes the device, reads the config space, sets up eventq with
 // FEWER buffers than events (so the device runs dry and must wait for the driver's notify) and
@@ -12,24 +12,33 @@
 // with what simmerv's term_keys::send would emit for the expected keys. Then: an LED update on
 // statusq is returned, the interrupt is raised and acknowledged, and a paste into a stalled
 // device loses exactly what the 512-byte FIFO cannot hold, counted.
+//
+// The HID line runs alongside: an event sent before DRIVER_OK is dropped; a stream of EV_REL
+// events is sent on the serial line WHILE the terminal vectors run, so the two sources
+// interleave event by event; each source's events must arrive in its own order (the driver side
+// tells them apart by type: the terminal never sends EV_REL). Then the line alone: keys and
+// buttons past the terminal's range, autorepeat values, SYN_REPORT, negative motion, two framing
+// errors that cost only their own events, and a full HID FIFO that loses exactly its excess.
 module tb_virtio_input;
    reg clk = 1'b0, reset = 1'b1;
    always #1.5 clk = ~clk;
    localparam integer TMO = 400;               // ESC timeout, cycles (1 ms on the board)
+   localparam integer BIT = 20;                // HID line: cycles per bit
 
    reg  [11:0] address = 12'd0;  reg rd = 1'b0, wr = 1'b0;  reg [31:0] wdata = 32'd0;  reg [3:0] be = 4'hf;
    wire [31:0] rdata;  wire irq;
    reg         key_valid = 1'b0;  reg [7:0] key_byte = 8'd0;
+   reg         hid_rxd = 1'b1;
    wire [2:0]  awid, awsize, awprot, arid, arsize, arprot;  wire [30:0] awaddr, araddr;
    wire [7:0]  awlen, arlen, wstrb;  wire [1:0] awburst, arburst;  wire [3:0] awcache, awqos, arcache, arqos;
    wire        awlock, awvalid, wlast, wvalid, bready, arlock, arvalid, rready;  wire [63:0] wdata_ax;
    reg         awready = 1'b0, wready = 1'b0, bvalid = 1'b0, arready = 1'b0, rvalid = 1'b0;
    reg  [63:0] rdata_ax = 64'd0;
 
-   virtio_input #(.ESC_TIMEOUT(TMO)) dut (
+   virtio_input #(.ESC_TIMEOUT(TMO), .CLK_HZ(BIT * 1_000_000), .HID_BAUD(1_000_000)) dut (
       .clock(clk), .reset(reset),
       .address(address), .read(rd), .read_data(rdata), .write(wr), .write_data(wdata), .byteenable(be),
-      .irq(irq), .key_valid(key_valid), .key_byte(key_byte),
+      .irq(irq), .key_valid(key_valid), .key_byte(key_byte), .hid_rxd(hid_rxd),
       .m_axi_awid(awid), .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
       .m_axi_awburst(awburst), .m_axi_awlock(awlock), .m_axi_awcache(awcache), .m_axi_awprot(awprot),
       .m_axi_awqos(awqos), .m_axi_awvalid(awvalid), .m_axi_awready(awready),
@@ -92,7 +101,7 @@ module tb_virtio_input;
       end
    endtask
    // virtio_input_config page: select, subsel, then size and the bytes back, one at a time
-   task cfg(input [7:0] sel, input [7:0] sub, input [7:0] want_size, input [127:0] want, input [8*16-1:0] what);
+   task cfg(input [7:0] sel, input [7:0] sub, input [7:0] want_size, input [319:0] want, input [8*16-1:0] what);
       reg [31:0] d;  integer i;
       begin
          mw(12'h100, {24'd0, sel}, 4'b0001);
@@ -137,6 +146,8 @@ module tb_virtio_input;
    // ---- expected events, from the vectors; delivered events, from the used ring ----
    reg [63:0] want_ev [0:65535];  integer n_want = 0;
    reg [63:0] got_ev  [0:65535];  integer n_got = 0;
+   reg [63:0] want_rel [0:4095];  integer n_want_rel = 0;    // the HID line's EV_REL events
+   reg [63:0] got_rel  [0:4095];  integer n_got_rel = 0;
    task key(input [6:0] code, input down);
       begin
          want_ev[n_want] = {31'd0, down, 9'd0, code, 16'd1};  want_ev[n_want + 1] = 64'd0;
@@ -156,12 +167,13 @@ module tb_virtio_input;
    always begin : drain_loop
       @(posedge clk);
       if (!reset && draining && rd16(Q0U + 32'd2) != used_seen) begin : drain
-      reg [31:0] id, len;
+      reg [31:0] id, len;  reg [63:0] e;
       id  = rd32(Q0U + 32'd4 + 32'd8 * (used_seen % QN));
       len = rd32(Q0U + 32'd8 + 32'd8 * (used_seen % QN));
       if (len != 32'd8 || id >= NBUF) begin $display("FAIL: used elem id %0d len %0d", id, len); errors = errors + 1; end
-      got_ev[n_got] = rd64(EBUF + 32'd8 * id);
-      n_got = n_got + 1;
+      e   = rd64(EBUF + 32'd8 * id);
+      if (e[15:0] == 16'd2) begin got_rel[n_got_rel] = e;  n_got_rel = n_got_rel + 1; end
+      else                  begin got_ev[n_got] = e;  n_got = n_got + 1; end
       used_seen = used_seen + 16'd1;
       post(id[15:0]);
       end
@@ -173,6 +185,44 @@ module tb_virtio_input;
          repeat (20) @(negedge clk);     // UART pace, far shorter than the ESC timeout
       end
    endtask
+
+   // ---- the HID line: 8N1, an event as four 7-bit bytes, the first marked by bit 7 ----
+   task hid_byte(input [7:0] c);
+      integer b;
+      begin
+         @(negedge clk);  hid_rxd = 1'b0;  repeat (BIT) @(negedge clk);
+         for (b = 0; b < 8; b = b + 1) begin hid_rxd = c[b];  repeat (BIT) @(negedge clk); end
+         hid_rxd = 1'b1;  repeat (BIT) @(negedge clk);
+      end
+   endtask
+   task hid_send(input [1:0] t, input [9:0] code, input [15:0] v);
+      reg [27:0] p;
+      begin
+         p = {t, code, v};
+         hid_byte({1'b1, p[27:21]});  hid_byte({1'b0, p[20:14]});  hid_byte({1'b0, p[13:7]});  hid_byte({1'b0, p[6:0]});
+      end
+   endtask
+   task hid_event(input [1:0] t, input [9:0] code, input [15:0] v);   // sent, and expected
+      reg [63:0] e;
+      begin
+         e = {{16{v[15]}}, v, 6'd0, code, 14'd0, t};
+         if (t == 2'd2) begin want_rel[n_want_rel] = e;  n_want_rel = n_want_rel + 1; end
+         else begin want_ev[n_want] = e;  n_want = n_want + 1; end
+         hid_send(t, code, v);
+      end
+   endtask
+
+   // The motion stream that runs alongside the terminal vectors.
+   reg motion_go = 1'b0, motion_done = 1'b0;
+   initial begin : motion
+      integer m;  reg [15:0] v;
+      wait (motion_go);
+      for (m = 0; m < 300; m = m + 1) begin
+         v = 16'd137 * m[15:0] - 16'd20000;
+         hid_event(2'd2, m % 3 == 2 ? 10'd8 : {9'd0, m[0]}, v);
+      end
+      motion_done = 1'b1;
+   end
 
    integer fd, rc, i, k, n_cases;
    string  line, w2, w3, w4;  byte tag;
@@ -192,9 +242,9 @@ module tb_virtio_input;
       mw(12'h070, 32'd11, 4'hf);                                     // FEATURES_OK
       cfg(8'h01, 8'h00, 8'd16, "draobyek vremmis", "ID_NAME");
       cfg(8'h03, 8'h00, 8'd8, {64'd0, 64'h0001_0001_0627_0006}, "ID_DEVIDS");
-      cfg(8'h11, 8'h01, 8'd16, 128'he080ffdf01cffffffffffffffffffffe, "EV_KEY bits");
+      cfg(8'h11, 8'h01, 8'd35, {40'd0, 8'h1f, 16'd0, {31{8'hff}}, 8'hfe}, "EV_KEY bits");
       cfg(8'h11, 8'h14, 8'd1, 128'h01, "EV_REP bits");
-      cfg(8'h11, 8'h02, 8'd0, 128'h0, "EV_REL bits");
+      cfg(8'h11, 8'h02, 8'd2, 128'h0103, "EV_REL bits");
       cfg(8'h12, 8'h00, 8'd0, 128'h0, "ABS_INFO");
       for (i = 0; i < NBUF; i = i + 1) begin                         // event buffers: 8 bytes, WRITE
          wr64(Q0D + 16 * i, {32'd0, EBUF + 32'd8 * i});
@@ -202,10 +252,13 @@ module tb_virtio_input;
       end
       setup_queue(0, QN, Q0D, Q0A, Q0U);
       setup_queue(1, 4, Q1D, Q1A, Q1U);
+      hid_send(2'd2, 10'd0, 16'd1);                                  // no driver yet: dropped
+      repeat (50) @(negedge clk);
       mw(12'h070, 32'd15, 4'hf);                                     // DRIVER_OK
       for (i = 0; i < NBUF; i = i + 1) post(i[15:0]);
 
-      // ---- every vector ----
+      // ---- every vector, with the HID line's motion interleaved ----
+      motion_go = 1'b1;
       fd = $fopen("kbd_vectors.txt", "r");
       if (fd == 0) $fatal(1, "kbd_vectors.txt not found (run from src/)");
       n_cases = 0;
@@ -240,7 +293,21 @@ module tb_virtio_input;
          end
       end
       $fclose(fd);
-      wait (n_got >= n_want);
+      wait (motion_done);
+      if (n_got_rel == 0 || n_got_rel == n_want_rel) begin
+         $display("FAIL: %0d of %0d HID events had arrived when the terminal finished: no interleaving", n_got_rel, n_want_rel);
+         errors = errors + 1;
+      end
+
+      // ---- the HID line alone: keys and buttons, repeats, SYN, motion, framing errors ----
+      hid_event(2'd1, 10'd183, 16'd1);   hid_event(2'd1, 10'd183, 16'd2);   hid_event(2'd1, 10'd183, 16'd0);
+      hid_event(2'd0, 10'd0, 16'd0);
+      hid_byte(8'h05);                                               // a stray byte
+      hid_byte({1'b1, 7'h00});  hid_byte(8'h00);                     // an event cut off...
+      hid_event(2'd1, 10'h110, 16'd1);                               // ...and the next one whole
+      hid_event(2'd2, 10'd1, 16'hffff);  hid_event(2'd2, 10'd0, 16'h8000);  hid_event(2'd2, 10'd8, 16'h7fff);
+      hid_event(2'd1, 10'h114, 16'd1);   hid_event(2'd1, 10'h110, 16'd0);   hid_event(2'd0, 10'd0, 16'd0);
+      wait (n_got >= n_want && n_got_rel >= n_want_rel);
       repeat (2000) @(negedge clk);
       if (n_got != n_want) begin $display("FAIL: %0d events delivered, %0d expected", n_got, n_want); errors = errors + 1; end
       k = 0;
@@ -249,7 +316,15 @@ module tb_virtio_input;
             if (k < 10) $display("FAIL: event %0d = %h, expected %h", i, got_ev[i], want_ev[i]);
             k = k + 1;  errors = errors + 1;
          end
-      $display("%0d vector cases, %0d events compared", n_cases, n_want);
+      if (n_got_rel != n_want_rel) begin $display("FAIL: %0d HID motion events delivered, %0d expected", n_got_rel, n_want_rel); errors = errors + 1; end
+      for (i = 0; i < n_want_rel && i < n_got_rel; i = i + 1)
+         if (got_rel[i] !== want_rel[i]) begin
+            if (k < 10) $display("FAIL: HID motion event %0d = %h, expected %h", i, got_rel[i], want_rel[i]);
+            k = k + 1;  errors = errors + 1;
+         end
+      mr(12'hf04, d);
+      if (d[31:16] != 16'd2) begin $display("FAIL: %0d HID framing errors, expected 2", d[31:16]); errors = errors + 1; end
+      $display("%0d vector cases, %0d + %0d events compared", n_cases, n_want, n_want_rel);
 
       // ---- statusq: an LED update is returned with len 0, and interrupts ----
       mw(12'h064, 32'h3, 4'hf);                                      // clear any pending
@@ -279,6 +354,10 @@ module tb_virtio_input;
       // NBUF events' worth of buffers are posted: the first key's 4 events fill them; then one
       // key waits in the expander and 512 bytes in the FIFO.
       expect32(12'hf00, 32'd600 + NBUF - 1 - 1 - 512, "bytes lost to a full FIFO");
+      // The HID FIFO, with no buffer posted: 64 events wait, the rest are counted.
+      for (i = 0; i < 70; i = i + 1) hid_send(2'd2, 10'd0, 16'd1);
+      repeat (100) @(negedge clk);
+      expect32(12'hf00, 32'h0006_0000 + 32'd600 + NBUF - 1 - 1 - 512, "HID events lost to a full FIFO");
 
       if (errors == 0) $display("PASS");
       else             $display("FAIL: %0d errors", errors);

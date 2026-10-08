@@ -71,6 +71,12 @@ set_property PACKAGE_PIN AD13 [get_ports rxd]
 set_property IOSTANDARD LVCMOS33 [get_ports txd]
 set_property PACKAGE_PIN AC14 [get_ports txd]
 
+# The Pico's HID line (virtio_input), 40-pin header J1 pin 4 = IO1_P, next to +5V (pin 2). The
+# pull-up holds the line idle with no Pico attached; rs232rx synchronizes it into ui_clk.
+set_property PACKAGE_PIN D11 [get_ports hid_rxd]
+set_property IOSTANDARD LVCMOS33 [get_ports hid_rxd]
+set_property PULLUP TRUE [get_ports hid_rxd]
+
 # DDR4 pin constraints (from ddr4_0_ex/imports/example_design.xdc)
 # Note: sys_clk_p/n (T24/U24) are also used by the DDR4 IP (already constrained above)
 
