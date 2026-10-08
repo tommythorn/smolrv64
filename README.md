@@ -182,7 +182,7 @@ operations. Every device offers `VIRTIO_F_VERSION_1` and `VIRTIO_F_ACCESS_PLATFO
 
 | Device | Address | PLIC source | Queues | Backend |
 |---|---|---|---|---|
-| virtio-blk (ID 2) | `0x1000_2000` | 11 | one, 8 entries | an SD card over SPI at 23.8 MHz |
+| virtio-blk (ID 2) | `0x1000_2000` | 11 | one, 64 entries | an SD card over SPI at 23.8 MHz |
 | virtio-net (ID 1) | `0x1000_3000` | 12 | receive and transmit, 256 entries each | an RTL8211F gigabit PHY over RGMII |
 | virtio-input (ID 18) | `0x1000_4000` | 4 | eventq and statusq, 64 entries each | USB keyboards and mice through a Pico, and the UART |
 

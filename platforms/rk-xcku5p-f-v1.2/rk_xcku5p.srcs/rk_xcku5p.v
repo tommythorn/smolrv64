@@ -891,7 +891,7 @@ module rk_xcku5p(
 
    virtio_mmio #(
       .DEVICE_ID(32'd2), /* virtio-blk, native-SD backend below. */
-      .QUEUE_NUM_MAX(32'd8)
+      .QUEUE_NUM_MAX(32'd64)   /* a request is 3 descriptors: 21 in flight */
    ) virtio_blk_inst(
       // virtio-blk config: capacity, a 64-bit count of 512-byte sectors, at offset 0.
       .config_read_data        (ui_mmio_address[11:2] == 10'h040 ? virtio_blk_capacity : 32'd0),
@@ -933,9 +933,9 @@ module rk_xcku5p(
    );
 
    virtio_blk #(
-      .QUEUE_SIZE(32'd8),
+      .QUEUE_SIZE(32'd64),      /* must match virtio_blk_inst's QUEUE_NUM_MAX */
       .SD_SLOW_HALF(16'd416),   /* ui_clk 333 MHz -> ~400 kHz SPI init */
-      .SD_FAST_HALF(16'd40),    /*               -> ~4 MHz transfer (margin) */
+      .SD_FAST_HALF(16'd40),    /* ~4 MHz, used only if spi_fast_half (0x1000_1100) is written 0 */
       .SD_INIT_TICKS(16'd10)    /* init idle bytes */
    ) virtio_blk_backend(
       .clock                   (ui_clk),

@@ -14,12 +14,6 @@ endif
 cosim: tiny128.dtb $(FW) tiny128.cpio
 	CYC=300000000 ../../core/run-cosim-linux.sh
 
-
-%: %.xz
-	xz -d < $^ > $@
-
-tiny128.cpio: tiny128.cpio.xz
-
 tiny128.dtb: tiny128.dts
 	dtc -I dts -O dtb < $^ > $@
 

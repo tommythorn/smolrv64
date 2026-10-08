@@ -272,7 +272,7 @@ module tb;
    wire  [7:0] v_dev_status;
    wire [31:0] v_q0_num;  wire v_q0_ready;
    wire [63:0] v_q0_desc, v_q0_driver, v_q0_device;
-   virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd8)) u_vmmio
+   virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd64)) u_vmmio
      (.clock(clk), .reset(reset),
       .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
       .write(virtio_write && !vio_net), .write_data(virtio_wdata), .byteenable(virtio_be),
@@ -299,7 +299,7 @@ module tb;
    wire [2:0]  ax_rid;    wire [63:0] ax_rdata; wire [1:0] ax_rresp; wire ax_rlast; wire ax_rvalid; wire ax_rready;
    wire        blk_sck, blk_mosi, blk_cs_n;  reg blk_miso = 1'b1;
 
-   virtio_blk #(.QUEUE_SIZE(32'd8), .SD_SLOW_HALF(16'd4), .SD_FAST_HALF(16'd2), .SD_INIT_TICKS(16'd10)) u_vblk
+   virtio_blk #(.QUEUE_SIZE(32'd64), .SD_SLOW_HALF(16'd4), .SD_FAST_HALF(16'd2), .SD_INIT_TICKS(16'd10)) u_vblk
      (.clock(clk), .reset(reset),
       .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
       .queue_num(v_q0_num), .queue_ready(v_q0_ready), .queue_desc(v_q0_desc),
