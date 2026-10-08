@@ -137,6 +137,11 @@ proc configure_smolrv64_sources {repo_root src_dir smolrv64_dir} {
 # artifact that matters, so its absence is the test; a complete IP costs nothing here.
 proc ensure_ip_products {} {
     foreach ip [get_ips -quiet] {
+        # an IP from an older Vivado is locked until upgraded; the upgrade drops its outputs
+        if {[get_property IS_LOCKED $ip]} {
+            puts "  IP $ip: locked ([get_property UPGRADE_VERSIONS $ip]) -- upgrading."
+            upgrade_ip $ip
+        }
         set dcp [file join [get_property IP_OUTPUT_DIR $ip] $ip.dcp]
         if {[file exists $dcp]} continue
         puts "  IP $ip: output products missing ($dcp) -- regenerating."

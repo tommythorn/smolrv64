@@ -1,4 +1,13 @@
-VIVADO   := /home/tommy/Xilinx/2025.1/Vivado/bin/vivado
+# The Vivado release: VIVADO_VER=2026.1 builds with the newer one, whose libraries live in its xic tree.
+VIVADO_VER ?= 2025.1
+ifeq ($(VIVADO_VER),2025.1)
+VIVADO_DIR := /home/tommy/Xilinx/2025.1/Vivado
+VIVADO_LIB := $(VIVADO_DIR)/lib/lnx64.o/Ubuntu/24
+else
+VIVADO_DIR := /home/tommy/Xilinx/$(VIVADO_VER)/$(VIVADO_VER)/Vivado
+VIVADO_LIB := /home/tommy/Xilinx/$(VIVADO_VER)/xic/lib/lnx64.o/Ubuntu/24
+endif
+VIVADO   := $(VIVADO_DIR)/bin/vivado
 VFLAGS   := -mode batch -nojournal -nolog
 PROJECT  := rk_xcku5p
 XPR      := $(PROJECT).xpr
@@ -9,7 +18,7 @@ WORKLOAD ?= ../../workloads/monitor
 
 # THE SHIPPING BUILD NEEDS NO ARGUMENTS: `make` builds core/rv_soc_top at SMOLRV64_HW=8 and
 # PROBE_CLK_DIV8=48 (166.67 MHz). Every knob below is a debug or experiment override.
-export LD_LIBRARY_PATH=/home/tommy/Xilinx/2025.1/Vivado/lib/lnx64.o/Ubuntu/24
+export LD_LIBRARY_PATH=$(VIVADO_LIB)
 
 # Diagnostic: PROBE_DIAG=1 decouples probe_clk from ui_rst + drives LED cal/clock heartbeats.
 ifneq ($(strip $(PROBE_DIAG)),)

@@ -3,10 +3,10 @@
 # that points at the new build rather than the old one. Always reset after a kill.
 set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
 open_project $xpr
-foreach r {impl_1 synth_1} {
-    if {[llength [get_runs -quiet $r]]} {
-        puts "resetting $r (was: [get_property STATUS [get_runs $r]])"
-        reset_run $r
-    }
+# every run, the IPs' out-of-context runs too: a run killed mid-flight blocks the next launch of
+# anything that depends on it until it is reset
+foreach r [get_runs -quiet] {
+    puts "resetting $r (was: [get_property STATUS $r])"
+    reset_run $r
 }
 puts "runs reset."
