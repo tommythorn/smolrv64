@@ -21,7 +21,7 @@
 // be stale. A full FIFO and a malformed frame are counted (0x1000_4F00/4F04), never lost silently.
 //
 // Terminal bytes: keys can also arrive as terminal bytes on the UART, which the platform steers
-// here when the operator selects the graphics console (key[3]). They are turned
+// here when the operator selects the graphics console (key[1]). They are turned
 // back into key presses as simmerv's sim/src/term_keys.rs does when its display is a terminal:
 // printable ASCII (US layout), control characters, xterm escape sequences with modifiers, and
 // ESC + byte = Alt. The one difference is the lone ESC: simmerv calls an ESC that ends a host

@@ -118,16 +118,12 @@ module rk_xcku5p(
 
    // CPU is held in reset until calibration completes.
    // THE BUTTONS: key[0] keeps the monitor at its prompt (its autoboot countdown reads it,
-   // 0x1000_6000), key[1] steers UART RX between the console and the keyboard, key[2] resets
-   // the DDR4 controller (recalibrates it, and the CPU with it), key[3] resets the CPU.
-   // key[3] is a soft-reset button (active low): pulses the CPU reset without
-   // touching the DDR4 MIG, so calibration is preserved and mig_* latency
-   // stats CSRs (which aren't in the CPU's reset block) survive across a
-   // soft reset. Press key[3] to return to the monitor from a hung workload.
+   // 0x1000_6000), key[1] steers UART RX between the console and the keyboard. key[2] and
+   // key[3] are only read there: no button resets anything.
    // fbdiag_reset_req: the in-order SoC's fetch-buffer invariant fired and wants the CPU
    // reset into the ROM monitor so the snapshot at 0x1000_E000 can be read out with R<addr>.
-   // key[3] is a physical button and there is no VIO, so without this the only way to read
-   // the evidence is to be standing at the board.  It is a ONE-SHOT by construction: the
+   // There is no reset button and no VIO, so without this a power cycle, which loses the
+   // evidence, is the only way back to the monitor.  It is a ONE-SHOT by construction: the
    // sticky bit that raises it clears only on power-on, so the edge cannot repeat.
    // probe_clk -> ui_clk, so it crosses through a 2-FF synchronizer with an XDC false path;
    // an un-exceptioned crossing between these RELATED clocks is what collapsed the timing
@@ -135,7 +131,7 @@ module rk_xcku5p(
    wire fbdiag_reset_req;
    (* async_reg = "true" *) reg [1:0] fbdiag_rst_sync = 2'b00;
    always @(posedge ui_clk) fbdiag_rst_sync <= {fbdiag_rst_sync[0], fbdiag_reset_req};
-   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | ~key[3] | fbdiag_rst_sync[1];
+   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | fbdiag_rst_sync[1];
    reg  [1:0] ui_cpu_reset_sync = 2'b11;
    wire ui_cpu_reset = ui_cpu_reset_sync[1];
 
@@ -316,7 +312,7 @@ module rk_xcku5p(
 
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
-      .sys_rst                        (~key[2]),          // active-high; key[2] low = pressed = reset
+      .sys_rst                        (1'b0),             // calibrates once, after configuration
 
       .c0_sys_clk_p                   (sys_clk_p),
       .c0_sys_clk_n                   (sys_clk_n),

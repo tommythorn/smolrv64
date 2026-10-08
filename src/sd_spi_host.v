@@ -234,7 +234,7 @@ module sd_spi_host #(
          capacity_sectors <= 32'd0; v2_card <= 1'b0; to_cnt <= 28'd0;
          cmd_open <= 1'b0;
          // dbg_r1/dbg_rd_to/dbg_retried deliberately NOT reset here, so the last
-         // read's failure mode survives a key[1] soft-reset and can be read from
+         // read's failure mode survives a CPU reset and can be read from
          // the monitor at 0x10002F08 after a boot failure.
       end else case (state)
         // ---- byte-transfer subroutine ----

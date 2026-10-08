@@ -10,7 +10,7 @@
     tools/vga-try.py --dry-run ...          # print what would be sent; touch nothing
     tools/vga-try.py --off                  # scanout off
 
-The board must be at the ROM monitor's `>` prompt (just programmed, or key[3] pressed), with
+The board must be at the ROM monitor's `>` prompt (stopped there by key[0] or a console key during its countdown), with
 the serial console in a `screen -L` session, as for ubuntu-boot.sh: SESSION (default `board`)
 and LOG (default ~/smolrv64/workloads/ubuntu/screenlog.0). The script
 
@@ -292,7 +292,7 @@ def main():
     if real > 40.5:
         print(f'note: {real:.1f} MHz is above the 40 MHz the bitstream\'s pixel-clock logic was timed at')
     if not mon.at_prompt():
-        sys.exit('the board is not at the monitor\'s ">" prompt (press key[3], or reprogram)')
+        sys.exit('the board is not at the monitor\'s ">" prompt (reprogram it)')
 
     # 1-2: off, MMCM in reset, CLKOUT0's divider read-modify-written, MMCM out of reset.
     mon.ww(CTRL, 0)
