@@ -9,18 +9,29 @@
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
-//   S [sector]       - probe SD card, or dump 512-byte sector in hex
-//   SL<sector> <count> <addr> - read SD sectors into memory
+//   L<addr> <path>   - load a file from the SD card's EFI System Partition
+//   D [path]         - list a directory there
+//   B                - boot from the SD card now (what the autoboot does)
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   P                - dump core debug counters; Pc clears them
 //   ?                - help
+//
+// AUTOBOOT: after the banner the monitor counts down AUTOBOOT_S seconds, then runs
+// /smolrv64/boot.txt from the SD card's EFI System Partition: monitor command lines, one per
+// line, '#' starts a comment. Without boot.txt it loads /smolrv64/fw_payload.bin at
+// 0x80000000 and /smolrv64/smolrv64.dtb at 0xffdff000 and jumps to the payload with the DTB.
+// key[0] held at reset or pressed in the countdown, or any key on the console, stops it at
+// the prompt; a key typed then starts the command line.
 
-typedef unsigned char      uint8_t;
-typedef unsigned short     uint16_t;
-typedef unsigned int       uint32_t;
-typedef unsigned long      uint64_t;
-
+#include "mon.h"
 #include "blake3.h"
+
+#ifndef AUTOBOOT_S
+#define AUTOBOOT_S 10
+#endif
+#ifndef BOOT_DIR
+#define BOOT_DIR "/smolrv64"
+#endif
 
 // Firmware build stamp (YYYYMMDDHHMMSS as hex digits, like the RTL stamp).
 // Injected by the Makefile; 0 when built without it.
@@ -30,7 +41,7 @@ typedef unsigned long      uint64_t;
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
-#define CLK_FREQ    333333333
+#define CLK_FREQ    166666667       // the line is 3 Mbps in hardware; the divisor is not used
 #define UART_SPEED  3000000
 
 #define UART_THR  0
@@ -47,9 +58,10 @@ typedef unsigned long      uint64_t;
 #define LSR_THRE  0x20
 #define LSR_DR    0x01
 
-#define SD_SPI_BASE     ((volatile uint32_t *)0x10001000)
-#define SD_CS_GPIO_BASE ((volatile uint32_t *)0x10001100)
-#define SD_CD_GPIO_BASE ((volatile uint32_t *)0x10001200)
+// The board's keys (rk_xcku5p.v @ 0x10006000): [3:0] held now, [11:8] pressed since the
+// CPU's reset. key[0] is the monitor's.
+#define KEYS_BASE       ((volatile uint32_t *)0x10006000)
+#define KEY_MONITOR     0x101u
 
 // Platform build-id block (rk_xcku5p.v @ 0x1000F000). Same registers Linux userland
 // can read via /dev/mem. Layout: [0]="SMOL" magic, [1]=version, [2:3]=RTL build stamp,
@@ -65,16 +77,6 @@ typedef unsigned long      uint64_t;
 // Linux userland reads the same words through /dev/mem (tools/errlog-read.sh).
 #define ERRLOG_BASE     ((volatile uint64_t *)0x1000E000)
 #define ERRLOG_MAGIC    0x4552524cu
-
-#define SD_SPI_RXDATA   0
-#define SD_SPI_TXDATA   1
-#define SD_SPI_STATUS   2
-#define SD_SPI_CONTROL  3
-#define SD_SPI_BAUD     4
-
-#define SD_SPI_READY    0x01
-
-static uint8_t sd_sector_buf[512];
 
 static void uart_init(volatile uint8_t *base, int clk_freq, int baud)
 {
@@ -100,14 +102,15 @@ static void uart_putc(volatile uint8_t *base, uint8_t c)
     base[UART_THR] = c;
 }
 
-static void putc_(char c)
+void putc_(char c)
 {
     if (c == '\n')
         uart_putc(UART0_BASE, '\r');
     uart_putc(UART0_BASE, c);
+    video_putc(c);
 }
 
-static void puts_(const char *s)
+void puts_(const char *s)
 {
     while (*s)
         putc_(*s++);
@@ -119,14 +122,14 @@ static void puthex4(uint32_t v)
     putc_(v < 10 ? '0' + v : 'a' + (v - 10));
 }
 
-static void puthex8(uint32_t v)
+void puthex8(uint32_t v)
 {
     v &= 0xff;
     puthex4(v >> 4);
     puthex4(v);
 }
 
-static void puthex32(uint32_t v)
+void puthex32(uint32_t v)
 {
     puthex8(v >> 24);
     puthex8(v >> 16);
@@ -134,10 +137,18 @@ static void puthex32(uint32_t v)
     puthex8(v);
 }
 
-static void puthex64(uint64_t v)
+void puthex64(uint64_t v)
 {
     puthex32((uint32_t)(v >> 32));
     puthex32((uint32_t)v);
+}
+
+void putdec(uint64_t v)
+{
+    char b[20];
+    int n = 0;
+    do { b[n++] = '0' + v % 10; v /= 10; } while (v);
+    while (n) putc_(b[--n]);
 }
 
 static uint64_t read_build_stamp(void)
@@ -154,7 +165,7 @@ static uint64_t read_build_stamp(void)
 
 static void sync_cache_for_exec(void)
 {
-    asm volatile (".word 0x0000100f" ::: "memory"); /* fence.i */
+    asm volatile ("fence.i" ::: "memory");
 }
 
 // Parse hex digits; returns pointer past last digit consumed, or 0 on error.
@@ -203,12 +214,13 @@ static void hist_add(const char *line)
         hist_count++;
 }
 
-static void readline(char *buf)
+static void readline(char *buf, char c0)
 {
     int n = 0;
     int browse = 0;   // 0 = fresh line, 1..hist_count = how far back in history
     for (;;) {
-        char c = uart_getc(UART0_BASE);
+        char c = c0 ? c0 : uart_getc(UART0_BASE);
+        c0 = 0;
         if (c == '\r' || c == '\n') {
             putc_('\n');
             buf[n] = 0;
@@ -274,31 +286,6 @@ static void hexdump(uint64_t addr, int len)
     }
 }
 
-static void hexdump_bytes(const uint8_t *data, uint64_t base, int len)
-{
-    int i;
-    for (i = 0; i < len; i += 16) {
-        int j, row = len - i < 16 ? len - i : 16;
-        puthex64(base + i);
-        puts_(":  ");
-        for (j = 0; j < 16; j++) {
-            if (j < row)
-                puthex8(data[i + j]);
-            else
-                puts_("  ");
-            putc_(j == 7 ? '-' : ' ');
-        }
-        putc_(' ');
-        putc_('|');
-        for (j = 0; j < row; j++) {
-            uint8_t b = data[i + j];
-            putc_(b >= 0x20 && b < 0x7f ? b : '.');
-        }
-        putc_('|');
-        putc_('\n');
-    }
-}
-
 /* ── XMODEM-1K receive ───────────────────────────────────────────────── */
 /* Simpler and more reliable than Y-modem: no header block, no batch end.
  * Host side: sx -k <file>   (lrzsz)
@@ -321,11 +308,12 @@ static uint16_t xm_crc16(const uint8_t *buf, int len)
     return crc;
 }
 
-/* Non-blocking UART read with a spin-count timeout.
+/* Non-blocking UART read with a timeout in mtime ticks.
  * Returns 1 and stores byte in *out if a byte arrived; 0 on timeout. */
-static int uart_getc_tmo(uint32_t tmo, uint8_t *out)
+static int uart_getc_tmo(uint64_t tmo, uint8_t *out)
 {
-    while (tmo--) {
+    uint64_t t0 = now();
+    while (now() - t0 < tmo) {
         if (UART0_BASE[UART_LSR] & LSR_DR) {
             *out = UART0_BASE[UART_RBR];
             return 1;
@@ -349,7 +337,7 @@ static uint64_t xmodem1k_recv(uint64_t addr)
     /* Send 'C' with ~1-second retries until the sender starts */
     for (int tries = 30; tries > 0; tries--) {
         uart_putc(UART0_BASE, 'C');
-        if (uart_getc_tmo(CLK_FREQ / 5, &c))  /* ~200 ms per poll */
+        if (uart_getc_tmo(TIMEBASE_HZ / 5, &c))  /* 200 ms per poll */
             goto got;
     }
     return (uint64_t)-1;  /* sender never responded */
@@ -362,7 +350,7 @@ got:
         }
         if (c == XM_CAN) {
             /* Two consecutive CANs = abort */
-            if (uart_getc_tmo(CLK_FREQ / 10, &c) && c == XM_CAN) {
+            if (uart_getc_tmo(TIMEBASE_HZ / 10, &c) && c == XM_CAN) {
                 uart_putc(UART0_BASE, XM_ACK);
                 return (uint64_t)-1;
             }
@@ -396,8 +384,8 @@ got:
         uart_putc(UART0_BASE, XM_ACK);
 
 next:
-        /* Wait up to ~10 s for next byte; timeout = stalled transfer */
-        if (!uart_getc_tmo((uint32_t)CLK_FREQ * 10, &c)) {
+        /* Wait up to 10 s for next byte; timeout = stalled transfer */
+        if (!uart_getc_tmo(TIMEBASE_HZ * 10, &c)) {
             uart_putc(UART0_BASE, XM_CAN);
             uart_putc(UART0_BASE, XM_CAN);
             return (uint64_t)-1;
@@ -405,390 +393,296 @@ next:
     }
 }
 
-static void sd_cs_assert(int assert)
+typedef void (*fn_t)(void);
+typedef void (*fn_t2)(uint64_t, uint64_t);
+
+static int run_cmd(const char *p);
+
+// The autoboot: /smolrv64/boot.txt's lines, each a monitor command, or the default. A failing
+// line stops it at the prompt.
+#define BOOT_TXT    (DMA_BASE + 0x10000)     // DDR scratch, above disk.c's queue
+#define BOOT_TXT_MAX 4096
+static const char *const boot_default[] = {
+    "L80000000 /smolrv64/fw_payload.bin",
+    "Lffdff000 /smolrv64/smolrv64.dtb",
+    "X80000000 0 ffdff000",
+    0
+};
+
+static int autoboot(void)
 {
-    SD_CS_GPIO_BASE[0] = assert ? 0 : 1;
-}
-
-static void sd_spi_init(int baud)
-{
-    SD_SPI_BASE[SD_SPI_CONTROL] = 0; /* mode 0 */
-    SD_SPI_BASE[SD_SPI_BAUD] = (uint32_t)baud;
-}
-
-static uint8_t sd_spi_xfer(uint8_t tx, int *ok)
-{
-    uint32_t tmo = 1000000;
-
-    SD_SPI_BASE[SD_SPI_TXDATA] = tx;
-    while (tmo--) {
-        if (SD_SPI_BASE[SD_SPI_STATUS] & SD_SPI_READY)
-            return (uint8_t)SD_SPI_BASE[SD_SPI_RXDATA];
-    }
-
-    *ok = 0;
-    return 0xff;
-}
-
-static void sd_idle_clocks(int bytes, int *ok)
-{
-    while (bytes-- && *ok)
-        (void)sd_spi_xfer(0xff, ok);
-}
-
-static int sd_cmd_raw(uint8_t cmd, uint32_t arg, uint8_t crc,
-                      uint8_t *resp, int resp_len, int *ok)
-{
-    uint8_t r = 0xff;
-
-    (void)sd_spi_xfer(0xff, ok);
-    (void)sd_spi_xfer(0x40 | cmd, ok);
-    (void)sd_spi_xfer((uint8_t)(arg >> 24), ok);
-    (void)sd_spi_xfer((uint8_t)(arg >> 16), ok);
-    (void)sd_spi_xfer((uint8_t)(arg >> 8), ok);
-    (void)sd_spi_xfer((uint8_t)arg, ok);
-    (void)sd_spi_xfer(crc, ok);
-
-    for (int i = 0; i < 16 && *ok; i++) {
-        r = sd_spi_xfer(0xff, ok);
-        if ((r & 0x80) == 0)
-            break;
-    }
-
-    if (!*ok || (r & 0x80))
-        return -1;
-
-    if (resp_len > 0)
-        resp[0] = r;
-    for (int i = 1; i < resp_len && *ok; i++)
-        resp[i] = sd_spi_xfer(0xff, ok);
-
-    return *ok ? 0 : -1;
-}
-
-static int sd_cmd(uint8_t cmd, uint32_t arg, uint8_t crc,
-                  uint8_t *resp, int resp_len, int *ok)
-{
-    int rc;
-
-    sd_cs_assert(1);
-    rc = sd_cmd_raw(cmd, arg, crc, resp, resp_len, ok);
-    sd_cs_assert(0);
-    (void)sd_spi_xfer(0xff, ok);
-
-    return rc;
-}
-
-static int sd_read_data(uint8_t cmd, uint32_t arg, volatile uint8_t *buf, int len, int *ok)
-{
-    uint8_t r1 = 0xff;
-
-    sd_cs_assert(1);
-    if (sd_cmd_raw(cmd, arg, 0x01, &r1, 1, ok) < 0 || r1 != 0) {
-        sd_cs_assert(0);
-        (void)sd_spi_xfer(0xff, ok);
-        return r1;
-    }
-
-    for (uint32_t tmo = 100000; tmo && *ok; tmo--) {
-        uint8_t token = sd_spi_xfer(0xff, ok);
-        if (token == 0xfe) {
-            for (int i = 0; i < len; i++)
-                buf[i] = sd_spi_xfer(0xff, ok);
-            (void)sd_spi_xfer(0xff, ok); /* crc */
-            (void)sd_spi_xfer(0xff, ok);
-            sd_cs_assert(0);
-            (void)sd_spi_xfer(0xff, ok);
-            return *ok ? 0 : -1;
+    static char line[LINE_MAX];
+    uint64_t n;
+    int r = disk_load(BOOT_DIR "/boot.txt", BOOT_TXT, BOOT_TXT_MAX - 1, &n);
+    if (r == -1) { puts_("the SD card did not answer: autoboot stopped\n"); return -1; }
+    if (r == 0) {
+        const char *t = (const char *)BOOT_TXT;
+        uint64_t i = 0;
+        while (i < n) {
+            int k = 0;
+            while (i < n && t[i] != '\n') {
+                if (t[i] != '\r' && k < LINE_MAX - 1) line[k++] = t[i];
+                i++;
+            }
+            i++;
+            line[k] = 0;
+            const char *q = line;
+            while (*q == ' ' || *q == '\t') q++;
+            if (!*q || *q == '#') continue;
+            puts_("boot> "); puts_(q); putc_('\n');
+            if (run_cmd(q)) { puts_("autoboot stopped\n"); return -1; }
         }
-        if ((token & 0xf0) == 0)
-            break;
+        return 0;
     }
-
-    sd_cs_assert(0);
-    (void)sd_spi_xfer(0xff, ok);
-    return -1;
-}
-
-static int sd_read_register(uint8_t cmd, uint8_t *buf, int *ok)
-{
-    return sd_read_data(cmd, 0, buf, 16, ok);
-}
-
-static int sd_sector_arg(uint64_t sector, int high_capacity, uint32_t *arg)
-{
-    if (high_capacity) {
-        if (sector > 0xffffffff)
-            return -1;
-        *arg = (uint32_t)sector;
-    } else {
-        if (sector > 0x7fffff)
-            return -1;
-        *arg = (uint32_t)(sector << 9);
+    puts_("no " BOOT_DIR "/boot.txt: the default\n");
+    for (int k = 0; boot_default[k]; k++) {
+        puts_("boot> "); puts_(boot_default[k]); putc_('\n');
+        if (run_cmd(boot_default[k])) { puts_("autoboot stopped\n"); return -1; }
     }
     return 0;
 }
 
-static void print_sd_r1(const char *name, uint8_t r1)
+// The countdown: key[0], held or pressed since reset, or a console key stops it. Returns the
+// key typed (it starts the command line), or 0.
+static char countdown(void)
 {
-    puts_(name);
-    puts_(" R1=");
-    puthex8(r1);
-    if (r1 & 0x01) puts_(" idle");
-    if (r1 & 0x02) puts_(" erase-reset");
-    if (r1 & 0x04) puts_(" illegal-cmd");
-    if (r1 & 0x08) puts_(" crc-err");
-    if (r1 & 0x10) puts_(" erase-seq-err");
-    if (r1 & 0x20) puts_(" addr-err");
-    if (r1 & 0x40) puts_(" param-err");
+    if (KEYS_BASE[0] & KEY_MONITOR) { puts_("key[0]: staying in the monitor\n"); return 0; }
+    puts_("autoboot from the SD card in ");
+    putdec(AUTOBOOT_S);
+    puts_(" s (key[0] or any key: monitor) ");
+    uint64_t t0 = now(), left = AUTOBOOT_S + 1;
+    for (;;) {
+        uint64_t el = (now() - t0) / TIMEBASE_HZ;
+        if (el >= AUTOBOOT_S) break;
+        if (AUTOBOOT_S - el != left) { left = AUTOBOOT_S - el; putdec(left); putc_(' '); }
+        if (UART0_BASE[UART_LSR] & LSR_DR) { putc_('\n'); return UART0_BASE[UART_RBR]; }
+        if (KEYS_BASE[0] & KEY_MONITOR) { puts_("\nkey[0]: staying in the monitor\n"); return 0; }
+    }
     putc_('\n');
+    autoboot();
+    return 0;
 }
 
-static void print_sd_csd_capacity(const uint8_t *csd)
+static int run_cmd(const char *p)
 {
-    uint64_t capacity = 0;
-    uint8_t csdver = csd[0] >> 6;
+    uint64_t addr, val;
 
-    puts_("CSD: ");
-    for (int i = 0; i < 16; i++)
-        puthex8(csd[i]);
-    putc_('\n');
+    if (*p == 'R' || *p == 'r') {
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: R<addr>\n"); return -1; }
+        val = *(volatile uint64_t *)addr;
+        puthex64(addr); puts_(": "); puthex64(val); putc_('\n');
 
-    if (csdver == 1) {
-        uint32_t c_size = ((uint32_t)(csd[7] & 0x3f) << 16) |
-                          ((uint32_t)csd[8] << 8) |
-                          csd[9];
-        capacity = ((uint64_t)c_size + 1) << 19;
-    } else if (csdver == 0) {
-        uint32_t read_bl_len = csd[5] & 0x0f;
-        uint32_t c_size = ((uint32_t)(csd[6] & 0x03) << 10) |
-                          ((uint32_t)csd[7] << 2) |
-                          ((csd[8] & 0xc0) >> 6);
-        uint32_t c_size_mult = ((csd[9] & 0x03) << 1) |
-                               ((csd[10] & 0x80) >> 7);
-        capacity = ((uint64_t)c_size + 1) << (c_size_mult + 2 + read_bl_len);
-    }
+    } else if ((*p == 'W' || *p == 'w') &&
+               (p[1] == 'B' || p[1] == 'b')) {
+        p = parse_hex(p + 2, &addr);
+        if (!p) { puts_("usage: WB<addr> <val>\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &val);
+        if (!p) { puts_("usage: WB<addr> <val>\n"); return -1; }
+        *(volatile uint8_t *)addr = (uint8_t)val;
+        puts_("ok\n");
 
-    puts_("CSD version=");
-    puthex8(csdver);
-    if (capacity) {
-        puts_(" capacity=");
-        puthex64(capacity);
-        puts_(" bytes (");
-        puthex64(capacity >> 20);
-        puts_(" MiB)\n");
-    } else {
-        puts_(" capacity=unknown\n");
-    }
-}
+    } else if ((*p == 'W' || *p == 'w') &&
+               (p[1] == 'H' || p[1] == 'h')) {
+        p = parse_hex(p + 2, &addr);
+        if (!p) { puts_("usage: WH<addr> <val>\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &val);
+        if (!p) { puts_("usage: WH<addr> <val>\n"); return -1; }
+        *(volatile uint16_t *)addr = (uint16_t)val;
+        puts_("ok\n");
 
-static int sd_init_card(int verbose, int *high_capacity)
-{
-    int ok = 1;
-    uint8_t r[5] = {0xff, 0xff, 0xff, 0xff, 0xff};
-    uint32_t cd_raw = SD_CD_GPIO_BASE[0] & 1;
-    int initialized = 0;
-    int v2_card = 0;
-    uint32_t ocr = 0;
+    } else if ((*p == 'W' || *p == 'w') &&
+               (p[1] == 'W' || p[1] == 'w')) {
+        p = parse_hex(p + 2, &addr);
+        if (!p) { puts_("usage: WW<addr> <val>\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &val);
+        if (!p) { puts_("usage: WW<addr> <val>\n"); return -1; }
+        *(volatile uint32_t *)addr = (uint32_t)val;
+        puts_("ok\n");
 
-    if (high_capacity)
-        *high_capacity = 0;
+    } else if (*p == 'W' || *p == 'w') {
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: W<addr> <val>\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &val);
+        if (!p) { puts_("usage: W<addr> <val>\n"); return -1; }
+        *(volatile uint64_t *)addr = val;
+        puts_("ok\n");
 
-    if (verbose) {
-        puts_("sd_cd raw=");
-        puthex8(cd_raw);
-        puts_(cd_raw ? " present=no (active-low)\n" : " present=yes (active-low)\n");
-    }
+    } else if (*p == 'T' || *p == 't') {
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: T<addr>\n"); return -1; }
+        hexdump(addr, 256);
 
-    sd_spi_init(255); /* about 650 kHz from 333 MHz UI clock */
-    sd_cs_assert(0);
-    sd_idle_clocks(10, &ok);
+    } else if (*p == 'Y' || *p == 'y') {
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: Y<addr>\n"); return -1; }
+        puts_("start XMODEM-1K send now\n");
+        {
+            uint64_t n = xmodem1k_recv(addr);
+            if (n == (uint64_t)-1)
+                puts_("cancelled\n");
+            else { puthex64(n); puts_(" bytes loaded\n"); }
+        }
 
-    if (!ok) {
-        if (verbose)
-            puts_("SPI timeout during idle clocks\n");
-        return -1;
-    }
-
-    if (sd_cmd(0, 0, 0x95, r, 1, &ok) < 0) {
-        if (verbose)
-            puts_("CMD0: no response\n");
-        return -1;
-    }
-    if (verbose)
-        print_sd_r1("CMD0", r[0]);
-
-    if (sd_cmd(8, 0x000001aa, 0x87, r, 5, &ok) < 0) {
-        if (verbose)
-            puts_("CMD8: no response\n");
-    } else {
-        if (verbose) {
-            print_sd_r1("CMD8", r[0]);
-            puts_("CMD8 echo=");
-            puthex8(r[3]);
-            puthex8(r[4]);
+    } else if (*p == 'C' || *p == 'c') {
+        uint64_t len;
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: C<addr> <len>\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &len);
+        if (!p) { puts_("usage: C<addr> <len>\n"); return -1; }
+        {
+            uint8_t hash[32];
+            int i;
+            blake3_hash((const void *)addr, len, hash);
+            puts_("blake3: ");
+            for (i = 0; i < 32; i++) puthex8(hash[i]);
             putc_('\n');
         }
-        v2_card = !(r[0] & 0x04) && r[3] == 0x01 && r[4] == 0xaa;
-    }
 
-    for (int i = 0; i < 1000 && ok; i++) {
-        uint8_t r55;
-        uint32_t acmd41_arg = v2_card ? 0x40000000 : 0;
-        if (sd_cmd(55, 0, 0x01, &r55, 1, &ok) < 0) {
-            puts_("CMD55: no response\n");
-            break;
+    } else if (*p == 'Z' || *p == 'z') {
+        uint64_t len, fill = 0;
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); return -1; }
+        while (*p == ' ') p++;
+        p = parse_hex(p, &len);
+        if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); return -1; }
+        while (*p == ' ') p++;
+        if (*p) {
+            const char *q = parse_hex(p, &fill);
+            if (!q) { puts_("usage: Z<addr> <len> [byte]\n"); return -1; }
         }
-        if (sd_cmd(41, acmd41_arg, 0x01, r, 1, &ok) < 0) {
-            puts_("ACMD41: no response\n");
-            break;
+        {
+            volatile uint8_t *d = (volatile uint8_t *)addr;
+            uint8_t b = (uint8_t)fill;
+            uint64_t i;
+            for (i = 0; i < len; i++) d[i] = b;
         }
-        if (r[0] == 0) {
-            initialized = 1;
-            if (verbose) {
-                puts_("ACMD41 ready after ");
-                puthex32(i + 1);
-                puts_(" tries\n");
+        puts_("ok\n");
+
+    } else if (*p == 'X' || *p == 'x') {
+        uint64_t a0 = 0, a1 = 0;
+        p = parse_hex(p + 1, &addr);
+        if (!p) { puts_("usage: X<addr> [a0 [a1]]\n"); return -1; }
+        if (*p == ' ') { const char *q = parse_hex(p + 1, &a0); if (q) p = q; }
+        if (*p == ' ') { const char *q = parse_hex(p + 1, &a1); if (q) p = q; }
+        puts_("jumping...\n");
+        disk_quiesce();
+        sync_cache_for_exec();
+        ((fn_t2)addr)(a0, a1);
+        puts_("returned\n");
+
+    } else if (*p == 'L' || *p == 'l') {
+        uint64_t n;
+        p = parse_hex(p + 1, &addr);
+        if (!p || *p != ' ') { puts_("usage: L<addr> <path>\n"); return -1; }
+        while (*p == ' ') p++;
+        if (disk_load(p, addr, ~0ul, &n)) return -1;
+
+    } else if (*p == 'D' || *p == 'd') {
+        p++;
+        while (*p == ' ') p++;
+        if (disk_list(p)) return -1;
+
+    } else if (*p == 'B' || *p == 'b') {
+        return autoboot();
+
+    } else if (*p == 'E' || *p == 'e') {
+        if ((uint32_t)ERRLOG_BASE[0] != ERRLOG_MAGIC) { puts_("no integrity log\n"); return -1; }
+        uint64_t st = ERRLOG_BASE[1], fi = ERRLOG_BASE[2];
+        puts_("errlog sticky="); puthex64(st);
+        puts_("  (D$ [15:0]  I$ [31:16]  LSU [47:32])\n");
+        if (st) {
+            puts_("first: bit "); puthex64((fi >> 48) & 0xff);
+            puts_(" at cycle "); puthex64(fi & 0xffffffffffffull);
+            putc_('\n');
+        }
+
+    } else if (*p == 'P' || *p == 'p') {
+        uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
+        uint64_t build_stamp = read_build_stamp();
+        uint64_t mcause, mtval, mepc, scause, stval, sepc;
+        asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
+        asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
+        asm volatile ("csrr %0, 0xfc2" : "=r"(tot));
+        asm volatile ("csrr %0, 0xfc3" : "=r"(cnt));
+        asm volatile ("csrr %0, 0xfc4" : "=r"(to));
+        asm volatile ("csrr %0, 0xfc5" : "=r"(to_pc));
+        asm volatile ("csrr %0, 0xfc6" : "=r"(to_tv));
+        asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
+        asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
+        asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
+        asm volatile ("csrr %0, mcause" : "=r"(mcause));
+        asm volatile ("csrr %0, mtval"  : "=r"(mtval));
+        asm volatile ("csrr %0, mepc"   : "=r"(mepc));
+        asm volatile ("csrr %0, scause" : "=r"(scause));
+        asm volatile ("csrr %0, stval"  : "=r"(stval));
+        asm volatile ("csrr %0, sepc"   : "=r"(sepc));
+        if (p[1] == 'c' || p[1] == 'C') {
+            asm volatile ("csrw 0xfc3, zero");
+            puts_("cleared\n");
+        } else {
+            puts_("build stamp="); puthex64(build_stamp);
+            putc_('\n');
+            puts_("mig min="); puthex64(mn);
+            puts_(" max=");    puthex64(mx);
+            puts_(" total=");  puthex64(tot);
+            puts_(" count=");  puthex64(cnt);
+            puts_(" timeouts="); puthex64(to);
+            if (cnt) {
+                puts_(" avg=");
+                puthex64(tot / cnt);
             }
-            break;
+            putc_('\n');
+            puts_("scause="); puthex64(scause);
+            puts_(" stval="); puthex64(stval);
+            puts_(" sepc=");  puthex64(sepc);
+            putc_('\n');
+            puts_("mcause="); puthex64(mcause);
+            puts_(" mtval="); puthex64(mtval);
+            puts_(" mepc=");  puthex64(mepc);
+            putc_('\n');
+            if (to) {
+                puts_("first-to pc="); puthex64(to_pc);
+                puts_(" tval=");  puthex64(to_tv);
+                puts_(" state="); puthex64(to_st);
+                puts_(" cause="); puthex64(to_ca);
+                puts_(" addr=");  puthex64(to_ad);
+                putc_('\n');
+            }
         }
-    }
-    if (!initialized && verbose)
-        print_sd_r1("ACMD41 last", r[0]);
 
-    if (sd_cmd(58, 0, 0x01, r, 5, &ok) == 0) {
-        ocr = ((uint32_t)r[1] << 24) |
-              ((uint32_t)r[2] << 16) |
-              ((uint32_t)r[3] << 8) |
-              r[4];
-        if (high_capacity)
-            *high_capacity = (ocr & 0x40000000) != 0;
-        if (verbose) {
-            print_sd_r1("CMD58", r[0]);
-            puts_("OCR=");
-            puthex32(ocr);
-            puts_((ocr & 0x40000000) ? " CCS=1\n" : " CCS=0\n");
-        }
-    } else {
-        if (verbose)
-            puts_("CMD58: no response\n");
-    }
+    } else if (*p == '?' || *p == 'h' || *p == 'H') {
+        puts_("R<addr>          read 64-bit word\n");
+        puts_("W<addr> <val>    write 64-bit word\n");
+        puts_("WW<addr> <val>   write 32-bit word\n");
+        puts_("WH<addr> <val>   write 16-bit half-word\n");
+        puts_("WB<addr> <val>   write 8-bit byte\n");
+        puts_("T<addr>          hexdump 256 bytes\n");
+        puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
+        puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
+        puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
+        puts_("L<addr> <path>   load a file from the SD card's EFI System Partition\n");
+        puts_("D [path]         list a directory there\n");
+        puts_("B                boot from the SD card (/smolrv64/boot.txt) now\n");
+        puts_("X<addr> [a0 [a1]] execute from address\n");
+        puts_("P                dump core debug counters; Pc clears them\n");
+        puts_("E                integrity log: which invariant fired, and when\n");
 
-    if (!ok) {
-        if (verbose)
-            puts_("SPI timeout\n");
+    } else if (*p != 0) {
+        puts_("unknown command (? for help)\n");
         return -1;
     }
-
-    return initialized ? 0 : -1;
+    return 0;
 }
-
-static void sd_probe(void)
-{
-    int ok = 1;
-    uint8_t csd[16];
-
-    if (sd_init_card(1, 0) == 0) {
-        sd_spi_init(12); /* about 12.8 MHz */
-        if (sd_read_register(9, csd, &ok) == 0)
-            print_sd_csd_capacity(csd);
-        else
-            puts_("CMD9/CSD: failed\n");
-    }
-
-    if (!ok)
-        puts_("SPI timeout\n");
-}
-
-static void sd_dump_sector(uint64_t sector)
-{
-    int ok = 1;
-    int high_capacity = 0;
-    uint32_t arg;
-    int rc;
-
-    if (sd_init_card(0, &high_capacity) < 0) {
-        puts_("SD init failed; run S for details\n");
-        return;
-    }
-
-    if (sd_sector_arg(sector, high_capacity, &arg) < 0) {
-        puts_("sector too large for card addressing mode\n");
-        return;
-    }
-
-    sd_spi_init(12); /* about 12.8 MHz */
-    rc = sd_read_data(17, arg, sd_sector_buf, sizeof(sd_sector_buf), &ok);
-    if (rc != 0 || !ok) {
-        puts_("CMD17/read failed");
-        if (!ok)
-            puts_(" (SPI timeout)");
-        putc_('\n');
-        return;
-    }
-
-    puts_("sector=");
-    puthex64(sector);
-    puts_(" arg=");
-    puthex32(arg);
-    puts_(high_capacity ? " SDHC/SDXC\n" : " SDSC\n");
-    hexdump_bytes(sd_sector_buf, sector << 9, sizeof(sd_sector_buf));
-}
-
-static void sd_load_sectors(uint64_t sector, uint64_t count, uint64_t addr)
-{
-    int ok = 1;
-    int high_capacity = 0;
-    volatile uint8_t *dst = (volatile uint8_t *)addr;
-
-    if (count == 0) {
-        puts_("count must be nonzero\n");
-        return;
-    }
-
-    if (sd_init_card(0, &high_capacity) < 0) {
-        puts_("SD init failed; run S for details\n");
-        return;
-    }
-
-    sd_spi_init(12); /* about 12.8 MHz */
-    for (uint64_t i = 0; i < count; i++) {
-        uint32_t arg;
-        int rc;
-
-        if (sd_sector_arg(sector + i, high_capacity, &arg) < 0) {
-            puts_("sector too large for card addressing mode\n");
-            return;
-        }
-
-        rc = sd_read_data(17, arg, dst + (i << 9), 512, &ok);
-        if (rc != 0 || !ok) {
-            puts_("CMD17/read failed at sector=");
-            puthex64(sector + i);
-            if (!ok)
-                puts_(" (SPI timeout)");
-            putc_('\n');
-            return;
-        }
-    }
-
-    puts_("loaded sectors=");
-    puthex64(sector);
-    puts_(" count=");
-    puthex64(count);
-    puts_(" addr=");
-    puthex64(addr);
-    puts_(" bytes=");
-    puthex64(count << 9);
-    putc_('\n');
-}
-
-typedef void (*fn_t)(void);
-typedef void (*fn_t2)(uint64_t, uint64_t);
 
 int main(void)
 {
-    char buf[LINE_MAX];
+    static char buf[LINE_MAX];
 
     uart_init(UART0_BASE, CLK_FREQ, UART_SPEED);
     // Flush any spurious chars received during init or terminal connect
@@ -816,231 +710,15 @@ int main(void)
     }
     putc_('\n');
 
+
+    // The screen after the banner: drawing it takes a few hundred thousand cycles, and the
+    // banner is what tells a console (and the netlist boot, rule F5) the core runs at all.
+    video_init();
+    char c0 = countdown();
     for (;;) {
-        uint64_t addr, val;
-        const char *p;
-
         puts_("> ");
-        readline(buf);
-        p = buf;
-
-        if (*p == 'R' || *p == 'r') {
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: R<addr>\n"); continue; }
-            val = *(volatile uint64_t *)addr;
-            puthex64(addr); puts_(": "); puthex64(val); putc_('\n');
-
-        } else if ((*p == 'W' || *p == 'w') &&
-                   (p[1] == 'B' || p[1] == 'b')) {
-            p = parse_hex(p + 2, &addr);
-            if (!p) { puts_("usage: WB<addr> <val>\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &val);
-            if (!p) { puts_("usage: WB<addr> <val>\n"); continue; }
-            *(volatile uint8_t *)addr = (uint8_t)val;
-            puts_("ok\n");
-
-        } else if ((*p == 'W' || *p == 'w') &&
-                   (p[1] == 'H' || p[1] == 'h')) {
-            p = parse_hex(p + 2, &addr);
-            if (!p) { puts_("usage: WH<addr> <val>\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &val);
-            if (!p) { puts_("usage: WH<addr> <val>\n"); continue; }
-            *(volatile uint16_t *)addr = (uint16_t)val;
-            puts_("ok\n");
-
-        } else if ((*p == 'W' || *p == 'w') &&
-                   (p[1] == 'W' || p[1] == 'w')) {
-            p = parse_hex(p + 2, &addr);
-            if (!p) { puts_("usage: WW<addr> <val>\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &val);
-            if (!p) { puts_("usage: WW<addr> <val>\n"); continue; }
-            *(volatile uint32_t *)addr = (uint32_t)val;
-            puts_("ok\n");
-
-        } else if (*p == 'W' || *p == 'w') {
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: W<addr> <val>\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &val);
-            if (!p) { puts_("usage: W<addr> <val>\n"); continue; }
-            *(volatile uint64_t *)addr = val;
-            puts_("ok\n");
-
-        } else if (*p == 'T' || *p == 't') {
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: T<addr>\n"); continue; }
-            hexdump(addr, 256);
-
-        } else if (*p == 'Y' || *p == 'y') {
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: Y<addr>\n"); continue; }
-            puts_("start XMODEM-1K send now\n");
-            {
-                uint64_t n = xmodem1k_recv(addr);
-                if (n == (uint64_t)-1)
-                    puts_("cancelled\n");
-                else { puthex64(n); puts_(" bytes loaded\n"); }
-            }
-
-        } else if (*p == 'C' || *p == 'c') {
-            uint64_t len;
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: C<addr> <len>\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &len);
-            if (!p) { puts_("usage: C<addr> <len>\n"); continue; }
-            {
-                uint8_t hash[32];
-                int i;
-                blake3_hash((const void *)addr, len, hash);
-                puts_("blake3: ");
-                for (i = 0; i < 32; i++) puthex8(hash[i]);
-                putc_('\n');
-            }
-
-        } else if (*p == 'Z' || *p == 'z') {
-            uint64_t len, fill = 0;
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
-            while (*p == ' ') p++;
-            p = parse_hex(p, &len);
-            if (!p) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
-            while (*p == ' ') p++;
-            if (*p) {
-                const char *q = parse_hex(p, &fill);
-                if (!q) { puts_("usage: Z<addr> <len> [byte]\n"); continue; }
-            }
-            {
-                volatile uint8_t *d = (volatile uint8_t *)addr;
-                uint8_t b = (uint8_t)fill;
-                uint64_t i;
-                for (i = 0; i < len; i++) d[i] = b;
-            }
-            puts_("ok\n");
-
-        } else if (*p == 'S' || *p == 's') {
-            uint64_t sector, count, load_addr;
-            if (p[1] == 'L' || p[1] == 'l') {
-                p += 2;
-                while (*p == ' ') p++;
-                p = parse_hex(p, &sector);
-                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
-                while (*p == ' ') p++;
-                p = parse_hex(p, &count);
-                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
-                while (*p == ' ') p++;
-                p = parse_hex(p, &load_addr);
-                if (!p) { puts_("usage: SL<sector> <count> <addr>\n"); continue; }
-                sd_load_sectors(sector, count, load_addr);
-                continue;
-            }
-
-            p++;
-            while (*p == ' ') p++;
-            if (*p) {
-                if (!parse_hex(p, &sector)) { puts_("usage: S [sector]\n"); continue; }
-                sd_dump_sector(sector);
-            } else {
-                sd_probe();
-            }
-
-        } else if (*p == 'X' || *p == 'x') {
-            uint64_t a0 = 0, a1 = 0;
-            p = parse_hex(p + 1, &addr);
-            if (!p) { puts_("usage: X<addr> [a0 [a1]]\n"); continue; }
-            if (*p == ' ') { const char *q = parse_hex(p + 1, &a0); if (q) p = q; }
-            if (*p == ' ') { const char *q = parse_hex(p + 1, &a1); if (q) p = q; }
-            puts_("jumping...\n");
-            sync_cache_for_exec();
-            ((fn_t2)addr)(a0, a1);
-            puts_("returned\n");
-
-        } else if (*p == 'E' || *p == 'e') {
-            if ((uint32_t)ERRLOG_BASE[0] != ERRLOG_MAGIC) { puts_("no integrity log\n"); continue; }
-            uint64_t st = ERRLOG_BASE[1], fi = ERRLOG_BASE[2];
-            puts_("errlog sticky="); puthex64(st);
-            puts_("  (D$ [15:0]  I$ [31:16]  LSU [47:32])\n");
-            if (st) {
-                puts_("first: bit "); puthex64((fi >> 48) & 0xff);
-                puts_(" at cycle "); puthex64(fi & 0xffffffffffffull);
-                putc_('\n');
-            }
-
-        } else if (*p == 'P' || *p == 'p') {
-            uint64_t mn, mx, tot, cnt, to, to_pc, to_tv, to_st, to_ca, to_ad;
-            uint64_t build_stamp = read_build_stamp();
-            uint64_t mcause, mtval, mepc, scause, stval, sepc;
-            asm volatile ("csrr %0, 0xfc0" : "=r"(mn));
-            asm volatile ("csrr %0, 0xfc1" : "=r"(mx));
-            asm volatile ("csrr %0, 0xfc2" : "=r"(tot));
-            asm volatile ("csrr %0, 0xfc3" : "=r"(cnt));
-            asm volatile ("csrr %0, 0xfc4" : "=r"(to));
-            asm volatile ("csrr %0, 0xfc5" : "=r"(to_pc));
-            asm volatile ("csrr %0, 0xfc6" : "=r"(to_tv));
-            asm volatile ("csrr %0, 0xfc7" : "=r"(to_st));
-            asm volatile ("csrr %0, 0xfc8" : "=r"(to_ca));
-            asm volatile ("csrr %0, 0xfc9" : "=r"(to_ad));
-            asm volatile ("csrr %0, mcause" : "=r"(mcause));
-            asm volatile ("csrr %0, mtval"  : "=r"(mtval));
-            asm volatile ("csrr %0, mepc"   : "=r"(mepc));
-            asm volatile ("csrr %0, scause" : "=r"(scause));
-            asm volatile ("csrr %0, stval"  : "=r"(stval));
-            asm volatile ("csrr %0, sepc"   : "=r"(sepc));
-            if (p[1] == 'c' || p[1] == 'C') {
-                asm volatile ("csrw 0xfc3, zero");
-                puts_("cleared\n");
-            } else {
-                puts_("build stamp="); puthex64(build_stamp);
-                putc_('\n');
-                puts_("mig min="); puthex64(mn);
-                puts_(" max=");    puthex64(mx);
-                puts_(" total=");  puthex64(tot);
-                puts_(" count=");  puthex64(cnt);
-                puts_(" timeouts="); puthex64(to);
-                if (cnt) {
-                    puts_(" avg=");
-                    puthex64(tot / cnt);
-                }
-                putc_('\n');
-                puts_("scause="); puthex64(scause);
-                puts_(" stval="); puthex64(stval);
-                puts_(" sepc=");  puthex64(sepc);
-                putc_('\n');
-                puts_("mcause="); puthex64(mcause);
-                puts_(" mtval="); puthex64(mtval);
-                puts_(" mepc=");  puthex64(mepc);
-                putc_('\n');
-                if (to) {
-                    puts_("first-to pc="); puthex64(to_pc);
-                    puts_(" tval=");  puthex64(to_tv);
-                    puts_(" state="); puthex64(to_st);
-                    puts_(" cause="); puthex64(to_ca);
-                    puts_(" addr=");  puthex64(to_ad);
-                    putc_('\n');
-                }
-            }
-
-        } else if (*p == '?' || *p == 'h' || *p == 'H') {
-            puts_("R<addr>          read 64-bit word\n");
-            puts_("W<addr> <val>    write 64-bit word\n");
-            puts_("WW<addr> <val>   write 32-bit word\n");
-            puts_("WH<addr> <val>   write 16-bit half-word\n");
-            puts_("WB<addr> <val>   write 8-bit byte\n");
-            puts_("T<addr>          hexdump 256 bytes\n");
-            puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
-            puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
-            puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
-            puts_("S [sector]       probe SD card, or dump 512-byte sector\n");
-            puts_("SL<sec> <n> <addr> read n SD sectors into memory\n");
-            puts_("X<addr> [a0 [a1]] execute from address\n");
-            puts_("P                dump core debug counters; Pc clears them\n");
-            puts_("E                integrity log: which invariant fired, and when\n");
-
-        } else if (*p != 0) {
-            puts_("unknown command (? for help)\n");
-        }
+        readline(buf, c0);
+        c0 = 0;
+        run_cmd(buf);
     }
 }

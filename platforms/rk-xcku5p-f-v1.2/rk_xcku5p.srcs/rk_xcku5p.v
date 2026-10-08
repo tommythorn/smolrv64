@@ -113,13 +113,16 @@ module rk_xcku5p(
    wire init_calib_complete;
 
    // CPU is held in reset until calibration completes.
-   // key[1] is a soft-reset button (active low): pulses the CPU reset without
+   // THE BUTTONS: key[0] keeps the monitor at its prompt (its autoboot countdown reads it,
+   // 0x1000_6000), key[1] steers UART RX between the console and the keyboard, key[2] resets
+   // the DDR4 controller (recalibrates it, and the CPU with it), key[3] resets the CPU.
+   // key[3] is a soft-reset button (active low): pulses the CPU reset without
    // touching the DDR4 MIG, so calibration is preserved and mig_* latency
    // stats CSRs (which aren't in the CPU's reset block) survive across a
-   // soft reset. Press key[1] to return to the monitor from a hung workload.
+   // soft reset. Press key[3] to return to the monitor from a hung workload.
    // fbdiag_reset_req: the in-order SoC's fetch-buffer invariant fired and wants the CPU
    // reset into the ROM monitor so the snapshot at 0x1000_E000 can be read out with R<addr>.
-   // key[1] is a physical button and there is no VIO, so without this the only way to read
+   // key[3] is a physical button and there is no VIO, so without this the only way to read
    // the evidence is to be standing at the board.  It is a ONE-SHOT by construction: the
    // sticky bit that raises it clears only on power-on, so the edge cannot repeat.
    // probe_clk -> ui_clk, so it crosses through a 2-FF synchronizer with an XDC false path;
@@ -128,7 +131,7 @@ module rk_xcku5p(
    wire fbdiag_reset_req;
    (* async_reg = "true" *) reg [1:0] fbdiag_rst_sync = 2'b00;
    always @(posedge ui_clk) fbdiag_rst_sync <= {fbdiag_rst_sync[0], fbdiag_reset_req};
-   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | ~key[1] | fbdiag_rst_sync[1];
+   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | ~key[3] | fbdiag_rst_sync[1];
    reg  [1:0] ui_cpu_reset_sync = 2'b11;
    wire ui_cpu_reset = ui_cpu_reset_sync[1];
 
@@ -309,7 +312,7 @@ module rk_xcku5p(
 
    // DDR4 MIG IP instantiation (AXI4 slave)
    ddr4_0 u_ddr4_0 (
-      .sys_rst                        (~key[0]),          // active-high; key[0] low = pressed = reset
+      .sys_rst                        (~key[2]),          // active-high; key[2] low = pressed = reset
 
       .c0_sys_clk_p                   (sys_clk_p),
       .c0_sys_clk_n                   (sys_clk_n),
@@ -425,6 +428,7 @@ module rk_xcku5p(
    wire        build_id_sel   = ui_mmio_address[19:8] == 12'h0f0;
    wire        vga_sel        = ui_mmio_address[19:12] == 8'h05;
    wire        kbd_sel        = ui_mmio_address[19:12] == 8'h04;
+   wire        keys_sel       = ui_mmio_address[19:12] == 8'h06;
    wire [31:0] kbd_mmio_rdata;
    wire [31:0] vga_mmio_rdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
@@ -748,8 +752,34 @@ module rk_xcku5p(
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
-   reg  [ 6:0] rd_sel_q = 7'd0;   reg rd_dbg_q = 1'b0;
-   reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_bid_q;
+   reg  [ 7:0] rd_sel_q = 8'd0;   reg rd_dbg_q = 1'b0;
+   reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_bid_q, rd_keys_q;
+
+   // 0x10006000, the board's keys: [3:0] key[3:0] held now, [11:8] pressed since the CPU's
+   // reset (a write of 1 clears). Each key is synchronized and debounced: a level counts once it
+   // has held for 2^18 ui_clk cycles (0.8 ms). key[0] is the monitor's: held, or pressed in its
+   // autoboot countdown, it stays at the prompt.
+   (* async_reg = "true" *) reg [3:0] keys_m = 4'hf, keys_s = 4'hf;
+   reg  [3:0]  keys_db = 4'hf;                      // debounced, active low like the pins
+   reg  [3:0]  keys_hit = 4'h0;                     // pressed since the CPU's reset
+   reg  [17:0] keys_cnt [0:3];
+   integer     ki;
+   initial for (ki = 0; ki < 4; ki = ki + 1) keys_cnt[ki] = 18'd0;
+   always @(posedge ui_clk) begin
+      keys_m <= key;  keys_s <= keys_m;
+      for (ki = 0; ki < 4; ki = ki + 1) begin
+         if (keys_s[ki] == keys_db[ki]) keys_cnt[ki] <= 18'd0;
+         else keys_cnt[ki] <= keys_cnt[ki] + 18'd1;
+         if (&keys_cnt[ki]) begin
+            keys_db[ki] <= keys_s[ki];
+            if (!keys_s[ki]) keys_hit[ki] <= 1'b1;
+         end
+      end
+      if (ui_mmio_write && keys_sel && ui_mmio_address[11:2] == 10'd0)
+         keys_hit <= keys_hit & ~ui_mmio_writedata[11:8];
+      if (ui_cpu_reset) keys_hit <= 4'h0;
+   end
+   wire [31:0] keys_readdata = {20'd0, keys_hit, 4'd0, ~keys_db};
 
    always @(posedge ui_clk) begin
       if (ui_cpu_reset) begin
@@ -772,14 +802,14 @@ module rk_xcku5p(
          // to mmio_readdata_q was the design's worst path at 333 MHz (-0.097 ns, from
          // virtio_net's queue_sel) once the keyboard and video pages joined it.
          if (ui_mmio_read) begin
-            rd_sel_q <= {build_id_sel, kbd_sel, vga_sel, virtio_net_sel, virtio_blk_sel,
+            rd_sel_q <= {keys_sel, build_id_sel, kbd_sel, vga_sel, virtio_net_sel, virtio_blk_sel,
                          sd_cd_gpio_sel, spi_speed_sel};
             rd_dbg_q <= ui_mmio_address[11:8] == 4'hf;
             rd_spi_q <= {16'd0, spi_fast_half};       rd_cd_q    <= sd_cd_gpio_readdata;
             rd_blk_q <= virtio_blk_readdata;          rd_blkdb_q <= virtio_blk_debug_word;
             rd_net_q <= virtio_net_readdata;          rd_netdb_q <= virtio_net_debug_word;
             rd_vga_q <= vga_mmio_rdata;               rd_kbd_q   <= kbd_mmio_rdata;
-            rd_bid_q <= build_id_readdata;
+            rd_bid_q <= build_id_readdata;            rd_keys_q  <= keys_readdata;
          end
          if (mmio_read_d1)
             mmio_readdata_q <= ({32{rd_sel_q[0]}} & rd_spi_q)
@@ -788,7 +818,8 @@ module rk_xcku5p(
                              | ({32{rd_sel_q[3]}} & (rd_dbg_q ? rd_netdb_q : rd_net_q))
                              | ({32{rd_sel_q[4]}} & rd_vga_q)
                              | ({32{rd_sel_q[5]}} & rd_kbd_q)
-                             | ({32{rd_sel_q[6]}} & rd_bid_q);
+                             | ({32{rd_sel_q[6]}} & rd_bid_q)
+                             | ({32{rd_sel_q[7]}} & rd_keys_q);
       end
    end
 
@@ -1372,11 +1403,11 @@ module rk_xcku5p(
 
    // ===== VGA scanout (simmerv's --graphics framebuffer on a TinyVGA adapter) =====
    // vga_scanout reads the RGB565 framebuffer that Linux's simplefb draws into and drives the
-   // header pins RGB222. Its registers are page 0x05 (0x1000_5000), written by the ROM monitor
-   // before Linux starts (workloads/ubuntu/ubuntu-boot.sh); Linux never touches them.
+   // header pins RGB222. Its registers are page 0x05 (0x1000_5000), programmed and enabled by the
+   // ROM monitor at reset (its splash and console); Linux never touches them.
    //
-   // The pixel clock: an MMCM fed from ui_clk, VCO 1000 MHz (333.33 / 2 * 6), CLKOUT0 / 25 =
-   // 40 MHz -- VESA 800x600@60, vga_scanout's reset mode. Software changes the mode by
+   // The pixel clock: an MMCM fed from ui_clk, VCO 1000 MHz (333.33 / 2 * 6), CLKOUT0 / 40 =
+   // 25 MHz -- VESA 640x480@60 (59.5 Hz at 25.0 MHz), vga_scanout's reset mode. Software changes the mode by
    // rewriting CLKOUT0's divider over DRP (tools/vga-mode.py): the VCO never moves, so the
    // MMCM's lock and filter settings, which depend only on M, stay valid. DCLK is ui_clk / 2
    // (DRP's limit is below ui_clk), from a BUFGCE_DIV, so ui_clk <-> DCLK is synchronous.
@@ -1396,7 +1427,7 @@ module rk_xcku5p(
       .CLKIN1_PERIOD      (3.000),
       .DIVCLK_DIVIDE      (2),
       .CLKFBOUT_MULT_F    (6.000),
-      .CLKOUT0_DIVIDE_F   (25.000),
+      .CLKOUT0_DIVIDE_F   (40.000),             // 25 MHz: 640x480@60 (vga_scanout's reset mode)
       .CLKOUT0_DUTY_CYCLE (0.5),
       .CLKOUT0_PHASE      (0.0)
    ) vga_mmcm_inst (
@@ -1452,7 +1483,7 @@ module rk_xcku5p(
    assign vga_axi_wlast = 1'b0;   assign vga_axi_wvalid = 1'b0;   assign vga_axi_bready = 1'b1;
 
    // ===== The virtio keyboard (simmerv's --graphics keyboard), fed from the serial line =====
-   // key[3] steers UART RX: each press toggles it between the console (the 16550, as always)
+   // key[1] steers UART RX: each press toggles it between the console (the 16550, as always)
    // and this keyboard, whose bytes are translated into key presses (virtio_input's header).
    // It starts on the console at every reset, so loading over the UART is never affected.
    wire        kbd_irq;
@@ -2057,20 +2088,20 @@ module rk_xcku5p(
    wire        ptx_valid;  wire [7:0] ptx_data;  wire ptx_ready;
    wire        prx_valid;  wire [7:0] prx_data;
 
-   // key[3] (active low) toggles kbd_route: UART RX to the console (0) or to the keyboard (1).
+   // key[1] (active low) toggles kbd_route: UART RX to the console (0) or to the keyboard (1).
    // Two flops of synchronizer, then a debounce: the level must hold for 2^17 probe_clk cycles
    // (~0.8 ms at 166 MHz) before it counts, so contact bounce gives one toggle per press.
-   (* async_reg = "true" *) reg [1:0] key3_s = 2'b11;
-   reg        key3_db = 1'b1;
-   reg [16:0] key3_cnt = 17'd0;
+   (* async_reg = "true" *) reg [1:0] ksw_s = 2'b11;
+   reg        ksw_db = 1'b1;
+   reg [16:0] ksw_cnt = 17'd0;
    reg        kbd_route = 1'b0;
    always @(posedge probe_clk) begin
-      key3_s <= {key3_s[0], key[3]};
-      if (key3_s[1] == key3_db) key3_cnt <= 17'd0;
-      else key3_cnt <= key3_cnt + 17'd1;
-      if (&key3_cnt) begin
-         key3_db <= key3_s[1];
-         if (!key3_s[1]) kbd_route <= ~kbd_route;   // a press
+      ksw_s <= {ksw_s[0], key[1]};
+      if (ksw_s[1] == ksw_db) ksw_cnt <= 17'd0;
+      else ksw_cnt <= ksw_cnt + 17'd1;
+      if (&ksw_cnt) begin
+         ksw_db <= ksw_s[1];
+         if (!ksw_s[1]) kbd_route <= ~kbd_route;   // a press
       end
       if (probe_reset) kbd_route <= 1'b0;
    end

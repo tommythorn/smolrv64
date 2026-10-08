@@ -12,7 +12,7 @@ table says by how much.
 
 The framebuffer is placed as simmerv's `--graphics WxH` places it (src/lib.rs
 setup_framebuffer): W*H*2 bytes rounded up to a power of two, at the top of 2 GiB of DRAM,
-aligned to that size. The DTS lines replace the 800x600 ones in workloads/ubuntu/ubuntu-nfs.dts.in,
+aligned to that size. The DTS lines replace the 640x480 ones in workloads/ubuntu/ubuntu-nfs.dts.in,
 and the DTB and initrd must load below the framebuffer (ubuntu-boot.sh: DTB_ADDR, INITRD_ADDR).
 
 DRP layout (CLKOUT0, XAPP888's MMCME3/MMCME4 tables -- CHECK ON THE BOARD, untested so far):

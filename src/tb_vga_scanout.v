@@ -10,7 +10,7 @@
 module tb_vga_scanout;
    reg clk = 1'b0, pix_clk = 1'b0, reset = 1'b1;
    always #1.5  clk = ~clk;        // 333 MHz, as ui_clk
-   always #12.5 pix_clk = ~pix_clk;  // 40 MHz
+   always #20 pix_clk = ~pix_clk;    // 25 MHz
 
    reg  [ 7:0] mmio_addr = 8'd0;  reg mmio_write = 1'b0;  reg [31:0] mmio_wdata = 32'd0;
    wire [31:0] mmio_rdata;
@@ -139,8 +139,9 @@ module tb_vga_scanout;
    initial begin
       repeat (10) @(posedge clk);
       reset = 1'b0;
-      if (dut.h_total != 12'd1056 || dut.v_total != 12'd628 || dut.fb_base != 32'hFFF0_0000)
-         $fatal(1, "reset values are not 800x600@60 at 0xFFF00000");
+      if (dut.h_total != 12'd800 || dut.v_total != 12'd525 || dut.fb_base != 32'hFFF0_0000
+          || dut.hs_pol || dut.vs_pol)
+         $fatal(1, "reset values are not 640x480@60 at 0xFFF00000");
       // One burst per line, then three; odd porches so an off-by-one shows.
       run_mode(32, 35, 39, 44, 6, 7, 9, 11, 32'd64);
       run_mode(96, 101, 110, 117, 5, 6, 8, 9, 32'd192);

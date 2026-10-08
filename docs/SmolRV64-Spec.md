@@ -1371,7 +1371,7 @@ have in flight, i.e. the multi-outstanding load queue in the work list below.
 | CLINT | `0x0200_0000` | 64 KiB |
 | PLIC | `0x0c00_0000` | 64 MiB |
 | UART (NS16550) | `0x1000_0000` | 8 byte registers |
-| ui_clk device pages, one 4 KiB page each: virtio-blk `0x1000_2000`, virtio-net `0x1000_3000`, virtio keyboard `0x1000_4000`, VGA scanout `0x1000_5000` (not in the DTB); pages `0x1000_6000`-`0x1000_7fff` read 0 | `0x1000_2000` | 24 KiB |
+| ui_clk device pages, one 4 KiB page each: virtio-blk `0x1000_2000`, virtio-net `0x1000_3000`, virtio keyboard `0x1000_4000`, VGA scanout `0x1000_5000` (not in the DTB; 640x480@60 from reset, RGB565 at `0xFFF0_0000`, the DTB's framebuffer, turned on by the monitor), the board's keys `0x1000_6000` (`[3:0]` held now, `[11:8]` pressed since the CPU's reset, write 1 to clear; key[0] keeps the monitor at its prompt, key[1] steers UART RX, key[2] resets the DDR4 controller, key[3] the CPU); page `0x1000_7000` reads 0 | `0x1000_2000` | 24 KiB |
 
 **virtio-net's DMA moves 8-byte words** (2026-09-05, plan item 7): RX gathers a frame one
 byte per clock from the engine's slot ring (a registered BRAM read: the backend presents

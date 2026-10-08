@@ -8,6 +8,8 @@ core/obj_dir_rs/
 # commit and committing it only makes it stale again. The template is the source.
 workloads/ubuntu/ubuntu-nfs.dts
 workloads/ubuntu/ubuntu-nfs.dtb
+workloads/ubuntu/ubuntu-sd.dts
+workloads/ubuntu/ubuntu-sd.dtb
 workloads/ubuntu/ubuntu-nfs-166.dts
 workloads/ubuntu/ubuntu-nfs-166.dtb
 workloads/ubuntu/ubuntu-nfs-polled.dts

@@ -87,20 +87,6 @@ wait_for_new_complete() {
     return 1
 }
 
-wait_for_loaded() {
-    # Wait until grep -c "loaded sectors=" $LOG reaches $1.
-    local target=$1
-    local deadline=$(( SECONDS + TIMEOUT ))
-    while (( SECONDS < deadline )); do
-        local n
-        n=$(grep -c "loaded sectors=" "$LOG" 2>/dev/null || true)
-        if (( n >= target )); then return 0; fi
-        sleep 2
-    done
-    echo "ERROR: transfer did not complete within ${TIMEOUT}s (target=$target)" >&2
-    return 1
-}
-
 send_file() {
     # sx runs inside the screen session, in ITS directory (the checkout that owns the console),
     # so a relative name would send that checkout's file, not this one's: pass the absolute path.
@@ -128,10 +114,14 @@ send_line() {
     screen -S "$SESSION" -X stuff $'\n'
 }
 
+# A carriage return stops the monitor's autoboot countdown if it is still running (at the
+# prompt it is an empty line).
+screen -S "$SESSION" -X stuff $'\r'
+sleep 1
 base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
 send_file "$DTB_ADDR"    "$DTB"    $((base + 1))
-# SD loader is dead — XMODEM the firmware to FW_ADDR instead of the old SD load
-# (`SL2800 ffff 80000000` / wait_for_loaded), which now fails "SD init failed".
+# The firmware over XMODEM: this script boots THIS tree's files; the monitor's SD autoboot
+# (/smolrv64/boot.txt on the card's EFI System Partition) boots the card's.
 send_file "$FW_ADDR"     "$FW"     $((base + 2))
 # Optional initramfs. The old SD-loader path used to place this; when that died the
 # upload was dropped but the banner above kept advertising it, so a DTB declaring
@@ -142,12 +132,11 @@ if [[ -n "${INITRD:-}" && -f "$INITRD" ]]; then
     n=3
     send_file "$INITRD_ADDR" "$INITRD" $((base + 3))
 fi
-# VGA=1 starts the scanout in vga_scanout's reset mode, 800x600@60 at 0xFFF0_0000 -- the DTB's
-# framebuffer. VGA=<mode> (tools/vga-mode.py --list) programs another mode first; the DTB's
-# framebuffer node must then be the one the tool prints. Opt-in: the scanout reads DRAM
-# continuously.
+# The monitor turns the scanout on at reset in its reset mode, 640x480@60 at 0xFFF0_0000 -- the
+# DTB's framebuffer -- and VGA=1 asks for that again. VGA=<mode> (tools/vga-mode.py --list)
+# programs another mode; the DTB's framebuffer node must then be the one the tool prints.
 if [[ "${VGA:-0}" == 1 ]]; then
-    send_line "WW10005000 7"
+    send_line "WW10005000 1"
 elif [[ "${VGA:-0}" != 0 ]]; then
     want=$(../../tools/vga-mode.py "$VGA" | sed -n 's/^\t\twidth = <\([0-9]*\)>;/\1/p')
     have=$(dtc -I dtb -O dts "$DTB" 2>/dev/null | sed -n '/simple-framebuffer/,/};/s/.*width = <\(0x[0-9a-f]*\|[0-9]*\)>;.*/\1/p')

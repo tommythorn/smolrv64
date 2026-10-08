@@ -27,8 +27,8 @@
 //   0x40 DRP          write {we[31], addr[22:16], data[15:0]} starts one access of the pixel
 //                     clock's MMCM; read gives {busy[31], last read data[15:0]}
 //   0x44 PIXCLK_CTRL  [0] hold the pixel-clock MMCM in reset
-// Reset values are VESA 800x600@60 (40 MHz) at FB_BASE 0xFFF0_0000, the address simmerv gives
-// an 800x600 framebuffer in 2 GiB; the board's MMCM comes up at 40 MHz.
+// Reset values are VESA 640x480@60 (25 MHz, negative syncs) at FB_BASE 0xFFF0_0000, the top MiB
+// of 2 GiB, where simmerv places a framebuffer of that size; the board's MMCM comes up at 25 MHz.
 //
 // Pixels are RGB565, little-endian, four to a 64-bit beat; the output is the top two bits of
 // each channel (RGB222, for the TinyVGA adapter).
@@ -95,10 +95,10 @@ module vga_scanout (
 
    always @(posedge clk) begin
       if (reset) begin
-         en <= 1'b0;  hs_pol <= 1'b1;  vs_pol <= 1'b1;
-         fb_base <= 32'hFFF0_0000;  stride <= 13'd1600;
-         h_active <= 12'd800;  h_sync_start <= 12'd840;  h_sync_end <= 12'd968;  h_total <= 12'd1056;
-         v_active <= 12'd600;  v_sync_start <= 12'd601;  v_sync_end <= 12'd605;  v_total <= 12'd628;
+         en <= 1'b0;  hs_pol <= 1'b0;  vs_pol <= 1'b0;
+         fb_base <= 32'hFFF0_0000;  stride <= 13'd1280;
+         h_active <= 12'd640;  h_sync_start <= 12'd656;  h_sync_end <= 12'd752;  h_total <= 12'd800;
+         v_active <= 12'd480;  v_sync_start <= 12'd490;  v_sync_end <= 12'd492;  v_total <= 12'd525;
          pixclk_rst <= 1'b0;
          drp_req <= 1'b0;  drp_we <= 1'b0;  drp_addr <= 7'd0;  drp_di <= 16'd0;  drp_rdata <= 16'd0;
       end else begin

@@ -105,6 +105,9 @@ for i in $(seq 1 30); do
    [ -n "$RTL_BANNER" ] && break; sleep 2
 done
 echo "banner: rtl=${RTL_BANNER:-?}"
+# The monitor autoboots from the SD card unless a console key stops its countdown: a carriage
+# return now keeps it at the prompt for the upload below.
+screen -S "$(screen -ls | awk '/\t[0-9]+\./ {print $1; exit}')" -X stuff $'\r'
 # A TRAILING '+' MEANS THE BITSTREAM IS NOT THAT COMMIT. The monitor appends it from the
 # build-id's source-dirty word; this gate used to grep only [0-9a-f] and silently drop it,
 # so a dirty build was reported -- and remembered -- as the commit it was built on top of.

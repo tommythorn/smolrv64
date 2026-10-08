@@ -1,6 +1,6 @@
 /dts-v1/;
 
-/* The framebuffer, as simmerv's `--graphics 800x600` lays it out: 800*600*2 bytes rounded up to
+/* The framebuffer, as simmerv's `--graphics 640x480` lays it out: 640*480*2 bytes rounded up to
  * a power of two, at the top of DRAM aligned to that size. It stays inside the memory node --
  * ordinary RAM in Linux's linear map -- and this keeps the page allocator off it. vga_scanout
  * reads it (docs/PLAN-2026-10-03-graphics-console.md); the DTB and initrd load below it. */
@@ -17,7 +17,7 @@
 	compatible = "riscv-virtio";
 	model = "@MODEL@";
 	chosen {
-		bootargs = "fbcon=font:SUN12x22 console=ttyS0 console=tty0 earlycon=sbi root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root,vers=4,tcp ip=dhcp rw ignore_loglevel random.trust_bootloader=on";
+		bootargs = "fbcon=font=6x10 console=ttyS0 console=tty0 earlycon=sbi @ROOT@ rw ignore_loglevel random.trust_bootloader=on";
 		stdout-path = "/uart@10000000";
 
 		/* Development-only static seed: replace with per-boot random bytes later. */
@@ -183,9 +183,9 @@
 	framebuffer@fff00000 {
 		compatible = "simple-framebuffer";
 		reg = <0 0xfff00000 0 0x100000>;
-		width = <800>;
-		height = <600>;
-		stride = <1600>;
+		width = <640>;
+		height = <480>;
+		stride = <1280>;
 		format = "r5g6b5";
 	};
 };

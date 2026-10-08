@@ -159,7 +159,7 @@ SECTIONS
   . = SEGMENT_START("ldata-segment", .);
   . = ALIGN(32 / 8);
   _end = .; PROVIDE (end = .);
-  __stack_top = MEM_BASE + 0x8000;
+  __stack_top = MEM_BASE + 0x40000;   /* the top of the 256 KiB SRAM */
   . = ALIGN(8);
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }

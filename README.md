@@ -113,8 +113,8 @@ is read off the RTL or measured with the workload named):
 
 **An SoC that runs the real thing.** CLINT, PLIC, an NS16550A UART hardwired to 3 Mbaud,
 virtio-blk backed by an SD card over SPI, virtio-net over RGMII with an eight-slot receive
-ring and word-wide DMA, a 256 KiB boot SRAM holding a ROM monitor with XMODEM upload and a
-memory-integrity command set, and one 512-bit line port into DDR4 with a hardware latency
+ring and word-wide DMA, a 256 KiB boot SRAM holding a ROM monitor that autoboots from the SD
+card or takes an XMODEM upload and has a memory-integrity command set, and one 512-bit line port into DDR4 with a hardware latency
 monitor on it. Ubuntu boots to `login:` over an NFS root; the board has run for days at a
 time.
 
@@ -221,9 +221,18 @@ make -C platforms/rk-xcku5p-f-v1.2 census     # every near-critical endpoint, gr
 tools/gate.sh                                 # build, program, boot Ubuntu to login:, judge
 ```
 
-The board boots through the ROM monitor: `workloads/ubuntu/ubuntu-boot.sh` uploads the
-device tree and the OpenSBI+Linux payload over the serial console at 3 Mbaud and starts
-them; the root filesystem is served over NFS. On the board,
+The board boots through the ROM monitor, which turns the VGA output on at reset (640x480, the
+device tree's framebuffer): a splash, and a console that shows everything it prints. Ten seconds
+after reset it boots from the SD card: it
+runs `/smolrv64/boot.txt` from the card's EFI System Partition (FAT32), monitor commands that
+load the OpenSBI+Linux payload and the device tree and jump to the payload; without
+`boot.txt` it loads `/smolrv64/fw_payload.bin` at `0x8000_0000` and `/smolrv64/smolrv64.dtb`
+at `0xffdf_f000`. key[0], or a key on the console, keeps it at its prompt, where
+`workloads/ubuntu/ubuntu-boot.sh` uploads the device tree and the payload over the serial
+console at 3 Mbaud instead. The device tree decides the root filesystem: `ubuntu-nfs.dtb`
+mounts NFS, `ubuntu-sd.dtb` the SD card's first partition (both `make -C workloads/ubuntu dtbs`);
+`workloads/sdboot/install-esp.sh` puts the payload and one of them on the card.
+On the board,
 `tools/perf-smol.sh td <cmd> 2>&1 | tools/perf-cpi-stack.py` runs a command under the
 Top-Down event set and prints the report; `docs/SmolRV64-Spec.md` §11, "Reading the report",
 explains each line and the `cpi` and `mem` sets that go under it.
