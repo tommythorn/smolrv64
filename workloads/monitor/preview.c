@@ -14,11 +14,13 @@ int main(void)
 {
     video_init();
     const char *s = "\nsmolrv64 monitor  rtl=2a9f0c41 fw=20261005104512 err=0000000000000000\n"
-                    "autoboot from the SD card in 10 s (key[0] or any key: monitor) 10 9 8 7 \n"
-                    "/smolrv64/boot.txt: 112 bytes in 3 ms\n"
-                    "boot> L80000000 /smolrv64/fw_payload.bin\n"
-                    "...................\n/smolrv64/fw_payload.bin: 19657736 bytes in 8123 ms\n"
-                    "boot> Lffdff000 /smolrv64/smolrv64.dtb\n/smolrv64/smolrv64.dtb: 3323 bytes in 4 ms\n"
+                    "go: boot from coffee over TFTP (or key[0]); B: from the SD card; ? for help\n"
+                    "> go\n"
+                    "net: 192.168.1.180 from DHCP\n"
+                    "boot.txt: 160 bytes in 2 ms (blksize 1468)\n"
+                    "boot> N80000000 fw_payload.bin\n"
+                    "...................\nfw_payload.bin: 19657736 bytes in 2900 ms (blksize 1468)\n"
+                    "boot> Nffdff000 smolrv64.dtb\nsmolrv64.dtb: 3319 bytes in 3 ms (blksize 1468)\n"
                     "boot> X80000000 0 ffdff000\njumping...\n";
     for (; *s; s++) video_putc(*s);
     FILE *f = fopen("splash.ppm", "wb");

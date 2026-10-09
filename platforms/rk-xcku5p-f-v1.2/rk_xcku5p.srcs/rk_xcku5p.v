@@ -117,7 +117,7 @@ module rk_xcku5p(
    wire init_calib_complete;
 
    // CPU is held in reset until calibration completes.
-   // THE BUTTONS: key[0] keeps the monitor at its prompt (its autoboot countdown reads it,
+   // THE BUTTONS: key[0] pressed at the monitor's prompt boots over TFTP (the monitor reads it at
    // 0x1000_6000), key[1] steers UART RX between the console and the keyboard. key[2] and
    // key[3] are only read there: no button resets anything.
    // fbdiag_reset_req: the in-order SoC's fetch-buffer invariant fired and wants the CPU
@@ -757,8 +757,8 @@ module rk_xcku5p(
 
    // 0x10006000, the board's keys: [3:0] key[3:0] held now, [11:8] pressed since the CPU's
    // reset (a write of 1 clears). Each key is synchronized and debounced: a level counts once it
-   // has held for 2^18 ui_clk cycles (0.8 ms). key[0] is the monitor's: held, or pressed in its
-   // autoboot countdown, it stays at the prompt.
+   // has held for 2^18 ui_clk cycles (0.8 ms). key[0] is the monitor's: pressed at its prompt,
+   // it boots over TFTP.
    (* async_reg = "true" *) reg [3:0] keys_m = 4'hf, keys_s = 4'hf;
    reg  [3:0]  keys_db = 4'hf;                      // debounced, active low like the pins
    reg  [3:0]  keys_hit = 4'h0;                     // pressed since the CPU's reset

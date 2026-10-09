@@ -1,6 +1,6 @@
 // The SD card for the monitor: the virtio-blk device (polled, one request at a time), the
 // partition table (GPT's EFI System Partition, or an MBR FAT32 partition) and a read-only FAT32
-// file system with long names. This is what the autoboot loads /smolrv64/boot.txt and the
+// file system with long names. This is what `B` loads /smolrv64/boot.txt and the
 // files it names from.
 //
 // The device's DMA reaches DDR, not the monitor's SRAM, and it is not cache-coherent: the
@@ -11,103 +11,35 @@
 #include "mon.h"
 
 #define VBLK            ((volatile uint32_t *)0x10002000)
-#define VM_MAGIC        (0x000 / 4)
-#define VM_VERSION      (0x004 / 4)
-#define VM_DEVID        (0x008 / 4)
-#define VM_DEVFEAT      (0x010 / 4)
-#define VM_DEVFEATSEL   (0x014 / 4)
-#define VM_DRVFEAT      (0x020 / 4)
-#define VM_DRVFEATSEL   (0x024 / 4)
-#define VM_QSEL         (0x030 / 4)
-#define VM_QNUMMAX      (0x034 / 4)
-#define VM_QNUM         (0x038 / 4)
-#define VM_QREADY       (0x044 / 4)
-#define VM_QNOTIFY      (0x050 / 4)
-#define VM_ISR          (0x060 / 4)
-#define VM_IACK         (0x064 / 4)
-#define VM_STATUS       (0x070 / 4)
-#define VM_QDESC        (0x080 / 4)
-#define VM_QAVAIL       (0x090 / 4)
-#define VM_QUSED        (0x0a0 / 4)
-#define VM_CONFIG       (0x100 / 4)
-#define ST_ACK 1
-#define ST_DRIVER 2
-#define ST_DRIVER_OK 4
-#define ST_FEATURES_OK 8
 
-// The scratch area (DMA_BASE, mon.h): each piece the CPU and the device share has cache lines of
-// its own.
-#define QN              8                                       // the queue's size
-#define D_NEXT 1
-#define D_WRITE 2
-struct vq_desc { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; };
-#define VQ_DESC         ((volatile struct vq_desc *)(DMA_BASE + 0x000))
-#define VQ_AVAIL        ((volatile uint16_t *)(DMA_BASE + 0x100))   // flags, idx, ring[QN]
-#define VQ_USED         ((volatile uint16_t *)(DMA_BASE + 0x200))   // flags, idx, {id, len}[QN]
-#define REQ_HDR         ((volatile uint32_t *)(DMA_BASE + 0x300))   // type, 0, sector
-#define REQ_ST          ((volatile uint8_t *)(DMA_BASE + 0x340))
-#define SECBUF          ((uint8_t *)(DMA_BASE + 0x1000))            // a metadata sector
-#define FATBUF          ((uint8_t *)(DMA_BASE + 0x1200))            // the cached FAT sector
+// The scratch area (DMA_BASE, mon.h): the queue, then the request header and status, the
+// metadata sector and the cached FAT sector, each on cache lines of its own.
+#define REQ_HDR         ((volatile uint32_t *)(DMA_BASE + 0x1000))  // type, 0, sector
+#define REQ_ST          ((volatile uint8_t *)(DMA_BASE + 0x1040))
+#define SECBUF          ((uint8_t *)(DMA_BASE + 0x1200))            // a metadata sector
+#define FATBUF          ((uint8_t *)(DMA_BASE + 0x1400))            // the cached FAT sector
 #ifndef RD_MAX
 #define RD_MAX          256                                      // sectors a request reads
 #endif
 
-static void fence(void) { asm volatile ("fence iorw, iorw" ::: "memory"); }
-
-// Zicbom over a range, by 64-byte block: 0 invalidate, 1 clean, 2 flush
-void cbo(uint64_t a, uint64_t n, int op)
-{
-    uint64_t e = a + n;
-    for (a &= ~63ul; a < e; a += 64) {
-        if (op == 0)      asm volatile ("cbo.inval (%0)" :: "r"(a) : "memory");
-        else if (op == 1) asm volatile ("cbo.clean (%0)" :: "r"(a) : "memory");
-        else              asm volatile ("cbo.flush (%0)" :: "r"(a) : "memory");
-    }
-    fence();
-}
-
-static int      vq_up;
-static uint16_t avail_idx, used_seen;
+static struct vq q;
+static int       vq_up;
 
 static void error(const char *what) { puts_("disk: "); puts_(what); putc_('\n'); }
 
 static int vblk_init(void)
 {
     if (vq_up) return 0;
-    if (VBLK[VM_MAGIC] != 0x74726976u || VBLK[VM_VERSION] != 2 || VBLK[VM_DEVID] != 2) {
-        error("no virtio-blk device at 0x10002000");
-        return -1;
-    }
-    VBLK[VM_STATUS] = 0;
-    VBLK[VM_STATUS] = ST_ACK;
-    VBLK[VM_STATUS] = ST_ACK | ST_DRIVER;
-    VBLK[VM_DEVFEATSEL] = 1;
-    uint32_t f1 = VBLK[VM_DEVFEAT];
-    if (!(f1 & 1)) { error("the device does not offer VIRTIO_F_VERSION_1"); return -1; }
-    VBLK[VM_DRVFEATSEL] = 1;  VBLK[VM_DRVFEAT] = f1 & 3;           // VERSION_1, ACCESS_PLATFORM
-    VBLK[VM_DRVFEATSEL] = 0;  VBLK[VM_DRVFEAT] = 0;
-    VBLK[VM_STATUS] = ST_ACK | ST_DRIVER | ST_FEATURES_OK;
-    if (!(VBLK[VM_STATUS] & ST_FEATURES_OK)) { error("the device refused the features"); return -1; }
-    VBLK[VM_QSEL] = 0;
-    if (VBLK[VM_QNUMMAX] < QN) { error("the device's queue is too small"); return -1; }
-    VBLK[VM_QNUM] = QN;
-    for (int i = 0; i < 0x380 / 8; i++) ((volatile uint64_t *)DMA_BASE)[i] = 0;
-    cbo(DMA_BASE, 0x380, 2);
-    VBLK[VM_QDESC]  = (uint32_t)(DMA_BASE + 0x000);  VBLK[VM_QDESC + 1]  = (uint32_t)((DMA_BASE + 0x000) >> 32);
-    VBLK[VM_QAVAIL] = (uint32_t)(DMA_BASE + 0x100);  VBLK[VM_QAVAIL + 1] = (uint32_t)((DMA_BASE + 0x100) >> 32);
-    VBLK[VM_QUSED]  = (uint32_t)(DMA_BASE + 0x200);  VBLK[VM_QUSED + 1]  = (uint32_t)((DMA_BASE + 0x200) >> 32);
-    VBLK[VM_QREADY] = 1;
-    VBLK[VM_STATUS] = ST_ACK | ST_DRIVER | ST_FEATURES_OK | ST_DRIVER_OK;
-    avail_idx = 0;  used_seen = 0;  vq_up = 1;
+    if (vio_start(VBLK, 2, "disk") || vio_queue(&q, VBLK, 0, DMA_BASE, "disk")) return -1;
+    vio_ready(VBLK);
+    vq_up = 1;
     return 0;
 }
 
-// The device back to its reset state, so the kernel's driver finds it as the hardware left it.
 void disk_quiesce(void)
 {
     if (!vq_up) return;
-    VBLK[VM_STATUS] = 0;
-    VBLK[VM_IACK] = VBLK[VM_ISR];
+    vio_reset(VBLK);
     vq_up = 0;
 }
 
@@ -117,24 +49,18 @@ static int vblk_read(uint64_t lba, uint64_t dst, uint32_t n)
     REQ_HDR[0] = 0;  REQ_HDR[1] = 0;                               // VIRTIO_BLK_T_IN
     REQ_HDR[2] = (uint32_t)lba;  REQ_HDR[3] = (uint32_t)(lba >> 32);
     *REQ_ST = 0xff;
-    VQ_DESC[0].addr = DMA_BASE + 0x300;  VQ_DESC[0].len = 16;  VQ_DESC[0].flags = D_NEXT;  VQ_DESC[0].next = 1;
-    VQ_DESC[1].addr = dst;  VQ_DESC[1].len = n * 512;  VQ_DESC[1].flags = D_NEXT | D_WRITE;  VQ_DESC[1].next = 2;
-    VQ_DESC[2].addr = DMA_BASE + 0x340;  VQ_DESC[2].len = 1;  VQ_DESC[2].flags = D_WRITE;  VQ_DESC[2].next = 0;
-    VQ_AVAIL[2 + avail_idx % QN] = 0;
-    avail_idx++;
-    VQ_AVAIL[1] = avail_idx;
+    volatile struct vq_desc *d = VQ_DESC(&q);
+    d[0].addr = (uint64_t)REQ_HDR;  d[0].len = 16;  d[0].flags = D_NEXT;  d[0].next = 1;
+    d[1].addr = dst;  d[1].len = n * 512;  d[1].flags = D_NEXT | D_WRITE;  d[1].next = 2;
+    d[2].addr = (uint64_t)REQ_ST;  d[2].len = 1;  d[2].flags = D_WRITE;  d[2].next = 0;
+    vq_add(&q, 0);
     cbo(dst, (uint64_t)n * 512, 2);
-    cbo(DMA_BASE, 0x380, 1);
-    VBLK[VM_QNOTIFY] = 0;
+    cbo((uint64_t)REQ_HDR, 0x80, 2);
+    vq_kick(&q);
     uint64_t t0 = now();
-    for (;;) {
-        cbo(DMA_BASE + 0x200, 0x80, 0);
-        if (VQ_USED[1] == (uint16_t)(used_seen + 1)) break;
+    while (vq_used(&q, 0) < 0)
         if (now() - t0 > 5 * TIMEBASE_HZ) { error("a read timed out"); disk_quiesce(); return -1; }
-    }
-    used_seen++;
-    VBLK[VM_IACK] = VBLK[VM_ISR];
-    cbo(DMA_BASE + 0x340, 1, 0);
+    cbo((uint64_t)REQ_ST, 1, 0);
     if (*REQ_ST != 0) { error("a read failed"); return -1; }
     cbo(dst, (uint64_t)n * 512, 0);
     return 0;

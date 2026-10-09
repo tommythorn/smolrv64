@@ -135,7 +135,7 @@ SECTIONS
     *(.sdata .sdata.* .gnu.linkonce.s.*)
   }
   _edata = .; PROVIDE (edata = .);
-  . = .;
+  . = ALIGN(8);   /* crt0.s clears from here to _end with 8-byte stores */
   __bss_start = .;
   .sbss           :
   {
@@ -157,7 +157,7 @@ SECTIONS
   }
   . = ALIGN(32 / 8);
   . = SEGMENT_START("ldata-segment", .);
-  . = ALIGN(32 / 8);
+  . = ALIGN(8);
   _end = .; PROVIDE (end = .);
   __stack_top = MEM_BASE + 0x40000;   /* the top of the 256 KiB SRAM */
   . = ALIGN(8);

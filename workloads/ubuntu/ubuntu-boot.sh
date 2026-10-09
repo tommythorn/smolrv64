@@ -114,14 +114,13 @@ send_line() {
     screen -S "$SESSION" -X stuff $'\n'
 }
 
-# A carriage return stops the monitor's autoboot countdown if it is still running (at the
-# prompt it is an empty line).
+# A carriage return: at the monitor's prompt, an empty line, so the commands below start clean.
 screen -S "$SESSION" -X stuff $'\r'
 sleep 1
 base=$(grep -c "Transfer complete" "$LOG" 2>/dev/null || true)
 send_file "$DTB_ADDR"    "$DTB"    $((base + 1))
-# The firmware over XMODEM: this script boots THIS tree's files; the monitor's SD autoboot
-# (/smolrv64/boot.txt on the card's EFI System Partition) boots the card's.
+# The firmware over XMODEM: this script boots THIS tree's files; the monitor's `go` boots
+# coffee's /srv/tftp and its `B` the SD card's.
 send_file "$FW_ADDR"     "$FW"     $((base + 2))
 # Optional initramfs. The old SD-loader path used to place this; when that died the
 # upload was dropped but the banner above kept advertising it, so a DTB declaring

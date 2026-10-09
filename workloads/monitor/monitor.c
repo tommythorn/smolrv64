@@ -9,26 +9,24 @@
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
+//   N<addr> <path>   - load a file from the TFTP server (coffee), relative to G's directory
+//   G [dir], go [dir] - boot from the TFTP server: run dir/boot.txt (key[0] at the prompt: go)
 //   L<addr> <path>   - load a file from the SD card's EFI System Partition
 //   D [path]         - list a directory there
-//   B                - boot from the SD card now (what the autoboot does)
+//   B                - boot from the SD card: run /smolrv64/boot.txt (for demos)
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   P                - dump core debug counters; Pc clears them
 //   ?                - help
 //
-// AUTOBOOT: after the banner the monitor counts down AUTOBOOT_S seconds, then runs
-// /smolrv64/boot.txt from the SD card's EFI System Partition: monitor command lines, one per
-// line, '#' starts a comment. Without boot.txt it loads /smolrv64/fw_payload.bin at
-// 0x80000000 and /smolrv64/smolrv64.dtb at 0xffdff000 and jumps to the payload with the DTB.
-// key[0] held at reset or pressed in the countdown, or any key on the console, stops it at
-// the prompt; a key typed then starts the command line.
+// BOOT SCRIPTS: monitor command lines, one per line, '#' starts a comment; a failing line stops
+// the script at the prompt. The monitor never boots by itself: `go` (or key[0] pressed at the
+// prompt) runs boot.txt from the TFTP server, `B` runs /smolrv64/boot.txt from the SD card.
+// Without a boot.txt, either loads fw_payload.bin at 0x80000000 and smolrv64.dtb at 0xffdff000
+// and jumps to the payload with the DTB.
 
 #include "mon.h"
 #include "blake3.h"
 
-#ifndef AUTOBOOT_S
-#define AUTOBOOT_S 10
-#endif
 #ifndef BOOT_DIR
 #define BOOT_DIR "/smolrv64"
 #endif
@@ -59,9 +57,10 @@
 #define LSR_DR    0x01
 
 // The board's keys (rk_xcku5p.v @ 0x10006000): [3:0] held now, [11:8] pressed since the
-// CPU's reset. key[0] is the monitor's.
+// CPU's reset (write 1 to clear). key[0] pressed at the prompt types `go`.
 #define KEYS_BASE       ((volatile uint32_t *)0x10006000)
-#define KEY_MONITOR     0x101u
+#define KEY0_PRESSED    0x100u
+#define KEY_GO          1                // what readline sees for a key[0] press
 
 // Platform build-id block (rk_xcku5p.v @ 0x1000F000). Same registers Linux userland
 // can read via /dev/mem. Layout: [0]="SMOL" magic, [1]=version, [2:3]=RTL build stamp,
@@ -214,13 +213,27 @@ static void hist_add(const char *line)
         hist_count++;
 }
 
-static void readline(char *buf, char c0)
+// A console key, or KEY_GO for a key[0] press.
+static char getc_or_key(void)
+{
+    for (;;) {
+        if (UART0_BASE[UART_LSR] & LSR_DR) return UART0_BASE[UART_RBR];
+        if (KEYS_BASE[0] & KEY0_PRESSED) { KEYS_BASE[0] = KEY0_PRESSED; return KEY_GO; }
+    }
+}
+
+static void readline(char *buf)
 {
     int n = 0;
     int browse = 0;   // 0 = fresh line, 1..hist_count = how far back in history
     for (;;) {
-        char c = c0 ? c0 : uart_getc(UART0_BASE);
-        c0 = 0;
+        char c = getc_or_key();
+        if (c == KEY_GO) {
+            if (n) continue;
+            buf[0] = 'g';  buf[1] = 'o';  buf[2] = 0;
+            puts_("go\n");
+            return;
+        }
         if (c == '\r' || c == '\n') {
             putc_('\n');
             buf[n] = 0;
@@ -398,69 +411,84 @@ typedef void (*fn_t2)(uint64_t, uint64_t);
 
 static int run_cmd(const char *p);
 
-// The autoboot: /smolrv64/boot.txt's lines, each a monitor command, or the default. A failing
-// line stops it at the prompt.
-#define BOOT_TXT    (DMA_BASE + 0x10000)     // DDR scratch, above disk.c's queue
+#define BOOT_TXT    (DMA_BASE + 0x10000)     // DDR scratch for a boot.txt (mon.h)
 #define BOOT_TXT_MAX 4096
-static const char *const boot_default[] = {
-    "L80000000 /smolrv64/fw_payload.bin",
-    "Lffdff000 /smolrv64/smolrv64.dtb",
-    "X80000000 0 ffdff000",
-    0
-};
 
-static int autoboot(void)
+// A script's lines, run in order; the first that fails stops it.
+static int run_script(const char *t, uint64_t n)
 {
     static char line[LINE_MAX];
-    uint64_t n;
-    int r = disk_load(BOOT_DIR "/boot.txt", BOOT_TXT, BOOT_TXT_MAX - 1, &n);
-    if (r == -1) { puts_("the SD card did not answer: autoboot stopped\n"); return -1; }
-    if (r == 0) {
-        const char *t = (const char *)BOOT_TXT;
-        uint64_t i = 0;
-        while (i < n) {
-            int k = 0;
-            while (i < n && t[i] != '\n') {
-                if (t[i] != '\r' && k < LINE_MAX - 1) line[k++] = t[i];
-                i++;
-            }
+    uint64_t i = 0;
+    while (i < n) {
+        int k = 0;
+        while (i < n && t[i] != '\n') {
+            if (t[i] != '\r' && k < LINE_MAX - 1) line[k++] = t[i];
             i++;
-            line[k] = 0;
-            const char *q = line;
-            while (*q == ' ' || *q == '\t') q++;
-            if (!*q || *q == '#') continue;
-            puts_("boot> "); puts_(q); putc_('\n');
-            if (run_cmd(q)) { puts_("autoboot stopped\n"); return -1; }
         }
-        return 0;
-    }
-    puts_("no " BOOT_DIR "/boot.txt: the default\n");
-    for (int k = 0; boot_default[k]; k++) {
-        puts_("boot> "); puts_(boot_default[k]); putc_('\n');
-        if (run_cmd(boot_default[k])) { puts_("autoboot stopped\n"); return -1; }
+        i++;
+        line[k] = 0;
+        const char *q = line;
+        while (*q == ' ' || *q == '\t') q++;
+        if (!*q || *q == '#') continue;
+        puts_("boot> "); puts_(q); putc_('\n');
+        if (run_cmd(q)) { puts_("boot stopped\n"); return -1; }
     }
     return 0;
 }
 
-// The countdown: key[0], held or pressed since reset, or a console key stops it. Returns the
-// key typed (it starts the command line), or 0.
-static char countdown(void)
+// The boot without a boot.txt; `ld` is the load command, N (TFTP) or L (SD card).
+static int run_default(char ld, const char *dir)
 {
-    if (KEYS_BASE[0] & KEY_MONITOR) { puts_("key[0]: staying in the monitor\n"); return 0; }
-    puts_("autoboot from the SD card in ");
-    putdec(AUTOBOOT_S);
-    puts_(" s (key[0] or any key: monitor) ");
-    uint64_t t0 = now(), left = AUTOBOOT_S + 1;
-    for (;;) {
-        uint64_t el = (now() - t0) / TIMEBASE_HZ;
-        if (el >= AUTOBOOT_S) break;
-        if (AUTOBOOT_S - el != left) { left = AUTOBOOT_S - el; putdec(left); putc_(' '); }
-        if (UART0_BASE[UART_LSR] & LSR_DR) { putc_('\n'); return UART0_BASE[UART_RBR]; }
-        if (KEYS_BASE[0] & KEY_MONITOR) { puts_("\nkey[0]: staying in the monitor\n"); return 0; }
+    static char t[3 * LINE_MAX];
+    int k = 0;
+    const char *lines[3] = { "80000000 fw_payload.bin", "ffdff000 smolrv64.dtb", 0 };
+    for (int i = 0; lines[i]; i++) {
+        t[k++] = ld;
+        for (const char *c = lines[i]; *c; c++) {
+            t[k++] = *c;
+            if (*c == ' ' && dir) for (const char *d = dir; *d; d++) t[k++] = *d;
+        }
+        t[k++] = '\n';
     }
-    putc_('\n');
-    autoboot();
-    return 0;
+    for (const char *c = "X80000000 0 ffdff000\n"; *c; c++) t[k++] = *c;
+    puts_("no boot.txt: the default\n");
+    return run_script(t, (uint64_t)k);
+}
+
+// N's relative paths resolve in G's directory.
+static char net_dir[LINE_MAX];
+static const char *net_path(const char *p, char *out)
+{
+    int k = 0;
+    if (*p != '/' && net_dir[0]) {
+        for (const char *d = net_dir; *d && k < LINE_MAX - 2; d++) out[k++] = *d;
+        out[k++] = '/';
+    }
+    while (*p && k < LINE_MAX - 1) out[k++] = *p++;
+    out[k] = 0;
+    return out;
+}
+
+static int net_boot(const char *dir)
+{
+    static char path[LINE_MAX];
+    uint64_t n;
+    int k = 0;
+    while (*dir && k < LINE_MAX - 1) net_dir[k++] = *dir++;
+    net_dir[k] = 0;
+    int r = net_load(net_path("boot.txt", path), BOOT_TXT, BOOT_TXT_MAX, &n);
+    if (r == -2) return run_default('N', 0);
+    if (r) return -1;
+    return run_script((const char *)BOOT_TXT, n);
+}
+
+static int sd_boot(void)
+{
+    uint64_t n;
+    int r = disk_load(BOOT_DIR "/boot.txt", BOOT_TXT, BOOT_TXT_MAX - 1, &n);
+    if (r == -1) { puts_("the SD card did not answer\n"); return -1; }
+    if (r == -2) return run_default('L', BOOT_DIR "/");
+    return run_script((const char *)BOOT_TXT, n);
 }
 
 static int run_cmd(const char *p)
@@ -572,9 +600,24 @@ static int run_cmd(const char *p)
         if (*p == ' ') { const char *q = parse_hex(p + 1, &a1); if (q) p = q; }
         puts_("jumping...\n");
         disk_quiesce();
+        net_quiesce();
         sync_cache_for_exec();
         ((fn_t2)addr)(a0, a1);
         puts_("returned\n");
+
+    } else if (*p == 'N' || *p == 'n') {
+        static char path[LINE_MAX];
+        uint64_t n;
+        p = parse_hex(p + 1, &addr);
+        if (!p || *p != ' ') { puts_("usage: N<addr> <path>\n"); return -1; }
+        while (*p == ' ') p++;
+        if (net_load(net_path(p, path), addr, ~0ul, &n)) return -1;
+
+    } else if (*p == 'G' || *p == 'g') {
+        p++;
+        if ((*p == 'o' || *p == 'O') && (p[1] == ' ' || !p[1])) p++;
+        while (*p == ' ') p++;
+        return net_boot(p);
 
     } else if (*p == 'L' || *p == 'l') {
         uint64_t n;
@@ -589,7 +632,7 @@ static int run_cmd(const char *p)
         if (disk_list(p)) return -1;
 
     } else if (*p == 'B' || *p == 'b') {
-        return autoboot();
+        return sd_boot();
 
     } else if (*p == 'E' || *p == 'e') {
         if ((uint32_t)ERRLOG_BASE[0] != ERRLOG_MAGIC) { puts_("no integrity log\n"); return -1; }
@@ -666,9 +709,11 @@ static int run_cmd(const char *p)
         puts_("Y<addr>          receive XMODEM-1K upload (sx -k <file>)\n");
         puts_("C<addr> <len>    blake3-256 of len bytes at address\n");
         puts_("Z<addr> <len> [b] fill len bytes with byte b (default 0)\n");
+        puts_("N<addr> <path>   load a file from the TFTP server (relative to G's directory)\n");
+        puts_("go [dir]         boot from the TFTP server: run dir/boot.txt (key[0]: go)\n");
         puts_("L<addr> <path>   load a file from the SD card's EFI System Partition\n");
         puts_("D [path]         list a directory there\n");
-        puts_("B                boot from the SD card (/smolrv64/boot.txt) now\n");
+        puts_("B                boot from the SD card (/smolrv64/boot.txt), for demos\n");
         puts_("X<addr> [a0 [a1]] execute from address\n");
         puts_("P                dump core debug counters; Pc clears them\n");
         puts_("E                integrity log: which invariant fired, and when\n");
@@ -714,11 +759,14 @@ int main(void)
     // The screen after the banner: drawing it takes a few hundred thousand cycles, and the
     // banner is what tells a console (and the netlist boot, rule F5) the core runs at all.
     video_init();
-    char c0 = countdown();
+    KEYS_BASE[0] = 0xf00u;                // presses before the prompt do not count
+#ifdef SIM_SDBOOT
+    sd_boot();
+#endif
+    puts_("go: boot from coffee over TFTP (or key[0]); B: from the SD card; ? for help\n");
     for (;;) {
         puts_("> ");
-        readline(buf, c0);
-        c0 = 0;
+        readline(buf);
         run_cmd(buf);
     }
 }
