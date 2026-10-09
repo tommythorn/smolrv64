@@ -99,8 +99,11 @@ synth: $(XPR)
 impl: $(XPR)
 	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs impl
 
+# A finished bitstream is banked in the cache (tools/bitcache.sh: ~/bitcache, keyed by the commit,
+# the uncommitted changes and the knobs); `tools/bitcache.sh get <commit>` finds it again.
 bit: $(XPR)
 	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs bit
+	../../tools/bitcache.sh put $(CURDIR)
 
 program:
 	@test -f $(BIT) || { echo "ERROR: $(BIT) not found — run 'make bit' first"; exit 1; }
@@ -117,9 +120,16 @@ flash:
 # Reset the runs after a KILLED build. A run terminated mid-flight leaves its directory
 # half-written and the next build inherits it, failing ~30 minutes in with an error that
 # points at the wrong thing. There was no target for this and it has bitten more than once.
-.PHONY: reset flash
+.PHONY: reset flash kill
 reset:
 	$(VIVADO) $(VFLAGS) -source reset_runs.tcl
+
+# Stop this tree's build, every process of it (the run server, vrs, outlives the rest), then reset
+# the runs: a surviving vrs or an un-reset run makes the next build wait forever.
+kill:
+	@for p in $$(ps -eo pid=,args= | awk '/[V]ivado\/bin\/|[u]nwrapped\/lnx64\.o\/|[I]SEWrap/ {print $$1}'); do \
+	   case "$$(readlink /proc/$$p/cwd)" in $(CURDIR)*) echo "kill $$p"; kill $$p;; esac; done; sleep 3
+	$(MAKE) reset
 
 timing:
 	$(VIVADO) $(VFLAGS) -source report_timing.tcl
