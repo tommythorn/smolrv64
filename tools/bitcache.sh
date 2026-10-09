@@ -6,6 +6,7 @@
 #   tools/bitcache.sh put [<platform dir>]   bank impl_1's bitstream (make bit does this)
 #   tools/bitcache.sh get <commit-prefix> [<knob filter>]   print the newest matching .bit
 #   tools/bitcache.sh list [<commit-prefix>]  the entries, newest first, with WNS
+#   tools/bitcache.sh start [<platform dir>]  record the tree a build starts from (make bit does this)
 #   tools/bitcache.sh key [<platform dir>]    the key the tree would be banked under
 #
 # A key is <commit12>[-d<diff8>]-iw<IW>-div<DIV8>-<placer>: the commit, a hash of the tree's
@@ -26,17 +27,25 @@ define() {
     grep -o "Verilog_Define Name=\"$2\" Val=\"[^\"]*\"" "$1/$PROJ.xpr" 2>/dev/null | head -1 | sed 's/.*Val="//; s/"$//'
 }
 
-key() {
-    local plat=$1
-    local commit dirty="" iw div plc
+# The tree: the commit and, when anything synthesized or used to build differs from it, a hash
+# of the difference.
+tree_id() {
+    local commit d
     commit=$(git -C "$here" rev-parse --short=12 HEAD)
-    local d
     d=$( (cd "$here" && git diff HEAD -- "${diff_paths[@]}" "${excl[@]}" 2>/dev/null
           git ls-files -o --exclude-standard -- "${diff_paths[@]}" 2>/dev/null | grep -v -E '\.(log|linehex|elf|bin)$' | sort | xargs -r cat) | sha1sum | cut -c1-8)
-    [ -n "$(cd "$here" && git status --porcelain -- "${diff_paths[@]}" "${excl[@]}" 2>/dev/null | grep -v -E '\.(log|linehex|elf|bin)$')" ] && dirty="-d$d"
+    if [ -n "$(cd "$here" && git status --porcelain -- "${diff_paths[@]}" "${excl[@]}" 2>/dev/null | grep -v -E '\.(log|linehex|elf|bin)$')" ]
+    then echo "$commit-d$d"; else echo "$commit"; fi
+}
+
+# The full key: the tree as `start` recorded it when the build began (else as it is now), and
+# the knobs the build used.
+key() {
+    local plat=$1 tree iw div plc
+    tree=$(cat "$plat/$PROJ.runs/bitcache-start/tree" 2>/dev/null || tree_id)
     iw=$(define "$plat" SMOLRV64_IW);  div=$(define "$plat" PROBE_CLK_DIV8)
     plc=$(grep -a -o -m1 'place_design -directive [A-Za-z_]*' "$plat/$PROJ.runs/impl_1/runme.log" 2>/dev/null | awk '{print $3}')
-    echo "$commit$dirty-iw${iw:-?}-div${div:-?}-${plc:-?}"
+    echo "$tree-iw${iw:-?}-div${div:-?}-${plc:-?}"
 }
 
 PROJ=rk_xcku5p
@@ -45,6 +54,15 @@ case "$cmd" in
 key)
     plat=${1:-$plat_default}
     key "$plat"
+    ;;
+start)
+    # what the build is made from, before it starts: a tree edited or committed meanwhile does
+    # not change the key or the diff the bitstream is banked with
+    plat=${1:-$plat_default}
+    mkdir -p "$plat/$PROJ.runs/bitcache-start"
+    tree_id > "$plat/$PROJ.runs/bitcache-start/tree"
+    (cd "$here" && git diff HEAD -- "${diff_paths[@]}" "${excl[@]}") > "$plat/$PROJ.runs/bitcache-start/dirty.diff" 2>/dev/null || true
+    (cd "$here" && git log -1 --format='%H %s') > "$plat/$PROJ.runs/bitcache-start/commit"
     ;;
 put)
     plat=${1:-$plat_default}
@@ -59,16 +77,20 @@ put)
     cp "$bit" "$d/$PROJ.bit"
     [ -f "$rpt" ] && cp "$rpt" "$d/timing_summary.rpt"
     grep -o 'Verilog_Define Name="[^"]*" Val="[^"]*"' "$plat/$PROJ.xpr" | sed 's/Verilog_Define Name="//; s/" Val="/=/; s/"$//; s/&apos;/'"'"'/g; s/&quot;/"/g' > "$d/defines.txt" || true
-    (cd "$here" && git diff HEAD -- "${diff_paths[@]}" "${excl[@]}") > "$d/dirty.diff" 2>/dev/null || true
+    st=$plat/$PROJ.runs/bitcache-start
+    if [ -f "$st/tree" ]; then cp "$st/dirty.diff" "$d/dirty.diff"; commit=$(cat "$st/commit")
+    else (cd "$here" && git diff HEAD -- "${diff_paths[@]}" "${excl[@]}") > "$d/dirty.diff" 2>/dev/null || true
+         commit=$(cd "$here" && git log -1 --format='%H %s'); fi
     [ -s "$d/dirty.diff" ] || rm -f "$d/dirty.diff"
     wns=$(grep -A2 'WNS(ns)' "$d/timing_summary.rpt" 2>/dev/null | sed -n 3p | awk '{print $1}')
     { echo "key:     $k"
-      echo "commit:  $(cd "$here" && git log -1 --format='%H %s')"
+      echo "commit:  $commit"
       echo "tree:    $here"
       echo "built:   $(date '+%Y-%m-%d %H:%M:%S')"
       echo "wns:     ${wns:-?}"
       echo "met:     $(awk -v w="${wns:-x}" 'BEGIN{print (w ~ /^-?[0-9.]+$/ && w >= 0) ? "yes" : "NO"}')"
     } > "$d/meta.txt"
+    rm -rf "$st"
     echo "bitcache: banked $d (WNS ${wns:-?})"
     ;;
 get)

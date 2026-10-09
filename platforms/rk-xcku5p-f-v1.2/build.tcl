@@ -281,7 +281,7 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-set source_paths [list src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128]
+set source_paths [list src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor]   ;# the monitor is baked into the SRAM
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1

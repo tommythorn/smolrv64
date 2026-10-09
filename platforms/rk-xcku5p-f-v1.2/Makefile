@@ -102,6 +102,7 @@ impl: $(XPR)
 # A finished bitstream is banked in the cache (tools/bitcache.sh: ~/bitcache, keyed by the commit,
 # the uncommitted changes and the knobs); `tools/bitcache.sh get <commit>` finds it again.
 bit: $(XPR)
+	../../tools/bitcache.sh start $(CURDIR)
 	$(VIVADO) $(VFLAGS) -source build.tcl -tclargs bit
 	../../tools/bitcache.sh put $(CURDIR)
 
