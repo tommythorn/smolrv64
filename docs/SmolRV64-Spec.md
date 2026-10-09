@@ -823,7 +823,7 @@ runs inside every 240-test and cosim run.
 | branch, `jal`/`jalr` (its slot's lane) | 1 cycle (at issue) | — | no | the lane's shard (the link) |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | LD shard (M's port) |
 | mul (`mul3`) | 3 cycles, pipelined | 1 (the MD stage's tag) | **never enters M** (MD stage, §7.x) | FE shard |
-| div (`divider`) | ~64 cycles, FSM | 1 | **never enters M** (MD stage, §7.x) | FE shard |
+| div (`divider`) | 3 + ceil(q/2) cycles, q the quotient's significant bits (3-35): radix 4, iterations limited to q | 1 | **never enters M** (MD stage, §7.x) | FE shard |
 | FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | the FP file's F-stage bank; FE shard for an integer result |
 | LSU load | see §8 | 4 fast (by tag, C4a) + 1 slow | **no** | LD shard; the FP file's load bank for an FP load |
 | LSU store / AMO | see §8 | 1 | yes | — |
@@ -903,7 +903,7 @@ multiply a cycle. Invariants: nothing executes in a lane's reserved slot, and th
 
 **A divide** is class M at dispatch (`d_cls_m`), shares `u_iq_f` with FP arithmetic and system
 ops, and drains from the select register `j_*` into the MD stage (`iss_md`) with the port's
-forwarded reads as its operands. The stage holds one: the divider (~64 cycles) starts in the
+forwarded reads as its operands. The stage holds one: the divider (3 to 35 cycles) starts in the
 issue cycle, the result is latched on its done pulse (`md_pend`, `md_res_q`) and leaves by the
 stage's own tag when the FPU is not writing (`md_wr`), into its lane's write slot like an FP
 op's integer result (§8). `abort(redirect)` and the flush arm last keep it sound while redirects
@@ -1964,7 +1964,7 @@ writes", and M writes mul/div results. It becomes wrong only if mul/div get thei
 which would need a fourth shard: one writer per shard is the property the PRF rests on.
 
 **What is genuinely left is div, not mul.** They are different units sharing a name --
-`mul3` is 3 cycles and pipelined, `divider` is ~64 cycles and iterative. Only a long divide
+`mul3` is 3 cycles and pipelined, `divider` is 3 to 35 cycles and iterative. Only a long divide
 occupying the shared stage is a real problem, and the fix follows two precedents already in
 the design: release the stage at start and land the result by tag, as non-blocking loads
 and the FPU both do. No new shard and no new scheduler.
@@ -2015,14 +2015,14 @@ Back-pressure belongs at the FRONTEND, where it is off the critical path and whe
 already a stall mechanism.
 
 So: a divide issues exactly like a multiply and enters a **small request FIFO**, which the
-single divider drains at one per ~64 cycles. The FIFO is allowed to fill. Only when it
+single divider drains at one per 3 to 35 cycles. The FIFO is allowed to fill. Only when it
 comes within **M entries of full** does the frontend stall (or restart) -- and `M` is the
 number of instructions that may already be past the frontend and still turn out to be
 divides. That slack is the whole design: it guarantees the back-pressure lands upstream
 before issue could ever be asked to wait.
 
 Measured, this mechanism is cold. On full-suite GB5, `ST_DIV` is 0.354% of cycles at ~64
-cycles per divide, i.e. **one divide per ~4,560 instructions, one per ~18,000 cycles**. The
+cycles per divide (the radix-2 divider of that measurement), i.e. **one divide per ~4,560 instructions, one per ~18,000 cycles**. The
 FIFO is essentially always empty and the frontend stall essentially never fires. It exists
 to handle a divide-dense burst correctly, rather than paying for that burst on the issue
 path in every cycle that is not one.

@@ -4,7 +4,9 @@
 // Iterative divider: drive start, wait for done, check result. Same div/rem cases
 // as the M datapath test (signed/unsigned, trunc-toward-zero, rem sign-of-dividend,
 // divide-by-zero, signed overflow, W sign-extension), plus a back-to-back pair to
-// exercise the handshake returning to idle.
+// exercise the handshake returning to idle, then random operations of every operand width
+// (so every iteration count) against Verilog's / and %, and the latencies they took.
+`include "tb_rand.vh"
 module tb;
    reg         clk=0; always #5 clk=~clk;
    reg         reset, start, abort;
@@ -19,6 +21,28 @@ module tb;
                 .f3(f3), .is_w(is_w), .busy(busy), .done(done), .result(result));
 
    localparam D=3'b100, DU=3'b101, R=3'b110, RU=3'b111;
+   integer lat;                                 // the last run's cycles, start to done
+   `TB_RAND(rnd, rs)
+   // the RISC-V M result, from Verilog's operators
+   function [63:0] mref(input [63:0] a, input [63:0] b, input w, input [2:0] func);
+      reg [63:0] q, r;
+      reg [31:0] q32, r32;
+      begin
+         if (w) begin
+            if (b[31:0] == 0) begin q32 = 32'hffffffff; r32 = a[31:0]; end
+            else if (!func[0] && a[31:0] == 32'h80000000 && b[31:0] == 32'hffffffff) begin q32 = a[31:0]; r32 = 0; end
+            else if (!func[0]) begin q32 = $signed(a[31:0]) / $signed(b[31:0]); r32 = $signed(a[31:0]) % $signed(b[31:0]); end
+            else begin q32 = a[31:0] / b[31:0]; r32 = a[31:0] % b[31:0]; end
+            mref = func[1] ? {{32{r32[31]}}, r32} : {{32{q32[31]}}, q32};
+         end else begin
+            if (b == 0) begin q = ~64'd0; r = a; end
+            else if (!func[0] && a == 64'h8000000000000000 && b == ~64'd0) begin q = a; r = 0; end
+            else if (!func[0]) begin q = $signed(a) / $signed(b); r = $signed(a) % $signed(b); end
+            else begin q = a / b; r = a % b; end
+            mref = func[1] ? r : q;
+         end
+      end
+   endfunction
 
    task run(input [200:0] nm, input [63:0] a, input [63:0] bb, input w, input [2:0] func, input [63:0] exp);
       integer guard;
@@ -27,6 +51,7 @@ module tb;
          @(negedge clk); start=1'b0;
          guard=0;
          while (!done && guard<200) begin @(negedge clk); guard=guard+1; end
+         lat=guard+1;
          if (!done) begin $display("FAIL %0s: never completed", nm); errs=errs+1; end
          else if (result!==exp)
             begin $display("FAIL %0s: %h / %h w=%b f3=%b -> %h exp %h", nm,a,bb,w,func,result,exp); errs=errs+1; end
@@ -61,7 +86,7 @@ module tb;
 
       // abort mid-run: start a divide, run partway, abort -> busy drops, no done,
       // and the unit is free to accept a new divide that completes correctly.
-      @(negedge clk); rs1=64'd1000; rs2=64'd7; is_w=0; f3=D; start=1;
+      @(negedge clk); rs1=~64'd0 >> 1; rs2=64'd3; is_w=0; f3=D; start=1;   // a 62-bit quotient: 31 steps
       @(negedge clk); start=0;
       repeat (5) @(negedge clk);
       if (!busy) begin $display("FAIL abort: not busy mid-run"); errs=errs+1; end
@@ -74,6 +99,28 @@ module tb;
          end
       end
       run("post-abort.div", 64'd20, 64'd3, 0, D, 64'd6);   // unit recovered
+      // random: operands of every width (each shifted down by 0..63), either sign, all ops
+      begin : random
+         integer i, hist [0:40], mx; reg [63:0] a, b; reg w; reg [2:0] func; reg [8*40-1:0] nm;
+         for (i = 0; i <= 40; i = i + 1) hist[i] = 0;
+         mx = 0;
+         for (i = 0; i < 20000; i = i + 1) begin
+            a = {rnd(0), rnd(0)} >> (rnd(0) % 64);  if (rnd(0) % 4 == 0) a = -a;
+            b = {rnd(0), rnd(0)} >> (rnd(0) % 64);  if (rnd(0) % 4 == 0) b = -b;
+            if (rnd(0) % 64 == 0) b = 0;
+            w = rnd(0) % 3 == 0;  func = {1'b1, 2'(rnd(0) % 4)};
+            run("random", a, b, w, func, mref(a, b, w, func));
+            if (errs > 10) disable random;
+            if (lat > mx) mx = lat;
+            hist[lat > 40 ? 40 : lat] = hist[lat > 40 ? 40 : lat] + 1;
+         end
+         $display("divider: 20000 random ops; latency (cycles, start to done) max %0d; 3:%0d 4:%0d 5:%0d 6:%0d 10:%0d 19:%0d 35:%0d",
+                  mx, hist[3], hist[4], hist[5], hist[6], hist[10], hist[19], hist[35]);
+      end
+      run("lat.small", 64'd100, 64'd7, 0, D, 64'd14);
+      $display("divider: 100/7 took %0d cycles", lat);
+      run("lat.full", ~64'd0, 64'd1, 0, DU, ~64'd0);
+      $display("divider: (2^64-1)/1 took %0d cycles", lat);
 
       if (errs==0) $display("divider: ALL TESTS PASSED (iterative div/rem)");
       else         $display("divider: %0d FAILURES", errs);
