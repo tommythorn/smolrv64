@@ -14,10 +14,11 @@
 #endif
 #define NET_BASE        (DMA_BASE + 0x20000)
 #define RXQ_BASE        NET_BASE
-#define TXQ_BASE        (NET_BASE + 0x1000)
-#define TXBUF           (NET_BASE + 0x2000)
-#define RXBUF           (NET_BASE + 0x4000)             // VQ_MAX buffers of BUFSZ
+#define TXQ_BASE        (NET_BASE + VQ_SPAN)
+#define TXBUF           (NET_BASE + 2 * VQ_SPAN)
+#define RXBUF           (NET_BASE + 0x10000)            // NRX buffers of BUFSZ
 #define BUFSZ           2048
+#define NRX             32                              // posted receive buffers (<= the ring)
 #define HDR             12                              // virtio_net_hdr_v1
 #define BLKSIZE         1468
 #define SEC             TIMEBASE_HZ
@@ -57,12 +58,14 @@ static int net_init(void)
     if (net_up) return 0;
     if (vio_start(VNET, 1, "net") || vio_queue(&rxq, VNET, 0, RXQ_BASE, "net") ||
         vio_queue(&txq, VNET, 1, TXQ_BASE, "net")) return -1;
-    for (uint16_t i = 0; i < rxq.n; i++) {
+    uint16_t nrx = rxq.n < NRX ? rxq.n : NRX;
+    for (uint16_t i = 0; i < nrx; i++) {
         volatile struct vq_desc *d = &VQ_DESC(&rxq)[i];
         d->addr = RXBUF + (uint64_t)i * BUFSZ;  d->len = BUFSZ;  d->flags = D_WRITE;  d->next = 0;
-        vq_add(&rxq, i);
     }
-    cbo(RXBUF, (uint64_t)rxq.n * BUFSZ, 2);
+    cbo(RXQ_BASE, nrx * sizeof(struct vq_desc), 1);
+    cbo(RXBUF, (uint64_t)nrx * BUFSZ, 2);
+    for (uint16_t i = 0; i < nrx; i++) vq_add(&rxq, i);
     vio_ready(VNET);
     vq_kick(&rxq);
     net_up = 1;
@@ -87,6 +90,7 @@ static int eth_send(const uint8_t *dst, uint16_t type, uint32_t len)   // len: p
     for (int i = 0; i < HDR; i++) ((uint8_t *)TXBUF)[i] = 0;
     volatile struct vq_desc *d = VQ_DESC(&txq);
     d->addr = TXBUF;  d->len = HDR + len;  d->flags = 0;  d->next = 0;
+    cbo((uint64_t)d, sizeof *d, 1);
     vq_add(&txq, 0);
     cbo(TXBUF, HDR + len, 1);
     vq_kick(&txq);
@@ -103,7 +107,10 @@ static uint8_t *rx_frame(uint32_t *len)
     uint32_t n;
     int id = vq_used(&rxq, &n);
     if (id < 0) return 0;
-    if ((uint32_t)id >= rxq.n || n < HDR + 14 || n > BUFSZ) { error("a malformed receive"); return 0; }
+    if ((uint32_t)id >= NRX || n < HDR + 14 || n > BUFSZ) {
+        puts_("net: a malformed receive: buffer "); putdec((uint32_t)id); puts_(" length "); putdec(n); putc_('\n');
+        return 0;
+    }
     uint64_t b = RXBUF + (uint64_t)id * BUFSZ;
     cbo(b, n, 0);
     rx_id = id;
@@ -304,7 +311,11 @@ int net_load(const char *path, uint64_t addr, uint64_t max, uint64_t *size)
     if (udp_send(srv, lport, 69, pkt, rrq_len)) return -1;
     for (;;) {
         if (!udp_wait(lport, SEC)) {
-            if (++tries > 5) { error("TFTP timed out"); return -1; }
+            if (++tries > 5) {
+                puts_("net: TFTP timed out waiting for block "); putdec(expect);
+                puts_(" after "); putdec(off); puts_(" bytes\n");
+                return -1;
+            }
             if (!tid) { if (udp_send(srv, lport, 69, pkt, rrq_len)) return -1; }
             else if (tftp_ack(srv, lport, tid, (uint16_t)(expect - 1))) return -1;
             continue;
@@ -336,7 +347,11 @@ int net_load(const char *path, uint64_t addr, uint64_t max, uint64_t *size)
         uint16_t blk = be16(udp_buf + 2);
         uint32_t len = udp_len - 4;
         if (blk == expect) {
-            if (off + len > max) { error("the file is larger than the space for it"); return -1; }
+            if (off + len > max) {
+                puts_("net: the file is larger than its space: "); putdec(off + len);
+                puts_(" bytes, the limit "); putdec(max); putc_('\n');
+                return -1;
+            }
             copy((void *)(addr + off), udp_buf + 4, len);
             off += len;
             expect++;

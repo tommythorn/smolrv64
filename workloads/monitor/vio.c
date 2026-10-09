@@ -30,10 +30,10 @@
 #define ST_DRIVER_OK    4
 #define ST_FEATURES_OK  8
 
-// A queue's 4 KiB at its base: the descriptors, then the available ring at +0x400 (flags, idx,
-// ring[n]), then the used ring at +0x800 (flags, idx, {id, len}[n]), each on lines of its own.
-#define AVAIL(q)        ((volatile uint16_t *)((q)->base + 0x400))
-#define USED(q)         ((volatile uint16_t *)((q)->base + 0x800))
+// A queue's 16 KiB at its base (VQ_SPAN): the descriptors, then the available ring at +0x1000
+// (flags, idx, ring[n]), then the used ring at +0x2000 (flags, idx, {id, len}[n]).
+#define AVAIL(q)        ((volatile uint16_t *)((q)->base + 0x1000))
+#define USED(q)         ((volatile uint16_t *)((q)->base + 0x2000))
 
 static void fence(void) { asm volatile ("fence iorw, iorw" ::: "memory"); }
 
@@ -56,8 +56,12 @@ static int fail(const char *name, const char *what)
 
 int vio_start(volatile uint32_t *d, uint32_t id, const char *name)
 {
-    if (d[VM_MAGIC] != 0x74726976u || d[VM_VERSION] != 2 || d[VM_DEVID] != id)
-        return fail(name, "no virtio device of that kind");
+    if (d[VM_MAGIC] != 0x74726976u || d[VM_VERSION] != 2 || d[VM_DEVID] != id) {
+        puts_(name); puts_(": no virtio device of that kind: magic "); puthex32(d[VM_MAGIC]);
+        puts_(" version "); putdec(d[VM_VERSION]); puts_(" id "); putdec(d[VM_DEVID]);
+        puts_(", want id "); putdec(id); putc_('\n');
+        return -1;
+    }
     d[VM_STATUS] = 0;
     d[VM_STATUS] = ST_ACK;
     d[VM_STATUS] = ST_ACK | ST_DRIVER;
@@ -75,13 +79,17 @@ int vio_queue(struct vq *q, volatile uint32_t *d, uint32_t sel, uint64_t base, c
 {
     d[VM_QSEL] = sel;
     uint32_t n = d[VM_QNUMMAX];
-    if (n == 0 || n > VQ_MAX || (n & (n - 1))) return fail(name, "the device's queue depth is not 1..64, a power of two");
+    if (n == 0 || n > VQ_MAX || (n & (n - 1))) {
+        puts_(name); puts_(": queue "); putdec(sel); puts_("'s depth "); putdec(n);
+        puts_(" is not a power of two in 1..256\n");
+        return -1;
+    }
     d[VM_QNUM] = n;
-    for (int i = 0; i < 0x1000 / 8; i++) ((volatile uint64_t *)base)[i] = 0;
-    cbo(base, 0x1000, 2);
-    d[VM_QDESC]  = (uint32_t)base;            d[VM_QDESC + 1]  = (uint32_t)(base >> 32);
-    d[VM_QAVAIL] = (uint32_t)(base + 0x400);  d[VM_QAVAIL + 1] = (uint32_t)((base + 0x400) >> 32);
-    d[VM_QUSED]  = (uint32_t)(base + 0x800);  d[VM_QUSED + 1]  = (uint32_t)((base + 0x800) >> 32);
+    for (int i = 0; i < VQ_SPAN / 8; i++) ((volatile uint64_t *)base)[i] = 0;
+    cbo(base, VQ_SPAN, 2);
+    d[VM_QDESC]  = (uint32_t)base;             d[VM_QDESC + 1]  = (uint32_t)(base >> 32);
+    d[VM_QAVAIL] = (uint32_t)(base + 0x1000);  d[VM_QAVAIL + 1] = (uint32_t)((base + 0x1000) >> 32);
+    d[VM_QUSED]  = (uint32_t)(base + 0x2000);  d[VM_QUSED + 1]  = (uint32_t)((base + 0x2000) >> 32);
     d[VM_QREADY] = 1;
     q->dev = d;  q->sel = sel;  q->base = base;  q->n = (uint16_t)n;  q->avail = 0;  q->used = 0;
     return 0;
@@ -101,22 +109,25 @@ void vio_reset(volatile uint32_t *d)
 
 void vq_add(struct vq *q, uint16_t head)
 {
-    AVAIL(q)[2 + q->avail % q->n] = head;
+    volatile uint16_t *e = &AVAIL(q)[2 + q->avail % q->n];
+    *e = head;
+    cbo((uint64_t)e, 2, 1);
     q->avail++;
-    AVAIL(q)[1] = q->avail;
 }
 
 void vq_kick(struct vq *q)
 {
-    cbo(q->base, 0x800, 1);                     // the descriptors and the available ring
+    AVAIL(q)[1] = q->avail;
+    cbo((uint64_t)AVAIL(q), 4, 1);
     q->dev[VM_QNOTIFY] = q->sel;
 }
 
 int vq_used(struct vq *q, uint32_t *len)
 {
-    cbo(q->base + 0x800, 4 + 8 * q->n, 0);
+    cbo((uint64_t)USED(q), 4, 0);
     if (USED(q)[1] == q->used) return -1;
     volatile uint32_t *e = (volatile uint32_t *)(USED(q) + 2) + 2 * (q->used % q->n);
+    cbo((uint64_t)e, 8, 0);
     int id = (int)e[0];
     if (len) *len = e[1];
     q->used++;

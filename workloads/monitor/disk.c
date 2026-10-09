@@ -14,10 +14,10 @@
 
 // The scratch area (DMA_BASE, mon.h): the queue, then the request header and status, the
 // metadata sector and the cached FAT sector, each on cache lines of its own.
-#define REQ_HDR         ((volatile uint32_t *)(DMA_BASE + 0x1000))  // type, 0, sector
-#define REQ_ST          ((volatile uint8_t *)(DMA_BASE + 0x1040))
-#define SECBUF          ((uint8_t *)(DMA_BASE + 0x1200))            // a metadata sector
-#define FATBUF          ((uint8_t *)(DMA_BASE + 0x1400))            // the cached FAT sector
+#define REQ_HDR         ((volatile uint32_t *)(DMA_BASE + VQ_SPAN))          // type, 0, sector
+#define REQ_ST          ((volatile uint8_t *)(DMA_BASE + VQ_SPAN + 0x40))
+#define SECBUF          ((uint8_t *)(DMA_BASE + VQ_SPAN + 0x200))            // a metadata sector
+#define FATBUF          ((uint8_t *)(DMA_BASE + VQ_SPAN + 0x400))            // the cached FAT sector
 #ifndef RD_MAX
 #define RD_MAX          256                                      // sectors a request reads
 #endif
@@ -53,6 +53,7 @@ static int vblk_read(uint64_t lba, uint64_t dst, uint32_t n)
     d[0].addr = (uint64_t)REQ_HDR;  d[0].len = 16;  d[0].flags = D_NEXT;  d[0].next = 1;
     d[1].addr = dst;  d[1].len = n * 512;  d[1].flags = D_NEXT | D_WRITE;  d[1].next = 2;
     d[2].addr = (uint64_t)REQ_ST;  d[2].len = 1;  d[2].flags = D_WRITE;  d[2].next = 0;
+    cbo((uint64_t)d, 3 * sizeof *d, 1);
     vq_add(&q, 0);
     cbo(dst, (uint64_t)n * 512, 2);
     cbo((uint64_t)REQ_HDR, 0x80, 2);

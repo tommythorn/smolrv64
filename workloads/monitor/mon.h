@@ -14,7 +14,7 @@ typedef unsigned long      uint64_t;
 // DDR scratch for the devices' queues and buffers and for boot.txt: their DMA reaches DDR, not
 // the monitor's SRAM. Below the initrd and DTB that boot.txt places under the framebuffer, far
 // above the payload at 0x8000_0000; the simulation's 512 MiB DDR takes it lower. The disk owns
-// +0x0000..+0x2000, boot.txt +0x10000 (4 KiB), the network +0x20000..+0x44000.
+// +0x0000..+0x5000, boot.txt +0x10000 (4 KiB), the network +0x20000..+0x40000.
 #ifndef DMA_BASE
 #define DMA_BASE 0xFE000000ul
 #endif
@@ -35,8 +35,10 @@ void putdec(uint64_t v);
 
 // Zicbom over a range, by 64-byte block: 0 invalidate, 1 clean, 2 flush (vio.c)
 void cbo(uint64_t a, uint64_t n, int op);
-// vio.c: virtio-mmio devices and split virtqueues, polled. A queue occupies 4 KiB at its base.
-#define VQ_MAX 64
+// vio.c: virtio-mmio devices and split virtqueues, polled. A queue occupies VQ_SPAN at its base;
+// the caller cleans the descriptors it writes before vq_add.
+#define VQ_MAX 256
+#define VQ_SPAN 0x4000
 #define D_NEXT 1
 #define D_WRITE 2
 struct vq_desc { uint64_t addr; uint32_t len; uint16_t flags; uint16_t next; };
