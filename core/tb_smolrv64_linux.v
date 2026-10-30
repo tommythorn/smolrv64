@@ -751,6 +751,7 @@ module tb;
 
    reg [8*256-1:0] fw, dtb, initrd, disk, ckpt, lramf;
    reg [63:0] ncyc, c, nret, last_ret, max_ret;
+   reg [63:0] gap_lim, gap_max, gap_end;      // the longest stretch without a retire, and its bound
 
    // +stop_after=<text>: the run ends +stop_margin cycles (default 1,000,000) after the console
    // prints <text> -- a userspace test's PASS line -- instead of at +cycles: the lockstep has
@@ -1694,7 +1695,8 @@ module tb;
             $display("[c=%0d] watch COMMIT port=%0d", c, ww);
    end
    initial begin
-      ncyc = 200000000; nret = 0; last_ret = 0;
+      ncyc = 200000000; nret = 0; last_ret = 0;  gap_max = 0;  gap_end = 0;
+      if (!$value$plusargs("gap=%d", gap_lim)) gap_lim = 64'd1000000;
       n_inject = 0; n_uirq = 0; n_seip = 0;  td_sum = 0;  td_disp = 0;
       // +trace_from=<cycle> +trace_to=<cycle>: the window every tb-side trace honours, so a
       // trace is aimed by plusarg and never by a compile-time literal (three 17 M-cycle
@@ -1749,12 +1751,22 @@ module tb;
                   end
                   // A HANG IS A FAILURE AT ONCE: nothing in the machine waits a million cycles (WFI
                   // completes, an idle kernel retires), so a run that stops retiring stops here.
-                  if (|retire) last_ret = c;
-                  else if (c - last_ret > 64'd1000000) begin
+                  if (|retire) begin
+                     if (c - last_ret > gap_max) begin gap_max = c - last_ret;  gap_end = c; end
+                     last_ret = c;
+                  end else if (c - last_ret > gap_lim) begin
                      // the restart's state: a wedge with one pending names its branch and what holds it
                      $display("tb: restart fr_v=%b fr_rob=%0d walk run=%b end=%b kill=%b age=%0d fpu_dead=%b rob v[head]=%b done[head]=%b",
                               dut.core.fr_v, dut.core.fr_rob, dut.core.u_rob.wl_run, dut.core.u_rob.wl_end, dut.core.rob_kd_v,
                               dut.core.kd_age, dut.core.fpu_dead, dut.core.u_rob.v[dut.core.u_rob.hsx], dut.core.u_rob.done[dut.core.u_rob.hsx]);
+                     $display("tb: fetch: I$ st=%0d door=%b s1=%b sk=%b f_l2=%b pf=%b%b%b inv=%b%b hold=%b | ring cnt=%0d resv=%0d infl=%0d fq %0d..%0d k=%b ic_req=%b xlate_ok=%b inpg=%b pq_room=%b | walk_hold=%b wk_e=%0d immu_ready=%b irq_inject=%b strad=%b rob_empty=%b",
+                              dut.u_icache.st, dut.u_icache.door, dut.u_icache.s1_v, dut.u_icache.sk_v, dut.u_icache.f_l2,
+                              dut.u_icache.pf_val, dut.u_icache.pf_want, dut.u_icache.pf_infl, dut.u_icache.inv_pend, dut.u_icache.inv_busy,
+                              dut.u_icache.fill_hold, dut.core.fe.u_ring.rg_cnt, dut.core.fe.u_ring.rg_resv, dut.core.fe.u_ring.rg_infl,
+                              dut.core.fe.u_ring.fq_rp, dut.core.fe.u_ring.fq_wp, dut.core.fe.u_ring.fq_k, dut.core.fe.u_ring.ic_req,
+                              dut.core.fe.u_ring.xlate_ok, dut.core.fe.u_ring.inpg, dut.core.fe.u_ring.pq_room,
+                              dut.core.walk_hold, $countones(dut.core.wk_e), dut.core.immu_ready, dut.core.irq_inject,
+                              dut.core.fe.u_fetch.strad, dut.core.rob_empty);
                      $fatal(1, "tb: nothing retired for %0d cycles (retires=%0d, ROB head %0d, pc~%h)",
                             c - last_ret, nret, dut.core.rob_head_idx, dut.imem_addr);
                   end
@@ -1767,6 +1779,7 @@ module tb;
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,
                      dut.core.mmu_satp, n_inject, n_uirq, n_seip, dut.uart_ier);
       end
+      $display("tb: the longest stretch without a retire: %0d cycles, ending at cycle %0d", gap_max, gap_end);
       if (tohost_done)
          $display("TOHOST exit=%0d after %0d cycles (retires=%0d pc~%h)", tohost_code, c, nret, dut.imem_addr);
       else if (stop_hit && (c >= stop_at))

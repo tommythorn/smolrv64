@@ -6,7 +6,8 @@
 // -> PA page, with aliases); every answer is checked, in order, against the tag, the VA, and the
 // window's halfwords at the PA that was sent. An L2 model answers
 // line reads after LAT cycles, one at a time. Mapping changes (ep_bump + a new page table) land at
-// random, without draining. Code changes land two ways: drain, write memory, fence.i (inv_req),
+// random, without draining. Code changes land two ways: drain (+nodrain: only stop requesting, as
+// the SoC does), write memory, fence.i (inv_req),
 // wait out inv_busy -- and the new bytes must be what comes back -- and, all the time, a store:
 // a line of memory rewritten and probed (pb_v) with requests in flight. A request taken after the
 // probe must see the new bytes; one taken before it may see the bytes of either side, each of the
@@ -208,6 +209,8 @@ module tb;
 
    // ---- fence.i: drain, change code, invalidate, wait ----
    integer n, m;
+   reg nodrain;
+   initial nodrain = $test$plusargs("nodrain");
    initial begin
       for (k = 0; k < PLINES*8; k = k + 1) mem[k] = {$urandom, $urandom};
       for (k = 0; k < NVP; k = k + 1) ptab[k] = 7'($urandom);
@@ -216,7 +219,9 @@ module tb;
       while (cyc < NCYC) begin
          repeat (15000 + ($urandom % 10000)) @(posedge clk);
          quiesce = 1;
-         while (q_n != 0 || rq_v) @(posedge clk);
+         // +nodrain: the SoC's fence.i freezes the requester but does not wait for its requests
+         if (nodrain) repeat ($urandom % 4) @(posedge clk);
+         else while (q_n != 0 || rq_v) @(posedge clk);
          for (m = 0; m < 400; m = m + 1) mem[$urandom % (PLINES*8)] = {$urandom, $urandom};
          @(posedge clk) inv_req = 1;
          @(posedge clk) inv_req = 0;

@@ -9,4 +9,6 @@ for lat in 4 40; do
       rv_icache.v ../src/smolrv64_sdpram.v tb_smolrv64_icache.v > obj_dir_icache_$lat.build.log 2>&1 \
       || { echo "BUILD FAILED (LAT=$lat)"; grep -m10 '%Error' obj_dir_icache_$lat.build.log; exit 1; }
    ./obj_dir_icache_$lat/tb_icache 2>&1 | grep -E 'PASS|FAIL|fatal|Error'
+   # the SoC's fence.i freezes fetch but leaves its requests in flight: the same run, not drained
+   ./obj_dir_icache_$lat/tb_icache +nodrain 2>&1 | grep -E 'PASS|FAIL|fatal|Error' | sed 's/^/nodrain: /'
 done
