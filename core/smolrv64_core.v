@@ -707,7 +707,11 @@ module smolrv64_core
    wire [1:0]  pend_err;
    wire        fpu_err;
    wire [15:0] fe_err_f;
-   assign fe_err = {fpu_err, pend_err, fe_err_f[12:0]};
+   // the frontend's 14 in its field; the scheduler's pending table and the FPU at the top of the
+   // LSU's (which uses 8)
+   assign fe_err  = {2'd0, fe_err_f[13:0]};
+   wire [15:0] lsu_err_l;
+   assign lsu_err = {fpu_err, pend_err, lsu_err_l[12:0]};
    // the queries: each slot's three sources (rs1..rs3, the map's read), then each lane's two
    // operands (the issue check below). By file: a slot's rs1 and rs2 and a lane's operands may
    // name either; a slot's rs3 (an FMA's) and the F FIFO head's sources name an f-register or p0,
@@ -2547,7 +2551,7 @@ module smolrv64_core
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind), .cos_data(lsu_cos_data), .cos_size(lsu_cos_size),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_infl(lsu_ld_infl), .ld_sent(lsu_ld_sent), .ld_fkill(lsu_ld_fkill),
-      .err(lsu_err), .idle(lsu_idle));
+      .err(lsu_err_l), .idle(lsu_idle));
    // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
    // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
    // only older stores, so the wait ends.

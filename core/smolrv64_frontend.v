@@ -141,7 +141,7 @@ module smolrv64_frontend
    wire [1:0]          imem_lvl;
    wire                imem_ok;
    wire [5:0]          ring_err;
-   wire [2:0]          bp_err;
+   wire [3:0]          bp_err;
    wire [1:0]          f_err;
    wire                pr_adv, pq_room;
    wire                bp_cancel;              // the predictor corrects a window: the ring drops its requests
@@ -484,7 +484,7 @@ module smolrv64_frontend
       if (e_order) $fatal(1, "smolrv64_frontend: a group dispatched in part (consume %b, valid %b)", consume, d_valid);
    reg  [1:0] fe_err_q;
    always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
-   assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
+   assign fe_err = {2'd0, fe_err_q, f_err, bp_err, ring_err};
    wire [IW-1:0] take_c = take;                   // the whole vector, for the loop below
    reg  [IW-1:0] take_l;                          // lane k's instruction is taken: j = (k - lc) % IW
    integer       tk;

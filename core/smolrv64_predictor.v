@@ -100,7 +100,7 @@ module smolrv64_predictor
     input  wire [PDW-1:0]       res_pdet,   // the resolving instruction's own details
     input  wire [PCW-1:0]       res_tgt,    // taken-target (train the BTB)
     input  wire [PCW-1:0]       res_last,   // the resolving CTI's last halfword's address
-    output wire [2:0]           err);       // its invariants, registered (the integrity log)
+    output wire [3:0]           err);       // its invariants, registered (the integrity log)
 
    localparam W    = 1 << BTBW;             // BTB ways
    initial if (PDW != RASB + GHL + (1+2+YBITS) + BTBW + (1+2))
@@ -472,7 +472,8 @@ module smolrv64_predictor
          wire [L1RB-1:0] lr  = fp ? lslot(sa_q, WI) : lslot1(sa_q, WI);   // the read's row
          wire [L1RB-1:0] lw  = l1t ? lslot(t_last, WI) : fl_r[FI*L1RB +: L1RB];
          wire [L1EW-1:0] lwd = l1t ? {ltag(t_last, btag(t_last)), t_type, res_tgt[TGTW:1]}
-                             : fl_c[FI] ? {L1EW{1'b0}} : fl_e[gb*L1EW +: L1EW];
+                             : fl_c[FI] ? {~fl_e[gb*L1EW + L1EW-1 -: L1TW], {(L1EW-L1TW){1'b0}}}
+                             : fl_e[gb*L1EW +: L1EW];
          assign e1[gw] = l1[lr];
          assign m1[gw] = e1[gw][L1EW-1 -: L1TW] == lt;
          always @(posedge clk) if (l1t | l1f) l1[lw] <= lwd;
@@ -524,7 +525,9 @@ module smolrv64_predictor
       assign bw2[gb] = x2;
       // the fill for this bank: L2's entry into L2's way where L2 hit, and every other way that held
       // the halfword in L1 cleared -- L1's rows are not L2's, so an L2 eviction leaves L1's copy, and a
-      // copy in a way before L2's would be L1's first match for ever
+      // copy in a way before L2's would be L1's first match for ever. An entry is never empty (zeros
+      // are tag 0, which some windows' tags are), so a cleared way takes the window's L1 tag inverted:
+      // it cannot match the window, and the window's next lookup is L2's view (e_conv checks it).
       wire            fp2 = fpk2[gb];
       for (gw = 0; gw < W; gw = gw + 1) begin : fl
          localparam [BTBW-1:0] WI = gw;
@@ -626,14 +629,32 @@ module smolrv64_predictor
    wire e_many = ~reset & push & (nmk > M);
    wire e_empt = ~reset & (popw > pq_n) & ~flush;
    wire e_end  = ~reset & p_cut & ~inw[hk];
-   reg  [2:0] err_q;
-   always @(posedge clk) err_q <= reset ? 3'd0 : {e_end, e_empt, e_full};
+   // A CORRECTION CONVERGES: it fills L1 from L2 at its window and restarts there, so that window's
+   // next check agrees -- unless another write changed either level since the window's lookup:
+   // training (which takes L1's write port from a fill), or a fill of a window before it that covered
+   // its banks. One that recurs is a livelock: fetch waits for the window's bytes (the aligner's
+   // bytes_late) and they never come.
+   wire            wr_any = tw_v | cr_q | mf_q;       // a cycle that writes either level
+   reg  [1:0]      wr_h;                              // ...in the two cycles before
+   reg             cv_q, cv_t;
+   reg  [PCW-1:0]  cv_a;
+   initial begin wr_h = 2'b00;  cv_q = 1'b0;  cv_t = 1'b0;  cv_a = {PCW{1'b0}}; end
+   always @(posedge clk) begin
+      wr_h <= {wr_h[0], wr_any};
+      if (reset | flush | d_v) cv_q <= 1'b0;             // its window's check came, or a flush took it
+      if (cr_q & ~flush) begin cv_q <= 1'b1;  cv_a <= cr_a;  cv_t <= tw_v | (|wr_h); end
+      else if (wr_any) cv_t <= 1'b1;
+   end
+   wire e_conv = ~reset & d_bad & cv_q & ~cv_t & ({s2_sa[PCW-1:4], s2_sk, 1'b0} == cv_a);
+   reg  [3:0] err_q;
+   always @(posedge clk) err_q <= reset ? 4'd0 : {e_conv, e_end, e_empt, e_full};
    assign err = err_q;
    always @(posedge clk) begin
       if (e_full) $fatal(1, "smolrv64_predictor: a prediction pushed into a full queue");
       if (e_many) $fatal(1, "smolrv64_predictor: %0d marks in a pair, more than %0d", nmk, M);
       if (e_empt) $fatal(1, "smolrv64_predictor: the aligner popped %0d of %0d predictions", pop, pq_n);
       if (e_end)  $fatal(1, "smolrv64_predictor: a window ends at bank %0d, outside it (offset %0d)", hk, sk_q);
+      if (e_conv) $fatal(1, "smolrv64_predictor: the correction at %h did not converge: L1 still disagrees with L2", cv_a);
    end
 
 `ifdef BP_TRACE

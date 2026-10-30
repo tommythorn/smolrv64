@@ -430,10 +430,14 @@ rows in the same cycle, each bank its own pair's (`sa_q + 16`, exact), so its en
 later, when a second end pick (`u_chk`) gives L2's view of the window: its last position, where the
 stream goes on, its marks. When L2's differs from L1's in where the window ends or where the stream
 goes on, the cycle after corrects: L1 is filled from L2 at that window (L2's entry into L2's way,
-and zeros into every other way that matched: L1's rows are not L2's, so an L2 eviction can leave
-L1's copy, which would stay L1's first match for ever), the stream goes back to the window's start
-with its history, RAS pointer and queue tail from before it, and the ring drops that window's
-request and the next's (§4.1) -- the window is looked up again three cycles after it first was. A
+and every other way that matched given the window's L1 tag inverted: L1's rows are not L2's, so an
+L2 eviction can leave L1's copy, which would stay L1's first match for ever, and an entry is never
+empty -- zeros are tag 0, which some windows' tags are, so a way cleared to zeros matched such a
+window again and the correction repeated every three cycles while fetch waited on that window's
+bytes -- a livelock the boot lockstep reaches in 14 M cycles with 1-bit tags), the stream goes back to
+the window's start with its history, RAS pointer and queue tail from before it, and the ring drops that window's
+request and the next's (§4.1) -- the window is looked up again three cycles after it first was, and
+that check agrees with L2 unless training wrote either level meanwhile (asserted, `e_conv`). A
 window that differs only in its marks fills L1 and is left alone: the not-taken conditional L1
 lacked goes unpredicted once, as a BTB miss does. Training writes both levels at the CTI's own
 slots. A window's two queue entries are picked one-hot by the end pick's masks, a mark's own fields
@@ -2268,8 +2272,8 @@ one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has n
 |---|---|---|
 | `[15:0]` | D$ | `rv_dcache.v`, invariants block (16 conditions: an orphan fill beat, a response nothing awaits, a write completion nothing sent, beats out of order, two valid ways holding one line in either lookup, a tag reused while outstanding, a waiter on a dead MSHR, a beat into a line being read out, a store in both lookups or a plain store that hits or joins in the main lookup, a victim an MSHR reserves or the store lookup writes, a store sent back or the head issued as the head leaves, a store taken while a clean is asked for or under way, M's fast load misused, an outside flush finishing on a blocked line or a release with none, an MSHR's read issued while the MSHR is not live or a second time) |
 | `[31:16]` | I$ | `rv_icache.v`, invariants block (11 conditions: a line hitting in both ways, an unrequested L2 answer, a window not halfword aligned, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways, a tag write in a bank read's cycle, a window across a page, a lookup beside the next line's reconcile probe) |
-| `[47:32]` | LSU | `smolrv64_lsu.v` (8 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head) |
-| `[63:48]` | frontend | `smolrv64_frontend.v` (the fetch ring's, the predictor's and fetch's invariants) |
+| `[47:32]` | LSU | `smolrv64_lsu.v` (8 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head), and at `[47:45]` the scheduler's pending table (2) and the FPU (1) |
+| `[63:48]` | frontend | `smolrv64_frontend.v` (14 conditions: the fetch ring's, the predictor's -- among them a BTB correction that does not converge -- and fetch's) |
 
 Read-only MMIO, 64-bit words, in the window the deleted fetch-buffer diagnostic owned so no
 comparator was added to the `dmem_raddr → is_dev_r` cone (a load-path critical cone): `0x1000_E000`
