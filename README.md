@@ -17,11 +17,11 @@ change has to boot Ubuntu to a login prompt on the board with zero faults before
 
 | | |
 |---|---|
-| Geekbench 5.4.1, board, 2026-10-29 | **20** single-core (Integer 24, Crypto 2, Floating Point 13), **20** multi-core ([result 24766670](https://browser.geekbench.com/v5/cpu/24766670), [every subtest](workloads/gb5/result-2026-10-29.md)); the whole suite in 1 h 36 min at IPC 1.34 |
-| Memory, board, 2026-10-29 | a dependent load **3.0** cycles from the D$, **21.0** from the L2, 45.1 from DRAM with a second-level dTLB lookup (71.0 with a page walk); sequential reads 7.93 bytes a cycle in the D$, 3.71 from the L2, 2.88 from DRAM, writes 7.91, 5.64 and 5.17 (`tools/board/membench/summary.sh`, beside every Geekbench run) |
+| Geekbench 5.4.1, board, 2026-10-27 | **20** single-core (Integer 24, Crypto 2, Floating Point 13), **20** multi-core ([result 24759238](https://browser.geekbench.com/v5/cpu/24759238), [every subtest](workloads/gb5/result-2026-10-27b.md)); the whole suite in 1 h 36 min at IPC 1.33 |
+| Memory, board, 2026-10-27 | a dependent load **3.0** cycles from the D$, **21.0** from the L2, 44.9 from DRAM with a second-level dTLB lookup (71.0 with a page walk); sequential reads 7.93 bytes a cycle in the D$, 3.71 from the L2, 2.88 from DRAM, writes 7.91, 5.64 and 5.17 (`tools/board/membench/summary.sh`, beside every Geekbench run) |
 | Geekbench 6.7.1, board (4 GiB), 2026-10-15 to 16 | **10** single-core, **10** multi-core ([result 19352041](https://browser.geekbench.com/v6/cpu/19352041), [every subtest](workloads/gb6/result-2026-10-16.md)); the whole suite in 17 h 48 min at IPC 1.00 |
-| Dhrystone 2.1, the RTL in lockstep simulation, 2026-10-29 | **3.07** DMIPS/MHz: 185.2 cycles a run, DMIPS being runs a second over 1757 (riscv-tests' Dhrystone at `-O2` with the full `-march`; `make run B=dhrystone` in [workloads/rvbench](workloads/rvbench)) |
-| CoreMark 1.0, the RTL in lockstep simulation, 2026-10-29 | **5.52** CoreMark/MHz: 181,084 cycles an iteration, the standard 2K performance run's CRCs (`-O2` with the full `-march`; `make run B=coremark`) |
+| Dhrystone 2.1, the RTL in lockstep simulation, 2026-10-27 | **3.14** DMIPS/MHz: 181.2 cycles a run, DMIPS being runs a second over 1757 (riscv-tests' Dhrystone at `-O2` with the full `-march`; `make run B=dhrystone` in [workloads/rvbench](workloads/rvbench)) |
+| CoreMark 1.0, the RTL in lockstep simulation, 2026-10-27 | **5.50** CoreMark/MHz: 181,820 cycles an iteration, the standard 2K performance run's CRCs (`-O2` with the full `-march`; `make run B=coremark`) |
 | `sha256sum` of a 30 MB file, board, 2026-09-25 | IPC 1.56 to 1.63 over three runs, 43 cycles per byte |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed four-wide; DDR4 at 333 MHz |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
@@ -41,13 +41,12 @@ looks like when every structure is chosen by what a Kintex LUT, LUTRAM or block 
 ([the specification](docs/SmolRV64-Spec.md) is the normative description, and every number below
 is read off the RTL or measured with the workload named):
 
-- **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream reads a
-  16-byte window from any halfword per cycle from the instruction cache into a 32-halfword
-  fetch ring, so code runs at full width whatever its alignment, ahead of decode, whose
-  instruction boundaries are found as the bytes arrive; up to six RVC or 32-bit instructions
-  a cycle go from it into a 16-entry decoupling queue; up to four are renamed and dispatched
-  a cycle, consecutive instructions to consecutive lanes (the lanes rotate, so each takes
-  every fourth with no steering), and up to four retire.
+- **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
+  reads one 16-byte pair per cycle from the instruction cache into a 32-halfword fetch ring,
+  ahead of decode, whose instruction boundaries are found as the bytes arrive; up to six RVC or
+  32-bit instructions a cycle go from it into a 16-entry decoupling queue; up to four are
+  renamed and dispatched a cycle, consecutive instructions to consecutive lanes (the lanes
+  rotate, so each takes every fourth with no steering), and up to four retire.
 - **A status-only reorder buffer.** 64 rows of four, of which 228 entries are live at once
   (the 9-bit sequence number that orders restarts bounds the window), 25 bits each: the
   destination and its new and previous mappings -- no values, no PCs, no operands. A second,
@@ -91,22 +90,19 @@ is read off the RTL or measured with the workload named):
   returned by tag and out of order, and its own scheduler and execute stage, so FP
   arithmetic never enters the memory stage and cannot block it; FP operations issue out of
   order among themselves.
-- **Prediction at the fetch stream.** Two BTBs, each eight halfword banks of two skewed ways
-  and taken-only (a branch is allocated when it resolves taken): a 1024-entry L1 in
-  distributed RAM, read in the predictor's one-cycle loop, and an 8192-entry L2 in block RAM
-  a cycle behind it, which checks every window and, when the two disagree, fills L1 and
-  restarts the stream at that window. With a 2048-entry YAGS corrector in eight
-  distributed-RAM banks, an 11-bit path history carried with each instruction, and an 8-entry
-  return stack they predict each 16-byte window as it is fetched, keyed by a control-transfer
-  instruction's last halfword; an 8-entry prediction queue carries each prediction's state to
-  the instruction it names, and a 32-entry training queue trains each one once it can no
-  longer be squashed. No table has a valid bit: validity is the tag match.
+- **Prediction at the fetch stream.** A 2048-entry BTB (eight halfword banks of two skewed
+  ways in block RAM, taken-only: a branch is allocated when it resolves taken), a 2048-entry
+  YAGS corrector in eight distributed-RAM banks, an 11-bit path history carried with each
+  instruction, and an 8-entry return stack predict each 16-byte pair as it is fetched, keyed by
+  a control-transfer instruction's last halfword; an 8-entry prediction queue carries each
+  prediction's state to the instruction it names, and a 32-entry training queue trains each
+  one once it can no longer be squashed. Neither table has a valid bit: validity is the tag
+  match.
 - **Caches built from what the part has.** A 128 KiB two-way instruction cache that is
   virtually indexed and hits on its virtual tag and an epoch, reconciling by physical tag
-  only on a miss, so a hit needs no translation; it reads a 16-byte window from any halfword
-  every cycle (each way's lines in an even and an odd 16-byte bank, the next line's tags
-  through the tag RAM's second port), stores probe it, so `fence.i` keeps it unless a device
-  has written memory since. A 128 KiB, 32-way write-back data cache, its
+  only on a miss, so a hit needs no translation; it reads a 16-byte pair every cycle, stores
+  probe it, so `fence.i` keeps it unless a device has written memory since, and its 64-byte
+  lines sit in even/odd 64-bit block-RAM banks. A 128 KiB, 32-way write-back data cache, its
   set inside the page offset so no line can have a synonym, that never blocks on a miss: two
   lookups a cycle, one for a load, answered by tag two cycles later, and one for a committed
   store, which writes its bytes into the one block RAM that holds them or merges them into its
@@ -238,7 +234,7 @@ words. Ubuntu's NFS root runs through it.
 ## Performance
 
 Geekbench 5 on the board is the target metric: the scores above, with every subtest's rate
-in [workloads/gb5/result-2026-10-29.md](workloads/gb5/result-2026-10-29.md). The whole-run
+in [workloads/gb5/result-2026-10-21c.md](workloads/gb5/result-2026-10-21c.md). The whole-run
 IPC from `perf stat` is the number comparable across builds, and the subtest rates are what
 the scores follow.
 

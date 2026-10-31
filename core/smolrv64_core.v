@@ -93,10 +93,9 @@ module smolrv64_core
     output wire                    imem_cancel,     // the fetch stream restarts: a waiting I$ miss is stale
     input  wire                    ic_busy,         // fence.i or an I$ invalidation in progress
     output wire                    ic_req,
-    output wire [63:0]             ic_va,           // the window's first halfword
+    output wire [63:0]             ic_va,           // the pair's first byte, 8-byte aligned
     output wire [63:0]             ic_pa,
     output wire [`SMOLRV64_ICTAG_W-1:0] ic_tag,
-    output wire [2:0]              ic_last,         // ...and its last halfword
     input  wire                    ic_ack,
     input  wire                    ic_valid,
     input  wire [127:0]            ic_data,
@@ -329,7 +328,7 @@ module smolrv64_core
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
       .imem_xlate_ok(immu_ready & ~immu_fault), .imem_freeze(ic_busy | imem_ctx_chg), .imem_flush(imem_cancel),
       .fe_avail(imem_avail), .fe_ok(imem_ok),
-      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag), .ic_last(ic_last),
+      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
       .imem_fault(immu_ready & immu_fault), .imem_cause(immu_cause),
       .res_v(res_v_q), .res_cbr(res_cbr_q), .res_call(res_call_q), .res_ret(res_ret_q),
@@ -707,11 +706,7 @@ module smolrv64_core
    wire [1:0]  pend_err;
    wire        fpu_err;
    wire [15:0] fe_err_f;
-   // the frontend's 14 in its field; the scheduler's pending table and the FPU at the top of the
-   // LSU's (which uses 8)
-   assign fe_err  = {2'd0, fe_err_f[13:0]};
-   wire [15:0] lsu_err_l;
-   assign lsu_err = {fpu_err, pend_err, lsu_err_l[12:0]};
+   assign fe_err = {fpu_err, pend_err, fe_err_f[12:0]};
    // the queries: each slot's three sources (rs1..rs3, the map's read), then each lane's two
    // operands (the issue check below). By file: a slot's rs1 and rs2 and a lane's operands may
    // name either; a slot's rs3 (an FMA's) and the F FIFO head's sources name an f-register or p0,
@@ -2551,7 +2546,7 @@ module smolrv64_core
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind), .cos_data(lsu_cos_data), .cos_size(lsu_cos_size),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_infl(lsu_ld_infl), .ld_sent(lsu_ld_sent), .ld_fkill(lsu_ld_fkill),
-      .err(lsu_err_l), .idle(lsu_idle));
+      .err(lsu_err), .idle(lsu_idle));
    // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
    // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
    // only older stores, so the wait ends.

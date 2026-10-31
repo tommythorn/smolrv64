@@ -75,7 +75,6 @@ module smolrv64_frontend
     output wire [63:0]             ic_va,
     output wire [63:0]             ic_pa,
     output wire [`SMOLRV64_ICTAG_W-1:0] ic_tag,
-    output wire [2:0]              ic_last,   // the window's last halfword
     input  wire                    ic_ack,
     input  wire                    ic_valid,
     input  wire [127:0]            ic_data,
@@ -141,11 +140,9 @@ module smolrv64_frontend
    wire [1:0]          imem_lvl;
    wire                imem_ok;
    wire [5:0]          ring_err;
-   wire [3:0]          bp_err;
+   wire [2:0]          bp_err;
    wire [1:0]          f_err;
    wire                pr_adv, pq_room;
-   wire                bp_cancel;              // the predictor corrects a window: the ring drops its requests
-   wire [1:0]          bp_cancel_n;
    wire [7:0]          p_mk;
    wire [PCW-1:0]      st_sa;
    wire [2:0]          st_sk, p_end;
@@ -162,8 +159,8 @@ module smolrv64_frontend
       .pc_va(imem_addr), .rst_a(st_rst_a), .pc_pa(imem_pa), .pc_lvl(imem_xlvl), .xlate_ok(imem_xlate_ok),
       .win(imem_data), .mk(imem_mk), .st(imem_st), .avail(imem_avail), .ok(imem_ok), .lvl(imem_lvl),
       .sa(st_sa), .sk(st_sk), .p_mk(p_mk), .p_end(p_end), .pr_adv(pr_adv),
-      .pq_room(pq_room), .pq_cnt(pq_cnt), .cancel(bp_cancel), .cancel_n(bp_cancel_n),
-      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag), .ic_last(ic_last),
+      .pq_room(pq_room), .pq_cnt(pq_cnt),
+      .ic_req(ic_req), .ic_va(ic_va), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(ic_ack), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag), .err(ring_err));
    assign fe_avail = imem_avail;
    assign fe_ok    = imem_ok;
@@ -225,7 +222,6 @@ module smolrv64_frontend
      (.clk(clk), .reset(reset),
       .flush(st_flush), .rst_a(st_rst_a), .rst_np(rej_np_q & ~redirect), .adv(pr_adv),
       .sa(st_sa), .sk(st_sk), .p_cut(), .p_end(p_end), .p_mk(p_mk), .pq_room(pq_room), .pq_cnt(pq_cnt),
-      .cancel(bp_cancel), .cancel_n(bp_cancel_n),
       .pq_tk(bp_tk), .pq_tgt(bp_tgts), .pd_mk(pd_mk), .pd_no(pd_no), .pop(f_pop),
       .rollback(redirect), .rb_rsp(redirect_rsp), .rb_ghr(redirect_ghr),
       .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
@@ -484,7 +480,7 @@ module smolrv64_frontend
       if (e_order) $fatal(1, "smolrv64_frontend: a group dispatched in part (consume %b, valid %b)", consume, d_valid);
    reg  [1:0] fe_err_q;
    always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
-   assign fe_err = {2'd0, fe_err_q, f_err, bp_err, ring_err};
+   assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
    wire [IW-1:0] take_c = take;                   // the whole vector, for the loop below
    reg  [IW-1:0] take_l;                          // lane k's instruction is taken: j = (k - lc) % IW
    integer       tk;

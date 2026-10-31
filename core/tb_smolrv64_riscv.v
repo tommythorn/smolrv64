@@ -32,14 +32,11 @@ module tb;
    reg  reset;
 
    wire [PCW-1:0]   imem_addr;                 // the fetch PC's PA
-   wire             ic_req;                    // the fetch ring's I$ port: a window per request,
+   wire             ic_req;                    // the fetch ring's I$ port: a pair per request,
    wire [63:0]      ic_pa;                     // answered the next cycle, in order
    wire [`SMOLRV64_ICTAG_W-1:0] ic_tag;
-   wire [2:0]       ic_last;                   // (the model answers 16 bytes from the window's start)
    reg              ic_valid;
-   reg  [63:0]      ic_pa_q, ic_pa1;
-   reg              ic_v1;
-   reg  [`SMOLRV64_ICTAG_W-1:0] ic_tag1;
+   reg  [63:0]      ic_pa_q;
    reg  [`SMOLRV64_ICTAG_W-1:0] ic_rtag;
    reg  [127:0]     ic_data;
    wire [63:0]      dmem_raddr, dmem_waddr, dmem_wdata;
@@ -68,7 +65,7 @@ module tb;
    smolrv64_core #(.PCW(PCW), .HW(HW), .RESET_PC(BASE)) dut
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(), .ic_busy(1'b0),
-      .ic_req(ic_req), .ic_va(), .ic_pa(ic_pa), .ic_tag(ic_tag), .ic_last(ic_last),
+      .ic_req(ic_req), .ic_va(), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(1'b1), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
       .hw_ip(12'd0), .mtime(64'd0),           // device-less: no CLINT/PLIC
       .hpm_dc_access(1'b0), .hpm_dc_miss(1'b0), .hpm_ic_access(1'b0), .hpm_ic_miss(1'b0),
@@ -109,17 +106,11 @@ module tb;
    reg wtick = 0;
    integer m;
    always @(posedge clk) begin
-      // two cycles from request to answer, as rv_icache's (its banks, then its tags): the ring's
-      // corrections rely on it (smolrv64_fring asserts it)
-      ic_v1    <= ~reset & ic_req;
-      if (ic_req) begin ic_pa1 <= ic_pa; ic_tag1 <= ic_tag; end
-      ic_valid <= ~reset & ic_v1;
-      if (ic_v1) begin ic_pa_q <= ic_pa1; ic_rtag <= ic_tag1; end
+      ic_valid <= ~reset & ic_req;
+      if (ic_req) begin ic_pa_q <= ic_pa; ic_rtag <= ic_tag; end
    end
-   // the window by bank, as rv_icache answers: halfword b from the first pair when b is at or after
-   // the window's first halfword, else from the pair after
    always @(ic_pa_q or wtick)
-      for (m=0;m<16;m=m+1) ic_data[m*8 +: 8] = mem[({ic_pa_q[63:4], 4'd0}-BASE)+m+(((m/2) < ic_pa_q[3:1]) ? 16 : 0)];
+      for (m=0;m<16;m=m+1) ic_data[m*8 +: 8] = mem[(ic_pa_q-BASE)+m];
    always @(dmem_raddr or wtick) dmem_rdata = rd64(dmem_raddr);
    reg                       fv_q;
    reg [`SMOLRV64_LQB-1:0]   ftag_q;

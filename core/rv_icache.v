@@ -1,24 +1,14 @@
 `default_nettype none
-// rv_icache: the read-only VHPR instruction cache (docs/VHPR.md), one 16-byte window per cycle at
-// any halfword (docs/PLAN-2026-10-27-fetch-window.md; Stage 4 increment 0 before it).
+// rv_icache: the read-only VHPR instruction cache (docs/VHPR.md), one 16-byte pair per cycle
+// (docs/PLAN-2026-09-24-frontend-stage4.md, increment 0).
 //
-// GEOMETRY. SIZE_KB (64) in 2 ways of 64-byte lines. Each way's data is an EVEN bank (a line's
-// pairs 0 and 2) and an ODD bank (pairs 1 and 3), each a pair's two 8-byte chunks in two 64-bit
-// block RAMs, and each bank has its own row, {set, pair[1]}. Each way's tags are a block RAM read
+// GEOMETRY. SIZE_KB (64) in 2 ways of 64-byte lines. A pair is a 16-byte-aligned quarter of a
+// line (asserted), so a pair is one line's lookup, and each way's data is two block-RAM banks,
+// the even and the odd 8-byte chunks, read at the same row. Each way's tags are a block RAM read
 // with them.
 //
-// THE WINDOW. A request is up to 16 bytes from any halfword (rd_addr, through rd_last) inside one
-// 4 KiB page (asserted). Its first halfword is in pair p of line L, and it covers at most pair p
-// and the pair after it, which has the other parity: the odd bank reads L's odd pair, the even bank
-// L's even pair -- or, when p is 3, the NEXT line's pair 0, at set + 1. The answer is BY BANK, as the
-// BTB's banks are: its halfword b is the window's halfword at address bits [3:1] == b, from the first
-// pair when b is at or after the window's first halfword, else from the pair after.
-//
 // HIT. Virtual only: valid, the virtual tag and the request's epoch -- no translation and no
-// physical tag on the hit path (docs/VHPR.md), so an I$ hit never waits on the iTLB. A window that
-// reaches the next line hits when both lines do: the next line's tags come from port A of the tag
-// RAMs (the fill's port, idle in every cycle the banks read) and its valid bits from a read of
-// their own. Each half of the answer takes its own line's way.
+// physical tag on the hit path (docs/VHPR.md), so an I$ hit never waits on the iTLB.
 //
 // RECONCILE is the MISS path. A virtual miss first compares the same set's two physical tags
 // against the request's PA: a match holds the right bytes under a changed mapping, so it is
@@ -32,11 +22,9 @@
 // (at most one) waits in the skid; the missed line is filled, and both replay in order, so every
 // taken request is answered, in order.
 //
-// MISS. A window misses on the first of its lines that misses: L, else the next line when the window
-// reaches it (never a line it does not reach); the next line's reconcile probe is a cycle later
-// (S_RCN), through the lookup's read of the physical tags. The missing line comes from the prefetch buffer if
-// it holds it (matched by physical line), else from L2 (a one-cycle request pulse, the address held until the ack). It installs
-// over four cycles, a pair a cycle into its parity's bank, and its tags last; the victim is an invalid way,
+// MISS. The missing line comes from the prefetch buffer if it holds it (matched by physical
+// line), else from L2 (a one-cycle request pulse, the address held until the ack). It installs
+// over four cycles, a row of each bank per cycle, and its tags last; the victim is an invalid way,
 // else the set's round-robin bit.
 //
 // EPOCHS. Every request carries the epoch it was taken in. Its lookup hits virtually only a line of
@@ -78,12 +66,11 @@ module rv_icache #(
    input  wire              clk,
    input  wire              reset,
    input  wire              rd_req,
-   input  wire [63:0]       rd_addr,     // VA of the window's first halfword
-   input  wire [2:0]        rd_last,     // ...and its last: the window is rd_addr .. rd_addr + 2*rd_last
+   input  wire [63:0]       rd_addr,     // VA of the pair's first byte, 16-byte aligned
    input  wire [63:0]       rd_pa,       // its PA
    input  wire [RTW-1:0]    rd_tag,
    output wire              rd_ack,      // taken this cycle
-   output reg  [HW*16-1:0]  rd_data,     // the window by bank: halfword b at address bits [3:1] == b (outside it: any)
+   output reg  [HW*16-1:0]  rd_data,     // the pair, first chunk low
    output reg               rd_valid,
    output reg  [63:0]       rd_resp_addr,
    output reg  [RTW-1:0]    rd_resp_tag,
@@ -110,7 +97,7 @@ module rv_icache #(
    localparam IB   = $clog2(SETS);
    localparam VTB  = VAW - OFFB - IB;          // virtual tag
    localparam PTB  = PGW - 12;                 // physical tag: PA above the 4 KiB page offset
-   localparam RB   = IB + 1;                   // bank row: {set, pair[1]}
+   localparam RB   = IB + 2;                   // bank row: {set, pair}
    assign l2_we    = 1'b0;
    assign l2_wdata = 512'd0;
 
@@ -127,7 +114,7 @@ module rv_icache #(
    localparam CB   = IB - 6;                     // colour bits
    localparam NCOL = 1 << CB;
    initial if (IB < 7) $fatal(1, "rv_icache: %0d sets are fewer than two colours of 64", SETS);
-   wire [2*NCOL-1:0]     v_s, v_n, v_f, v_p;
+   wire [2*NCOL-1:0]     v_s, v_f, v_p;
    wire [2*NCOL*PTB-1:0] pt_s, pt_p;
    reg [EPW-1:0] cur_ep;
    initial cur_ep = {EPW{1'b0}};
@@ -137,14 +124,14 @@ module rv_icache #(
 
    // ---------------------------------------------------------------- state
    localparam S_RUN = 4'd0, S_FILL = 4'd1, S_INST = 4'd2, S_RPL = 4'd3, S_CHK = 4'd4,
-              S_RPS = 4'd5, S_SCAN = 4'd6, S_RST = 4'd7, S_CNM = 4'd8, S_CNS = 4'd9, S_RCN = 4'd10;
+              S_RPS = 4'd5, S_SCAN = 4'd6, S_RST = 4'd7, S_CNM = 4'd8, S_CNS = 4'd9;
    reg [3:0]  st;
    reg        door;                            // the door is open this cycle (a register)
    // the lookup stage
-   reg        s1_v, s1_rp;  reg [63:0] s1_va, s1_pa;  reg [RTW-1:0] s1_tag;  reg [EPW-1:0] s1_ep;  reg [2:0] s1_last;
+   reg        s1_v, s1_rp;  reg [63:0] s1_va, s1_pa;  reg [RTW-1:0] s1_tag;  reg [EPW-1:0] s1_ep;
    // the skid (a request taken in the cycle a lookup missed) and the missed request
-   reg        sk_v;  reg [63:0] sk_va, sk_pa;  reg [RTW-1:0] sk_tag;  reg [EPW-1:0] sk_ep;  reg [2:0] sk_last;
-   reg [63:0] f_va, f_pa;  reg [RTW-1:0] f_tag;  reg [2:0] f_last;
+   reg        sk_v;  reg [63:0] sk_va, sk_pa;  reg [RTW-1:0] sk_tag;  reg [EPW-1:0] sk_ep;
+   reg [63:0] f_va, f_pa;  reg [RTW-1:0] f_tag;
    // the fill: which line, where it goes, its epoch at issue, the data
    reg [IB+VTB-1:0] f_line;                    // the VIRTUAL line
    reg [57:0]       f_pline;                   // the PHYSICAL line
@@ -172,73 +159,39 @@ module rv_icache #(
    wire [63:0] a_pa  = rp_f ? f_pa  : rp_s ? sk_pa  : rd_pa;
    wire [RTW-1:0] a_tag = rp_f ? f_tag : rp_s ? sk_tag : rd_tag;
    wire [EPW-1:0] a_ep  = rp_f ? f_ep  : rp_s ? sk_ep  : cur_ep;
-   wire [2:0]     a_last = rp_f ? f_last : rp_s ? sk_last : rd_last;
    wire        a_take = rp_f | rp_s | rd_ack;
-   // data: per way, the even and the odd bank, each a pair's two 8-byte chunks in two 64-bit block
-   // RAMs read at its own row (gb = {way, parity, chunk}); an install writes pair f_k into its
-   // parity's two. The window's first pair is a_va[5:4]: the odd bank reads this line's odd pair,
-   // the even bank this line's even pair, or the next line's pair 0 when the window starts in pair 3.
+   // data: per way, the even and the odd 8-byte chunk of a pair, in two 64-bit banks read at one
+   // row (bank = way*2 + parity)
    wire [IB+VTB-1:0] a_line = line_of(a_va);
-   wire [IB-1:0]  a_set  = a_line[IB-1:0];
-   wire [IB-1:0]  a_set1 = a_set + 1'b1;                   // the next line's set
-   wire [1:0]     a_pr   = a_va[5:4];
-   wire [RB-1:0]  bk_re  = (a_pr == 2'd3) ? {a_set1, 1'b0} : {a_set, a_pr != 2'd0};
-   wire [RB-1:0]  bk_ro  = {a_set, a_pr[1]};
-   wire [RB-1:0]  bk_wa = {f_line[IB-1:0], f_k[1]};
-   wire [63:0]    bk_rd [0:7];
+   wire [RB-1:0]  bk_ra = {a_line[IB-1:0], a_va[5:4]};
+   wire [RB-1:0]  bk_wa = {f_line[IB-1:0], f_k};
+   wire [63:0]    bk_rd [0:3];
    genvar gb;
-   generate for (gb = 0; gb < 8; gb = gb + 1) begin : bank
+   generate for (gb = 0; gb < 4; gb = gb + 1) begin : bank
       smolrv64_sdpram #(.ADDR_WIDTH(RB), .DATA_WIDTH(64), .READ_LATENCY(1)) u_bank
-        (.clock(clk), .rd_addr(gb[1] ? bk_ro : bk_re), .rd_data(bk_rd[gb]),
-         .wr_en((st == S_INST) & (f_way == gb[2]) & (f_k[0] == gb[1])), .wr_addr(bk_wa),
-         .wr_data(f_data[{f_k, gb[0]} * 64 +: 64]));             // chunk 2*f_k (low) or 2*f_k+1
+        (.clock(clk), .rd_addr(bk_ra), .rd_data(bk_rd[gb]),
+         .wr_en((st == S_INST) & (f_way == gb[1])), .wr_addr(bk_wa),
+         .wr_data(f_data[{f_k, gb[0]} * 64 +: 64]));             // chunk 2k (even) or 2k+1 (odd)
    end endgenerate
 
    // ---------------------------------------------------------------- the lookup
-   // the window's line (l) and the next line (n): each one's set, virtual tag, colour, valid bits
-   wire [IB+VTB-1:0] l_line = line_of(s1_va);
-   wire [IB+VTB-1:0] n_line = l_line + 1'b1;
-   wire [IB-1:0]  s1_set = l_line[IB-1:0];
-   wire [IB-1:0]  n_set  = n_line[IB-1:0];
-   wire [PTB-1:0] ptg    = s1_pa[12 +: PTB];          // both lines' (one page: asserted at the door)
+   wire [IB+VTB-1:0] m_line = line_of(s1_va);      // the line, and the one a miss fills
+   wire [IB-1:0]  s1_set = m_line[IB-1:0];
+   wire [VTB-1:0] s1_vtg = m_line[IB +: VTB];
+   wire [PTB-1:0] ptg    = s1_pa[12 +: PTB];
    wire [CB-1:0]  s1_col = s1_set[IB-1:6];
-   wire [CB-1:0]  n_col  = n_set[IB-1:6];
    wire vl0_s = v_s[{1'b0, s1_col}];
    wire vl1_s = v_s[{1'b1, s1_col}];
-   wire vl0_n = v_n[{1'b0, n_col}];
-   wire vl1_n = v_n[{1'b1, n_col}];
-   wire [TGW-1:0] tq0, tq1;                        // each way's tags at s1_set (the tag block)...
-   wire [TGW-1:0] tn0, tn1;                        // ...and at n_set
-   wire h0   = vl0_s & (tq0 == {l_line[IB +: VTB], s1_ep});
-   wire h1   = vl1_s & (tq1 == {l_line[IB +: VTB], s1_ep});
-   wire g0   = vl0_n & (tn0 == {n_line[IB +: VTB], s1_ep});
-   wire g1   = vl1_n & (tn1 == {n_line[IB +: VTB], s1_ep});
-   // the window reaches the next line: it starts in pair 3 and runs past the line's last halfword
-   wire need1 = (s1_va[5:4] == 2'd3) & ({1'b0, s1_va[3:1]} + {1'b0, s1_last} > 4'd7);
-   wire hit_l = h0 | h1;
-   wire hit   = hit_l & (~need1 | g0 | g1);
-   wire miss  = s1_v & ~hit;
-   // the line a miss fills: the window's own, else the next (its PA the next line of the page)
-   wire [IB+VTB-1:0] m_line = hit_l ? n_line : l_line;
-   wire [57:0]       m_pl   = hit_l ? {s1_pa[63:12], s1_pa[11:6] + 6'd1} : s1_pa[63:OFFB];
-   // the reconcile probe: the missing line's set, both ways, by physical tag -- in the miss's cycle
-   // for the window's own line; for the next line a cycle later (S_RCN), through the same read of
-   // the physical tags at the missing line's row (the lookup's, free while the door is shut)
-   wire [CB-1:0]     r_col  = (st == S_RCN) ? f_line[IB-1:6] : s1_col;
-   wire [PTB-1:0]    r_tg   = (st == S_RCN) ? f_pline[12-OFFB +: PTB] : ptg;
-   wire              rc0    = v_s[{1'b0, r_col}] & (pt_s[{1'b0, r_col}*PTB +: PTB] == r_tg);
-   wire              rc1    = v_s[{1'b1, r_col}] & (pt_s[{1'b1, r_col}*PTB +: PTB] == r_tg);
-   // the answer: the window's first pair (pair p of this line) and the pair after it (the other
-   // parity: this line's, or the next line's pair 0 when p is 3), each from its own line's way, by
-   // bank: halfword b is in the first pair when b is at or after the window's first halfword, the
-   // first pair is the odd one when s1_va[4] is set, and b is the odd pair's when those two agree
-   wire        we1 = (s1_va[5:4] == 2'd3) ? g1 : h1;      // the even bank's line hits in way 1
-   wire [127:0] evp = we1 ? {bk_rd[5], bk_rd[4]} : {bk_rd[1], bk_rd[0]};
-   wire [127:0] odp = h1  ? {bk_rd[7], bk_rd[6]} : {bk_rd[3], bk_rd[2]};
-   reg  [127:0] win;
-   integer wk;
-   always @* for (wk = 0; wk < 8; wk = wk + 1)
-      win[wk*16 +: 16] = ((wk[2:0] >= s1_va[3:1]) == s1_va[4]) ? odp[wk*16 +: 16] : evp[wk*16 +: 16];
+   wire [TGW-1:0] tq0, tq1;                        // each way's tags at s1_set (the tag block)
+   wire h0   = vl0_s & (tq0 == {s1_vtg, s1_ep});
+   wire h1   = vl1_s & (tq1 == {s1_vtg, s1_ep});
+   wire hit  = h0 | h1;
+   wire miss = s1_v & ~hit;
+   wire [57:0]       m_pl   = s1_pa[63:OFFB];
+   // the reconcile probe: the missing line's set, both ways, by physical tag
+   wire [IB-1:0]     m_set  = m_line[IB-1:0];
+   wire              rc0    = vl0_s & (pt_s[{1'b0, s1_col}*PTB +: PTB] == ptg);   // (m_set is s1_set)
+   wire              rc1    = vl1_s & (pt_s[{1'b1, s1_col}*PTB +: PTB] == ptg);
    // counted once per request, never per replay: an access is a request taken, a miss its first lookup's
    assign perf_access = rd_ack;
    assign perf_miss   = miss & ~s1_rp;
@@ -274,10 +227,8 @@ module rv_icache #(
       (* ram_style = "distributed" *) reg           kg [0:63];   // probe kills
       integer r;
       initial for (r = 0; r < 64; r = r + 1) begin ig[r] = 1'b1; kg[r] = 1'b0; end
-      wire [5:0] s_row = (st == S_RCN) ? f_line[5:0] : s1_set[5:0];
-      wire [5:0] n_row = n_set[5:0];
+      wire [5:0] s_row = s1_set[5:0];
       assign v_s[gk] = (ig[s_row] == kg[s_row]);
-      assign v_n[gk] = (ig[n_row] == kg[n_row]);
       assign v_f[gk] = (ig[f_rrow] == kg[f_rrow]);
       assign v_p[gk] = (ig[pb_row] == kg[pb_row]);
       assign pt_s[gk*PTB +: PTB] = pt_k[s_row];
@@ -301,18 +252,15 @@ module rv_icache #(
    // for (a_line's), so a lookup's tags are out in s1 beside its data. Port A is the fill's, at
    // t_set: it writes the installed or re-stamped way and reads the other before the write, for the
    // duplicate check a cycle later. A tag write never shares a cycle with a bank read (asserted:
-   // e_col), so port B never reads a row port A is writing -- and in every cycle the banks read,
-   // port A is free: it reads the next line's set, for the window that reaches it.
+   // e_col), so port B never reads a row port A is writing.
+   wire [IB-1:0]  a_set = a_line[IB-1:0];
    wire [TGW-1:0] t_wd  = {f_line[IB +: VTB], f_ep};
-   wire [IB-1:0]  t_pa  = t_vt ? t_set : a_set1;           // port A: the fill's set, else the next line's
    reg  [TGW-1:0] tq0_r, tq1_r, td0, td1;
    always @(posedge clk) begin tq0_r <= tg0[a_set]; tq1_r <= tg1[a_set]; end
-   always @(posedge clk) begin if (t_vt & ~f_way) tg0[t_pa] <= t_wd; td0 <= tg0[t_pa]; end
-   always @(posedge clk) begin if (t_vt &  f_way) tg1[t_pa] <= t_wd; td1 <= tg1[t_pa]; end
+   always @(posedge clk) begin if (t_vt & ~f_way) tg0[t_set] <= t_wd; td0 <= tg0[t_set]; end
+   always @(posedge clk) begin if (t_vt &  f_way) tg1[t_set] <= t_wd; td1 <= tg1[t_set]; end
    assign tq0 = tq0_r;
    assign tq1 = tq1_r;
-   assign tn0 = td0;
-   assign tn1 = td1;
 
    // ---------------------------------------------------------------- the machine
    always @(posedge clk) begin
@@ -331,22 +279,20 @@ module rv_icache #(
 
          // the lookup stage takes whatever the banks were addressed for this cycle
          s1_v <= 1'b0;
-         if (a_take & ~(miss & rd_ack)) begin s1_v <= 1'b1; s1_va <= a_va; s1_pa <= a_pa; s1_tag <= a_tag; s1_ep <= a_ep; s1_last <= a_last; s1_rp <= rp_f | rp_s; end
+         if (a_take & ~(miss & rd_ack)) begin s1_v <= 1'b1; s1_va <= a_va; s1_pa <= a_pa; s1_tag <= a_tag; s1_ep <= a_ep; s1_rp <= rp_f | rp_s; end
          if (rp_s) sk_v <= 1'b0;
          // a hit answers; a miss parks the request (and a request taken this cycle in the skid)
          if (s1_v & hit) begin
             rd_valid <= 1'b1;
-            rd_data  <= win;
+            rd_data  <= h1 ? {bk_rd[3], bk_rd[2]} : {bk_rd[1], bk_rd[0]};
             rd_resp_addr <= s1_va;  rd_resp_tag <= s1_tag;
          end
          if (miss) begin
-            f_va <= s1_va;  f_pa <= s1_pa;  f_tag <= s1_tag;  f_last <= s1_last;
+            f_va <= s1_va;  f_pa <= s1_pa;  f_tag <= s1_tag;
             f_line <= m_line;  f_pline <= m_pl;  f_ep <= s1_ep;
-            if (rd_ack) begin sk_v <= 1'b1; sk_va <= rd_addr; sk_pa <= rd_pa; sk_tag <= rd_tag; sk_ep <= cur_ep; sk_last <= rd_last; end
-            // the line is resident under another mapping: re-stamp it; else fill it (the next line's
-            // reconcile probe is the next cycle's)
-            if (hit_l) st <= S_RCN;
-            else if (rc0 | rc1) begin f_way <= rc1; st <= S_RST; end
+            if (rd_ack) begin sk_v <= 1'b1; sk_va <= rd_addr; sk_pa <= rd_pa; sk_tag <= rd_tag; sk_ep <= cur_ep; end
+            // the line is resident under another mapping: re-stamp it; else fill it
+            if (rc0 | rc1) begin f_way <= rc1; st <= S_RST; end
             else st <= S_FILL;
          end
 
@@ -380,7 +326,6 @@ module rv_icache #(
               if (f_k == 2'd3) st <= S_RPL;
            end
            S_RST: st <= S_RPL;                    // the reconciled way took its new tag
-           S_RCN: if (rc0 | rc1) begin f_way <= rc1; st <= S_RST; end else st <= S_FILL;
            // the cancelled miss's answer, then the skid's: every taken request is answered once
            S_CNM: begin
               rd_valid <= 1'b1;  rd_data <= {HW*16{1'b0}};  rd_resp_addr <= f_va;  rd_resp_tag <= f_tag;
@@ -427,10 +372,9 @@ module rv_icache #(
 
    // ---------------------------------------------------------------- invariants
    // Always on; the integrity log carries the same conditions (rv_errlog bits 16..31).
-   wire e_dual   = s1_v & ((h0 & h1) | (need1 & g0 & g1));              // one line in both ways
+   wire e_dual   = s1_v & h0 & h1;                                       // one line in both ways
    wire e_ack    = l2_ack & ~f_l2 & ~pf_infl;                            // an L2 answer nobody asked for
-   wire e_align  = rd_ack & rd_addr[0];                                  // a window not halfword aligned
-   wire e_page   = rd_ack & ({1'b0, rd_addr[11:1]} + {9'd0, rd_last} > 12'h7ff);   // a window across a page
+   wire e_align  = rd_ack & (rd_addr[3:0] != 4'd0);                      // a pair not 16-byte aligned
    wire e_skid   = miss & rd_ack & sk_v;                                 // a second request into a full skid
    wire e_pa     = rd_ack & (rd_pa[11:0] != rd_addr[11:0]);              // VA and PA disagree in the page offset
    wire e_two    = f_l2 & pf_infl;                                       // a demand read and a prefetch both outstanding
@@ -441,19 +385,16 @@ module rv_icache #(
       dq_v <= ~reset & t_vt;  dq_way <= f_way;  dq_vl0 <= vl0_f;  dq_vl1 <= vl1_f;  dq_wd <= t_wd;
    end
    wire e_dup    = dq_v & ((~dq_way & dq_vl1 & (td1 == dq_wd)) | (dq_way & dq_vl0 & (td0 == dq_wd)));
-   wire e_rc2    = (miss & ~hit_l | (st == S_RCN)) & rc0 & rc1;         // one physical line in both ways
-   wire e_rcn    = (st == S_RCN) & s1_v;                                 // a lookup beside the next line's probe
+   wire e_rc2    = miss & rc0 & rc1;                                     // one physical line in both ways
    wire e_col    = t_vt & a_take;                                        // a tag write beside a bank read
-   wire [15:0] e_now = {4'd0, e_rcn, e_page, e_col, e_rc2, e_dup, e_two, e_pa, e_skid, e_align, e_ack, 1'b0, e_dual};
+   wire [15:0] e_now = {6'd0, e_col, e_rc2, e_dup, e_two, e_pa, e_skid, e_align, e_ack, 1'b0, e_dual};
    reg  [15:0] err_q;
    always @(posedge clk) err_q <= reset ? 16'd0 : e_now;
    assign err = err_q;
    always @(posedge clk) if (!reset) begin
       if (e_dual)  $fatal(1, "rv_icache: a line hits in both ways (va %h)", s1_va);
       if (e_ack)   $fatal(1, "rv_icache: an L2 answer with no read outstanding");
-      if (e_align) $fatal(1, "rv_icache: a window not halfword aligned (va %h)", rd_addr);
-      if (e_page)  $fatal(1, "rv_icache: a window across a 4 KiB page (va %h, last %0d)", rd_addr, rd_last);
-      if (e_rcn)   $fatal(1, "rv_icache: a lookup in the cycle of the next line's reconcile probe");
+      if (e_align) $fatal(1, "rv_icache: a pair not 16-byte aligned (va %h)", rd_addr);
       if (e_skid)  $fatal(1, "rv_icache: a request into a full skid");
       if (e_pa)    $fatal(1, "rv_icache: VA %h and PA %h disagree in the page offset", rd_addr, rd_pa);
       if (e_two)   $fatal(1, "rv_icache: a demand read and a prefetch outstanding together");

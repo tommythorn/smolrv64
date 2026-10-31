@@ -302,28 +302,19 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
 - **The fetch ring** (Stage 4 increment 1a, `smolrv64_fring`, in the frontend; the core's instruction
   port is the I$ request and its answer). A ring of 32 halfword slots holds the
-  instruction stream from the PC on, filled by an address stream that reads one **window** per
-  accepted `rv_icache` request -- up to 16 bytes from the stream's address, any halfword, never
-  across its 4 KiB page (the stream address is the predictor's, §4.2) -- and runs ahead of the PC
-  while the ring has room for a whole window and the predictor's queue has room. Every request is
-  the next 16 bytes of the stream, so after a taken branch the windows are in step with the bundles
-  of 4-byte code and the ring's room suffices at 16 bytes a cycle: ChaCha20 (`crypt.c`, its loop 12
-  bytes into a pair) runs 25 cycles an iteration, as aligned code does (on the 4 GiB board, its loop
-  6 bytes into a pair: 26.09 cycles, as `-falign-loops=16` code does, against 34.09), against 34 when the ring
-  asked for 16-byte-aligned pairs and every bundle straddled two of them (the ring then skipped
-  every fourth request; docs/PLAN-2026-10-27-fetch-window.md). **Its head is the PC by construction:** the head
+  instruction stream from the PC on, filled by an address stream that reads one 16-byte pair per
+  accepted `rv_icache` request (16-byte aligned, so a pair never crosses 4 KiB; the stream address
+  is the predictor's, §4.2) and runs ahead of the PC while the ring has room for a whole pair and
+  the predictor's queue has room. **Its head is the PC by construction:** the head
   advances by the halfwords fetch consumed (`adv_hw`: a bundle's `consumed`, or one halfword per
   step of a page straddle), and a predicted-taken branch does not empty it -- the predictor
   (§4.2) already steered the stream to the target, whose halfwords follow the branch's; a restart
   (a redirect, or, a cycle later, a mark fetch rejects) empties it and restarts the stream at the
   redirect's target or the PC.
   So the window fetch aligns is a rotation of the ring from its registered head, with no address
-  compare on the fetch loop, and each halfword carries a mark bit: it ends a CTI the predictor
-  knows. Answers come back in order, and each request in flight is an entry of a small FIFO with
-  its halfwords, its marks and a kill bit: a flush kills every one in flight (a generation in the
-  tag cross-checks it), and a correction of the predictor's (§4.2) the youngest one or two, whose
-  reservation and marks are given back. That needs an answer two cycles after its request, as
-  `rv_icache` gives it; the ring asserts it. A `fence.i` or a
+  compare on the fetch loop, and each halfword carries a mark bit: it ends a pair at a CTI the
+  predictor knows. Answers come back in order; a flush marks every request then in flight stale and
+  that many answers are dropped (a generation in the tag cross-checks it). A `fence.i` or a
   mapping change (`freeze`) empties the ring. **The stream stays inside the PC's enclosing page**
   (4 KiB, or 2 MiB for a >= 2 MiB leaf) and takes its PA from the iMMU's translation of the PC;
   increment 1d translates on an I$ miss instead. The ring replaced Stage 2's alignment adapter
@@ -365,7 +356,7 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   loop back edge in `workloads/brbench`, 15 lost predictions in 300 iterations; 2 after.) A
   bundle also ends at a mark predicted taken and carries on through one predicted not taken, so
   a bundle holds up to `IW` predictions, one for each slot that ends on a mark. The fetch ring
-  predecodes a START bit per halfword as each window arrives (a halfword begins an instruction unless
+  predecodes a START bit per halfword as each pair arrives (a halfword begins an instruction unless
   the one before began a 32-bit op; the chain runs on from the last halfword appended and restarts
   at the PC), so the aligner places slot k at the window's k-th start, decodes every halfword in
   parallel and selects per slot: no slot's position waits for the lengths before it. `PDW` = 32:
@@ -373,86 +364,49 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
 ### 4.2 Branch prediction
 
 **At the fetch stream, keyed by the last halfword** (Stage 4 increment 1b). The predictor is the
-fetch stream: it holds the stream's address (a registered **window**: its first 16-byte pair and
-its first halfword in it), looks the window up as the fetch ring asks the I$ for it, and steers the
-stream to the next window. **Two BTBs:** a small L1 in the predictor's loop, and an 8K-entry L2
-behind it that checks every window a cycle later and corrects L1 (below). A BTB entry belongs to
-its CTI's last halfword; a window covers eight
-consecutive halfwords, one in each halfword position, so the BTB and the corrector are each eight
-banks by position. Each BTB bank reads the row of the pair its halfword is in -- the window's first
-pair at or after its offset, else the pair after it -- and compares the window's tag (the bits above
-its 2 KiB block, which the two pairs share except across a block, where the second pair misses: a
-lost hint); the corrector's tag for the pair after takes the pair's own bits plus one, wrapping
-inside them. The corrector's banks all read the row of the window the stream is leaving (the restart's on a restart) -- read
-ahead, so the BTB's read and pick are not in front of its read address. No two CTIs share an entry
+fetch stream: it holds the stream's address (a registered 16-byte pair and the halfwords of it to
+skip), looks the pair up as the fetch ring asks the I$ for it, and steers the stream to the next
+pair. A BTB entry belongs to its CTI's last halfword; a pair covers eight halfwords, so the BTB and
+the corrector are each eight banks, one per halfword position, and all eight read the same row
+whenever the stream moves: the BTB the next pair's address above its 16 bytes, the corrector the
+pair the stream is leaving (the restart's on a restart) -- read ahead, so the BTB's read and pick
+are not in front of its read address. No two CTIs share an entry
 (rule B10). Every position evaluates its own hit, corrector hit and direction from registers, and
-the hits in window order mark the known CTIs. **A window ends at its first known CTI predicted
-taken, or at its second known CTI** (`M`=2): the stream goes on at the target (the RAS top for a
-return), at the halfword after the last mark, or 16 bytes on; a predicted call pushes its last
-halfword + 2. A window stops at its first pair's end only when that pair is its page's last. A
-window therefore holds at most two predictions, both read with the history from before the window,
-and the history shifts at most once per window. The corrector is read with the history before the
-current window's own shift (a window of lag), and the index read is the one carried for training. Training recomputes the key
+the hits in order mark the known CTIs. **A pair ends at its first known CTI predicted taken, or
+at its second known CTI** (`M`=2): the stream goes on at the target (the RAS top for a return) or
+at the halfword after the last mark; a predicted call pushes its last halfword + 2. A pair
+therefore holds at most two predictions, both read with the history from before the pair, and the
+history shifts at most once per pair. The corrector is read with the history before the current pair's own shift (a
+pair of lag), and the index read is the one carried for training. Training recomputes the key
 from the resolving CTI's PC and length.
 
-**Both BTBs are skewed-associative and taken-only.** Each halfword bank is `W` = 2 ways (`BTBW`=1);
-way `w` reads row `lo ^ rotl(hi, w)`, `lo` the row bits above the pair (L2 9, L1 6) and `hi` as many
-above those, so halfwords that share a row in one way rarely share it in another. A window reads
-both ways of all eight banks; a halfword's entry is its first way whose tag matches. Every jump,
-call and return is allocated; a conditional is allocated only when it resolves taken, so a
-conditional the BTB misses is one never taken (or evicted) and falls through, with no decode
-redirect (`DCR_BACK`=0). Training never reads the entries: a CTI the BTB hit carries the way it hit
-in its details, and training rewrites that way; a miss allocates the first way whose
-recently-trained bit is clear (set when trained; when that would set both, the other clears), else a
-rotating way. Each L2 way's entries are therefore a block RAM with two ports, the check's read and
-training's write. An instance predicted before an earlier instance's allocation landed allocates
-again, but a first miss mispredicts and drops everything younger, so few do: 11 to 184 duplicate
-allocations in about 9 M trainings on each GB5 slice (the lockstep's `BTB-SIM` line, which also
-counts entries rewritten after they changed: 0 to 18). Modelled in Simmerv over GB5 single-core (690
-G instructions), the BTB-coverage cost (decode redirects and mispredicts a BTB miss causes) is 44.8
-cycles/K instructions for the 2048-entry direct-mapped, allocate-every-CTI BTB with backward-taken
-decode redirects, 1.9 for 2048 entries 2-way skewed taken-only, and 0.2 for 8192 entries 4-way. Each
-position decides from the hits before it in the window alone whether the window ends there: the
-window's order is its first pair's banks ascending, then the second pair's, so a bank's hits before
-it are its own pair's below it (a constant mask) and, for a second-pair bank, the first pair's as a
-whole (any, exactly one, any taken); the offset register only splits the hits in two. **The BTB in
-the loop is a small L1, and the 8K-entry L2 behind it checks it.** L1 is eight halfword banks of 2
-skewed ways of 64 rows (`L1RB`=6) in distributed RAM, read at the START of the cycle at rows of the
-stream's registers: bank b at its pair's -- the first pair's when b is at or after the offset, else
-the pair after's, which is the first pair's plus one in L1's row bits alone, with the first pair's
-skew and tag, so no carry chain stands in front of the read (it is the pair's own slot except where
-those bits wrap, and the fill writes a pair after's entries where the read finds them). So the loop
-is the stream's registers, the rows, the read, the hits and the end pick, the next address -- none
-of the next window's rows. An L1 entry mirrors an L2 entry in the SAME way: its tag is the L2 index
-bits above L1's and L2's tag, its type carries the bimodal counter, and the way the details carry is
-both levels'. L2 (`BTBB`=13: 512 rows a bank and way, in the 16 RAMB36 that held 128) reads the same
-rows in the same cycle, each bank its own pair's (`sa_q + 16`, exact), so its entries arrive a cycle
-later, when a second end pick (`u_chk`) gives L2's view of the window: its last position, where the
-stream goes on, its marks. When L2's differs from L1's in where the window ends or where the stream
-goes on, the cycle after corrects: L1 is filled from L2 at that window (L2's entry into L2's way,
-and every other way that matched given the window's L1 tag inverted: L1's rows are not L2's, so an
-L2 eviction can leave L1's copy, which would stay L1's first match for ever, and an entry is never
-empty -- zeros are tag 0, which some windows' tags are, so a way cleared to zeros matched such a
-window again and the correction repeated every three cycles while fetch waited on that window's
-bytes -- a livelock the boot lockstep reaches in 14 M cycles with 1-bit tags), the stream goes back to
-the window's start with its history, RAS pointer and queue tail from before it, and the ring drops that window's
-request and the next's (§4.1) -- the window is looked up again three cycles after it first was, and
-that check agrees with L2 unless training wrote either level meanwhile (asserted, `e_conv`). A
-window that differs only in its marks fills L1 and is left alone: the not-taken conditional L1
-lacked goes unpredicted once, as a BTB miss does. Training writes both levels at the CTI's own
-slots. A window's two queue entries are picked one-hot by the end pick's masks, a mark's own fields
-only, and L2's bimodal counter is read from a register of its row during the block RAM's
-clock-to-out. Out of context at 6.000 ns (FW 6, PCW 40) the predictor meets with +0.109 ns at a
-queue write, its loop with more (not among the 40 worst paths, the 40th at +0.237); 6,799 LUTs
-(2,832 of them distributed RAM). The one-level predictor (2K entries in block RAM, in the loop) met
-with +0.204 ns out of context and missed all nine of its builds (-0.065 to -0.83 ns): its loop's
-route to 16 block RAMs in two columns was 60% of 5.88 ns. On GB5's single-core SimPoints the two
-levels take -0.03% cycles against that one level (L1 at 32 rows +0.21%, SQLite +9.9%; one 8K level
-in the loop, which would not close timing, -0.49%, Clang -17%): L1's corrections cost what the
-bigger L2 gains. The 300 M boot corrects 2,978,277 of 122,700,264 windows.
+**The BTB is skewed-associative and taken-only.** Each halfword bank is `W` = 2 ways
+(`BTBW`=1); way `w` reads row `lo ^ rotl(hi, w)`, `lo` the 7 address bits above the pair and
+`hi` the 7 above those, so halfwords that share a row in one way rarely share it in another. A
+pair reads both ways of all eight banks; a halfword's entry is its first way whose tag
+matches. Every jump, call and return is allocated; a conditional is allocated only when it
+resolves taken, so a conditional the BTB misses is one never taken (or evicted) and falls
+through, with no decode redirect (`DCR_BACK`=0). Training never reads the entries: a CTI the
+BTB hit carries the way it hit in its details, and training rewrites that way; a miss allocates
+the first way whose recently-trained bit is clear (set when trained; when that would set both,
+the other clears), else a rotating way. Each way's entries are therefore a block RAM with two
+ports, the stream's read and training's write. An instance predicted before an earlier
+instance's allocation landed allocates again, but a first miss mispredicts and drops everything
+younger, so few do: 11 to 184 duplicate allocations in about 9 M trainings on each GB5 slice
+(the lockstep's `BTB-SIM` line, which also counts entries rewritten after they changed: 0 to
+18).
+Modelled in Simmerv over GB5 single-core (690 G instructions), the BTB-coverage cost (decode
+redirects and mispredicts a BTB miss causes) is 44.8 cycles/K instructions for the 2048-entry
+direct-mapped, allocate-every-CTI BTB with backward-taken decode redirects, 1.9 for 2048 entries
+2-way skewed taken-only, and 0.2 for 8192 entries 4-way. Each position decides from the hits
+below it alone whether the pair ends there, and each way's next row is skewed from every candidate
+address (the restart's, the ending CTI's target, this pair's, the next pair's) before the pick, so
+no find-first chain and no skew stand between the rows read and the next rows' address: out of
+context at 6.000 ns the predictor meets with +0.268 ns, the block RAM's clock-to-out in its loop
+(+0.624 with the entries in distributed RAM, which cost 3,392 LUTs of LUTRAM).
 
 The ring marks each predicted CTI's last halfword, and each prediction enters an 8-entry queue (two
-banks by position parity, one write each) in order (a window pushes up to two; the stream moves
+banks by position parity, one write each) in order (a pair pushes up to two; the stream moves
 only with two entries free): taken, the target,
 the corrector details training needs, and the RAS pointer and history as they stand before the
 CTI. The aligner reads the queue's first `IW` entries; an instruction ending on a marked halfword
@@ -461,7 +415,7 @@ and, when its last instruction is a real branch or jump predicted taken, takes i
 costs a restart a cycle later, as a one-cycle freeze: taken on anything but a branch or jump (a
 page straddler included), the bundle falls through and the stream restarts at its fall-through;
 taken inside a 32-bit instruction, the stream restarts at the PC predicting nothing in its first
-window; not taken inside a 32-bit instruction, the ring clears the mark and the head is popped.
+pair; not taken inside a 32-bit instruction, the ring clears the mark and the head is popped.
 Between marks the stream's state does not change, so the queue head's pre-state -- or the
 stream's own registers, when the queue is empty -- is the state as of fetch: every instruction's
 snapshot, and what every restart of the stream (a rejected mark, a freeze) goes back to.
@@ -478,8 +432,7 @@ frontend reaches 214.6 MHz (196.5 with the ring alone).
 
 | structure | size | organisation | storage |
 |---|---|---|---|
-| L1 BTB | 1024 entries (`L1RB`=6), 8 halfword banks x 2 skewed ways (`BTBW`=1) of 64 | 15-bit tag + 3-bit type (a conditional's counter) + 38-bit target | distributed RAM, read at the stream's registers (in the predictor's loop); one write, training's, else a correction's fill |
-| L2 BTB | **8192 entries** (`BTBB`=13), 8 halfword banks x 2 skewed ways of 512 | 12-bit tag + 3-bit type + 38-bit target | block RAM, one RAMB36 per bank and way: the check's read (a cycle behind the stream) and training's write |
+| BTB | **2048 entries** (`BTBB`=11), 8 halfword banks x 2 skewed ways (`BTBW`=1) of 128 | 12-bit tag + 3-bit type + 38-bit target | block RAM, one RAMB36 per bank and way: the stream's read (in the predictor's loop) and training's write |
 | YAGS corrector | 2048 entries (`YBITS`=11), 8 halfword banks | 8-bit tag + 2-bit counter | distributed RAM, read as the stream moves |
 | GHR | 11 bits (`GHL`) | path history | flops |
 | RAS | 8 entries (`RASB`=3) | call/return stack | flops |
@@ -508,8 +461,8 @@ of its CTIs, the same two taken branches on every run, which never reached the B
 mispredicted every run (253.2 cycles a run); at 32 it drops none and runs in 222.2. A CTI younger than a pending restart
 queues nothing; an entry the kill marks dead, or one past the pending restart, is discarded at
 the head. A redirect discards every entry that has not retired, except the restart's own CTI at
-its squash (the ROB head). Training is a read-modify-write of the tables' current counters (L2's
-bimodal banks `bc`, the corrector; L1 takes the same write), never of the snapshot carried from fetch, which every
+its squash (the ROB head). Training is a read-modify-write of the tables' current counters (the
+bimodal banks `bc`, the corrector), never of the snapshot carried from fetch, which every
 in-flight instance of a loop's branch shares. A mispredicting
 conditional branch's early restart restores its own history snapshot, stepped by its own address
 when it was taken. The key is the CTI's last halfword (its PC and length). Dhrystone
@@ -1685,24 +1638,18 @@ its revised order); the I$ is `rv_icache`, a read-only module of its own (Stage 
 | Sets | 1024 | 64 |
 | Line | 64 B (512 bit) | 64 B |
 | Indexing | **VHPR** (virtual index and tag; physical reconcile on a miss) | **VIPT, alias-free**: the set, PA[11:6], is inside the page offset; every request carries its PA |
-| Read | a window of up to 16 bytes from any halfword, inside a 4 KiB page, a new one taken every cycle, answered the next | 64 bit, one load lookup a cycle, answered at T+2 by tag |
+| Read | a 16-byte-aligned pair, a new one taken every cycle, answered the next | 64 bit, one load lookup a cycle, answered at T+2 by tag |
 | Stores | -- | **a store lookup beside the load lookup**: a committed plain store a cycle, written into the one array that holds its chunk or merged into its line's fill |
 | Misses | one demand read + prefetch | **non-blocking**: 8 MSHRs with merge buffers, a waiter per tag |
 | Write policy | fill-only | **write-back**, 2 write-back lines |
 | Prefetch | next line, **on**, within the 4 KiB page | none |
 | Storage | BRAM (`smolrv64_sdpram`, 1R1W, `READ_LATENCY=1`) | 32 RAMB36 of 512 x 64 with a write enable per byte (`smolrv64_sdpram_be`), diagonal in groups of eight |
 
-**Not UltraRAM.** The I$'s data is an even and an odd 16-byte bank per way -- a line's pairs 0
-and 2, and 1 and 3 -- each two 64-bit block RAMs with a row of its own ({set, pair[1]}). A read is
-a **window**: up to 16 bytes from any halfword (`rd_addr` through `rd_last`), the window's first
-pair and the pair after it, which has the other parity; the even bank reads the next line's pair 0
-when the window starts in pair 3. Each half takes its own line's way, and the answer is **by bank**,
-as the BTB's banks are (§4.2): halfword b is the window's halfword at address bits [3:1] == b, the
-first pair's when b is at or after the window's first halfword, else the pair after's -- a pick of
-the even and the odd pair's halfword b, no rotation. The ring appends bank b at its tail plus b's
-position in the window. The fetch ring asks for windows from the stream's address (§4.1),
-so a stream that is not 16-byte aligned runs as an aligned one does (ChaCha20: 25 cycles an
-iteration; 34 when the ring asked for 16-byte-aligned pairs).
+**Not UltraRAM.** The I$'s data is two 64-bit block-RAM banks per way, the even and the odd 8-byte
+chunk of a pair, read at one row ({set, pair}): a read is one **16-byte-aligned pair** (asserted),
+and the fetch ring (§4.1) does the alignment. A stream that is not 16-byte aligned costs
+bandwidth at IW=4 (ChaCha20: 34 cycles an iteration against 25 aligned); the even and odd 16-byte
+banks that read 16 bytes at any halfword are `docs/PLAN-2026-10-27-fetch-window.md`.
 
 The I$ does not skew: a VHPR cache's physical probe finds the same-offset synonym candidates by
 a straight index, and a hashed index would scatter them across sets.
@@ -1743,13 +1690,9 @@ takes 4.9% more cycles though it mispredicts less: strcmp's byte loads land soon
 branch resolves before reaching the ROB head and its recovery walks back about 15 rows instead of
 squashing at the head (§6).
 
-**VHPR I$ (`rv_icache`).** A request is a window of up to 16 bytes from any halfword, inside one
-page (asserted). It reaches the next line only when it starts in a line's last pair, and then it
-hits when both lines do: the next line's tags come from the tag RAMs' second port (the fill's, idle
-in every cycle the banks read) and its valid bits from a second read of the valid arrays. A miss
-fills the first of the window's lines that misses (never a line it does not reach); the next
-line's reconcile probe is a cycle later (`S_RCN`), through the lookup's read of the physical tags.
-Per line: valid, the **virtual tag**, the
+**VHPR I$ (`rv_icache`).** A pair is a 16-byte-aligned quarter of a line (asserted), so it is one
+line's lookup; each way's data is two BRAM banks, the even and the odd 8-byte chunks, read at the
+same row. Per line: valid, the **virtual tag**, the
 **physical tag** (PA above the 4 KiB offset) and an **8-bit epoch**. Every request carries the
 epoch it was taken in, and **a hit is `valid & (vtag == VA) & (epoch == the request's)` -- no
 translation and no physical tag on the hit path**, so an I$ hit never waits on the iTLB. A
@@ -2041,12 +1984,11 @@ The L2 (`rv_l2`, 2 MiB; out of context 1.5 k logic LUTs, 0.38 k LUTs of distribu
 | fill-beat queue | 16 × 136 | {id, beat, last, data} | 2 176 | LUTRAM |
 | MSHRs | 8 | line 26, way 3, id 5, 3 flags | 296 | flops |
 
-The I$ (`rv_icache`, 128 KiB): data 8 RAMs of `2048 × 64` (1 048 576 bits, 32 RAMB36): per way an
-even and an odd 16-byte bank, each two RAMs on one row address (§9.1). Each way's
+The I$ (`rv_icache`, 128 KiB): data 4 banks of `4096 × 64` (1 048 576 bits, BRAM), even/odd chunk
+banking per way, so any read at any byte offset is served by one access (§9.1). Each way's
 `{virtual tag, epoch}` (`tg0`, `tg1`: `1024 × 31`) is one block RAM read with the banks, at the
 same set, so a lookup's tags arrive in s1 beside its data; its second port is the fill's (the
-write, and the other way's read for the duplicate-stamp check), and in every cycle the banks read
-it reads the next line's set. The physical tags and validity
+write, and the other way's read for the duplicate-stamp check). The physical tags and validity
 (`pst[*]`: 32 × 64 rows of 27 + 2 bits) are LUTRAM, read at the lookup's, the fill's and the
 probe's rows in one cycle.
 
@@ -2271,9 +2213,9 @@ one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has n
 | bits | unit | source of the numbering |
 |---|---|---|
 | `[15:0]` | D$ | `rv_dcache.v`, invariants block (16 conditions: an orphan fill beat, a response nothing awaits, a write completion nothing sent, beats out of order, two valid ways holding one line in either lookup, a tag reused while outstanding, a waiter on a dead MSHR, a beat into a line being read out, a store in both lookups or a plain store that hits or joins in the main lookup, a victim an MSHR reserves or the store lookup writes, a store sent back or the head issued as the head leaves, a store taken while a clean is asked for or under way, M's fast load misused, an outside flush finishing on a blocked line or a release with none, an MSHR's read issued while the MSHR is not live or a second time) |
-| `[31:16]` | I$ | `rv_icache.v`, invariants block (11 conditions: a line hitting in both ways, an unrequested L2 answer, a window not halfword aligned, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways, a tag write in a bank read's cycle, a window across a page, a lookup beside the next line's reconcile probe) |
-| `[47:32]` | LSU | `smolrv64_lsu.v` (8 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head), and at `[47:45]` the scheduler's pending table (2) and the FPU (1) |
-| `[63:48]` | frontend | `smolrv64_frontend.v` (14 conditions: the fetch ring's, the predictor's -- among them a BTB correction that does not converge -- and fetch's) |
+| `[31:16]` | I$ | `rv_icache.v`, invariants block (9 conditions: a line hitting in both ways, an unrequested L2 answer, alignment, a full skid, VA/PA page-offset mismatch, a demand read and a prefetch both outstanding, a duplicate stamp, one physical line in both ways, a tag write in a bank read's cycle) |
+| `[47:32]` | LSU | `smolrv64_lsu.v` (8 conditions: the three B-rule tag checks, the two non-DRAM checks, `pt_ld_done` equivalence, `req_early`, an AMO or CBO off the ROB head) |
+| `[63:48]` | frontend | `smolrv64_frontend.v` (the fetch ring's, the predictor's and fetch's invariants) |
 
 Read-only MMIO, 64-bit words, in the window the deleted fetch-buffer diagnostic owned so no
 comparator was added to the `dmem_raddr → is_dev_r` cone (a load-path critical cone): `0x1000_E000`

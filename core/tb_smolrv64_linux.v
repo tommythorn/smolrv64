@@ -656,11 +656,11 @@ module tb;
    // BTB-SIM: each training's way decision (smolrv64_predictor's tm: the hit way the CTI carried)
    // against the CTI's slots as they are now, which training does not read: an allocation of a CTI
    // a slot already holds (a duplicate), a rewrite of a way that no longer holds it (stale). The
-   // tag is btag() at RB=9 (the 8K L2), TAGW=12; an entry's sits above {type, target[38:1]}.
+   // tag is btag() at RB=7, TAGW=12; an entry's sits above {type, target[38:1]}.
    reg [63:0] bt_n, bt_car, bt_dup, bt_stale;
    initial begin bt_n = 0; bt_car = 0; bt_dup = 0; bt_stale = 0; end
    wire [63:0] bt_a   = 64'($signed(dut.core.fe.u_bp.t_last));   // a PC's sign extension
-   wire [11:0] bt_tag = bt_a[24:13] ^ bt_a[36:25] ^ {11'd0, bt_a[63]};
+   wire [11:0] bt_tag = bt_a[22:11] ^ bt_a[34:23] ^ {11'd0, bt_a[63]};
    wire [1:0]  bt_now;
    genvar btw;
    generate for (btw = 0; btw < 2; btw = btw + 1) begin : btn
@@ -682,16 +682,6 @@ module tb;
       if (dut.core.fe.u_bp.t_hit)                           bt_car   <= bt_car + 1;
       if (dut.core.fe.u_bp.tw_v & ~dut.core.fe.u_bp.tr_hit & (|bt_now))   bt_dup   <= bt_dup + 1;
       if (dut.core.fe.u_bp.tr_hit & ~|(dut.core.fe.u_bp.tm & bt_now))     bt_stale <= bt_stale + 1;
-   end
-   // L1BTB-SIM: the two-level BTB (smolrv64_predictor): the windows the ring took, the corrections
-   // (L2 disagreed with L1 on where a window ends or where the stream goes on: the window is looked
-   // up again, three cycles), and the windows that differed only in their marks (L1 filled).
-   reg  [63:0] l1_wn, l1_cr, l1_mf;
-   initial begin l1_wn = 0; l1_cr = 0; l1_mf = 0; end
-   always @(posedge clk) if (!reset && meas) begin
-      if (dut.core.fe.u_bp.adv & ~dut.core.fe.u_bp.rs) l1_wn <= l1_wn + 1;
-      if (dut.core.fe.u_bp.cr_q & ~dut.core.fe.u_bp.flush) l1_cr <= l1_cr + 1;
-      if (dut.core.fe.u_bp.mf_q) l1_mf <= l1_mf + 1;
    end
    // LQ-SIM: the load queue's occupancy summed per cycle, and the cycles the queue head has no
    // load-queue credit (smolrv64_core st_lq) by why: a head op in flight or in the IR (cbo_any: cbo),
@@ -1759,11 +1749,11 @@ module tb;
                      $display("tb: restart fr_v=%b fr_rob=%0d walk run=%b end=%b kill=%b age=%0d fpu_dead=%b rob v[head]=%b done[head]=%b",
                               dut.core.fr_v, dut.core.fr_rob, dut.core.u_rob.wl_run, dut.core.u_rob.wl_end, dut.core.rob_kd_v,
                               dut.core.kd_age, dut.core.fpu_dead, dut.core.u_rob.v[dut.core.u_rob.hsx], dut.core.u_rob.done[dut.core.u_rob.hsx]);
-                     $display("tb: fetch: I$ st=%0d door=%b s1=%b sk=%b f_l2=%b pf=%b%b%b inv=%b%b hold=%b | ring cnt=%0d resv=%0d infl=%0d fq %0d..%0d k=%b ic_req=%b xlate_ok=%b inpg=%b pq_room=%b | walk_hold=%b wk_e=%0d immu_ready=%b irq_inject=%b strad=%b rob_empty=%b",
+                     $display("tb: fetch: I$ st=%0d door=%b s1=%b sk=%b f_l2=%b pf=%b%b%b inv=%b%b hold=%b | ring cnt=%0d resv=%0d infl=%0d drop=%0d ic_req=%b xlate_ok=%b inpg=%b pq_room=%b | walk_hold=%b wk_e=%0d immu_ready=%b irq_inject=%b strad=%b rob_empty=%b",
                               dut.u_icache.st, dut.u_icache.door, dut.u_icache.s1_v, dut.u_icache.sk_v, dut.u_icache.f_l2,
                               dut.u_icache.pf_val, dut.u_icache.pf_want, dut.u_icache.pf_infl, dut.u_icache.inv_pend, dut.u_icache.inv_busy,
                               dut.u_icache.fill_hold, dut.core.fe.u_ring.rg_cnt, dut.core.fe.u_ring.rg_resv, dut.core.fe.u_ring.rg_infl,
-                              dut.core.fe.u_ring.fq_rp, dut.core.fe.u_ring.fq_wp, dut.core.fe.u_ring.fq_k, dut.core.fe.u_ring.ic_req,
+                              dut.core.fe.u_ring.rg_drop, dut.core.fe.u_ring.ic_req,
                               dut.core.fe.u_ring.xlate_ok, dut.core.fe.u_ring.inpg, dut.core.fe.u_ring.pq_room,
                               dut.core.walk_hold, $countones(dut.core.wk_e), dut.core.immu_ready, dut.core.irq_inject,
                               dut.core.fe.u_fetch.strad, dut.core.rob_empty);
@@ -1898,7 +1888,6 @@ module tb;
                fx_div, fx_i2f, fx_sys, fx_st, fx_fst, fx_rd);
       $display("BTB-SIM trainings=%0d carried-hit=%0d | against the slots now: duplicate allocations=%0d stale rewrites=%0d",
                bt_n, bt_car, bt_dup, bt_stale);
-      $display("L1BTB-SIM windows=%0d corrections=%0d mark-fills=%0d", l1_wn, l1_cr, l1_mf);
       $write("RENAME-SIM be:rename cycles each shard is low, and the sweep (a cycle can count in several):");
       for (rli = 0; rli < 8; rli = rli + 1)
          if (dut.core.sh_used(3'(rli))) begin

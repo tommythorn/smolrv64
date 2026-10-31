@@ -141,7 +141,6 @@ module rv_soc_top #(
    wire                ic_rd_req, ic_rd_ack, ic_rd_valid, ic_inv_busy, fi_stall;
    wire [63:0]         ic_rd_addr, ic_rd_pa;
    wire [`SMOLRV64_ICTAG_W-1:0] ic_tag, ic_rsp_tag;
-   wire [2:0]          ic_rd_last;
    wire [127:0]        ic_rd_data;
    wire                fe_redirect;
    wire [63:0]         dmem_raddr;
@@ -171,7 +170,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip), .mtime(clint_mtime),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
-      .ic_tag(ic_tag), .ic_last(ic_rd_last), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),
+      .ic_tag(ic_tag), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),
       .fe_redirect(fe_redirect),
       .hpm_dc_access(dc_access), .hpm_dc_miss(dc_miss), .hpm_ic_access(ic_access), .hpm_ic_miss(ic_miss),
       .dmem_raddr(dmem_raddr), .dmem_ren(dmem_ren), .dmem_runcached(dmem_runcached),
@@ -853,7 +852,7 @@ module rv_soc_top #(
    // The read-only VHPR I$ (core/rv_icache.v): a pair per cycle, hit on the virtual tag alone.
    rv_icache #(.SIZE_KB(SIZE_KB), .HW(8), .RTW(`SMOLRV64_ICTAG_W), .PGW(PABITS)) u_icache
      (.clk(clk), .reset(reset),
-      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_last(ic_rd_last), .rd_pa(ic_rd_pa), .rd_tag(ic_tag),
+      .rd_req(ic_rd_req), .rd_addr(ic_rd_addr), .rd_pa(ic_rd_pa), .rd_tag(ic_tag),
       .rd_ack(ic_rd_ack), .rd_data(ic_rd_data), .rd_valid(ic_rd_valid),
       .rd_resp_addr(ic_rd_resp_addr), .rd_resp_tag(ic_rsp_tag),
       .inv_req(ic_inv_req), .ep_bump(ic_ep_bump), .inv_busy(ic_inv_busy),

@@ -1,7 +1,7 @@
 // The widths of the tags that cross the core's boundary, the one definition every module and
 // bench carrying them uses.
-//   SMOLRV64_ICTAG_W  the I$ request tag (smolrv64_fring builds it: the window's marks, its end, its
-//                     first halfword's bank and the stream generation, and asserts this matches)
+//   SMOLRV64_ICTAG_W  the I$ request tag (smolrv64_fring builds it: the pair's marks, its end, its
+//                     skip and the stream generation, and asserts this matches)
 //   SMOLRV64_LQB      the load queue's index width (1 << it entries), which a fast load's D$ read
 //                     tag carries
 //   SMOLRV64_ROB_ROWS the ROB's rows of IW entries (a power of two), which a ROB tag's row field
