@@ -50,6 +50,7 @@ workloads/rvbench/*.elf
 workloads/rvbench/*.bin
 workloads/rvbench/*.dump
 workloads/rvbench/*.run.log
+workloads/rvbench/*.trace
 workloads/rvbench/syscalls-uart.c
 workloads/rvbench/dhry-src/
 sq/obj_dir_sq

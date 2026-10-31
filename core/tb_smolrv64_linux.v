@@ -683,6 +683,15 @@ module tb;
       if (dut.core.fe.u_bp.tw_v & ~dut.core.fe.u_bp.tr_hit & (|bt_now))   bt_dup   <= bt_dup + 1;
       if (dut.core.fe.u_bp.tr_hit & ~|(dut.core.fe.u_bp.tm & bt_now))     bt_stale <= bt_stale + 1;
    end
+   // +trace_out=<file>: every retired PC (the core's 40-bit form), in order, one hex word a line --
+   // the correct path the oracle frontend replays (-DSMOLRV64_ORACLE_FE +oracle=<file>; the commit
+   // ports are the head row's positions, in program order)
+   integer tro_fd, tro_k;
+   reg [8*256-1:0] tro_f;
+   initial tro_fd = $value$plusargs("trace_out=%s", tro_f) ? $fopen(tro_f, "w") : 0;
+   always @(posedge clk) if (tro_fd != 0 && !reset)
+      for (tro_k = 0; tro_k < `SMOLRV64_IW; tro_k = tro_k + 1)
+         if (retire[tro_k]) $fwrite(tro_fd, "%h\n", dut.core.retire_pc[tro_k*40 +: 40]);
    // LQ-SIM: the load queue's occupancy summed per cycle, and the cycles the queue head has no
    // load-queue credit (smolrv64_core st_lq) by why: a head op in flight or in the IR (cbo_any: cbo),
    // every entry live (full),
@@ -1769,6 +1778,7 @@ module tb;
                      c, nret, dut.core.fe.u_fetch.pc_q, dut.imem_addr, dut.core.mmu_priv,
                      dut.core.mmu_satp, n_inject, n_uirq, n_seip, dut.uart_ier);
       end
+      if (tro_fd != 0) $fclose(tro_fd);
       $display("tb: the longest stretch without a retire: %0d cycles, ending at cycle %0d", gap_max, gap_end);
       if (tohost_done)
          $display("TOHOST exit=%0d after %0d cycles (retires=%0d pc~%h)", tohost_code, c, nret, dut.imem_addr);

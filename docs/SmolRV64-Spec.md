@@ -2212,6 +2212,24 @@ both), so they are depth under the `td` buckets, not a second partition; its *un
 line is what no event names. The simulator's `TOPDOWN-SIM` prints the same classifier for a
 whole simulated run, and `workloads/rvbench` (`make run B=<name>`) runs the bare-metal programs
 there; before reasoning from a surprising board number, look for the same shape in simulation.
+
+**The ideal frontend** (`workloads/rvbench`, `make ideal B=<name>`) prices the frontend against a
+perfect one on the same backend. The run records its retired path (the Linux lockstep's
+`+trace_out`), and a second build (`-DSMOLRV64_ORACLE_FE`, bench only) puts
+`core/smolrv64_oracle_fe.v` at the bundle register in place of fetch, the ring and the predictor:
+up to FW instructions a cycle from that path, each slot predicted to its own next PC, so nothing
+mispredicts and a bundle runs through taken branches, with no I$, no ring and no alignment; the
+queue, decode, the IR's groups and everything after are the real ones, and the lockstep checks
+every retire. A redirect the backend still makes (a replay, a serialising CSR, a branch resolved on
+a load that read past an older store) restarts the oracle at the position its sequence number was
+given (a replay's, the number before's: the op comes again under the next number), and one the
+path does not hold (the printout of the program's own timing) sends the halfwords after it,
+predicting nothing, until a redirect lands on the path again. On 80c38b1c's backend: Dhrystone
+(5,000 runs) 184.2 cycles a run against 159.0 ideal, 3.09 against 3.58 DMIPS/MHz, the frontend at
+86.3% of ideal; CoreMark (30 iterations) 181,341 cycles an iteration against 143,756, 5.51 against
+6.96 CoreMark/MHz, 79.3%. Ending the oracle's bundles at each taken branch (`IDEAL_CUT=1`, as the
+aligner does) costs the ideal 0.35% and 0.09%, so the gap is the mispredicts': 5,239 recoveries in
+Dhrystone and 50,826 in CoreMark (the lockstep's `SWEEP-SIM` squashes), 24 and 22 cycles each.
 The board's reference run is `sha256sum` on `/usr/bin/emacs-nox`, five times: at 1c4ff06f (the
 lanes' multipliers, 5.2c) it dispatches 66.3% of cycles, IPC 2.07, with the back-end at 21.3%
 (no ROB room 14.8%, memory 4.4%), the front-end at 11.9% and bad speculation at 0.5%.

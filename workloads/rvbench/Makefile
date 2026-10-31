@@ -10,6 +10,11 @@
 #   make run B=coremark           CoreMark (github.com/eembc/coremark, checked out at COREMARK),
 #                                 the performance run's seeds, COREMARK_ITERS iterations; its
 #                                 port is coremark/core_portme.[ch], ticks = mcycle
+#   make ideal B=dhrystone        the ideal-frontend study: the run, its retired path recorded
+#                                 (<name>.trace), then replayed by the oracle frontend
+#                                 (-DSMOLRV64_ORACLE_FE, core/smolrv64_oracle_fe.v); prints both
+#                                 counts (mcycle, or CoreMark's ticks) and the real one's share of
+#                                 the ideal. IDEAL_CUT=1 ends the oracle's bundles at a taken branch.
 #
 # Sources stay upstream (RVT); only syscall() is swapped for the UART (uart-syscalls.py).
 # Left out: mt-* (multi-hart), pmp (no PMP), vec-* (no V).
@@ -81,10 +86,19 @@ run: $(B).bin
 	 if grep -aq 'TOHOST exit=0 ' $$out && ! grep -aqE 'Diverging retire|STORE DATA MISMATCH|ERROR! [a-z]+ crc' $$out; then echo "RVBENCH $(B): PASS"; \
 	 else echo "RVBENCH $(B): FAIL (log: $$out)"; exit 1; fi
 
+ideal: $(B).bin
+	@$(MAKE) --no-print-directory run B=$(B) LOG=$(B).run.log PLUSARGS="+trace_out=$(CURDIR)/$(B).trace $(PLUSARGS)"
+	@$(MAKE) --no-print-directory run B=$(B) LOG=$(B).ideal.run.log VDEFS="-DSMOLRV64_ORACLE_FE $(VDEFS)" \
+	   PLUSARGS="+oracle=$(CURDIR)/$(B).trace $(if $(IDEAL_CUT),+oracle_cut) $(PLUSARGS)"
+	@grep -a 'smolrv64_oracle_fe: [0-9]* redirects' $(B).ideal.run.log
+	@r=$$(grep -a -E '^mcycle =|^Total ticks' $(B).run.log | grep -o '[0-9]*$$' | head -1); \
+	 i=$$(grep -a -E '^mcycle =|^Total ticks' $(B).ideal.run.log | grep -o '[0-9]*$$' | head -1); \
+	 awk -v r=$$r -v i=$$i -v b=$(B) 'BEGIN { printf "IDEAL %s: %d cycles, %d with an ideal frontend: the frontend runs at %.1f%% of ideal\n", b, r, i, 100 * i / r }'
+
 runall:
 	@for b in $(BMARKS); do $(MAKE) --no-print-directory run B=$$b || exit 1; done
 
 clean:
-	rm -rf *.elf *.bin *.dump *.run.log syscalls-uart.c dhry-src
-.PHONY: all run runall clean
+	rm -rf *.elf *.bin *.dump *.run.log *.trace syscalls-uart.c dhry-src
+.PHONY: all run ideal runall clean
 .PRECIOUS: %.elf

@@ -110,11 +110,12 @@ module smolrv64_frontend
    initial if (IW < 2 || IW > 4 || FW < IW || FW > 8 || QDEPTH < 2*FW || (1 << QAW) != QDEPTH)
       $fatal(1, "smolrv64_frontend: IW=%0d FW=%0d QDEPTH=%0d QAW=%0d: IW is 2..4, FW is IW..8, QDEPTH = 2**QAW >= 2*FW",
              IW, FW, QDEPTH, QAW);
-   wire               dq_valid;
-   wire [FW-1:0]      dq_sv;                      // per-slot valid
-   wire [FW*32-1:0]   dq_inst;
-   wire [FW*PCW-1:0]  dq_pc;
-   wire [FW*SEQW-1:0] dq_seq;
+   wire               dq_valid, fv_valid;         // the bundle (fetch's, unless an oracle replaces it)
+   wire [FW-1:0]      dq_sv, fv_sv;               // per-slot valid
+   wire [FW*32-1:0]   dq_inst, fv_inst;
+   wire [FW*PCW-1:0]  dq_pc, fv_pc;
+   wire [FW*SEQW-1:0] dq_seq, fv_seq;
+   wire [SEQW-1:0]    fv_cur_seq;
    wire [PCW-1:0]     bp_tgt;                  // the target of the prediction fetch takes
    wire [FW-1:0]      bp_tk;                   // the first FW predictions: taken...
    wire [FW*PCW-1:0]  bp_tgts;                 // ...to here
@@ -184,8 +185,22 @@ module smolrv64_frontend
       .pred_npc(), .pnpc_kind(dq_pk), .adv_hw(f_adv_hw),
       .imem_addr(imem_addr), .imem_ipc(imem_ipc), .imem_data(imem_data),
       .imem_avail(imem_avail), .imem_lvl(imem_lvl), .imem_ok(imem_ok),
-      .err(f_err), .ready(pb_ready), .valid(dq_valid),
-      .slot_valid(dq_sv), .inst(dq_inst), .pc(dq_pc), .seq(dq_seq), .cur_seq(cur_seq));
+      .err(f_err), .ready(pb_ready), .valid(fv_valid),
+      .slot_valid(fv_sv), .inst(fv_inst), .pc(fv_pc), .seq(fv_seq), .cur_seq(fv_cur_seq));
+`ifdef SMOLRV64_ORACLE_FE
+   // the ideal-frontend study: the bundle register's source is the recorded correct path, each slot
+   // predicted to its own next PC (smolrv64_oracle_fe); fetch, the ring and the predictor run on
+   // unread
+   wire [FW-1:0]      or_tk;
+   wire [FW*PCW-1:0]  or_tgt;
+   smolrv64_oracle_fe #(.FW(FW), .PCW(PCW), .SEQW(SEQW), .BASE(64'h8000_0000)) u_or
+     (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
+      .irq_inject(irq_inject), .ready(pb_ready), .valid(dq_valid), .sv(dq_sv), .inst(dq_inst), .pc(dq_pc),
+      .seq(dq_seq), .tk(or_tk), .tgt(or_tgt), .cur_seq(cur_seq));
+`else
+   assign dq_valid = fv_valid;  assign dq_sv = fv_sv;  assign dq_inst = fv_inst;  assign dq_pc = fv_pc;
+   assign dq_seq = fv_seq;  assign cur_seq = fv_cur_seq;
+`endif
 
    // THE BUNDLE IS REGISTERED BEFORE THE QUEUE WRITE (plan item T1 (F), step 2, 2026-09-06).
    // With the fetch buffer's compare out of the data path (step 1), the decoupling queue's 826
@@ -254,7 +269,11 @@ module smolrv64_frontend
    // instead of ~46 per field, with one field list for pack and unpack.
    localparam integer IRW = `IR_RECW;              // the record dispatch takes (d_rec)
    localparam integer QRW = `QR_RECW;              // ...and what the queue holds of it
+`ifdef SMOLRV64_ORACLE_FE
+   wire           dq_fault = 1'b0;
+`else
    wire           dq_fault = imem_fault & ~dq_valid;    // fetch-fault pseudo-op, pushed like a bundle
+`endif
    wire           pb_load  = pb_ready & (dq_valid | dq_fault);   // the register takes a bundle or the fault op
    // UP TO FW ENTRIES PER CYCLE INTO A LUTRAM: QNB = next_pow2(FW) banks (smolrv64_bankq), so a
    // bundle's slots land in distinct banks. `q_room` asks for a whole bundle's room, so a bundle
@@ -270,6 +289,9 @@ module smolrv64_frontend
    // ...and what is the bundle's, once: the predicted target (the last slot's to use), and a fetch
    // fault's cause and straddle bit (the fault pseudo-op's, slot 0)
    reg  [PCW-1:0] pb_tgt;
+`ifdef SMOLRV64_ORACLE_FE
+   reg  [PCW-1:0] pb_otgt [0:QNB-1];                    // the oracle predicts each slot itself
+`endif
    reg  [3:0]     pb_cause;
    reg            pb_fhi;
    reg  [FW-1:0]  pb_sv;                                 // the bundle's slots (slot 0: whenever pb_v)
@@ -296,10 +318,15 @@ module smolrv64_frontend
       wire last = (gk == FW - 1) ? 1'b1 : ~dq_sv[(gk == FW - 1) ? gk : gk + 1];
       wire [$clog2(FW+1)-1:0] mw = f_mi[gk*$clog2(FW+1) +: $clog2(FW+1)];
       wire [$clog2(FW+1)-1:0] m  = (mw < FW) ? mw : {$clog2(FW+1){1'b0}};   // past the run: any entry
+`ifdef SMOLRV64_ORACLE_FE
+      wire [PDW-1:0] pd_slot = {PDW{1'b0}};
+      wire [1:0]     pk_slot = or_tk[gk] ? 2'd1 : 2'd0;
+`else
       wire [PDW-1:0] pd_slot = f_emk[gk] ? pd_mk[m*PDW +: PDW] : pd_no[m*PDW +: PDW];
+      wire [1:0]     pk_slot = last ? dq_pk : 2'd0;
+`endif
       assign q_in[gk] = {pd_slot, ((gk == 0) & dq_fault) ? imem_ipc : dq_pc[gk*PCW +: PCW],
-                         dq_inst[gk*32 +: 32], dq_seq[gk*SEQW +: SEQW],
-                         last ? dq_pk : 2'd0, (gk == 0) & dq_fault};
+                         dq_inst[gk*32 +: 32], dq_seq[gk*SEQW +: SEQW], pk_slot, (gk == 0) & dq_fault};
    end endgenerate
    integer k;
    initial for (k = 0; k < QNB; k = k + 1) pb_in[k] = {QW{1'b0}};
@@ -317,6 +344,9 @@ module smolrv64_frontend
          // a fetch fault's address is its instruction's pc, or pc+2 for a straddler's high halfword
          // (src/fetch.v: imem_addr is pc_q, which is ipc_q but while it fetches that halfword)
          pb_tgt <= bp_tgt;  pb_cause <= imem_cause;  pb_fhi <= imem_addr != imem_ipc;
+`ifdef SMOLRV64_ORACLE_FE
+         for (k = 0; k < FW; k = k + 1) pb_otgt[k] <= or_tgt[k*PCW +: PCW];
+`endif
          pb_sv <= {dq_sv[FW-1:1] & {(FW-1){dq_valid}}, 1'b1};
       end
    end
@@ -336,7 +366,11 @@ module smolrv64_frontend
       wire [1:0]      pk;    wire fault_op;    wire imm_wide;
       assign {pdet, pc, inst, seq, pk, fault_op} = pb_in[j];
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK)) u_ds
+`ifdef SMOLRV64_ORACLE_FE
+        (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_otgt[j]), .fault_op(fault_op),
+`else
         (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_tgt), .fault_op(fault_op),
+`endif
          .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off),
          .q_rvc(1'b0), .q_pnpc({PCW{1'b0}}), .q_illegal(1'b0), .q_mis_taken(1'b0), .q_mis_nt(1'b0), .q_gc(16'd0),
          .qrec(q_wd[gk*QRW +: QRW]), .rec(q_fwd[gk*IRW +: IRW]), .imm_wide(imm_wide));
