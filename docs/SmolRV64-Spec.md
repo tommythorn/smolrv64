@@ -301,11 +301,18 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   VIRT-safe (probe by `r_pa`/`f_pa`, arm by `f_pa`). The single-copy invariant (≤1 valid line
   per physical line) and the epoch roll-over walk are in `docs/VHPR.md`.
 - **The fetch ring** (Stage 4 increment 1a, `smolrv64_fring`, in the frontend; the core's instruction
-  port is the I$ request and its answer). A ring of 32 halfword slots holds the
+  port is the I$ request and its answer). A ring of 64 halfword slots (128 bytes) holds the
   instruction stream from the PC on, filled by an address stream that reads one 16-byte pair per
   accepted `rv_icache` request (16-byte aligned, so a pair never crosses 4 KiB; the stream address
   is the predictor's, §4.2) and runs ahead of the PC while the ring has room for a whole pair and
-  the predictor's queue has room. **Its head is the PC by construction:** the head
+  the predictor's queue has room. **The ring is deep enough for a stream that is not 16-byte
+  aligned:** a request waits for a whole pair's room and the I$ answers it a cycle later, so 32
+  halfwords would refill at exactly 16 bytes a cycle, and a stream whose bundles straddle pairs
+  would wait a cycle on each pair's tail: 12 bytes a cycle. ChaCha20 (`crypt.c`, its
+  loop 12 bytes into a pair, the 256-round kernel in lockstep): 26.00 cycles an iteration at 64
+  halfwords (6,880 cycles), 34 at 32 (8,919), 25 for the same loop 16-byte aligned; the cycle left
+  is one `bytes-late` an iteration at the loop's wrap, whose first and last pairs are partial.
+  **Its head is the PC by construction:** the head
   advances by the halfwords fetch consumed (`adv_hw`: a bundle's `consumed`, or one halfword per
   step of a page straddle), and a predicted-taken branch does not empty it -- the predictor
   (§4.2) already steered the stream to the target, whose halfwords follow the branch's; a restart
@@ -1647,9 +1654,10 @@ its revised order); the I$ is `rv_icache`, a read-only module of its own (Stage 
 
 **Not UltraRAM.** The I$'s data is two 64-bit block-RAM banks per way, the even and the odd 8-byte
 chunk of a pair, read at one row ({set, pair}): a read is one **16-byte-aligned pair** (asserted),
-and the fetch ring (§4.1) does the alignment. A stream that is not 16-byte aligned costs
-bandwidth at IW=4 (ChaCha20: 34 cycles an iteration against 25 aligned); the even and odd 16-byte
-banks that read 16 bytes at any halfword are `docs/PLAN-2026-10-27-fetch-window.md`.
+and the fetch ring (§4.1) does the alignment: at 64 halfwords it fetches a stream that is not
+16-byte aligned within a cycle an iteration of aligned code (ChaCha20: 26 cycles against 25).
+Reading 16 bytes at any halfword instead puts the alignment in the predictor's loop
+(`docs/PLAN-2026-10-27-fetch-window.md`).
 
 The I$ does not skew: a VHPR cache's physical probe finds the same-offset synonym candidates by
 a straight index, and a hashed index would scatter them across sets.
@@ -1952,8 +1960,8 @@ load or FP result.
 | `bank[b].way[w].bc` | `smolrv64_predictor` | 8 x 2 x 128 | 2 | 4 096 | distributed RAM, read as the stream moves and by training |
 | `bank[b].way[w].nu` | `smolrv64_predictor` | 8 x 2 x 128 | 1 | 2 048 | distributed RAM, the recently-trained bit, read and written by training |
 | `pq0`, `pq1` | `smolrv64_predictor` | 2 x 4 | 72 | 576 | the prediction queue: even and odd positions, one write each |
-| `u_rg` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_fring`) | 8 x 4 | 17 | 544 | LUTRAM (the halfword, its start bit): one write a bank (an answer's halfword landing there), the window's eight read |
-| `rmk` | `smolrv64_fring` | 32 | 1 | 32 | flops (the halfword ends a pair at a known CTI; fetch clears the head's) |
+| `u_rg` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_fring`) | 8 x 8 | 17 | 1 088 | LUTRAM (the halfword, its start bit): one write a bank (an answer's halfword landing there), the window's eight read |
+| `rmk` | `smolrv64_fring` | 64 | 1 | 64 | flops (the halfword ends a pair at a known CTI; fetch clears the head's) |
 
 Neither BTB nor corrector bank has a valid bit — validity is the tag match (§4.2).
 

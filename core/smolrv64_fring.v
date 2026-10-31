@@ -69,7 +69,7 @@ module smolrv64_fring
     input  wire [`SMOLRV64_ICTAG_W-1:0] ic_rtag,
     output wire [5:0]              err);      // its invariants, registered (the integrity log)
 
-   localparam integer RS  = 32;                            // ring slots (halfwords): 64 bytes
+   localparam integer RS  = 64;                            // ring slots (halfwords): 128 bytes
    localparam integer RSB = $clog2(RS);
    localparam integer GW  = 3;                             // stream generation
    localparam integer AVW = $clog2(HW+2);
