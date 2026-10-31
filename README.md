@@ -41,12 +41,13 @@ looks like when every structure is chosen by what a Kintex LUT, LUTRAM or block 
 ([the specification](docs/SmolRV64-Spec.md) is the normative description, and every number below
 is read off the RTL or measured with the workload named):
 
-- **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
-  reads one 16-byte pair per cycle from the instruction cache into a 32-halfword fetch ring,
-  ahead of decode, whose instruction boundaries are found as the bytes arrive; up to six RVC or
-  32-bit instructions a cycle go from it into a 16-entry decoupling queue; up to four are
-  renamed and dispatched a cycle, consecutive instructions to consecutive lanes (the lanes
-  rotate, so each takes every fourth with no steering), and up to four retire.
+- **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream reads a
+  16-byte window from any halfword per cycle from the instruction cache into a 32-halfword
+  fetch ring, so code runs at full width whatever its alignment, ahead of decode, whose
+  instruction boundaries are found as the bytes arrive; up to six RVC or 32-bit instructions
+  a cycle go from it into a 16-entry decoupling queue; up to four are renamed and dispatched
+  a cycle, consecutive instructions to consecutive lanes (the lanes rotate, so each takes
+  every fourth with no steering), and up to four retire.
 - **A status-only reorder buffer.** 64 rows of four, of which 228 entries are live at once
   (the 9-bit sequence number that orders restarts bounds the window), 25 bits each: the
   destination and its new and previous mappings -- no values, no PCs, no operands. A second,
@@ -90,19 +91,22 @@ is read off the RTL or measured with the workload named):
   returned by tag and out of order, and its own scheduler and execute stage, so FP
   arithmetic never enters the memory stage and cannot block it; FP operations issue out of
   order among themselves.
-- **Prediction at the fetch stream.** A 2048-entry BTB (eight halfword banks of two skewed
-  ways in block RAM, taken-only: a branch is allocated when it resolves taken), a 2048-entry
-  YAGS corrector in eight distributed-RAM banks, an 11-bit path history carried with each
-  instruction, and an 8-entry return stack predict each 16-byte pair as it is fetched, keyed by
-  a control-transfer instruction's last halfword; an 8-entry prediction queue carries each
-  prediction's state to the instruction it names, and a 32-entry training queue trains each
-  one once it can no longer be squashed. Neither table has a valid bit: validity is the tag
-  match.
+- **Prediction at the fetch stream.** Two BTBs, each eight halfword banks of two skewed ways
+  and taken-only (a branch is allocated when it resolves taken): a 1024-entry L1 in
+  distributed RAM, read in the predictor's one-cycle loop, and an 8192-entry L2 in block RAM
+  a cycle behind it, which checks every window and, when the two disagree, fills L1 and
+  restarts the stream at that window. With a 2048-entry YAGS corrector in eight
+  distributed-RAM banks, an 11-bit path history carried with each instruction, and an 8-entry
+  return stack they predict each 16-byte window as it is fetched, keyed by a control-transfer
+  instruction's last halfword; an 8-entry prediction queue carries each prediction's state to
+  the instruction it names, and a 32-entry training queue trains each one once it can no
+  longer be squashed. No table has a valid bit: validity is the tag match.
 - **Caches built from what the part has.** A 128 KiB two-way instruction cache that is
   virtually indexed and hits on its virtual tag and an epoch, reconciling by physical tag
-  only on a miss, so a hit needs no translation; it reads a 16-byte pair every cycle, stores
-  probe it, so `fence.i` keeps it unless a device has written memory since, and its 64-byte
-  lines sit in even/odd 64-bit block-RAM banks. A 128 KiB, 32-way write-back data cache, its
+  only on a miss, so a hit needs no translation; it reads a 16-byte window from any halfword
+  every cycle (each way's lines in an even and an odd 16-byte bank, the next line's tags
+  through the tag RAM's second port), stores probe it, so `fence.i` keeps it unless a device
+  has written memory since. A 128 KiB, 32-way write-back data cache, its
   set inside the page offset so no line can have a synonym, that never blocks on a miss: two
   lookups a cycle, one for a load, answered by tag two cycles later, and one for a committed
   store, which writes its bytes into the one block RAM that holds them or merges them into its
