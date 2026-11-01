@@ -102,7 +102,10 @@ module ddr_port_sync #(
    // ---- requests: the promise at the other edge, the capture at CAP, then the output register ----
    reg            c_v;                     // the capture register: valid, and the request's fields
    reg  [IDW-1:0] c_id;  reg c_we;  reg [57:0] c_addr;  reg [63:0] c_wmask;  reg [511:0] c_wdata;
-   reg            promise;                 // the port's ready: launched at an other edge, held through CAP
+   // the port's ready: launched at an other edge, held through CAP. It is the enable of the L2's
+   // 512-bit write-back data among others (rv_l2 d_q_wdata), with an ui cycle to get there, so it
+   // is replicated beside its loads.
+   (* max_fanout = 32 *) reg promise;
    assign p_q_ready = promise;
    wire           c_go = c_v && (!m_q_valid || m_q_ready);   // the capture moves on to the output
    always @(posedge clk_m) begin

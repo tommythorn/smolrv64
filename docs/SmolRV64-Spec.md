@@ -1786,7 +1786,8 @@ The L2's misses and write-backs go out on the `ddr_*` port: the testbench's mode
   a register, as it alternates), and captures a request at the ui_clk edge 3.3 ns after the port's
   (a multicycle path of 2 in the XDC), a second ui_clk register on to the controller; everything back
   to the port is launched at the other ui_clk edges, the request's ready being a promise of room made
-  an edge ahead, and a read beat or a write done lands in a probe_clk register by the core -- the long
+  an edge ahead (replicated beside its loads: it enables the L2's 512-bit write-back data, with a ui
+  cycle to get there), and a read beat or a write done lands in a probe_clk register by the core -- the long
   route is register to register. Its snoop channel runs the other way, a DMA line to clean or flush
   and the release after a flush as toggles launched at the other edges into probe_clk registers, the
   answer's toggle captured at CAP;
