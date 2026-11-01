@@ -2534,10 +2534,11 @@ failing family within 0.03 ns of the worst, so area went first, then the deepest
 | e51bbfee | + the schedulers' oldest-first pick (alone it missed by 0.497 and, with `ExtraTimingOpt`, 0.480 -- the LQ's commit cone, the lanes' completion, the landing's wake, ~3,000 endpoints), and three cycle-identical-or-nearly cuts: rename's low-water flag from registers, a CTI's completion a cycle late on a port of its own, the landing's destination read a cycle ahead | **+0.001** | 0 | 148 748 |
 | 7f8f5a94 | + rename's low-water flag counting the IR group's allocation from the IR's registers (e51bbfee's mark plus a cycle's worst-case allocation had doubled the rename stalls) | **0.000** | 0 | 150 870 |
 | a814eba8 | the frontend back to 7f8f5a94's with a 64-halfword ring, the IQ's wake-at-select a cycle after the issue, the replay hold from registers, the L2's write-back data loading whenever its port is free, and three cycle-identical cuts: the DDR port's ready replicated beside its loads, the ring's head checked a cycle late, fetch's outcomes selected by the bundle's last slot | **+0.002** | 0 | 151 230 |
+| e15ac83a | + two statistics-only cuts, cycle-identical: the DDR latency counters write a request's start a cycle after its acceptance, and the counters' top-down classifier runs a cycle behind from registered leaves (`tdr_*`, checked against the core's own every cycle); the ideal-frontend instrument (§11) beside them, outside the synthesized design | **+0.028** | 0 | 152 344 |
 
 The board gate passes on 325e5341 (the 2g board, 2026-10-24): login, 900 s of Geekbench, zero faults,
 and on 71796044 (2g, 2026-10-25), 7a3b6c95 (4g), 0446b9de (4g), e51bbfee and 7f8f5a94 (4g, 2026-10-27; both boards' flash since),
-and a814eba8 (4g, 2026-10-31, and a `cargo check` of Simmerv on it, 47 min 53 s). The margin is a draw's, not the design's: the same netlist family
+and a814eba8 (4g, 2026-10-31, and a `cargo check` of Simmerv on it, 47 min 53 s), and e15ac83a (4g, 2026-11-01). The margin was a draw's, not the design's: the same netlist family
 missed by 0.15 to 0.62 ns in other draws (6ca128ca -0.615, 23ae98a9 -0.335, 5f3fdaca -0.208,
 2f791a83 -0.249, b06455d0 -0.152), each cut taking its family off the failing list (5,593 endpoints
 under 0 at -0.615, 1,367 at -0.208); what remains is a plateau of the core's loops -- the lane's
@@ -2545,7 +2546,8 @@ execute and completion, the predictor's and the fetch ring's next address, the c
 frontend restored without the cuts drew -0.21 to -0.60 on seven placer directives (80c38b1c) and
 -0.31 and -0.42 at 32 halfwords (465b5444), and in each draw the families outside the frontend
 failed as far as those inside it; with the cuts the other directives drew -0.140 (`ExtraNetDelay_low`)
-and -0.256 (`AltSpreadLogic_medium`). A miss's census is `tools/timing-census.sh <dcp>...`: each draw's WNS, its failing
+and -0.256 (`AltSpreadLogic_medium`). With the two statistics cuts every directive meets: +0.011 (`ExtraNetDelay_high`), +0.028
+(`ExtraNetDelay_low`) and +0.004 (`AltSpreadLogic_medium`) on 3280e57b, whose logic e15ac83a keeps. A miss's census is `tools/timing-census.sh <dcp>...`: each draw's WNS, its failing
 endpoints, the worst slack inside the frontend against the rest's, and the families across the draws,
 those failing in the most first.
 
