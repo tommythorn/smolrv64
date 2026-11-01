@@ -2512,13 +2512,19 @@ failing family within 0.03 ns of the worst, so area went first, then the deepest
 | 0446b9de | + the DMA port's three reads in flight and its request from a register | **0.000** | 0 | 147 932 |
 | e51bbfee | + the schedulers' oldest-first pick (alone it missed by 0.497 and, with `ExtraTimingOpt`, 0.480 -- the LQ's commit cone, the lanes' completion, the landing's wake, ~3,000 endpoints), and three cycle-identical-or-nearly cuts: rename's low-water flag from registers, a CTI's completion a cycle late on a port of its own, the landing's destination read a cycle ahead | **+0.001** | 0 | 148 748 |
 | 7f8f5a94 | + rename's low-water flag counting the IR group's allocation from the IR's registers (e51bbfee's mark plus a cycle's worst-case allocation had doubled the rename stalls) | **0.000** | 0 | 150 870 |
+| a814eba8 | the frontend back to 7f8f5a94's with a 64-halfword ring, the IQ's wake-at-select a cycle after the issue, the replay hold from registers, the L2's write-back data loading whenever its port is free, and three cycle-identical cuts: the DDR port's ready replicated beside its loads, the ring's head checked a cycle late, fetch's outcomes selected by the bundle's last slot | **+0.002** | 0 | 151 230 |
 
 The board gate passes on 325e5341 (the 2g board, 2026-10-24): login, 900 s of Geekbench, zero faults,
-and on 71796044 (2g, 2026-10-25), 7a3b6c95 (4g), 0446b9de (4g), e51bbfee and 7f8f5a94 (4g, 2026-10-27; both boards' flash since). The margin is a draw's, not the design's: the same netlist family
+and on 71796044 (2g, 2026-10-25), 7a3b6c95 (4g), 0446b9de (4g), e51bbfee and 7f8f5a94 (4g, 2026-10-27; both boards' flash since),
+and a814eba8 (4g, 2026-10-31, and a `cargo check` of Simmerv on it, 47 min 53 s). The margin is a draw's, not the design's: the same netlist family
 missed by 0.15 to 0.62 ns in other draws (6ca128ca -0.615, 23ae98a9 -0.335, 5f3fdaca -0.208,
 2f791a83 -0.249, b06455d0 -0.152), each cut taking its family off the failing list (5,593 endpoints
 under 0 at -0.615, 1,367 at -0.208); what remains is a plateau of the core's loops -- the lane's
-execute and completion, the predictor's and the fetch ring's next address, the commit count.
+execute and completion, the predictor's and the fetch ring's next address, the commit count. The
+frontend restored without the cuts drew -0.21 to -0.60 on seven placer directives (80c38b1c) and
+-0.31 and -0.42 at 32 halfwords (465b5444), and in each draw the families outside the frontend
+failed as far as those inside it; with the cuts the other directives drew -0.140 (`ExtraNetDelay_low`)
+and -0.256 (`AltSpreadLogic_medium`).
 
 ## 14. Known limits
 

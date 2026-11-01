@@ -20,8 +20,8 @@ change has to boot Ubuntu to a login prompt on the board with zero faults before
 | Geekbench 5.4.1, board, 2026-10-27 | **20** single-core (Integer 24, Crypto 2, Floating Point 13), **20** multi-core ([result 24759238](https://browser.geekbench.com/v5/cpu/24759238), [every subtest](workloads/gb5/result-2026-10-27b.md)); the whole suite in 1 h 36 min at IPC 1.33 |
 | Memory, board, 2026-10-27 | a dependent load **3.0** cycles from the D$, **21.0** from the L2, 44.9 from DRAM with a second-level dTLB lookup (71.0 with a page walk); sequential reads 7.93 bytes a cycle in the D$, 3.71 from the L2, 2.88 from DRAM, writes 7.91, 5.64 and 5.17 (`tools/board/membench/summary.sh`, beside every Geekbench run) |
 | Geekbench 6.7.1, board (4 GiB), 2026-10-15 to 16 | **10** single-core, **10** multi-core ([result 19352041](https://browser.geekbench.com/v6/cpu/19352041), [every subtest](workloads/gb6/result-2026-10-16.md)); the whole suite in 17 h 48 min at IPC 1.00 |
-| Dhrystone 2.1, the RTL in lockstep simulation, 2026-10-27 | **3.14** DMIPS/MHz: 181.2 cycles a run, DMIPS being runs a second over 1757 (riscv-tests' Dhrystone at `-O2` with the full `-march`; `make run B=dhrystone` in [workloads/rvbench](workloads/rvbench)) |
-| CoreMark 1.0, the RTL in lockstep simulation, 2026-10-27 | **5.50** CoreMark/MHz: 181,820 cycles an iteration, the standard 2K performance run's CRCs (`-O2` with the full `-march`; `make run B=coremark`) |
+| Dhrystone 2.1, the RTL in lockstep simulation, 2026-10-31 | **3.09** DMIPS/MHz: 184.2 cycles a run, DMIPS being runs a second over 1757 (riscv-tests' Dhrystone at `-O2` with the full `-march`; `make run B=dhrystone` in [workloads/rvbench](workloads/rvbench)) |
+| CoreMark 1.0, the RTL in lockstep simulation, 2026-10-31 | **5.51** CoreMark/MHz: 181,341 cycles an iteration, the standard 2K performance run's CRCs (`-O2` with the full `-march`; `make run B=coremark`) |
 | `sha256sum` of a 30 MB file, board, 2026-09-25 | IPC 1.56 to 1.63 over three runs, 43 cycles per byte |
 | Clock | 166.67 MHz on the XCKU5P (a 6.000 ns cycle), closed four-wide; DDR4 at 333 MHz |
 | Software | OpenSBI and mainline Linux; Ubuntu 25.04 boots over an NFS root through the core's own virtio-net |
@@ -42,7 +42,7 @@ looks like when every structure is chosen by what a Kintex LUT, LUTRAM or block 
 is read off the RTL or measured with the workload named):
 
 - **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
-  reads one 16-byte pair per cycle from the instruction cache into a 32-halfword fetch ring,
+  reads one 16-byte pair per cycle from the instruction cache into a 64-halfword fetch ring,
   ahead of decode, whose instruction boundaries are found as the bytes arrive; up to six RVC or
   32-bit instructions a cycle go from it into a 16-entry decoupling queue; up to four are
   renamed and dispatched a cycle, consecutive instructions to consecutive lanes (the lanes
