@@ -688,7 +688,10 @@ module tb;
    // ports are the head row's positions, in program order)
    integer tro_fd, tro_k;
    reg [8*256-1:0] tro_f;
-   initial tro_fd = $value$plusargs("trace_out=%s", tro_f) ? $fopen(tro_f, "w") : 0;
+   initial begin
+      tro_fd = 0;
+      if ($value$plusargs("trace_out=%s", tro_f)) tro_fd = $fopen(tro_f, "w");
+   end
    always @(posedge clk) if (tro_fd != 0 && !reset)
       for (tro_k = 0; tro_k < `SMOLRV64_IW; tro_k = tro_k + 1)
          if (retire[tro_k]) $fwrite(tro_fd, "%h\n", dut.core.retire_pc[tro_k*40 +: 40]);
