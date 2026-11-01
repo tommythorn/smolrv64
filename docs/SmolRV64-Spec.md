@@ -2524,7 +2524,9 @@ execute and completion, the predictor's and the fetch ring's next address, the c
 frontend restored without the cuts drew -0.21 to -0.60 on seven placer directives (80c38b1c) and
 -0.31 and -0.42 at 32 halfwords (465b5444), and in each draw the families outside the frontend
 failed as far as those inside it; with the cuts the other directives drew -0.140 (`ExtraNetDelay_low`)
-and -0.256 (`AltSpreadLogic_medium`).
+and -0.256 (`AltSpreadLogic_medium`). A miss's census is `tools/timing-census.sh <dcp>...`: each draw's WNS, its failing
+endpoints, the worst slack inside the frontend against the rest's, and the families across the draws,
+those failing in the most first.
 
 ## 14. Known limits
 
