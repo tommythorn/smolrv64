@@ -56,7 +56,7 @@ module tb;
 
       do_txn(1'b0, 5'd3, 5);     // read,  bin3 (4-7)
       do_txn(1'b1, 5'd4, 20);    // write, bin5 (16-31)
-      do_txn(1'b0, 5'd3, 1);     // read,  bin1
+      do_txn(1'b0, 5'd3, 2);     // read,  bin2 (2-3): the shortest a completion comes
       do_txn(1'b0, 5'd7, 100);   // read,  bin7 (64+)
       // two reads overlapping: id 1 accepted, id 2 two cycles later; id 2 completes first
       @(negedge clk); q_fire = 1'b1; q_id = 5'd1;          // accepted at T
@@ -76,16 +76,16 @@ module tb;
       @(negedge clk); r_done = 1'b0; w_done = 1'b0;
       @(posedge clk); @(posedge clk);
 
-      chk(8'h08, 64'd1, "rd_bin1");
+      chk(8'h08, 64'd0, "rd_bin1");
       chk(8'h18, 64'd2, "rd_bin3");      // 5, 7
       chk(8'h20, 64'd2, "rd_bin4");      // 10, 12
       chk(8'h38, 64'd1, "rd_bin7");
       chk(8'h00, 64'd0, "rd_bin0");
-      chk(8'h10, 64'd0, "rd_bin2");
+      chk(8'h10, 64'd1, "rd_bin2");
       chk(8'h68, 64'd1, "wr_bin5");      // 0x40 + 5*8
       chk(8'h60, 64'd1, "wr_bin4");      // 11
       chk(8'h40, 64'd0, "wr_bin0");
-      chk(8'h80, 64'd135, "rd_sum");     // 5 + 1 + 100 + 7 + 10 + 12
+      chk(8'h80, 64'd136, "rd_sum");     // 5 + 2 + 100 + 7 + 10 + 12
       chk(8'h88, 64'd31,  "wr_sum");     // 20 + 11
       chk(8'h90, 64'd6,   "rd_cnt");
       chk(8'h98, 64'd2,   "wr_cnt");

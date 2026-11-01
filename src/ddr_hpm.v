@@ -10,8 +10,9 @@
 // the completion names its id).
 //
 // Per direction (read = ~we, write = we) it keeps:
-//   * an 8-bin log2 histogram: bin = floor(log2(lat))+1 capped at 7. Latency is >=1, so
-//     bin0 is unused; bins are [1] [2-3] [4-7] [8-15] [16-31] [32-63] [64+] (matches the
+//   * an 8-bin log2 histogram: bin = floor(log2(lat))+1 capped at 7. Latency is >= 2 (the
+//     start is written the cycle after the acceptance; a DDR round trip is far longer, asserted),
+//     so bins 0 and 1 stay empty; bins are [1] [2-3] [4-7] [8-15] [16-31] [32-63] [64+] (matches the
 //     perftool bucket() convention so the same reader/plots apply).
 //   * SUM of latencies (mean = sum / count) and transaction COUNT.
 //
@@ -41,17 +42,29 @@ module ddr_hpm #(
    input  wire           clr
 );
    localparam [LW-1:0] ONE = {{(LW-1){1'b0}}, 1'b1};
-   // ---- per-id acceptance cycle; a completion's latency is now - start (>= 1) ----
-   reg  [LW-1:0] now;
+   // ---- per-id acceptance cycle; a completion's latency is now - start (>= 2) ----
+   // The acceptance (q_fire: the port's valid and the DDR crossing's ready, a promise launched in the
+   // other clock with half a cycle to arrive) is registered with its id and cycle, and written a cycle
+   // later: the same start, and the crossing's ready no longer the enable of a RAM's write. A
+   // completion comes many cycles after its acceptance; one meeting its id's write still pending is
+   // asserted.
+   reg  [LW-1:0] now, qf_now;
+   reg  [IDW-1:0] qf_id;
+   reg           qf_v;
    reg  [LW-1:0] start [0:(1<<IDW)-1];
    reg           rstb, wstb;               // 1-cycle: a read / a write completed
    reg  [LW-1:0] rlat, wlat;
+   initial qf_v = 1'b0;
    always @(posedge clk) begin
       now <= reset ? {LW{1'b0}} : now + ONE;
-      if (q_fire) start[q_id] <= now;
+      qf_v <= ~reset & q_fire;  qf_id <= q_id;  qf_now <= now;
+      if (qf_v) start[qf_id] <= qf_now;
       rstb <= ~reset & r_done;  rlat <= now - start[r_id];
       wstb <= ~reset & w_done;  wlat <= now - start[w_id];
    end
+   always @(posedge clk)
+      if (!reset && qf_v && ((r_done && r_id == qf_id) || (w_done && w_id == qf_id)))
+         $fatal(1, "ddr_hpm: id %0d completes the cycle after its acceptance, before its start is written", qf_id);
    // ---- log2 bin of the completed latency (highest set bit + 1, capped at 7) ----
    function [2:0] binof; input [LW-1:0] v; integer i; begin
       binof = 3'd0;
