@@ -317,7 +317,9 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   step of a page straddle), and a predicted-taken branch does not empty it -- the predictor
   (§4.2) already steered the stream to the target, whose halfwords follow the branch's; a restart
   (a redirect, or, a cycle later, a mark fetch rejects) empties it and restarts the stream at the
-  redirect's target or the PC.
+  redirect's target or the PC. That it is the PC is checked a cycle late, from registers: the head's
+  VA (`rg_hva`) follows the registered advance and taken target, and the check and the advance's
+  bound read the cycle before's PC and count, so neither is on the head's loop.
   So the window fetch aligns is a rotation of the ring from its registered head, with no address
   compare on the fetch loop, and each halfword carries a mark bit: it ends a pair at a CTI the
   predictor knows. Answers come back in order; a flush marks every request then in flight stale and

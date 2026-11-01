@@ -160,7 +160,6 @@ module smolrv64_fring
                : rg_drop - {2'd0, ic_valid & (rg_drop != 3'd0)};
       if (reset | flush) begin
          rg_cnt <= 0;  rg_resv <= 0;  rg_head <= 0;  rg_mfl <= 0;  rg_cy <= 1'b0;
-         rg_hva <= rst_a;
          if (flush) rg_gen <= rg_gen + 1'b1;
       end else begin
          rg_head <= rg_head + adv_w[RSB-1:0];
@@ -168,7 +167,6 @@ module smolrv64_fring
          rg_resv <= rg_resv + (rq_acc ? {{(RSB-3){1'b0}}, rq_n} : {(RSB+1){1'b0}}) - adv_w;
          rg_mfl  <= rg_mfl + (rq_acc ? {{(PQB+1-4){1'b0}}, ones8(p_mk)} : {(PQB+1){1'b0}})
                            - (rp_ok ? {{(PQB+1-4){1'b0}}, ones8(rp_mk)} : {(PQB+1){1'b0}});
-         rg_hva  <= take ? take_tgt : rg_hva + {{(PCW-1-AVW){1'b0}}, adv_hw, 1'b0};
          if (rq_acc) rg_lvl <= pc_lvl;
          if (drop) rmk[rg_head] <= 1'b0;
          if (rp_ok) rg_cy <= rp_cy;
@@ -202,8 +200,22 @@ module smolrv64_fring
          if (k < rg_cnt) n_mk = n_mk + {{(PQB+1){1'b0}}, rmk[rg_head + k[RSB-1:0]]};
    end
    wire chk     = ~reset & ~flush;
-   wire e_head  = chk & (rg_cnt != 0) & (rg_hva != pc_va);
-   wire e_over  = chk & ({1'b0, adv_hw} > rg_cnt);
+   // THE HEAD AND THE ADVANCE ARE CHECKED A CYCLE LATE, from registers: rg_hva follows the head from
+   // the registered advance and taken target, so its add and the advance's compare are off the
+   // head's loop (window -> aligner -> adv_hw), and each check reads the cycle before's PC and count.
+   reg             hv_rs, hv_tk, hv_ok, hv_cnz;
+   reg  [PCW-1:0]  hv_ra, hv_tgt, hv_pc;
+   reg  [AVW-1:0]  hv_adv;
+   reg  [RSB:0]    hv_cnt;
+   initial begin hv_rs = 1'b1;  hv_ok = 1'b0; end
+   always @(posedge clk) begin
+      hv_rs <= reset | flush;  hv_ra <= rst_a;  hv_tk <= take;  hv_tgt <= take_tgt;  hv_adv <= adv_hw;
+      hv_ok <= chk;  hv_cnz <= rg_cnt != 0;  hv_cnt <= rg_cnt;  hv_pc <= pc_va;
+      if (hv_rs) rg_hva <= hv_ra;
+      else       rg_hva <= hv_tk ? hv_tgt : rg_hva + {{(PCW-1-AVW){1'b0}}, hv_adv, 1'b0};
+   end
+   wire e_head  = hv_ok & hv_cnz & (rg_hva != hv_pc);
+   wire e_over  = hv_ok & ({1'b0, hv_adv} > hv_cnt);
    wire e_hold  = chk & (rg_cnt + rp_n > rg_resv);
    wire e_gen   = chk & rp_ok & (ic_rtag[GW-1:0] != rg_gen);
    wire e_orph  = chk & ic_valid & (rg_infl == 3'd0);
@@ -212,8 +224,8 @@ module smolrv64_fring
    always @(posedge clk) err_q <= reset ? 6'd0 : {e_marks, e_orph, e_gen, e_hold, e_over, e_head};
    assign err = err_q;
    always @(posedge clk) begin
-      if (e_head)  $fatal(1, "smolrv64_fring: the ring's head %h is not the PC %h", rg_hva, pc_va);
-      if (e_over)  $fatal(1, "smolrv64_fring: fetch consumed %0d halfwords of a ring holding %0d", adv_hw, rg_cnt);
+      if (e_head)  $fatal(1, "smolrv64_fring: the ring's head %h is not the PC %h", rg_hva, hv_pc);
+      if (e_over)  $fatal(1, "smolrv64_fring: fetch consumed %0d halfwords of a ring holding %0d", hv_adv, hv_cnt);
       if (e_hold)  $fatal(1, "smolrv64_fring: the ring holds more (%0d) than it reserved (%0d)", rg_cnt + rp_n, rg_resv);
       if (e_gen)   $fatal(1, "smolrv64_fring: a kept I$ answer is from generation %0d, the stream is %0d", ic_rtag[GW-1:0], rg_gen);
       if (e_orph)  $fatal(1, "smolrv64_fring: an I$ answer with no request in flight");
