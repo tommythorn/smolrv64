@@ -123,7 +123,8 @@ module smolrv64_frontend
    // ------------------------------------------------------------- the fetch ring
    wire                f_drop, f_rej, f_rej_np, f_take;
    wire [$clog2(FW+1)-1:0] f_pop;
-   wire [FW-1:0]       f_smk;
+   wire [FW-1:0]       f_smk, f_emk;
+   wire [FW*$clog2(FW+1)-1:0] f_mi;
    // A rejected mark restarts the stream a cycle later, as a freeze of one cycle: the ring
    // withholds its window, empties and restarts at the PC, and the predictor goes back to the
    // aligner's state. It is rare, and registering it keeps the aligner out of the stream's next
@@ -175,7 +176,7 @@ module smolrv64_frontend
       .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
       .irq_inject(irq_inject), .irq_pres(irq_pres),
       .imem_mk(imem_mk), .imem_st(imem_st), .pq_tk(bp_tk), .pq_tgt(bp_tgts),
-      .pop(f_pop), .drop(f_drop), .at_mark(), .take(f_take), .take_tgt(bp_tgt), .slot_mk(f_smk),
+      .pop(f_pop), .drop(f_drop), .at_mark(), .take(f_take), .take_tgt(bp_tgt), .slot_mk(f_smk), .slot_emk(f_emk), .slot_mi(f_mi),
       .reject(f_rej), .reject_np(f_rej_np),
       // `pred_npc` (the chosen next PC, with its adder) is left unconnected: the queue
       // stores the CHOICE (pnpc_kind) and the target, and decode rebuilds the value from
@@ -285,20 +286,17 @@ module smolrv64_frontend
    // Slot k's queue record: slot 0 is the fetch-fault pseudo-op when fetch has nothing; a slot
    // falls through when a later one follows, and the bundle's last valid slot carries its
    // prediction (pnpc_kind and the target belong to it). Each slot's details are its own: m is
-   // the number of marks in the slots before it, so a slot ending at a mark has prediction m's,
-   // and any other the details of an unpredicted instruction with prediction m's pre-state (the
-   // state between mark m-1 and mark m).
+   // the number of marks before it, so a slot ending at a mark has prediction m's, and any other
+   // the details of an unpredicted instruction with prediction m's pre-state (the state between
+   // mark m-1 and mark m). Both come from fetch's window alone (slot_emk, slot_mi), not from the
+   // bundle's run: a slot past the run is not pushed, and what it would have held is not read.
    wire [QW-1:0]  q_in [0:FW-1];
    genvar gk;
    generate for (gk = 0; gk < FW; gk = gk + 1) begin: qi
       wire last = (gk == FW - 1) ? 1'b1 : ~dq_sv[(gk == FW - 1) ? gk : gk + 1];
-      reg  [$clog2(FW+1)-1:0] m;
-      integer mi;
-      always @* begin
-         m = 0;
-         for (mi = 0; mi < gk; mi = mi + 1) m = m + {{($clog2(FW+1)-1){1'b0}}, f_smk[mi]};
-      end
-      wire [PDW-1:0] pd_slot = f_smk[gk] ? pd_mk[m*PDW +: PDW] : pd_no[m*PDW +: PDW];
+      wire [$clog2(FW+1)-1:0] mw = f_mi[gk*$clog2(FW+1) +: $clog2(FW+1)];
+      wire [$clog2(FW+1)-1:0] m  = (mw < FW) ? mw : {$clog2(FW+1){1'b0}};   // past the run: any entry
+      wire [PDW-1:0] pd_slot = f_emk[gk] ? pd_mk[m*PDW +: PDW] : pd_no[m*PDW +: PDW];
       assign q_in[gk] = {pd_slot, ((gk == 0) & dq_fault) ? imem_ipc : dq_pc[gk*PCW +: PCW],
                          dq_inst[gk*32 +: 32], dq_seq[gk*SEQW +: SEQW],
                          last ? dq_pk : 2'd0, (gk == 0) & dq_fault};

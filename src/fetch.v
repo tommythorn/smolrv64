@@ -86,6 +86,8 @@ module fetch
     output wire                    take,        // ...whose taken prediction fetch took: pc_q goes to its target
     output wire [PCW-1:0]          take_tgt,    // the target of the last slot's prediction
     output wire [IW-1:0]           slot_mk,     // per slot: it ends at a mark (its own prediction)
+    output wire [IW-1:0]           slot_emk,    // ...the same from the window alone, past the bundle too
+    output wire [IW*$clog2(IW+1)-1:0] slot_mi,  // ...and the marks before it: its prediction's index
     output wire                    reject,      // the first mark does not fit the code: restart the stream...
     output wire                    reject_np,   // ...predicting nothing in its first pair
     output wire [PCW-1:0]          pred_npc,
@@ -181,12 +183,14 @@ module fetch
    wire [IW*PBW-1:0] al_offs;
    wire [IW*SEQW-1:0] al_seq;
    wire al_br_term, al_mk_term;
-   wire [IW-1:0] al_smk, al_sbr;
+   wire [IW-1:0] al_smk, al_sbr, al_semk, al_setk, al_sbrw;
+   wire [IW*PBW-1:0] al_nxt, al_smi;
    aligner #(.IW(IW), .HW(HW), .PCW(PCW), .SEQW(SEQW)) u_al
      (.hwin(imem_data), .avail(eff_avail), .base_pc(pc_q), .base_seq(seq_q),
       .solo_all(solo_all), .bytes_late(bytes_late), .st(imem_st), .mk(imem_mk), .mk_tk(pq_tk),
       .valid(al_valid), .inst(al_inst), .pc(al_pc), .offs(al_offs), .seq(al_seq), .consumed(al_consumed),
-      .br_term(al_br_term), .mk_term(al_mk_term), .smk(al_smk), .sbr(al_sbr));
+      .br_term(al_br_term), .mk_term(al_mk_term), .smk(al_smk), .sbr(al_sbr),
+      .nxt(al_nxt), .smi(al_smi), .semk(al_semk), .setk(al_setk), .sbrw(al_sbrw));
    // THE FALL-THROUGH AND THE SLOT PCs ARE MUXES, NOT ADDERS (2026-09-05). Gate U, the first
    // build of the two-wide fetch, failed at -0.620 ns on pc_q -> iMMU -> fetch buffer ->
    // aligner -> +2*consumed -> the RAS write and the decoupling queue's slot-1 PC: 23 levels with
@@ -208,12 +212,8 @@ module fetch
    // is invisible to `always @*` (iverilog's list, and the 240 riscv-tests that timed out
    // under Verilator on the first cut agree), so the block names everything it reads.
    reg  [IW*PCW-1:0] al_pcm;
-   reg  [PCW-1:0]    ft_sel;
    integer ps, pi;
    always @* begin
-      ft_sel = pc_q;
-      for (pi = 1; pi <= NP; pi = pi + 1)
-         if (al_consumed == pi[PBW-1:0]) ft_sel = pc_plus[pi];
       for (ps = 0; ps < IW; ps = ps + 1) begin
          al_pcm[ps*PCW +: PCW] = pc_q;
          for (pi = 1; pi <= NP; pi = pi + 1)
@@ -247,25 +247,60 @@ module fetch
    // the marks (see PREDICTION): which slots end at one, and the bundle's last slot. A straddle's
    // one instruction may end at a mark; the interrupt pseudo-op never does. Straddle and interrupt
    // bundles never take a prediction (the straddle FSM owns its +4 advance; the pseudo-op holds PC).
+   localparam integer MW = $clog2(IW+1);
    wire [IW-1:0] sm = irq_go ? {IW{1'b0}} : strad ? {{(IW-1){1'b0}}, imem_mk[0]} : al_smk & al_valid;
-   reg  [IW-1:0] lst;                          // the last valid slot, one-hot
-   reg  [$clog2(IW+1)-1:0] nm;                  // the marks in the bundle
-   integer ls;
+   wire          n_arm = ~irq_go & ~strad;     // the aligner's bundle
+   // THE BUNDLE'S OUTCOMES ARE SELECTED, NOT DERIVED. Whatever the bundle decides -- its next PC,
+   // its target, whether it is taken, its marks, how far it consumed, how many it holds -- is the
+   // value of its last slot, and each slot's value comes from the window alone (the aligner's
+   // per-slot facts: its next position, its mark's index), in parallel with the bundle's run. The
+   // run's one-hot last slot then picks one: the run is the only chain in front of pc_q, the ring's
+   // head and the predictor's pop.
+   wire [IW-1:0] lst = slot_valid & ~(slot_valid >> 1);   // the last valid slot (they run from slot 0)
+   reg  [PCW-1:0] sl_ft [0:IW-1], sl_tg [0:IW-1], sl_np [0:IW-1];
+   reg  [IW-1:0]  sl_pv;
+   reg  [MW-1:0]  sl_nm [0:IW-1];
+   reg  [PCW-1:0] n_np, n_tg;
+   reg  [MW-1:0]  n_nm;
+   reg  [PBW-1:0] n_cons;
+   reg  [SEQW-1:0] n_nv;
+   integer ls, lm, lp;
    always @* begin
-      lst = {IW{1'b0}};  nm = 0;
+      n_np = {PCW{1'b0}};  n_tg = {PCW{1'b0}};  n_nm = {MW{1'b0}};  n_cons = {PBW{1'b0}};  n_nv = {SEQW{1'b0}};
       for (ls = 0; ls < IW; ls = ls + 1) begin
-         if (slot_valid[ls]) lst = {IW{1'b0}} | ({{(IW-1){1'b0}}, 1'b1} << ls);
-         nm = nm + {{($clog2(IW+1)-1){1'b0}}, sm[ls]};
+         sl_ft[ls] = pc_q;
+         for (lp = 1; lp <= NP; lp = lp + 1)
+            if (al_nxt[ls*PBW +: PBW] == lp[PBW-1:0]) sl_ft[ls] = pc_plus[lp];
+         sl_tg[ls] = pq_tgt[0 +: PCW];
+         for (lm = 1; lm < IW && lm <= HW; lm = lm + 1)   // a window holds at most HW marks
+            if (al_smi[ls*PBW +: PBW] == lm[PBW-1:0]) sl_tg[ls] = pq_tgt[lm*PCW +: PCW];
+         sl_pv[ls] = al_setk[ls] & al_sbrw[ls];            // a taken mark on a branch or jump
+         sl_np[ls] = sl_pv[ls] ? sl_tg[ls] : sl_ft[ls];
+         sl_nm[ls] = {{(MW-1){1'b0}}, al_semk[ls]};
+         for (lm = 1; lm < IW && lm <= HW; lm = lm + 1)   // a window holds at most HW marks
+            if (al_smi[ls*PBW +: PBW] == lm[PBW-1:0]) sl_nm[ls] = lm[MW-1:0] + {{(MW-1){1'b0}}, al_semk[ls]};
+         if (lst[ls]) begin
+            n_np = n_np | sl_np[ls];  n_tg = n_tg | sl_tg[ls];  n_nm = n_nm | sl_nm[ls];
+            n_cons = n_cons | al_nxt[ls*PBW +: PBW];  n_nv = n_nv | (ls[SEQW-1:0] + 1'b1);
+         end
       end
    end
-   // the last slot's mark is the bundle's nm-th: entry nm-1 (0 when there is none: unused then)
-   wire [$clog2(IW+1)-1:0] jm = (nm == 0) ? 0 : nm - 1'b1;
-   wire [$clog2(IW)-1:0]   ji = jm[$clog2(IW)-1:0];   // jm < IW: the mark's index
-   wire           tk_l  = at_mark & pq_tk[ji];
-   wire [PCW-1:0] tgt_l = pq_tgt[ji*PCW +: PCW];
+   always @(posedge clk)
+      if (!reset && ((slot_valid & (slot_valid + 1'b1)) != {IW{1'b0}}))
+         $fatal(1, "fetch: the bundle's slots %b do not run from slot 0", slot_valid);
+   // the last slot's mark (the bundle's last prediction): the aligner's, or a straddle's own
+   wire           tk_l  = n_arm ? |(lst & al_setk) : (at_mark & pq_tk[0]);
+   wire [PCW-1:0] tgt_l = n_arm ? n_tg : pq_tgt[0 +: PCW];
+   wire [MW-1:0]  nm    = n_arm ? n_nm : {{(MW-1){1'b0}}, sm[0]};   // the marks in the bundle
    assign at_mark   = |(sm & lst);
    assign slot_mk   = sm;
-   wire   pred_v    = tk_l & |(al_sbr & lst) & ~strad & ~irq_go;   // the LAST slot is a branch or jump
+   genvar gs;
+   generate for (gs = 0; gs < IW; gs = gs + 1) begin : wmk
+      assign slot_emk[gs] = n_arm ? al_semk[gs] : sm[gs];
+      if (MW <= PBW) begin : mn  assign slot_mi[gs*MW +: MW] = n_arm ? al_smi[gs*PBW +: MW] : {MW{1'b0}}; end
+      else           begin : mx  assign slot_mi[gs*MW +: MW] = n_arm ? {{(MW-PBW){1'b0}}, al_smi[gs*PBW +: PBW]} : {MW{1'b0}}; end
+   end endgenerate
+   wire   pred_v    = n_arm & |(lst & sl_pv);      // the LAST slot is a branch or jump at a taken mark
    wire   mid       = imem_ok & ~strad & ~irq_go & imem_mk[0] & (imem_data[1:0] == 2'b11);
    assign drop      = mid & ~pq_tk[0];
    assign reject    = ~reset & ~redirect & ((fire & tk_l & ~pred_v) | (mid & pq_tk[0]));
@@ -274,18 +309,11 @@ module fetch
    assign take      = fire & pred_v;
    assign take_tgt  = tgt_l;
 
-   integer c;
-   reg [SEQW-1:0] nvalid;
-   always @* begin
-      nvalid = 0;
-      for (c = 0; c < IW; c = c + 1) nvalid = nvalid + slot_valid[c];
-   end
 
    // normal-path advance: predicted-taken CTI -> target, else fall-through. The
    // straddle/irq arms of the advance chain come first, so pred_v is naturally
    // ignored there (the straddle FSM owns its +4; the pseudo-op holds PC).
-   wire [PCW-1:0] ft_npc   = ft_sel;                                            // += 2*consumed, by selection
-   wire [PCW-1:0] norm_npc = pred_v ? tgt_l : ft_npc;
+   wire [PCW-1:0] norm_npc = n_np;                    // the last slot's: its target, or past it
    // the presented bundle's chosen next PC (mispredict reference at execute)
    assign pred_npc = irq_go     ? ipc_q
                    : strad      ? pc_plus[1]           // ipc_q + 4: the straddler's length
@@ -299,7 +327,7 @@ module fetch
                   : strad         ? {{(PBW-1){1'b0}}, fire}
                   : irq_go        ? {PBW{1'b0}}
                   : straddle_det  ? {{(PBW-1){1'b0}}, 1'b1}
-                  : fire          ? al_consumed
+                  : fire          ? n_cons
                   :                 {PBW{1'b0}};
 
    always @(posedge clk) begin
@@ -322,7 +350,7 @@ module fetch
       end else if (fire) begin
          pc_q  <= norm_npc;
          ipc_q <= norm_npc;
-         seq_q <= seq_q + nvalid;
+         seq_q <= seq_q + n_nv;
       end
    end
 

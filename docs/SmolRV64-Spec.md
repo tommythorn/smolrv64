@@ -368,7 +368,12 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   predecodes a START bit per halfword as each pair arrives (a halfword begins an instruction unless
   the one before began a 32-bit op; the chain runs on from the last halfword appended and restarts
   at the PC), so the aligner places slot k at the window's k-th start, decodes every halfword in
-  parallel and selects per slot: no slot's position waits for the lengths before it. `PDW` = 32:
+  parallel and selects per slot: no slot's position waits for the lengths before it. Fetch selects the
+  bundle's outcomes the same way: each slot's next PC (its target at a taken mark on a branch or jump,
+  else the PC past it), its target, its marks and its advance come from the window alone (the
+  aligner's per-slot position and mark index), and the run's one-hot last slot picks one, so the run
+  of slots is the only chain in front of `pc_q`, the ring's head and the predictor's pop; the
+  details each slot carries are picked by its window-only mark index the same way. `PDW` = 32:
   {RAS-pointer snapshot 3, history snapshot 11, yhit, yctr 2, yidx 11, the BTB way 1, hit, ctr 2}.
 ### 4.2 Branch prediction
 

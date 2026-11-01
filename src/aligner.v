@@ -51,7 +51,15 @@ module aligner
                                               // window cut or a SYSTEM/AMO/FENCE terminator)
     output wire                    mk_term,   // bundle ends on a marked halfword
     output wire [IW-1:0]           smk,       // per slot: it ends on a marked halfword
-    output wire [IW-1:0]           sbr);      // per slot: it is a genuine branch/jump
+    output wire [IW-1:0]           sbr,       // per slot: it is a genuine branch/jump
+    // ...and per slot from the window alone, whether or not the bundle reaches it, for the selects
+    // that follow the bundle's run (fetch): its next position, the marks before it (its own
+    // prediction's index), that it ends on a mark, on one predicted taken, and is a branch or jump
+    output wire [IW*PBW_O-1:0]     nxt,
+    output wire [IW*PBW_O-1:0]     smi,
+    output wire [IW-1:0]           semk,
+    output wire [IW-1:0]           setk,
+    output wire [IW-1:0]           sbrw);
 
    localparam PBW = $clog2(HW+2);        // holds a position 0..HW (+1 for lookahead)
 
@@ -149,6 +157,7 @@ module aligner
    reg  [HW-1:0]    ps   [0:IW-1];
    reg  [IW-1:0]    s_in, s_have, s_mkin, s_sys, s_end, s_br, s_emk, s_tk;
    reg  [PBW-1:0]   s_pos[0:IW-1], s_nxt[0:IW-1];
+   reg  [CW-1:0]    s_mi [0:IW-1];
    reg  [31:0]      ir   [0:IW-1];
    reg  [PCW-1:0]   pcv  [0:IW-1];
    reg  [SEQW-1:0]  sqv  [0:IW-1];
@@ -172,6 +181,7 @@ module aligner
             end
          end
          s_tk[k] = mk_tk[mi[$clog2(IW)-1:0]];               // this slot's mark is the mi-th
+         s_mi[k] = mi;
          pcv[k]  = base_pc + (s_pos[k] << 1);
          sqv[k]  = base_seq + k[SEQW-1:0];
       end
@@ -205,6 +215,9 @@ module aligner
          assign pc  [g*PCW +: PCW]  = pcv[g];
          assign offs[g*PBW +: PBW]  = s_pos[g];
          assign seq [g*SEQW +: SEQW] = sqv[g];
+         assign nxt [g*PBW +: PBW]  = s_nxt[g];
+         if (PBW > CW) begin : mw  assign smi[g*PBW +: PBW] = {{(PBW-CW){1'b0}}, s_mi[g]}; end
+         else          begin : me  assign smi[g*PBW +: PBW] = s_mi[g]; end
       end
    endgenerate
    assign valid    = v;
@@ -213,6 +226,9 @@ module aligner
    assign mk_term  = mt;
    assign smk      = smv;
    assign sbr      = sbv;
+   assign semk     = s_emk;
+   assign setk     = s_emk & s_tk;
+   assign sbrw     = s_br;
 endmodule
 
 `default_nettype wire
