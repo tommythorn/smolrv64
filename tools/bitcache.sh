@@ -68,7 +68,8 @@ key() {
     local plat=$1 tree iw div plc
     tree=$(cat "$plat/$PROJ.runs/bitcache-start/tree" 2>/dev/null || tree_id)
     iw=$(define "$plat" SMOLRV64_IW);  div=$(define "$plat" PROBE_CLK_DIV8)
-    plc=$(grep -a -o -m1 'place_design -directive [A-Za-z_]*' "$plat/$PROJ.runs/impl_1/runme.log" 2>/dev/null | awk '{print $3}')
+    # the LAST place_design: runme.log keeps the runs a reset_run left before this one's
+    plc=$(grep -a -o 'place_design -directive [A-Za-z_]*' "$plat/$PROJ.runs/impl_1/runme.log" 2>/dev/null | tail -1 | awk '{print $3}')
     echo "$tree-iw${iw:-?}-div${div:-?}-${plc:-?}"
 }
 
