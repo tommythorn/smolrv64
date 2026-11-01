@@ -2099,7 +2099,10 @@ instructions on programmable counters, which do filter.
 **TOP-DOWN (§11.2, on the board).** `smolrv64_core`'s one classifier (`td_k`) charges every cycle to
 exactly one of bad speculation, front-end, back-end or dispatching; its events count it, so
 `TD_BS + TD_FE + TD_BE` plus the dispatching cycles is the cycle count by construction, and the
-simulator's `TOPDOWN-SIM` prints the same classifier. A cycle whose IR group dispatches is a
+simulator's `TOPDOWN-SIM` prints the same classifier. The counters take a copy of it computed a cycle behind from
+its leaves registered, with feedback of its own (`tdr_k`): `td_k` reads the cycle's latest dispatch,
+M and redirect signals, and its cone was the end of theirs. The copy is `td_k` delayed exactly (asserted
+every cycle), and its causes and depth events reach the counters at the same edge `td_k`'s did. A cycle whose IR group dispatches is a
 dispatching cycle whatever waits behind it (the queue head's credit is the next group's), so the
 dispatching cycles' instructions are exactly `DPATCH`. `perf-smol td CMD` prints the report: level 1, the depth under each parent, and the slots; the
 `tdbe` and `tdfe` sets add level 3, `td_k` itself.

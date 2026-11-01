@@ -3467,6 +3467,60 @@ module smolrv64_core
                          // senior queue -- which is what "completion" means since the queues.
                          redirect | fr_rel, lsu_pt_ack & pt_store, ld_land};   // REDIR: a restart ends
 
+   // THE COUNTERS' CLASSIFIER RUNS A CYCLE BEHIND, FROM REGISTERS. td_k above reads the cycle's
+   // latest signals (the dispatch take, the queue head's credits, M, the redirect), and its depth
+   // events were the end of those cones in every placer draw. The counters take a copy computed
+   // from the classifier's leaves registered, with its own feedback (tdr_pbe, tdr_pk): the same
+   // causes one cycle later, so the copy is td_k delayed exactly (td_k itself stays for the
+   // testbench's views, the wedge ILA and the assertions). The counters see each event at the
+   // same edge as before: the copy's depth events go straight into hpm_ev_q, and its cause and
+   // the dispatch count are the counters' without a register of their own.
+   reg        tdr_rst, tdr_red, tdr_rdw, tdr_stm, tdr_dany, tdr_hdw, tdr_hdv, tdr_imr, tdr_avz, tdr_dqv, tdr_dtk,
+              tdr_mem, tdr_rob, tdr_dld, tdr_dfp, tdr_siq, tdr_srn, tdr_ssq, tdr_slq, tdr_srz, tdr_pbe;
+   reg [IW-1:0] tdr_takev;
+   reg [4:0]  tdr_pk, tdr_k;
+   initial begin tdr_rst = 1'b1;  tdr_pbe = 1'b0;  tdr_pk = 5'd0; end
+   always @(posedge clk) begin
+      tdr_rst <= reset;  tdr_red <= redirect;  tdr_rdw <= rd_wait;  tdr_stm <= st_m;  tdr_dany <= d_any;
+      tdr_hdw <= hd_wait;  tdr_hdv <= fe_hd_v;  tdr_imr <= immu_ready;
+      tdr_avz <= (imem_avail_g == {$clog2(HW+2){1'b0}});  tdr_dqv <= fe_dq_valid;  tdr_dtk <= d_take;
+      tdr_mem <= m_mem_op;  tdr_rob <= st_rob;  tdr_dld <= dep_ld;  tdr_dfp <= dep_fp;  tdr_siq <= st_iq;
+      tdr_srn <= st_rn;  tdr_ssq <= st_sq;  tdr_slq <= st_lq;  tdr_srz <= st_srz;  tdr_takev <= s_takev;
+   end
+   wire       tdr_mt   = ~tdr_stm & ~tdr_dany & ~tdr_hdw & ~tdr_red;
+   wire       tdr_rf   = tdr_mt & tdr_hdv & tdr_pbe;
+   wire       tdr_bub  = tdr_mt & ~tdr_rf;
+   wire       tdr_mmu  = tdr_bub & ~tdr_imr;
+   wire       tdr_ic   = tdr_bub &  tdr_imr & tdr_avz;
+   wire       tdr_aln  = tdr_bub &  tdr_imr & ~tdr_avz & ~tdr_dqv;
+   wire       tdr_que  = tdr_bub &  tdr_imr & ~tdr_avz &  tdr_dqv;
+   wire       tdr_bs   = tdr_red | tdr_rdw;
+   wire       tdr_fe   = ~tdr_bs & tdr_bub;
+   wire       tdr_be   = ~tdr_bs & ~tdr_dtk & (tdr_stm | tdr_hdw | (tdr_dany & ~tdr_dtk) | tdr_rf);
+   wire [3:0] tdr_n4   = ones_nl(tdr_takev);
+   wire [2:0] tdr_nd   = tdr_n4[2:0];
+   always @* begin
+      if (tdr_bs)      tdr_k = tdr_red ? 5'd3 : 5'd4;
+      else if (tdr_fe) tdr_k = tdr_mmu ? 5'd5 : tdr_ic ? 5'd6 : tdr_aln ? 5'd7 : tdr_que ? 5'd8 : 5'd9;
+      else if (tdr_be) tdr_k = tdr_rf ? tdr_pk : tdr_stm ? (tdr_mem ? 5'd10 : 5'd11)
+                             : tdr_rob ? 5'd12 : tdr_dld ? 5'd13 : tdr_dfp ? 5'd14 : tdr_siq ? 5'd15
+                             : tdr_srn ? 5'd16 : tdr_ssq ? 5'd17 : tdr_slq ? 5'd18 : tdr_srz ? 5'd19 : 5'd20;
+      else             tdr_k = (tdr_nd == 3'd0) ? 5'd21 : (tdr_nd == 3'd4) ? 5'd22 : {2'b0, tdr_nd} - 5'd1;
+   end
+   always @(posedge clk) begin
+      tdr_pbe <= ~tdr_rst & (tdr_k >= 5'd10) & (tdr_k <= 5'd20);
+      tdr_pk  <= tdr_k;
+   end
+   always @(posedge clk)
+      if (!reset && !tdr_rst && (tdr_k != td_pk))
+         $fatal(1, "smolrv64_core: the counters' top-down cause %0d is not the cycle before's %0d", tdr_k, td_pk);
+   // the event bus as the counters take it: the classifier's bits from the copy, the rest registered
+   wire [43:0] hpm_ev_r = {(tdr_k == 5'd5) | (tdr_k == 5'd6),
+                           (tdr_k == 5'd15) | (tdr_k == 5'd17) | (tdr_k == 5'd18),
+                           (tdr_k == 5'd12), (tdr_k == 5'd10) | (tdr_k == 5'd13), tdr_be,
+                           hpm_ev_p[38:22], tdr_fe, tdr_bs, tdr_que, tdr_aln, hpm_ev_p[17:15],
+                           tdr_ic, tdr_mmu, tdr_bub, hpm_ev_p[11:0]};
+
    // FMAX: the Zihpm event bus is REGISTERED. hpm_ev -> hpm_inc -> a 64-bit mhpmcounter
    // carry chain was 823 of 3113 failing endpoints at 6 ns and the WORST family in the
    // design (m_addr -> ... -> u_csr/mhpmcounter[12][63]).  These bits are pure
@@ -3491,8 +3545,8 @@ module smolrv64_core
    // Two stages: the first has no reset or initial value, so synthesis retiming may pull it back
    // into the attribution cone (the top-down events read M's done, the redirect and the door).
    reg [43:0] hpm_ev_p, hpm_ev_q;
-   reg [2:0]  hpm_disp_q;                 // instructions dispatched this cycle (DPATCH)
-   reg [4:0]  hpm_tdk_q;                  // this cycle's top-down cause (the TDK_* events)
+   wire [2:0] hpm_disp_q = tdr_rst ? 3'd0 : tdr_nd;   // instructions dispatched the cycle before (DPATCH)
+   wire [4:0] hpm_tdk_q  = tdr_rst ? 5'd0 : tdr_k;    // ...and its top-down cause (the TDK_* events)
    reg [5:0]  hpm_lqocc_q, hpm_sqocc_q;   // queue occupancies, per cycle (MEM_LQOCC / MEM_SQOCC)
    reg [5:0]  hpm_ldinfl_q;               // fast-path loads in flight, per cycle (MEM_LDINFL)
    reg [5:0]  hpm_ret_q;
@@ -3500,13 +3554,10 @@ module smolrv64_core
    wire [5:0] lq_occ6 = lq_occ, sq_occ6 = sq_occ;
    initial if (LQ_N > 32 || SQ_N > 32)
       $fatal(1, "smolrv64_core: LQ_N=%0d SQ_N=%0d; the 6-bit occupancy fields count to 32", LQ_N, SQ_N);
-   initial begin hpm_ev_q = 44'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; hpm_disp_q = 3'd0;
-                 hpm_tdk_q = 5'd0; hpm_ldinfl_q = 6'd0; end
+   initial begin hpm_ev_q = 44'd0; hpm_ret_q = 6'd0; hpm_lqocc_q = 6'd0; hpm_sqocc_q = 6'd0; hpm_ldinfl_q = 6'd0; end
    always @(posedge clk) begin
       hpm_ev_p  <= hpm_ev;
-      hpm_ev_q  <= reset ? 44'd0 : hpm_ev_p;
-      hpm_disp_q <= reset ? 3'd0 : td_nd;
-      hpm_tdk_q  <= reset ? 5'd0 : td_k;
+      hpm_ev_q  <= reset ? 44'd0 : hpm_ev_r;
       hpm_ldinfl_q <= reset ? 6'd0 : lsu_ld_infl;
       hpm_lqocc_q <= reset ? 6'd0 : lq_occ6;
       hpm_sqocc_q <= reset ? 6'd0 : sq_occ6;
