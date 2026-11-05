@@ -62,13 +62,15 @@ set_false_path -to [get_pins -hier -filter {NAME =~ hdmi/rb_*/sr_reg[*]/PRE}]
 # may not put in one CMT column (its MMCM sits by the serializers in bank 65).
 set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets -of_objects [get_pins hdmi/smmcm/CLKIN1]]
 
-# Ethernet: the RTL8211EG, strapped GMII, bank 87 (3.3 V). gmii_phy deskews rxclk with an MMCM
-# and captures RXD/RXDV in the IOB; GMII at the receiver: data valid 2.0 ns before the clock's
-# rising edge, held 0 ns after it. Transmit leaves IOB flops with GTX_CLK forwarded inverted.
+# Ethernet: the RTL8211EG, strapped GMII, bank 87 (3.3 V). gmii_phy captures RXD/RXDV in the IOB
+# on its MMCM's clock, RX_PHASE placing the sample in the eye. The PHY drives RXD valid 2.5 ns before
+# RXCLK's rising edge and holds it 0.5 ns after (GMII at the PHY's pins, IEEE 802.3 35.4.2.3): input
+# delay max 8 - 2.5, min 0.5. (The receiver-side 2.0 / 0.0 leaves the IOB flop's capture ~0.01 ns,
+# under one MMCM phase step.) Transmit leaves IOB flops with GTX_CLK forwarded inverted.
 # named eth_rxc on every board: cvfpu_timing.tcl declares it asynchronous to the rest
 create_clock -period 8.000 -name eth_rxc [get_ports eth_rxclk]
-set_input_delay -clock eth_rxc -max 6.000 [get_ports {eth_rxd[*] eth_rxdv}]
-set_input_delay -clock eth_rxc -min 0.000 [get_ports {eth_rxd[*] eth_rxdv}]
+set_input_delay -clock eth_rxc -max 5.500 [get_ports {eth_rxd[*] eth_rxdv}]
+set_input_delay -clock eth_rxc -min 0.500 [get_ports {eth_rxd[*] eth_rxdv}]
 set_property PACKAGE_PIN D14 [get_ports eth_rxclk]
 set_property PACKAGE_PIN H12 [get_ports eth_rxdv]
 set_property PACKAGE_PIN F12 [get_ports {eth_rxd[0]}]

@@ -33,7 +33,10 @@ for {set round 1} {$round <= 4 && $wns < 0} {incr round} {
     if {$wns <= $before} { break }
 }
 puts "PHYSOPT-CLOSE: FINAL WNS=$wns ns"
-if {$wns >= 0} {
+# hold as well as setup, as build.tcl's gate: phys_opt can trade one for the other
+set whs [get_property SLACK [lindex [get_timing_paths -max_paths 1 -nworst 1 -hold] 0]]
+puts "PHYSOPT-CLOSE: FINAL WHS=$whs ns"
+if {$wns >= 0 && $whs >= 0} {
     catch {set_property SEVERITY {Warning} [get_drc_checks MDRV-1]}
     write_checkpoint -force $rundir/$::env(PROJECT)_closed.dcp
     report_timing_summary -file $rundir/$::env(PROJECT)_timing_summary_closed.rpt
@@ -41,6 +44,6 @@ if {$wns >= 0} {
     puts "PHYSOPT-CLOSE: BITSTREAM WRITTEN (WNS=$wns)"
 } else {
     write_checkpoint -force $rundir/$::env(PROJECT)_physopt2.dcp
-    puts "PHYSOPT-CLOSE: STILL NEGATIVE (WNS=$wns) -- no bit; checkpoint saved for inspection"
+    puts "PHYSOPT-CLOSE: STILL NEGATIVE (WNS=$wns WHS=$whs) -- no bit; checkpoint saved for inspection"
 }
 close_project

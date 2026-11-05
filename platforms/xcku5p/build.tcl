@@ -640,12 +640,19 @@ if {$step in {impl bit}} {
         puts "WARNING: STATS.WNS empty -- skipping the WNS gate; check the timing summary report."
         set wns 0
     }
-    if {$wns < 0} {
-        puts "\n*** TIMING VIOLATION: WNS=${wns}ns  TNS=${tns}ns  failing_endpoints=$failing ***"
+    # Hold as well as setup: a hold violation reaches a bitstream otherwise (HDMI-XCKU5P's GMII
+    # capture, WHS -2.874 ns, "met" at WNS +0.044 and every frame it received was bad).
+    set whs [get_property STATS.WHS [get_runs impl_1]]
+    if {$whs eq ""} {
+        puts "WARNING: STATS.WHS empty -- skipping the WHS gate; check the timing summary report."
+        set whs 0
+    }
+    if {$wns < 0 || $whs < 0} {
+        puts "\n*** TIMING VIOLATION: WNS=${wns}ns  TNS=${tns}ns  WHS=${whs}ns  failing_endpoints=$failing ***"
         puts "    Design will not function reliably at this clock frequency."
         error "Timing not met — fix violations before generating bitstream."
     } else {
-        puts "Timing met: WNS=${wns}ns"
+        puts "Timing met: WNS=${wns}ns WHS=${whs}ns"
     }
 }
 

@@ -102,7 +102,10 @@ module hdmi_xcku5p(
       .ui_clk           (ui_clk)
    );
 
-   gmii_phy eth (
+   // The capture clock reaches the IOB flops 3.5 ns after RXCLK's pin edge (the HD bank's input
+   // buffer and BUFGCE_HDIO before the MMCM, which compensates only its own feedback): -130.5
+   // degrees (2.9 ns earlier, the nearest MMCM step) centers the sample in the PHY's window.
+   gmii_phy #(.RX_PHASE(-130.5)) eth (
       .ui_clk(ui_clk), .rxclk(eth_rxclk), .rxdv(eth_rxdv), .rxd(eth_rxd),
       .gtx_clk(eth_gtx_clk), .txen(eth_txen), .txd(eth_txd), .phy_rst_n(eth_rst_n),
       .gmii_rx_clk(gmii_rx_clk), .gmii_clk_ok(gmii_clk_ok), .gmii_rx_dv(gmii_rx_dv),
