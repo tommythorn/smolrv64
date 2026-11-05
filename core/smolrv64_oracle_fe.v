@@ -13,6 +13,9 @@
 // run leaving the recorded path, as the printout of its own timing does -- sends the halfwords after
 // it, predicting nothing, until a redirect lands on a recorded position again. +oracle_cut ends a
 // bundle at its first taken branch, as the aligner does: the ideal less one taken branch a cycle.
+// Guarded by the same define as its one instance (smolrv64_frontend): every other build, and
+// every synthesis flow, sees an empty file.
+`ifdef SMOLRV64_ORACLE_FE
 module smolrv64_oracle_fe
   #(parameter integer FW   = 6,
     parameter integer PCW  = 40,
@@ -142,3 +145,4 @@ module smolrv64_oracle_fe
    final $display("smolrv64_oracle_fe: %0d redirects left the recorded path, %0d came back to it; %0d instructions sent off it; at position %0d of the path",
                   n_left, n_back, n_offi, k);
 endmodule
+`endif
