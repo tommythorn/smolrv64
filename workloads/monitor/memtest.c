@@ -11,14 +11,15 @@
 //                  bank: the activate and precharge timing rather than the bandwidth
 //
 // Each pass draws new values, and passes repeat until a key is pressed (seen between phases) or
-// the count runs out: a soak. The monitor's own DDR, the devices' scratch and the framebuffer in
-// [DMA_BASE, FB_BASE + 1 MiB), is never written: a range across it is tested on either side.
+// the count runs out: a soak. The monitor's own DDR, the devices' scratch and the framebuffer region
+// in [DMA_BASE, FB_BASE + 16 MiB), is never written: a range across it is tested on either side.
+// The region is the device tree's /memreserve/, whatever the mode (a 1080p frame is 4 MiB).
 #include "mon.h"
 
 #define LINE   64ul
 #define DRAM_A 0x80000000ul                 // the DRAM window's base (src/dram_window.vh)
 #define HOLE_A DMA_BASE
-#define HOLE_E (FB_BASE + 0x100000ul)
+#define HOLE_E (FB_BASE + 0x1000000ul)
 #define GOLD   0x9e3779b97f4a7c15ul         // word w of a line holds the line's value + w x GOLD
 
 static uint64_t nerr, shown;
