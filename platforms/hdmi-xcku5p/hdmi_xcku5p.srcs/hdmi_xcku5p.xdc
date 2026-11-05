@@ -92,6 +92,10 @@ set_property PACKAGE_PIN B14 [get_ports {eth_txd[7]}]
 set_property PACKAGE_PIN D13 [get_ports eth_rst_n]
 set_property IOSTANDARD LVCMOS33 [get_ports {eth_rxclk eth_rxdv eth_rxd[*] eth_gtx_clk eth_txen eth_txd[*] eth_rst_n}]
 set_property IOB TRUE [get_ports {eth_txen eth_txd[*]}]
+# RXCLK (D14) is an HD bank's clock pin: it reaches the clock network through that bank's own
+# BUFGCE_HDIO, and gmii_phy's MMCM -- no CMT sits beside an HD bank -- is in another column.
+set_property LOC BUFGCE_HDIO_X0Y6 [get_cells eth/bufg_in]
+set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets eth/rxclk_g]
 set_false_path -to [get_ports eth_rst_n]
 
 # Configuration from the quad-SPI flash, a Micron MT25QU128 (JEDEC 20 BB 18; the schematic says
