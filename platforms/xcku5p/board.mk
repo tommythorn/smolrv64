@@ -255,7 +255,7 @@ clean:
 	       .Xil *.jou *.log
 
 connect:
-	@screen $(TTY) 3000000
+	@screen $(TTY) $(or $(BAUD),3000000)
 
 help:
 	@echo "Targets:"

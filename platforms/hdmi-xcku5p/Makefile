@@ -4,5 +4,6 @@ PROJECT    := hdmi_xcku5p
 FLASH_PART := mt25qu128-spi-x1_x2_x4
 FLASH_MB   := 16
 MONITOR    := monitor-hdmi.bin
+BAUD       := 2000000
 TTY        := /dev/serial/by-id/usb-Silicon_Labs_CP2105_Dual_USB_to_UART_Bridge_Controller_0066394E-if00-port0
 include ../xcku5p/board.mk

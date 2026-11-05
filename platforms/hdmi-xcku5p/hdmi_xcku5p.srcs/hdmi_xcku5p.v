@@ -60,7 +60,8 @@ module hdmi_xcku5p(
 
    // The pixel clock's MMCM comes up, and is timed, at 1000 MHz / 7 = 142.86 MHz: hdmi_tx's
    // MMCM multiplies it by ten, within its VCO's 1600 MHz, and the monitor's 1080p60 is D = 7.
-   smolrv64_shell #(.VID_CLK_D(7)) shell (
+   // The console runs at 2 Mbps, its CP2105 interface's fastest.
+   smolrv64_shell #(.VID_CLK_D(7), .UART_BAUD(2_000_000)) shell (
       .sys_clk_p        (sys_clk_p),
       .sys_clk_n        (sys_clk_n),
       .key              (key),

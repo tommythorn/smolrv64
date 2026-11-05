@@ -58,7 +58,10 @@ module smolrv64_shell #(
     // The pixel clock's MMCM divider at configuration, which is also the frequency the pixel
     // domain is timed at (1000 MHz VCO / VID_CLK_D): the fastest pixel clock a mode may use. The
     // monitor sets each mode's divider over DRP.
-    parameter integer VID_CLK_D = 6
+    parameter integer VID_CLK_D = 6,
+    // The console's baud rate: what the board's USB-UART bridge can take (the RK board's 3 Mbps;
+    // a CP2105's interface 0 stops at 2 Mbps).
+    parameter integer UART_BAUD = 3_000_000
 ) (
     // Differential system clock (fed directly to DDR4 IP)
     input  wire       sys_clk_p,
@@ -1996,16 +1999,17 @@ module smolrv64_shell #(
       .wrData(wrData), .wrDataMask(wrDataMask), .wrDataEn(wrDataEn), .wrDataAddr(wrDataAddr),
       .rdDataEn(rdDataEn), .rdDataAddr(rdDataAddr), .rdData(rdData), .per_rd_done(per_rd_done));
 
-   // UART at probe_clk. rs232 ROUNDS the divisor (period=(CLK+BAUD/2)/BAUD), so at
-   // 66.67 MHz (ui_clk/5) / 3 Mbaud -> period 22 -> 3.030 Mbaud (1.0% err, within tolerance).
+   // UART at probe_clk, UART_BAUD (the board's: 3 Mbaud on the RK board, 2 on a CP2105). rs232
+   // ROUNDS the divisor (period=(CLK+BAUD/2)/BAUD): 166.67 MHz / 3 Mbaud -> 56 -> 2.976 Mbaud,
+   // / 2 Mbaud -> 83 -> 2.008 Mbaud, both well within tolerance.
    // CLK_FREQ MUST track probe_clk's divider: a stale value skews the baud (leaving 41.67
    // here while the clock runs /5 transmits ~60% too fast -> garbage on the wire).
-   // Matches the scalar core + `make connect` (3 Mbaud); 26x faster fw load than 115200.
+   // `make connect` opens the console at the board Makefile's BAUD.
    // rs232tx.ready (output, ready-to-accept) feeds rv_soc_top.uart_tx_ready directly.
-   rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(3_000_000)) probe_tx
+   rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(UART_BAUD)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
-   rs232rx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(3_000_000)) probe_rx
+   rs232rx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(UART_BAUD)) probe_rx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
