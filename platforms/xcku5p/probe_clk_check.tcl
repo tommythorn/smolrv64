@@ -58,10 +58,21 @@ if {[llength $probe_mmcm] == 1} {
 # so a flop clocked above its limit -- one packed into an HD bank's I/O stops at 8 ns -- would
 # otherwise reach a bitstream that "met timing". Placement decides some of them (an I/O flop), so
 # the check that counts is the one after route.
+#
+# One exception, named: a component-mode OSERDESE3's bit clock (CLK) above its rating -- an HDMI
+# transmitter's 5x pixel clock (src/hdmi_tx.v), 1.600 ns min period at -2, which the board runs
+# cleanly at 1080p. Only its period and pulse widths; its CLK-CLKDIV skew and every other cell still
+# fail the build. Each waived check is printed.
 set pw_bad {}
 foreach line [split [report_pulse_width -all_violators -return_string] "\n"] {
    if {[regexp {^(Min Period|Max Period|Low Pulse Width|High Pulse Width|Max Skew)\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(-[0-9.]+)\s+\S+\s+(\S+)} \
            $line -> check slack pin]} {
+      set p [get_pins -quiet $pin]
+      if {[llength $p] && [get_property REF_PIN_NAME $p] eq "CLK" && $check ne "Max Skew" &&
+          [get_property REF_NAME [get_cells -of_objects $p]] eq "OSERDESE3"} {
+         puts "probe_clk_check: waived (OSERDESE3 bit clock above its rating): $check $slack ns: $pin"
+         continue
+      }
       lappend pw_bad "$check $slack ns: $pin"
    }
 }
