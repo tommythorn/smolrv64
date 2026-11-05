@@ -122,10 +122,10 @@ endmodule
 // 4 lanes x 10-bit words @ pclk -> 4 lanes x 8-bit words @ wclk (wclk = 5/4 pclk,
 // frequency-locked, any phase). Bit 0 of each word is sent first.
 module hdmi_tmds_gearbox (
-    input         pclk, prst,
-    input  [39:0] din,
-    input         wclk, wrst,
-    output [31:0] dout
+    input  wire        pclk, prst,
+    input  wire [39:0] din,
+    input  wire        wclk, wrst,
+    output wire [31:0] dout
 );
     wire [39:0] word;
     wire [5:0]  level;
