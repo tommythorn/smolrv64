@@ -1275,8 +1275,9 @@ module smolrv64_shell #(
    // reads it once, after the memory controller's reset (its clock is limited to 200 MHz, so it
    // runs on vga_drp_clk), and it folds to the low 32 bits of net_mac, under 02:53 (locally
    // administered, unicast; 0x53 is 'S'): one MAC per board for good, recognisable in a DHCP
-   // server's leases, with nothing stored or programmed. vga_drp_clk is ui_clk / 2
-   // and phase-aligned with it, so dna_n and the fold reach ui_clk as ordinary timed paths.
+   // server's leases, with nothing stored or programmed. vga_drp_clk is ui_clk / 2 and
+   // phase-aligned with it, so dna_n and the fold reach ui_clk as timed paths; each holds for two
+   // ui_clk cycles (it changes only on vga_drp_clk's edges), which smolrv64_shell.xdc states.
    // READ and SHIFT come straight from flops: the port sits at the configuration site with a
    // large setup time, and ui_rst crosses in through dna_go, never through logic to its pins.
    reg         dna_go = 1'b0, dna_rd = 1'b0, dna_sh = 1'b0;

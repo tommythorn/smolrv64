@@ -64,6 +64,14 @@ resize_pblock [get_pblocks pb_l2] -add {SLICE_X74Y0:SLICE_X85Y239 URAM288_X0Y0:U
 # ui_clk's falling edge), so its capture registers -- the request's capture register (c_*) and that
 # falling-edge sample -- are multicycle 2. The paths back to probe_clk launch at the other ui_clk
 # edges and need no exception.
+# The device DNA's fold into net_mac (smolrv64_shell.v): dna_n and dna change only on
+# vga_drp_clk's edges -- ui_clk / 2, phase-aligned -- so each holds two ui_clk cycles at net_mac.
+# On HDMI-XCKU5P the two clock trees are 1.9 ns apart, and the default one-cycle check failed.
+set_multicycle_path -setup 2 -end -from [get_cells -hier -filter {NAME =~ *dna_n_reg* || NAME =~ *dna_reg*}] \
+    -to [get_cells -hier -filter {NAME =~ *net_mac_reg*}]
+set_multicycle_path -hold 1 -end -from [get_cells -hier -filter {NAME =~ *dna_n_reg* || NAME =~ *dna_reg*}] \
+    -to [get_cells -hier -filter {NAME =~ *net_mac_reg*}]
+
 set_multicycle_path -setup 2 -end -from [get_clocks probe_clk] \
     -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg* || NAME =~ *probe_sync/m_tf_reg}]
 set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] \
