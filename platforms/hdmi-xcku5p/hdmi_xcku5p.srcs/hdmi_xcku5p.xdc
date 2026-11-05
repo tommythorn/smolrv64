@@ -58,6 +58,9 @@ set hdmi_word [get_clocks -of_objects [get_pins -hier -filter {NAME =~ hdmi/bufg
 set_max_delay -datapath_only -from $hdmi_pix  -to $hdmi_word 5.000
 set_max_delay -datapath_only -from $hdmi_word -to $hdmi_pix  5.000
 set_false_path -to [get_pins -hier -filter {NAME =~ hdmi/rb_*/sr_reg[*]/PRE}]
+# hdmi_tx's MMCM takes the pixel clock from the shell's MMCM through a BUFG: a cascade the placer
+# may not put in one CMT column (its MMCM sits by the serializers in bank 65).
+set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets -of_objects [get_pins hdmi/smmcm/CLKIN1]]
 
 # Ethernet: the RTL8211EG, strapped GMII, bank 87 (3.3 V). gmii_phy deskews rxclk with an MMCM
 # and captures RXD/RXDV in the IOB; GMII at the receiver: data valid 2.0 ns before the clock's

@@ -3,10 +3,11 @@
 
 // gmii_phy -- a GMII PHY's pins (the RTL8211EG, strapped GMII) to the shell's GMII, gigabit.
 //
-// Receive: rxclk through an MMCM whose BUFG feedback deskews it back to the pin edge, as rgmii_rx
-// does (UltraScale+ has no BUFIO, and a BUFG's ~2.5 ns insertion alone samples past the eye);
-// RX_PHASE then places the sample in the eye, which the board's .xdc constrains with
-// set_input_delay so every build proves the window. RXD and RXDV are captured in the IOB.
+// Receive: rxclk through an MMCM whose BUFG feedback deskews its output, as rgmii_rx does
+// (UltraScale+ has no BUFIO, and a BUFG's ~2.5 ns insertion alone samples past the eye). The pin
+// is in an HD bank, which has no clock management tile beside it, so a BUFG carries it to the
+// MMCM, and that BUFG's delay is not compensated: RX_PHASE places the sample in the eye, which the
+// board's .xdc constrains with set_input_delay so every build proves the window. RXD and RXDV are captured in the IOB.
 // MMCME4 does not reliably relock after its input stops (link renegotiation) without a reset
 // pulse: as on the RK board, a ui_clk watchdog pulses RST while LOCKED stays low.
 // Transmit runs on the same clock: TXD and TXEN from IOB flops, and GTX_CLK forwarded inverted
@@ -38,7 +39,8 @@ module gmii_phy #(
     assign phy_rst_n = por[22];
 
     // ---- the capture clock ----
-    wire clkfb, clkfb_buf, clk0, locked;
+    wire rxclk_g, clkfb, clkfb_buf, clk0, locked;
+    BUFG bufg_in (.I(rxclk), .O(rxclk_g));
     reg  mmcm_rst = 1'b0;
     MMCME4_BASE #(
         .CLKIN1_PERIOD    (8.000),         // 125 MHz from the PHY
@@ -47,7 +49,7 @@ module gmii_phy #(
         .CLKOUT0_DIVIDE_F (10.000),        // 125 MHz
         .CLKOUT0_PHASE    (RX_PHASE)
     ) rx_mmcm (
-        .CLKIN1(rxclk), .CLKFBIN(clkfb_buf), .CLKFBOUT(clkfb), .CLKOUT0(clk0),
+        .CLKIN1(rxclk_g), .CLKFBIN(clkfb_buf), .CLKFBOUT(clkfb), .CLKOUT0(clk0),
         .LOCKED(locked), .PWRDWN(1'b0), .RST(mmcm_rst | ~phy_rst_n)
     );
     BUFG bufg_fb  (.I(clkfb), .O(clkfb_buf));
