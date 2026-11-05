@@ -8,6 +8,13 @@ set_property PACKAGE_PIN T24 [get_ports sys_clk_p]
 set_property PACKAGE_PIN U24 [get_ports sys_clk_n]
 set_property IOSTANDARD DIFF_SSTL12 [get_ports {sys_clk_p sys_clk_n}]
 
+# The fan (bank 67): 25 kHz PWM on E15 from the 50 MHz oscillator (E18), which nothing else uses.
+set_property -dict {PACKAGE_PIN E18 IOSTANDARD LVCMOS18} [get_ports clk_50m]
+set_property -dict {PACKAGE_PIN E15 IOSTANDARD LVCMOS18} [get_ports fan_pwm]
+create_clock -period 20.000 -name clk_50m [get_ports clk_50m]
+set_clock_groups -asynchronous -group [get_clocks clk_50m]
+set_false_path -to [get_ports fan_pwm]
+
 # Keys (bank 65, pulled to +1.2 V), the four push buttons.
 set_property -dict {PACKAGE_PIN T19 IOSTANDARD LVCMOS12} [get_ports {key[0]}]
 set_property -dict {PACKAGE_PIN N22 IOSTANDARD LVCMOS12} [get_ports {key[1]}]

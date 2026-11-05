@@ -7,6 +7,8 @@ module hdmi_xcku5p(
     // 100 MHz differential reference (X1), the DDR4 IP's system clock
     input  wire        sys_clk_p,
     input  wire        sys_clk_n,
+    input  wire        clk_50m,   // the board's 50 MHz oscillator, for the fan alone
+    output reg         fan_pwm = 1'b0,
     input  wire [3:0]  key,
     input  wire        rxd,       // the CP2105's interface 0
     output wire [7:0]  led,
@@ -57,6 +59,16 @@ module hdmi_xcku5p(
 
    assign led     = {4'd0, shell_led};
    assign hdmi_oe = 1'b1;
+
+   // The fan: 25 kHz at 50% (100% is loud, and the board is cool at half). Its driver inverts, and an
+   // undriven pin is pulled up, which stops it; at 50% the polarity does not matter. It runs from the
+   // board's own oscillator, so it turns from configuration on, whatever DDR4 or the core are doing.
+   wire       clk_fan;
+   reg  [9:0] fan_cnt = 10'd0;
+   BUFG bufg_fan (.I(clk_50m), .O(clk_fan));
+   always @(posedge clk_fan)
+      if (fan_cnt == 10'd999) begin fan_cnt <= 10'd0;  fan_pwm <= ~fan_pwm; end   // 50 MHz / 2000
+      else fan_cnt <= fan_cnt + 10'd1;
 
    // The pixel clock's MMCM comes up, and is timed, at 1000 MHz / 7 = 142.86 MHz: hdmi_tx's
    // MMCM multiplies it by ten, within its VCO's 1600 MHz, and the monitor's 1080p60 is D = 7.
