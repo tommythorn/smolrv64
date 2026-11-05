@@ -32,8 +32,9 @@
 // the pixel domain is timed at, so the ROM monitor sets each mode's clock over DRP -- its reset
 // mode's 25 MHz included -- before it enables the scan (workloads/monitor/video.c).
 //
-// Pixels are RGB565, little-endian, four to a 64-bit beat; the output is the top two bits of
-// each channel (RGB222, for the TinyVGA adapter).
+// Pixels are RGB565, little-endian, four to a 64-bit beat; the output is the pixel, zero in the
+// blanking, with its data enable and the syncs: a board takes what its connector needs (the RK
+// board the top two bits of each channel, RGB222, for the TinyVGA adapter; HDMI all of it).
 module vga_scanout (
     input  wire        clk,
     input  wire        reset,
@@ -76,11 +77,10 @@ module vga_scanout (
 
     input  wire        pix_clk,
     input  wire        pix_rst,
-    output reg         vga_hs,
-    output reg         vga_vs,
-    output reg  [ 1:0] vga_r,
-    output reg  [ 1:0] vga_g,
-    output reg  [ 1:0] vga_b
+    output reg         vid_de,
+    output reg         vid_hs,
+    output reg         vid_vs,
+    output reg  [15:0] vid_rgb
 );
    // ================================ registers (clk) ================================
    reg        en, hs_pol, vs_pol;
@@ -217,11 +217,10 @@ module vga_scanout (
    end
    wire [15:0] px = lb_q[{sel1, 4'd0} +: 16];
    always @(posedge pix_clk) begin
-      vga_r  <= act1 ? px[15:14] : 2'd0;
-      vga_g  <= act1 ? px[10: 9] : 2'd0;
-      vga_b  <= act1 ? px[ 4: 3] : 2'd0;
-      vga_hs <= hs1 ~^ hs_pol;     // active level when in the sync pulse
-      vga_vs <= vs1 ~^ vs_pol;
+      vid_de  <= act1;
+      vid_rgb <= act1 ? px : 16'd0;
+      vid_hs  <= hs1 ~^ hs_pol;    // active level when in the sync pulse
+      vid_vs  <= vs1 ~^ vs_pol;
    end
 
    // ================================ line fetch (clk) ================================

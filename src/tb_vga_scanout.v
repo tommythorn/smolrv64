@@ -17,7 +17,7 @@ module tb_vga_scanout;
    wire [ 2:0] arid, arsize, arprot;  wire [31:0] araddr;  wire [7:0] arlen;  wire [1:0] arburst;
    wire        arlock, arvalid, rready;  wire [3:0] arcache, arqos;
    reg         arready = 1'b0, rvalid = 1'b0, rlast = 1'b0;  reg [63:0] rdata = 64'd0;
-   wire        hs, vs;  wire [1:0] r, g, b;
+   wire        de, hs, vs;  wire [15:0] rgb;
    wire        pixclk_rst, drp_req, drp_we;  wire [6:0] drp_addr;  wire [15:0] drp_di;
 
    vga_scanout dut (
@@ -33,7 +33,7 @@ module tb_vga_scanout;
       .drp_req(drp_req), .drp_we(drp_we), .drp_addr(drp_addr), .drp_di(drp_di),
       .drp_ack(drp_req), .drp_do(16'hBEEF),          // an instant DRP: ack follows req
       .pix_clk(pix_clk), .pix_rst(1'b0),
-      .vga_hs(hs), .vga_vs(vs), .vga_r(r), .vga_g(g), .vga_b(b));
+      .vid_de(de), .vid_hs(hs), .vid_vs(vs), .vid_rgb(rgb));
 
    // ---- the framebuffer, as a function: pixel (x, y) ----
    localparam [31:0] BASE = 32'h8000_1000;
@@ -93,17 +93,17 @@ module tb_vga_scanout;
          synced = 1;  mh = 0;  mv = VSS;
       end
       if (armed && synced) begin : check
-         reg exp_hs, exp_vs, act;  reg [15:0] p;  reg [5:0] exp_rgb;
+         reg exp_hs, exp_vs, act;  reg [15:0] p;  reg [15:0] exp_rgb;
          exp_hs = mh >= HSS && mh < HSE;
          exp_vs = mv >= VSS && mv < VSE;
          act    = mh < HA && mv < VA;
          p      = pixel(mh, mv);
-         exp_rgb = act ? {p[15:14], p[10:9], p[4:3]} : 6'd0;
+         exp_rgb = act ? p : 16'd0;
          // The first frame after the edge may show lines fetched before the mode settled.
-         if (checking && frames > 0 && (hs !== exp_hs || vs !== exp_vs || {r, g, b} !== exp_rgb)) begin
+         if (checking && frames > 0 && (hs !== exp_hs || vs !== exp_vs || de !== act || rgb !== exp_rgb)) begin
             if (errors < 10)
-               $display("FAIL: frame %0d (x=%0d, y=%0d): hs=%b vs=%b rgb=%b, expected %b %b %b",
-                        frames, mh, mv, hs, vs, {r, g, b}, exp_hs, exp_vs, exp_rgb);
+               $display("FAIL: frame %0d (x=%0d, y=%0d): hs=%b vs=%b de=%b rgb=%h, expected %b %b %b %h",
+                        frames, mh, mv, hs, vs, de, rgb, exp_hs, exp_vs, act, exp_rgb);
             errors = errors + 1;
          end
          mh = mh + 1;

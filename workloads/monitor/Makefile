@@ -24,6 +24,15 @@ CFLAGS = -mabi=lp64 -mcmodel=medany \
 monitor.elf: $(SRCS) mon.h font.h blake3.h monitor.ld
 	$(RV)gcc $(CFLAGS) -DMONITOR_BUILD_STAMP=0x$(BUILD_STAMP)ULL $(SRCS) -o $@
 
+# The HDMI-XCKU5P board's monitor: 1 GiB, so its DMA scratch, framebuffer and default device tree
+# sit under 0xC000_0000 rather than 0x1_0000_0000, and its screen comes up at 1080p60 (HDMI).
+monitor-hdmi.elf: $(SRCS) mon.h font.h blake3.h monitor.ld
+	$(RV)gcc $(CFLAGS) -DMONITOR_BUILD_STAMP=0x$(BUILD_STAMP)ULL -DDRAM_SIZE=0x40000000ul \
+		-DDMA_BASE=0xBE000000ul -DFB_BASE=0xBF000000ul -DVIDEO_1080P $(SRCS) -o $@
+
+monitor-hdmi.bin: monitor-hdmi.elf
+	$(RV)objcopy -O binary $< $@
+
 # The simulation's monitor (workloads/sdboot): it boots from the disk image's
 # /smoltest at once, its DMA scratch and framebuffer are inside the simulation's 512 MiB DDR, and a request reads
 # at most 32 sectors, so a cluster run takes several.

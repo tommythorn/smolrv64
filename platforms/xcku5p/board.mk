@@ -16,7 +16,7 @@ SHARED   := $(dir $(lastword $(MAKEFILE_LIST)))
 ifeq ($(strip $(PROJECT)),)
 $(error the board's Makefile sets PROJECT before including board.mk)
 endif
-export PROJECT FLASH_PART FLASH_MB
+export PROJECT FLASH_PART FLASH_MB MONITOR
 XPR      := $(PROJECT).xpr
 RUNS_DIR := $(PROJECT).runs
 BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit

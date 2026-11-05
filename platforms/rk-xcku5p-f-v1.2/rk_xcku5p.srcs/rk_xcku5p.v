@@ -54,6 +54,11 @@ module rk_xcku5p(
     );
 
    wire        ui_clk;
+   wire [15:0] vid_rgb;
+   // The TinyVGA adapter's RGB222: the top two bits of each RGB565 channel.
+   assign vga_r = vid_rgb[15:14];
+   assign vga_g = vid_rgb[10: 9];
+   assign vga_b = vid_rgb[ 4: 3];
    wire        gmii_rx_clk, gmii_clk_ok, gmii_rx_dv, gmii_tx_en;
    wire [ 7:0] gmii_rxd, gmii_txd;
 
@@ -68,11 +73,12 @@ module rk_xcku5p(
       .sd_cmd           (sd_cmd),
       .sd_cd            (sd_cd),
       .sd_d             (sd_d),
-      .vga_hs           (vga_hs),
-      .vga_vs           (vga_vs),
-      .vga_r            (vga_r),
-      .vga_g            (vga_g),
-      .vga_b            (vga_b),
+      .vid_clk          (),
+      .vid_locked       (),
+      .vid_de           (),
+      .vid_hs           (vga_hs),
+      .vid_vs           (vga_vs),
+      .vid_rgb          (vid_rgb),
       .hid_rxd          (hid_rxd),
       .c0_ddr4_act_n    (c0_ddr4_act_n),
       .c0_ddr4_adr      (c0_ddr4_adr),

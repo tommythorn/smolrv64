@@ -24,6 +24,15 @@ typedef unsigned long      uint64_t;
 #define FB_BASE 0xFF000000ul
 #endif
 
+// The default boot's device tree, the page under the framebuffer.
+#define DTB_BASE (FB_BASE - 0x1000ul)
+
+// The board's DRAM in bytes; 0 probes for 2 or 4 GiB (memtest.c). A board with less states it:
+// its controller is set for 16 Gb parts, so an address past its end is not a plain alias.
+#ifndef DRAM_SIZE
+#define DRAM_SIZE 0ul
+#endif
+
 // Integrity log (rv_soc_top.v, the window the fetch-buffer diagnostic used to own,
 // 0x1000E000): the design's own invariants, latched in hardware by rv_errlog. 64-bit words:
 // [0]={version,"ERRL"} magic, [1]=sticky, one bit per invariant that has fired since reset

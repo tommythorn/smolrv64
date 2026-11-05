@@ -183,8 +183,14 @@ static void video_show(void)
 
 void video_init(void)
 {
-    static const struct vmode vga = { 25175, { 640, 656, 752, 800 }, { 480, 490, 492, 525 }, 0, 0 };
-    video_mode(&vga);                             // VESA 640x480@60, at 25 MHz (59.5 Hz)
+#ifdef VIDEO_1080P
+    // CEA 1920x1080@60 (VIC 16), at 1000 / 7 = 142.86 MHz (57.7 Hz): an HDMI transmitter's MMCM
+    // multiplies the pixel clock by ten, so its modes are 80 to 160 MHz (src/hdmi_tx.v).
+    static const struct vmode boot = { 148500, { 1920, 2008, 2052, 2200 }, { 1080, 1084, 1089, 1125 }, 1, 1 };
+#else
+    static const struct vmode boot = { 25175, { 640, 656, 752, 800 }, { 480, 490, 492, 525 }, 0, 0 };
+#endif
+    video_mode(&boot);                            // VESA 640x480@60, at 25 MHz (59.5 Hz), or 1080p60
     on = 1;
     for (int i = 0; i < nearly; i++) video_putc(early[i]);
 }

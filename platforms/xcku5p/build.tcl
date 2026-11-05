@@ -111,7 +111,12 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir rgmii_rx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir rgmii_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir gmii_phy.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir hdmi_tx.v] Verilog
     add_source_if_missing $fileset [file join $repo_root platforms xcku5p smolrv64_shell.v] Verilog
+    # the SoC's own constraints, every board's, beside the board's .xdc
+    set shell_xdc [file normalize [file join $repo_root platforms xcku5p smolrv64_shell.xdc]]
+    if {[llength [get_files -quiet $shell_xdc]] == 0} { add_files -fileset constrs_1 -norecurse $shell_xdc }
 
     add_source_if_missing $fileset [file join $src_dir alu.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_plic_arbiter.v] Verilog
@@ -196,7 +201,10 @@ set vdefines [list "MEM_BASEADDR=64'h70000000"]
 # The ROM monitor boots from on-chip SRAM (lmem, 512-bit lines): bake the monitor binary
 # into BRAM via $readmemh of a 64-byte-per-line hex (SOC_BOOT_HEX).
 if {1} {
-    set monitor_bin [file join $repo_root workloads monitor monitor.bin]
+    # the board's monitor image (its Makefile's MONITOR): its memory map and its screen's mode
+    set monitor_name monitor.bin
+    if {[info exists ::env(MONITOR)] && $::env(MONITOR) ne ""} { set monitor_name $::env(MONITOR) }
+    set monitor_bin [file join $repo_root workloads monitor $monitor_name]
     set boot_hex    [file join $src_dir mem.linehex]
     if {![file exists $monitor_bin]} {
         error "Monitor binary missing: $monitor_bin\nRun 'make -C workloads/monitor' first."

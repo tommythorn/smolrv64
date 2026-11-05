@@ -54,7 +54,12 @@
 // The SmolRV64 SoC on an XCKU5P board, everything but the board's PHYs: the core, the DDR4 PHY
 // and our controller, the devices, the clocks. A board's top (platforms/<board>/) gives it the
 // pins and adapts its Ethernet PHY to GMII; ui_clk comes out for that adapter.
-module smolrv64_shell(
+module smolrv64_shell #(
+    // The pixel clock's MMCM divider at configuration, which is also the frequency the pixel
+    // domain is timed at (1000 MHz VCO / VID_CLK_D): the fastest pixel clock a mode may use. The
+    // monitor sets each mode's divider over DRP.
+    parameter integer VID_CLK_D = 6
+) (
     // Differential system clock (fed directly to DDR4 IP)
     input  wire       sys_clk_p,
     input  wire       sys_clk_n,
@@ -78,12 +83,14 @@ module smolrv64_shell(
     output wire [7:0] gmii_txd,
     output wire       ui_clk,    // the DDR4 UI clock, for the adapter's own supervision
 
-    // Video: RGB222 and the syncs (vga_scanout), in the pixel clock.
-    output wire       vga_hs,
-    output wire       vga_vs,
-    output wire [1:0] vga_r,
-    output wire [1:0] vga_g,
-    output wire [1:0] vga_b,
+    // Video (vga_scanout): the pixel clock and its MMCM's lock, and in that clock the RGB565
+    // pixel (zero in the blanking), its data enable and the syncs.
+    output wire        vid_clk,
+    output wire        vid_locked,
+    output wire        vid_de,
+    output wire        vid_hs,
+    output wire        vid_vs,
+    output wire [15:0] vid_rgb,
 
     // USB keyboards and mice through a Raspberry Pi Pico (tools/hid-bridge): its UART TX,
     // virtio_input's HID line.
@@ -1240,13 +1247,13 @@ module smolrv64_shell(
 `endif
 
    // ===== VGA scanout (simmerv's --graphics framebuffer on a TinyVGA adapter) =====
-   // vga_scanout reads the RGB565 framebuffer that Linux's simplefb draws into and drives the
-   // header pins RGB222. Its registers are page 0x05 (0x1000_5000), programmed and enabled by the
+   // vga_scanout reads the RGB565 framebuffer that Linux's simplefb draws into and gives the board
+   // its pixel stream (vid_*). Its registers are page 0x05 (0x1000_5000), programmed and enabled by the
    // ROM monitor at reset (its splash and console); Linux never touches them.
    //
-   // The pixel clock: an MMCM fed from ui_clk, VCO 1000 MHz (333.33 / 2 * 6), CLKOUT0 / 6 =
-   // 166.67 MHz at configuration -- the fastest clock any mode gets (1600x1200 at 61.7 Hz), so the
-   // pixel domain is timed at it and every slower mode is covered. The ROM monitor sets each mode,
+   // The pixel clock: an MMCM fed from ui_clk, VCO 1000 MHz (333.33 / 2 * 6), CLKOUT0 / VID_CLK_D
+   // at configuration (6 on the RK board: 166.67 MHz, 1600x1200 at 61.7 Hz) -- the fastest clock any
+   // mode gets, so the pixel domain is timed at it and every slower mode is covered. The ROM monitor sets each mode,
    // vga_scanout's 640x480 reset mode (/40) included, by rewriting CLKOUT0's divider over DRP (its
    // V command, workloads/monitor/video.c): the VCO never moves, so the MMCM's lock and filter
    // settings, which depend only on M, stay valid. DCLK is ui_clk / 2 (DRP's limit is below
@@ -1290,7 +1297,7 @@ module smolrv64_shell(
       .CLKIN1_PERIOD      (3.000),
       .DIVCLK_DIVIDE      (2),
       .CLKFBOUT_MULT_F    (6.000),
-      .CLKOUT0_DIVIDE_F   (6.000),              // 166.67 MHz: the fastest mode, timed (the monitor sets each)
+      .CLKOUT0_DIVIDE_F   (VID_CLK_D),          // the fastest mode, timed (the monitor sets each)
       .CLKOUT0_DUTY_CYCLE (0.5),
       .CLKOUT0_PHASE      (0.0)
    ) vga_mmcm_inst (
@@ -1337,7 +1344,9 @@ module smolrv64_shell(
       .drp_req(vga_drp_req), .drp_we(vga_drp_we), .drp_addr(vga_drp_addr), .drp_di(vga_drp_di),
       .drp_ack(vga_drp_ack), .drp_do(vga_drp_do_q),
       .pix_clk(vga_pix_clk), .pix_rst(vga_pix_rst_s[1]),
-      .vga_hs(vga_hs), .vga_vs(vga_vs), .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b));
+      .vid_de(vid_de), .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_rgb(vid_rgb));
+   assign vid_clk    = vga_pix_clk;
+   assign vid_locked = vga_pixclk_locked;
    // The scanout only reads: its write channel is idle.
    assign vga_axi_awid = 3'd0;    assign vga_axi_awaddr = 32'd0;  assign vga_axi_awlen = 8'd0;
    assign vga_axi_awsize = 3'd0;  assign vga_axi_awburst = 2'd0;  assign vga_axi_awlock = 1'b0;

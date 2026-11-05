@@ -166,6 +166,7 @@ static void mibs(uint64_t bytes, uint64_t ticks)
 // words the probe writes get their values back.
 static uint64_t dram_size(void)
 {
+    if (DRAM_SIZE) return DRAM_SIZE;
     uint64_t lo = get(DRAM_A), hi = get(DRAM_A + (2ul << 30)), size;
     put(DRAM_A, 0);
     put(DRAM_A + (2ul << 30), ~0ul);

@@ -23,7 +23,7 @@
 // BOOT SCRIPTS: monitor command lines, one per line, '#' starts a comment; a failing line stops
 // the script at the prompt. The monitor never boots by itself: `go` (or key[0] pressed at the
 // prompt) runs boot.txt from the TFTP server, `B` runs /smolrv64/boot.txt from the SD card.
-// Without a boot.txt, either loads fw_payload.bin at 0x80000000 and smolrv64.dtb at 0xfefff000
+// Without a boot.txt, either loads fw_payload.bin at 0x80000000 and smolrv64.dtb at DTB_BASE
 // and jumps to the payload with the DTB.
 
 #include "mon.h"
@@ -437,12 +437,21 @@ static int run_script(const char *t, uint64_t n)
     return 0;
 }
 
+// v as eight hex digits, the form the commands take.
+static void hex32s(char *p, uint32_t v)
+{
+    for (int i = 7; i >= 0; i--, v >>= 4) p[i] = "0123456789abcdef"[v & 15];
+}
+
 // The boot without a boot.txt; `ld` is the load command, N (TFTP) or L (SD card).
 static int run_default(char ld, const char *dir)
 {
     static char t[3 * LINE_MAX];
     int k = 0;
-    const char *lines[3] = { "80000000 fw_payload.bin", "fefff000 smolrv64.dtb", 0 };
+    char dtb[] = "00000000 smolrv64.dtb", go[] = "X80000000 0 00000000\n";
+    hex32s(dtb, DTB_BASE);
+    hex32s(go + 12, DTB_BASE);
+    const char *lines[3] = { "80000000 fw_payload.bin", dtb, 0 };
     for (int i = 0; lines[i]; i++) {
         t[k++] = ld;
         for (const char *c = lines[i]; *c; c++) {
@@ -451,7 +460,7 @@ static int run_default(char ld, const char *dir)
         }
         t[k++] = '\n';
     }
-    for (const char *c = "X80000000 0 fefff000\n"; *c; c++) t[k++] = *c;
+    for (const char *c = go; *c; c++) t[k++] = *c;
     puts_("no boot.txt: the default\n");
     return run_script(t, (uint64_t)k);
 }
