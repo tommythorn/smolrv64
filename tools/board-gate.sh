@@ -48,6 +48,14 @@ CON=${CON:-$UB/screenlog.0}
 # that console's tty) name the board under test; JTAG=<cable serial> reaches `make program`.
 # Unset, the first screen session, as with one board.
 SCREEN=${SCREEN:-$(screen -ls | awk '/\t[0-9]+\./ {print $1; exit}')}
+# Every command goes to the board through that session, and without it each `screen -X` only
+# prints "No screen session found": the gate programmed the board and then watched a log that
+# never grew (2026-11-04, after a power-on). The tty is named by the cable (ttyUSB numbers move).
+if [ -z "${REPLAY:-}" ] && ! screen -ls | grep -qE "^[[:space:]]+[0-9]+\.${SCREEN:-NONE}[[:space:]]"; then
+   echo "BOARD: FAIL (no screen session '${SCREEN:-}' on the console; start it:"
+   echo "  screen -dmS ${SCREEN:-<name>} -L -Logfile $CON /dev/serial/by-id/usb-Xilinx_my_product_desc_${JTAG%A}-if01-port0 3000000)"
+   exit 1
+fi
 # The board's address is read off ITS console (the kernel's IP-Config line, from byte $1 on),
 # never off the host's NFS peer list, which names every board.
 con_ip() { tail -c +$(( ${1:-0} + 1 )) "$CON" | tr -d '\r' | grep -aoE 'ipaddr=192\.168\.1\.[0-9]+' | tail -1 | cut -d= -f2; }
