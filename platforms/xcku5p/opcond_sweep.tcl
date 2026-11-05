@@ -10,10 +10,10 @@
 # Re-timing a routed checkpoint under different operating conditions costs seconds: no
 # re-place, no re-route, the delays are simply re-derated. Usage:
 #   vivado -mode batch -source opcond_sweep.tcl [-tclargs <checkpoint.dcp>]
-set here [file dirname [info script]]
-set dcp [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_postroute_physopt.dcp]
+set here [pwd]
+set dcp [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_postroute_physopt.dcp]
 if {[llength $argv] > 0} { set dcp [lindex $argv 0] }
-if {![file exists $dcp]} { set dcp [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_routed.dcp] }
+if {![file exists $dcp]} { set dcp [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_routed.dcp] }
 puts "=== checkpoint: $dcp ==="
 open_checkpoint $dcp
 

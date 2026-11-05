@@ -9,8 +9,8 @@
 #   Usage: vivado -mode batch -source ila_capture.tcl [-tclargs <out.csv>]
 #   (or:   make ila-capture [CSV=<out.csv>])    JTAG=<cable serial> picks the board
 
-set here   [file dirname [file normalize [info script]]]
-set ltx    [file join $here rk_xcku5p.runs/impl_1/debug_nets.ltx]
+set here   [pwd]
+set ltx    [file join $here $::env(PROJECT).runs/impl_1/debug_nets.ltx]
 set outcsv [expr {[llength $argv] > 0 ? [file normalize [lindex $argv 0]] \
                                       : [file join $here ila_capture.csv]}]
 

@@ -9,14 +9,14 @@
 # the index and the replication suffixes stripped (x_reg[3]_i_2__0 -> x) names the signal, and
 # grouping by it is a census of the instance's structures: a queue's read muxes, a comparator
 # bank, a register file's write enables. A LUT6_2 counts once (one site), a LUTRAM primitive once.
-set rundir rk_xcku5p.runs/impl_1
+set rundir $::env(PROJECT).runs/impl_1
 set insts [lindex $argv 0]
 set dcp  [lindex $argv 1]
 set out  [lindex $argv 2]
 set top  [expr {[lindex $argv 3] ne "" ? [lindex $argv 3] : 40}]
 if {$insts eq ""} { error "usage: make weigh INST=<hier path> [DCP=...] [OUT=...] [TOP=40]" }
 if {$dcp eq ""} {
-    foreach c {rk_xcku5p_postroute_physopted.dcp rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp rk_xcku5p_placed.dcp} {
+    foreach c [lmap s {postroute_physopted postroute_physopt routed placed} {string cat $::env(PROJECT) _ $s .dcp}] {
         if {[file exists $rundir/$c]} { set dcp $rundir/$c; break }
     }
 }

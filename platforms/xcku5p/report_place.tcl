@@ -3,9 +3,9 @@
 # Rule I7 measured every critical path at 65-83% ROUTE on a device that is only a third full
 # (make util). That is a SPREAD problem, not a congestion one, so the first question is which
 # clock regions each block occupies and how far apart the endpoints of the failing paths are.
-set rundir rk_xcku5p.runs/impl_1
+set rundir $::env(PROJECT).runs/impl_1
 set dcp ""
-foreach c {rk_xcku5p_postroute_physopted.dcp rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp rk_xcku5p_placed.dcp} {
+foreach c [lmap s {postroute_physopted postroute_physopt routed placed} {string cat $::env(PROJECT) _ $s .dcp}] {
     if {[file exists $rundir/$c]} { set dcp $rundir/$c; break }
 }
 if {$dcp eq ""} { error "no impl_1 checkpoint -- run `make` first" }

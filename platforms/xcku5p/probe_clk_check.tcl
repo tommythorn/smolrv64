@@ -5,7 +5,7 @@
 # CRITICAL WARNING and is then silently ignored, which is worse than useless for
 # a guard).  The hook runs after the implementation design is opened.
 #
-# WHY THIS EXISTS.  rk_xcku5p.xdc carries two set_max_delay -datapath_only
+# WHY THIS EXISTS.  The board's .xdc carries two set_max_delay -datapath_only
 # constraints on the probe_clk <-> ui_clk 512-bit line crossing.  Without them
 # Vivado times that bus as a single 3 ns ui_clk hop -- zero logic levels, ~90%
 # routing -- and that over-constraint, not core logic, was the sole thing keeping
@@ -27,7 +27,7 @@ set probe_clks [get_clocks -quiet -of_objects $probe_clk_pins]
 if {[llength $probe_clks] != 1} {
    error "probe_clk_check: expected exactly one clock on probe_clk_buf/O, found\
  [llength $probe_clks] ('$probe_clks').  The probe_clk <-> ui_clk CDC max_delay\
- constraints in rk_xcku5p.xdc would bind to nothing, restoring the over-constraint\
+ constraints in $::env(PROJECT).xdc would bind to nothing, restoring the over-constraint\
  that kept this core off 111 MHz.  Run report_clocks and fix the lookup."
 }
 

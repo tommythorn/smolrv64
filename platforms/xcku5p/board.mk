@@ -1,0 +1,269 @@
+# The Vivado release: VIVADO_VER=2026.1 builds with the newer one, whose libraries live in its xic tree.
+VIVADO_VER ?= 2025.1
+ifeq ($(VIVADO_VER),2025.1)
+VIVADO_DIR := /home/tommy/Xilinx/2025.1/Vivado
+VIVADO_LIB := $(VIVADO_DIR)/lib/lnx64.o/Ubuntu/24
+else
+VIVADO_DIR := /home/tommy/Xilinx/$(VIVADO_VER)/$(VIVADO_VER)/Vivado
+VIVADO_LIB := /home/tommy/Xilinx/$(VIVADO_VER)/xic/lib/lnx64.o/Ubuntu/24
+endif
+VIVADO   := $(VIVADO_DIR)/bin/vivado
+VFLAGS   := -mode batch -nojournal -nolog
+# The board's Makefile sets PROJECT (its .xpr, .srcs and run names), FLASH_PART and FLASH_MB (its
+# configuration flash) and TTY (its console), then includes this. Every target runs in the board's
+# directory; the scripts are here, beside this file.
+SHARED   := $(dir $(lastword $(MAKEFILE_LIST)))
+ifeq ($(strip $(PROJECT)),)
+$(error the board's Makefile sets PROJECT before including board.mk)
+endif
+export PROJECT FLASH_PART FLASH_MB
+XPR      := $(PROJECT).xpr
+RUNS_DIR := $(PROJECT).runs
+BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit
+WORKLOAD ?= ../../workloads/monitor
+
+# THE SHIPPING BUILD NEEDS NO ARGUMENTS: `make` builds core/rv_soc_top at SMOLRV64_HW=8 and
+# PROBE_CLK_DIV8=48 (166.67 MHz). Every knob below is a debug or experiment override.
+export LD_LIBRARY_PATH=$(VIVADO_LIB)
+
+# Diagnostic: PROBE_DIAG=1 decouples probe_clk from ui_rst + drives LED cal/clock heartbeats.
+ifneq ($(strip $(PROBE_DIAG)),)
+export PROBE_DIAG
+endif
+
+# Fetch window halfwords.  8 is the default in the RTL, in build.tcl and here (since 2026-09-05;
+# 4 before): a 16-byte window.  2, 4 and 8 elaborate.  Setting 2 builds a 32-bit fetch window
+# that no bitstream should ship.
+ifneq ($(strip $(SMOLRV64_HW)),)
+export SMOLRV64_HW
+endif
+
+# Fmax sweep: probe_clk = 1000MHz*8/PROBE_CLK_DIV8, from an MMCM, so the frequency is
+# CONTINUOUS (the old BUFGCE_DIV could only reach 66.7/83.3/111.1/166.7/333.3, which made
+# any gain smaller than a whole rung worth nothing). 48 = 166.67 MHz is the shipping clock
+# and the default everywhere; 72 = 111.11 MHz was the previous milestone. build.tcl hard-errors on the retired
+# PROBE_CLK_DIV rather than let it silently mean a different clock.
+ifneq ($(strip $(PROBE_CLK_DIV8)),)
+export PROBE_CLK_DIV8
+endif
+ifneq ($(strip $(PROBE_CLK_DIV)),)
+export PROBE_CLK_DIV
+endif
+
+# Debug: ILA_VIRTIO=1 inserts an ILA on the MMIO clock-bridge ui-side (virtio-mmio access +
+# device read data), on ui_clk. Capture the driver's DeviceFeaturesSel/DeviceFeatures sequence
+# to see whether the Sel write reaches virtio before the Features read (probe VERSION_1 -22).
+ifneq ($(strip $(ILA_VIRTIO)),)
+export ILA_VIRTIO
+endif
+
+# Debug: ILA_IRQ=1 inserts an ILA on the probe-clk interrupt path (plic src-11 lifecycle from
+# rv_soc_top's irq_dbg bus) -- to see whether the virtio_blk completion IRQ is raised/serviced or lost.
+ifneq ($(strip $(ILA_IRQ)),)
+export ILA_IRQ
+endif
+
+# Debug: NO_SSTC=1 hides Sstc (stimecmp traps) so OpenSBI uses the CLINT timer path.
+ifneq ($(strip $(NO_SSTC)),)
+export NO_SSTC
+endif
+# Debug: ILA_PARITY=1 builds with -DCACHE_PARITY (parity bit per cache-bank word,
+# checked on every read) and inserts an ILA triggered by the error pulse -- catching a
+# bad cache-array read AT THE MOMENT it happens, instead of the kernel Oops millions of
+# cycles later. If it never fires while the board still corrupts, the cache data path is
+# exonerated on real BRAM.
+ifneq ($(strip $(ILA_PARITY)),)
+export ILA_PARITY
+endif
+# Debug: ILA_DEV=1 inserts an ILA on the ui-clk virtio_blk backend (FSM/SD/DMA state + AXI DMA
+# handshakes + SD SPI pins) -- to see which block request / SPI-DMA step wedges during the root mount.
+ifneq ($(strip $(ILA_DEV)),)
+export ILA_DEV
+endif
+
+# Debug: ILA_CORE=1 inserts an ILA on the probe-clk core/DDR-line steady state (commit pulse +
+# line req/we/ack + stuck line addr + irq bus) -- for a -trigger_now capture of a FROZEN wedge
+# (post-root-mount, e.g. systemd "Hostname set"): DDR-path deadlock vs irq livelock vs SW spin.
+ifneq ($(strip $(ILA_CORE)),)
+export ILA_CORE
+endif
+
+# Debug: ILA_MEM=1 inserts two ILAs on the memory path (the core's port on probe_clk; the CDC's
+# far end, the core/device AXI masters and the AXI into the DDR4 controller on ui_clk), triggered
+# at the onset of a wedge by a port watchdog. Arm with `make ila-mem` once the board is up.
+ifneq ($(strip $(ILA_MEM)),)
+export ILA_MEM
+endif
+
+.PHONY: all synth impl bit program load clean timing ila-capture ila-mem fmax-report
+
+all: bit
+
+synth: $(XPR)
+	$(VIVADO) $(VFLAGS) -source $(SHARED)build.tcl -tclargs synth
+
+impl: $(XPR)
+	$(VIVADO) $(VFLAGS) -source $(SHARED)build.tcl -tclargs impl
+
+# A finished bitstream is banked in the cache (tools/bitcache.sh: ~/bitcache, keyed by the commit,
+# the uncommitted changes and the knobs); `tools/bitcache.sh get <commit>` finds it again.
+bit: $(XPR)
+	../../tools/bitcache.sh start $(CURDIR)
+	$(VIVADO) $(VFLAGS) -source $(SHARED)build.tcl -tclargs bit
+	../../tools/bitcache.sh put $(CURDIR)
+
+program:
+	@test -f $(BIT) || { echo "ERROR: $(BIT) not found — run 'make bit' first"; exit 1; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)program.tcl -tclargs $(BIT)
+
+# Write BIT into the configuration flash (the board's FLASH_PART), so it loads at power-on, and
+# boot the FPGA from it. Replaces the running design.
+flash:
+	@test -f $(BIT) || { echo "ERROR: $(BIT) not found — run 'make bit' first"; exit 1; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)flash.tcl -tclargs $(BIT)
+
+# Open the impl_1 checkpoint and dump worst setup paths.  Use this to diagnose
+# timing violations without rebuilding.
+# Reset the runs after a KILLED build. A run terminated mid-flight leaves its directory
+# half-written and the next build inherits it, failing ~30 minutes in with an error that
+# points at the wrong thing. There was no target for this and it has bitten more than once.
+.PHONY: reset flash kill
+reset:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)reset_runs.tcl
+
+# Stop this tree's build, every process of it (the run server, vrs, outlives the rest), then reset
+# the runs: a surviving vrs or an un-reset run makes the next build wait forever.
+kill:
+	@for p in $$(ps -eo pid=,args= | awk '/[V]ivado\/bin\/|[u]nwrapped\/lnx64\.o\/|[I]SEWrap/ {print $$1}'); do \
+	   case "$$(readlink /proc/$$p/cwd)" in $(CURDIR)*) echo "kill $$p"; kill $$p;; esac; done; sleep 3
+	$(MAKE) reset
+
+timing:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_timing.tcl
+
+# Device utilization from the newest impl checkpoint. "Is it full?" is the first question
+# before more critical-path surgery -- see rule I7.
+#   make util [DCP=<checkpoint>] [OUT=<dir>]
+util:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_util.tcl -tclargs '$(DCP)' '$(OUT)'
+
+# Where each block physically sits, by clock region. The input to any floorplanning.
+place-report:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_place.tcl
+
+# The same, drawn: every placed cell coloured by its block (blocks in tools/floorplan.py).
+#   make floorplan [DCP=<checkpoint>] [OUT=<dir>]   ->  <dir>/floorplan.png
+floorplan:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_floorplan.tcl -tclargs '$(DCP)' '$(or $(OUT),floorplan)'
+	python3 ../../tools/floorplan.py '$(or $(OUT),floorplan)'
+
+# Synthesise ONE module alone and report its intrinsic Fmax and logic depth.
+#   make ooc MODULE=smolrv64_iq [PERIOD=6.0] [GENERICS="P=V ..."] [REPORT=/path/to/write] [HIER=1] [DCP=<file>]
+#   DCP= keeps the routed checkpoint, for `make weigh INST=. DCP=<file>` (the module's own cells).
+#   HIER=1 is the weight census: synthesis only, each submodule's LUTs/LUTRAM/flops (ooc.tcl).
+#   GENERICS is the INSTANCE's parameters -- without it the module DEFAULTS are measured,
+#   which for rv_cache is a 128 KB / PAW=34 cache nothing instantiates (see ooc.tcl).
+# The flat design is 65-83% route and placement-dominated (rules I2/I7), so it cannot judge a
+# STRUCTURE. This can. Compare a replacement against the incumbent at the same interface here
+# first, then confirm in the full build.
+ooc:
+	@test -n "$(MODULE)" || { echo "usage: make ooc MODULE=<module> [PERIOD=6.0]"; exit 2; }
+	OOC_MODULE=$(MODULE) OOC_PERIOD=$(PERIOD) OOC_GENERICS="$(GENERICS)" OOC_REPORT="$(REPORT)" OOC_HIER="$(HIER)" OOC_DCP="$(DCP)" \
+	  $(VIVADO) $(VFLAGS) -source $(SHARED)ooc.tcl
+
+# What an instance's LUTs and flops ARE: every cell grouped by the signal it drives (report_weigh.tcl).
+#   make weigh INST=probe_core/core/fe [DCP=<checkpoint>] [OUT=<file>] [TOP=40]
+weigh:
+	@test -n "$(INST)" || { echo "usage: make weigh INST=<hier path> [DCP=...] [OUT=...] [TOP=40]"; exit 2; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_weigh.tcl -tclargs '$(INST)' '$(DCP)' '$(OUT)' '$(TOP)'
+
+# The near-critical CENSUS of a routed checkpoint: every endpoint under SLACK ns grouped
+# into families, the startpoint/endpoint module histograms and the slack histogram. WNS is
+# one path; this is what a timing change is judged by (rules I2, I8, I9). Read-only.
+#   make census [DCP=<checkpoint>] [OUT=<file>] [SLACK=0.35]
+census:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_census.tcl -tclargs \
+	  $(if $(DCP),$(DCP),$(RUNS_DIR)/impl_1/$(PROJECT)_postroute_physopt.dcp) \
+	  $(if $(OUT),$(OUT),census.txt) $(if $(SLACK),$(SLACK),0.35)
+
+# The worst setup paths of a checkpoint over every clock, and each clock's worst (the census
+# counts probe_clk alone; a build's WNS is any clock's). Read-only.
+#   make worst DCP=<checkpoint> [N=10]
+worst:
+	@test -n "$(DCP)" || { echo "usage: make worst DCP=<checkpoint> [N=10]"; exit 2; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_worst.tcl -tclargs $(DCP) $(if $(N),$(N),10)
+
+# The worst routed path between two cell groups, pin by pin (the census names the family).
+#   make path FROM=<cell glob> TO=<cell glob> [N=1] [DCP=<checkpoint>]
+path:
+	@test -n "$(FROM)" -a -n "$(TO)" || { echo "usage: make path FROM=<cell glob> TO=<cell glob> [N=1] [DCP=<checkpoint>]"; exit 2; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_path.tcl -tclargs '$(FROM)' '$(TO)' $(if $(N),$(N),1) '$(DCP)'
+
+# The worst path of each family in a file of "<from glob> <to glob>" lines, in one session.
+#   make paths PAIRS=<file> [DCP=<checkpoint>] [OUT=paths.txt]
+paths:
+	@test -n "$(PAIRS)" || { echo "usage: make paths PAIRS=<file> [DCP=<checkpoint>] [OUT=paths.txt]"; exit 2; }
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_paths.tcl -tclargs '$(PAIRS)' '$(DCP)' '$(OUT)'
+
+# Last-mile timing closure: targeted post-route phys_opt on the routed checkpoint
+# (no re-place/route). Writes the .bit iff it reaches WNS >= 0, and banks it like `make bit`
+# does: a missed build's start record is still there, so the entry carries its content id.
+#   make physopt [DCP=<checkpoint>]   # default: the run's post-route phys_opt result
+physopt:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)physopt_close.tcl -tclargs '$(DCP)'
+	if [ -f $(RUNS_DIR)/impl_1/$(PROJECT)_closed.dcp ]; then ../../tools/bitcache.sh put $(CURDIR); fi
+
+cdc:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)report_cdc.tcl
+
+# Headless ILA capture of the CURRENT (frozen) hardware state over JTAG. Requires a bit built
+# with an ILA_* flag already programmed and the board wedged. Writes one CSV per ILA next to the
+# script, <CSV>_<instance>.csv. CSV=<path> overrides the base. No GUI. See ila_capture.tcl.
+ila-capture:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)ila_capture.tcl $(if $(CSV),-tclargs $(CSV),)
+
+# ARMED capture of a memory-path wedge (needs a bit built ILA_MEM=1): blocks until the port
+# watchdog fires, then writes <CSV>_p.csv and <CSV>_m.csv. See ila_mem.tcl.
+ila-mem:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)ila_mem.tcl -tclargs $(if $(CSV),$(CSV),ila_mem) $(if $(HOURS),$(HOURS),0)
+
+# Per-clock achievable Fmax from the routed checkpoint. Global WNS is often pinned by the
+# virtio/MIG ui_clk domain, so this is the number that tells us what the CORE can clock.
+fmax-report:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)fmax_report.tcl
+
+# ARMED capture on a cache data-array parity failure (needs a bit built ILA_PARITY=1).
+# Blocks until an array returns a word that is not what was stored -- the moment of
+# corruption. Run it while the board boots. See ila_parity.tcl.
+ila-parity:
+	$(VIVADO) $(VFLAGS) -source $(SHARED)ila_parity.tcl -tclargs $(if $(CSV),$(CSV),ila_parity.csv) $(if $(HOURS),$(HOURS),0)
+
+load:
+	$(MAKE) -C $(WORKLOAD) load MEM_BASE=0x70000000
+	$(VIVADO) $(VFLAGS) -source $(SHARED)build.tcl -tclargs bit force
+	$(MAKE) program
+
+$(BIT): bit
+
+# Wipe all generated outputs (keeps sources and .xpr).  This must leave exactly what
+# `git clean -fdx` leaves -- the .gitignore beside it lists the same paths -- so that
+# the two ways of getting to a clean tree agree and `make` can rebuild from either.
+clean:
+	rm -rf $(PROJECT).cache $(PROJECT).gen $(PROJECT).hw $(PROJECT).sim $(RUNS_DIR) \
+	       ddr4_0_ex.gen ddr4_0_ex.srcs \
+	       $(PROJECT).srcs/utils_1 $(PROJECT).srcs/sources_1/ip/ila_* \
+	       .Xil *.jou *.log
+
+connect:
+	@screen $(TTY) 3000000
+
+help:
+	@echo "Targets:"
+	@echo "  make          — full build (synth + impl + bitstream)"
+	@echo "  make synth    — synthesis only"
+	@echo "  make impl     — synthesis + implementation"
+	@echo "  make bit      — synthesis + implementation + bitstream"
+	@echo "  make program  — program device over JTAG"
+	@echo "  make load     — build workload, rebuild bitstream, program (WORKLOAD=path)"
+	@echo "  make clean    — remove all generated files"
+	@echo "  make connect  — connect to the serial port"

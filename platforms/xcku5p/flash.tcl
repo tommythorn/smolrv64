@@ -1,13 +1,13 @@
 # flash.tcl -- write a bitstream into the board's configuration flash, so it is the design the
-# FPGA loads at power-on (mode pins M[2:0] = 001, Master SPI). The flash is a Macronix
-# MX25U51245G (512 Mib, 1.8 V, bank 0 CFGBVS low), used x4 from address 0, as rk_xcku5p.xdc's
-# SPI_BUSWIDTH 4 / CONFIG_MODE SPIx4 build it for. A compressed bitstream fits 24-bit addressing.
+# FPGA loads at power-on (mode pins M[2:0] = 001, Master SPI). The flash is the board's: its
+# Makefile names the part (FLASH_PART) and its size in MB (FLASH_MB), used x4 from address 0, as
+# the board's .xdc (SPI_BUSWIDTH 4 / CONFIG_MODE SPIx4) builds for.
 #
 # Usage: vivado -mode batch -source flash.tcl [-tclargs <bitfile>]
 # Erases, programs and verifies the flash through Vivado's indirect-programming core (this
 # replaces the running design), then pulses PROGRAM_B so the FPGA boots from the flash.
 
-set default_bit [file join [file dirname [info script]] rk_xcku5p.runs/impl_1/rk_xcku5p.bit]
+set default_bit [file join [pwd] $::env(PROJECT).runs/impl_1/$::env(PROJECT).bit]
 set bitfile $default_bit
 if {[llength $argv] > 0} { set bitfile [lindex $argv 0] }
 set bitfile [file normalize $bitfile]
@@ -15,7 +15,7 @@ if {![file exists $bitfile]} { error "Bitfile not found: $bitfile" }
 set mcs [file rootname $bitfile].mcs
 puts "Flashing with: $bitfile"
 
-write_cfgmem -force -format mcs -size 64 -interface SPIx4 -loadbit "up 0x0 $bitfile" -file $mcs
+write_cfgmem -force -format mcs -size $::env(FLASH_MB) -interface SPIx4 -loadbit "up 0x0 $bitfile" -file $mcs
 
 open_hw_manager
 connect_hw_server -allow_non_jtag
@@ -25,7 +25,7 @@ set dev [lindex [get_hw_devices] 0]
 current_hw_device $dev
 refresh_hw_device -update_hw_probes false $dev
 
-set mem [create_hw_cfgmem -hw_device $dev [lindex [get_cfgmem_parts {mx25u51245gxxj-spi-x1_x2_x4}] 0]]
+set mem [create_hw_cfgmem -hw_device $dev [lindex [get_cfgmem_parts $::env(FLASH_PART)] 0]]
 set_property PROGRAM.ADDRESS_RANGE  {use_file} $mem
 set_property PROGRAM.FILES          [list $mcs] $mem
 set_property PROGRAM.PRM_FILE       {} $mem

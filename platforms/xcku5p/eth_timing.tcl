@@ -1,4 +1,4 @@
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set xpr [file normalize $::env(PROJECT).xpr]
 open_project $xpr
 open_run impl_1
 puts "=== IDDRE1 -> fanout (setup) ==="

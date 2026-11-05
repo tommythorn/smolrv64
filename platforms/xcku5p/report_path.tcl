@@ -4,12 +4,12 @@
 #
 # The census names families (start register -> end register); this prints one member whole, so
 # the logic between them can be read without opening the GUI.
-set here [file dirname [info script]]
+set here [pwd]
 lassign $argv from to n dcp
 if {$n eq ""} { set n 1 }
 if {$dcp eq ""} {
-   foreach c {rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp} {
-      set f [file join $here rk_xcku5p.runs impl_1 $c]
+   foreach c [lmap s {postroute_physopt routed} {string cat $::env(PROJECT) _ $s .dcp}] {
+      set f [file join $here $::env(PROJECT).runs impl_1 $c]
       if {[file exists $f]} { set dcp $f; break }
    }
 }

@@ -12,18 +12,18 @@
 # Open the design. Prefer a checkpoint on disk over `open_run impl_1`: a run whose
 # bookkeeping was disturbed (an external reset_run, a killed parent) reports PROGRESS 0%
 # and refuses to open, even though the checkpoint it produced is perfectly good.
-set here [file dirname [info script]]
+set here [pwd]
 set dcps [list \
-   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_postroute_physopt.dcp] \
-   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_routed.dcp] \
-   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_physopt.dcp] \
-   [file join $here rk_xcku5p.runs impl_1 rk_xcku5p_placed.dcp]]
+   [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_postroute_physopt.dcp] \
+   [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_routed.dcp] \
+   [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_physopt.dcp] \
+   [file join $here $::env(PROJECT).runs impl_1 $::env(PROJECT)_placed.dcp]]
 set opened ""
 foreach d $dcps {
    if {[file exists $d]} { open_checkpoint $d ; set opened $d ; break }
 }
 if {$opened eq ""} {
-   open_project [file normalize [file join $here rk_xcku5p.xpr]]
+   open_project [file normalize [file join $here $::env(PROJECT).xpr]]
    open_run impl_1
    set opened "impl_1 (run)"
 }

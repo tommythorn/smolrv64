@@ -5,8 +5,8 @@
 # does not exist here), so the armed-wait script can poll the right one; (2) freeze-frame
 # a wedged board -- the sticky parity bit in probe1 answers "did any cache array ever
 # return bad data" even if the error pulse itself was missed.
-set here   [file dirname [file normalize [info script]]]
-set ltx    [file join $here rk_xcku5p.runs/impl_1/debug_nets.ltx]
+set here   [pwd]
+set ltx    [file join $here $::env(PROJECT).runs/impl_1/debug_nets.ltx]
 set outcsv [expr {[llength $argv] > 0 ? [file normalize [lindex $argv 0]] \
                                       : [file join $here ila_now.csv]}]
 

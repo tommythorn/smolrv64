@@ -6,10 +6,10 @@
 # critical-path surgery: at 65-83% route on every failing path (rule I7), utilization and
 # placement pressure decide the answer, not logic depth. `make` produces no utilization
 # report of its own, so this was being answered by guesswork.
-set rundir rk_xcku5p.runs/impl_1
+set rundir $::env(PROJECT).runs/impl_1
 set dcp [lindex $argv 0]
 if {$dcp eq ""} {
-    foreach c {rk_xcku5p_postroute_physopted.dcp rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp rk_xcku5p_placed.dcp} {
+    foreach c [lmap s {postroute_physopted postroute_physopt routed placed} {string cat $::env(PROJECT) _ $s .dcp}] {
         if {[file exists $rundir/$c]} { set dcp $rundir/$c; break }
     }
 }
@@ -17,11 +17,11 @@ if {$dcp eq ""} { error "no impl_1 checkpoint found -- run `make` first" }
 if {[lindex $argv 1] ne ""} { set rundir [lindex $argv 1]; file mkdir $rundir }
 puts "UTIL: reading $dcp"
 open_checkpoint $dcp
-report_utilization -file $rundir/rk_xcku5p_utilization.rpt
-puts "UTIL: wrote $rundir/rk_xcku5p_utilization.rpt"
+report_utilization -file $rundir/$::env(PROJECT)_utilization.rpt
+puts "UTIL: wrote $rundir/$::env(PROJECT)_utilization.rpt"
 # Per instance, four levels down: what each structure costs (the PRF shards, the schedulers, the ROB).
-report_utilization -hierarchical -hierarchical_depth 4 -file $rundir/rk_xcku5p_utilization_hier.rpt
-puts "UTIL: wrote $rundir/rk_xcku5p_utilization_hier.rpt"
+report_utilization -hierarchical -hierarchical_depth 4 -file $rundir/$::env(PROJECT)_utilization_hier.rpt
+puts "UTIL: wrote $rundir/$::env(PROJECT)_utilization_hier.rpt"
 foreach l [split [report_utilization -return_string] "\n"] {
     if {[regexp {^\| (CLB LUTs|CLB Registers|CLB  |LUT as Logic|LUT as Memory|Block RAM Tile|DSPs|CARRY8)} $l]} { puts "UTIL| $l" }
 }
@@ -54,7 +54,7 @@ foreach c [get_cells -hier -quiet -filter {IS_PRIMITIVE && (REF_NAME =~ RAMB36* 
     if {![info exists br($k)]} { set br($k) 0.0 }
     set br($k) [expr {$br($k) + $w}]
 }
-set fh [open $rundir/rk_xcku5p_memories.rpt w]
+set fh [open $rundir/$::env(PROJECT)_memories.rpt w]
 set tot 0; foreach k [array names lr] { incr tot $lr($k) }
 puts $fh "distributed RAM: $tot LUTs in [llength [array names lr]] arrays (largest first)"
 puts $fh "   LUTs  depth  array (depth: entries, from the slice names; ? when Vivado's name carries none)"
@@ -65,5 +65,5 @@ set btot 0.0; foreach k [array names br] { set btot [expr {$btot + $br($k)}] }
 puts $fh "\nblock RAM / UltraRAM: $btot RAMB36 equivalents (URAMs counted as tiles) in [llength [array names br]] arrays"
 foreach k [lsort -command {apply {{a b} {upvar br br; expr {$br($b) > $br($a) ? 1 : ($br($b) < $br($a) ? -1 : 0)}}}} [array names br]] { puts $fh [format "%7.1f  %s" $br($k) $k] }
 close $fh
-report_ram_utilization -file $rundir/rk_xcku5p_ram_utilization.rpt
-puts "UTIL: wrote $rundir/rk_xcku5p_memories.rpt ($tot distributed-RAM LUTs) and rk_xcku5p_ram_utilization.rpt"
+report_ram_utilization -file $rundir/$::env(PROJECT)_ram_utilization.rpt
+puts "UTIL: wrote $rundir/$::env(PROJECT)_memories.rpt ($tot distributed-RAM LUTs) and $::env(PROJECT)_ram_utilization.rpt"

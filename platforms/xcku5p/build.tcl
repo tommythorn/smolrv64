@@ -8,7 +8,7 @@ foreach arg $argv {
     if {$arg eq "force"} { set force 1 } else { set step $arg }
 }
 
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set xpr [file normalize $::env(PROJECT).xpr]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
 set smolrv64_dir [file join $repo_root core]
@@ -307,7 +307,8 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-set source_paths [list src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor]   ;# the monitor is baked into the SRAM
+set board_srcs [string range [file join [pwd] $::env(PROJECT).srcs] [string length $repo_root/] end]   ;# this board's top, xdc and IP
+set source_paths [list src core platforms/xcku5p $board_srcs workloads/ubuntu workloads/tiny128 workloads/monitor]   ;# the monitor is baked into the SRAM
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1
@@ -602,7 +603,7 @@ if {$step in {impl bit}} {
     set_property STEPS.OPT_DESIGN.TCL.PRE   $cvfpu_timing_hook [get_runs impl_1]
     set_property STEPS.PLACE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
     set_property STEPS.ROUTE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
-    # probe_clk guard: assert the CDC constraints in rk_xcku5p.xdc actually bound to a
+    # probe_clk guard: assert the CDC constraints in the board's .xdc actually bound to a
     # clock, and record the frequency the bitstream really runs at. Twice: after opt so a
     # dropped constraint fails in minutes instead of after a full place-and-route, and after
     # route so the recorded frequency is the one the bitstream is actually generated from.
@@ -644,7 +645,7 @@ if {$step in {impl bit}} {
 if {$step in {bit}} {
     puts "\n=== Generating Bitstream ==="
     set bit_dir [get_property DIRECTORY [get_runs impl_1]]
-    set bit_file "$bit_dir/rk_xcku5p.bit"
+    set bit_file "$bit_dir/$::env(PROJECT).bit"
     set run [get_runs impl_1]
     # THE BITSTREAM MUST BE NEWER THAN THE IMPLEMENTATION THAT PRODUCED IT.
     # `NEEDS_REFRESH` tracks whether SOURCES changed under the run -- it says nothing about
@@ -654,8 +655,8 @@ if {$step in {bit}} {
     # bitstream of different RTL than the timing report just blessed. That is a board gate
     # run against the wrong design, which is indistinguishable from a passing one.
     # 2026-09-19: caught exactly that -- a 02:32 .bit surviving a 10:32 implementation.
-    set routed_dcp "$bit_dir/rk_xcku5p_postroute_physopt.dcp"
-    if {![file exists $routed_dcp]} { set routed_dcp "$bit_dir/rk_xcku5p_routed.dcp" }
+    set routed_dcp "$bit_dir/$::env(PROJECT)_postroute_physopt.dcp"
+    if {![file exists $routed_dcp]} { set routed_dcp "$bit_dir/$::env(PROJECT)_routed.dcp" }
     set bit_stale 1
     if {[file exists $bit_file] && [file exists $routed_dcp]} {
         set bit_stale [expr {[file mtime $bit_file] < [file mtime $routed_dcp]}]

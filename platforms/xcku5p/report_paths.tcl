@@ -4,12 +4,12 @@
 #
 # make path's batch form: the census names thirty families, and opening the checkpoint is most of
 # a path report's time.
-set here [file dirname [info script]]
+set here [pwd]
 lassign $argv pf dcp out
 if {$out eq ""} { set out paths.txt }
 if {$dcp eq ""} {
-   foreach c {rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp} {
-      set f [file join $here rk_xcku5p.runs impl_1 $c]
+   foreach c [lmap s {postroute_physopt routed} {string cat $::env(PROJECT) _ $s .dcp}] {
+      set f [file join $here $::env(PROJECT).runs impl_1 $c]
       if {[file exists $f]} { set dcp $f; break }
    }
 }

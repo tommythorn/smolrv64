@@ -1,4 +1,4 @@
-# fmax166.tcl -- what stands between the core and 166.67 MHz (PROBE_CLK_DIV8=48)?
+# fmax333.tcl -- what stands between the core and 166.67 MHz (PROBE_CLK_DIV8=48)?
 #
 # BUFGCE_DIV divides ui_clk (333.333 MHz) by an integer, so the frequency ladder is
 # 66.7 / 83.3 / 111.1 / 166.7 / 333.3 -- there is no step between the current 111.1 MHz
@@ -9,12 +9,12 @@
 # collapsed to their hierarchy prefixes so distinct problems group into families rather
 # than appearing as thousands of near-identical bit-slices.
 
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set xpr [file normalize $::env(PROJECT).xpr]
 open_project $xpr
 open_run impl_1
 
-set PERIOD    9.000
-set TARGET    6.000
+set PERIOD    6.000
+set TARGET    3.000
 set THRESH    [expr {$PERIOD - $TARGET}]
 
 puts "\n=== paths that do NOT fit in ${TARGET} ns (slack < ${THRESH} ns at ${PERIOD} ns) ==="
@@ -53,7 +53,7 @@ foreach r [lsort -real -index 0 $rows] {
 
 # Slack histogram: how much of the design is already close to the 6 ns budget?
 puts "\n=== probe_clk slack distribution (intra-clock setup) ==="
-foreach lim {0.5 1.0 1.5 2.0 2.5 3.0 4.0 5.0} {
+foreach lim {0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0} {
     set ps [get_timing_paths -delay_type max -group probe_clk \
                              -max_paths 20000 -slack_lesser_than $lim -quiet]
     puts [format "  slack < %4.1f ns : %6d paths   (delay > %4.1f ns)" \

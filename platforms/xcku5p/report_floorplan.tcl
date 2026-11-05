@@ -4,11 +4,11 @@
 #   <OUT>/cells.tsv   name  ref  site  bel          one line per placed leaf cell
 #   <OUT>/sites.tsv   site  clock-region            every SLICE, RAMB36, DSP48E2 and URAM288 site
 #   <OUT>/cols.tsv    kind  x  grid-column          where each site column sits in the device grid
-set rundir rk_xcku5p.runs/impl_1
+set rundir $::env(PROJECT).runs/impl_1
 set dcp [lindex $argv 0]
 set out [lindex $argv 1]
 if {$dcp eq ""} {
-    foreach c {rk_xcku5p_postroute_physopted.dcp rk_xcku5p_postroute_physopt.dcp rk_xcku5p_routed.dcp rk_xcku5p_placed.dcp} {
+    foreach c [lmap s {postroute_physopted postroute_physopt routed placed} {string cat $::env(PROJECT) _ $s .dcp}] {
         if {[file exists $rundir/$c]} { set dcp $rundir/$c; break }
     }
 }

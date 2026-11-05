@@ -1,7 +1,7 @@
 # report_timing.tcl — open impl_1 checkpoint and dump the worst failing paths.
 # Usage: vivado -mode batch -source report_timing.tcl
 
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set xpr [file normalize $::env(PROJECT).xpr]
 open_project $xpr
 open_run impl_1
 

@@ -1,8 +1,7 @@
 # program.tcl — Program the FPGA via JTAG using Vivado hw_server
 # Usage: vivado -mode batch -source program.tcl [-tclargs <bitfile>]
 
-set default_bit [file join [file dirname [info script]] \
-    rk_xcku5p.runs/impl_1/rk_xcku5p.bit]
+set default_bit [file join [pwd] $::env(PROJECT).runs/impl_1/$::env(PROJECT).bit]
 
 set bitfile $default_bit
 if {[llength $argv] > 0} { set bitfile [lindex $argv 0] }

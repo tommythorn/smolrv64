@@ -8,7 +8,7 @@
 # Paths are collapsed to hierarchy prefixes so one structural problem shows up as one family
 # rather than a thousand near-identical bit slices.
 
-set xpr [file normalize [file join [file dirname [info script]] rk_xcku5p.xpr]]
+set xpr [file normalize $::env(PROJECT).xpr]
 open_project $xpr
 open_run impl_1
 

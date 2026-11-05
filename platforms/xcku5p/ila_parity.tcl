@@ -20,8 +20,8 @@
 # NO TRIGGER = the cache arrays never lied: a decisive negative that exonerates the
 # data path on real BRAM and moves the hunt to the core/LSU/MMU.
 
-set here   [file dirname [file normalize [info script]]]
-set ltx    [file join $here rk_xcku5p.runs/impl_1/debug_nets.ltx]
+set here   [pwd]
+set ltx    [file join $here $::env(PROJECT).runs/impl_1/debug_nets.ltx]
 set outcsv [expr {[llength $argv] > 0 ? [file normalize [lindex $argv 0]] \
                                       : [file join $here ila_parity.csv]}]
 

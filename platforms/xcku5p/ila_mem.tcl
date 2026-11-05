@@ -11,8 +11,8 @@
 #   (or:   make ila-mem [CSV=<out>] [HOURS=<n>|now])
 # `now` snapshots a board that is already wedged: <out>_now_p.csv and <out>_now_m.csv.
 
-set here [file dirname [file normalize [info script]]]
-set ltx  [file join $here rk_xcku5p.runs/impl_1/debug_nets.ltx]
+set here [pwd]
+set ltx  [file join $here $::env(PROJECT).runs/impl_1/debug_nets.ltx]
 set out  [expr {[llength $argv] > 0 ? [file normalize [lindex $argv 0]] : [file join $here ila_mem]}]
 set max_hours [expr {[llength $argv] > 1 ? [lindex $argv 1] : 0}]
 
