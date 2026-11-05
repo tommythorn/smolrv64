@@ -8,8 +8,9 @@
 # one set of sources are the same netlist, placement and routing (docs/rtl-rules.md I2), and the
 # design a probe routed is the gate's once these INITs say the gate's commit. Writes the routed
 # timing summary, identity.txt (the INITs read back) and, when the design meets timing,
-# <outdir>/rk_xcku5p.bit; a design that does not prints STAMP-REFUSED and writes no bitstream.
-lassign $argv dcp commit dirty stamp out
+# <outdir>/<project>.bit (the 6th argument, rk_xcku5p by default); a design that does not prints STAMP-REFUSED and writes no bitstream.
+lassign $argv dcp commit dirty stamp out proj
+if {$proj eq ""} { set proj rk_xcku5p }   ;# the bitstream's name: the board's project
 foreach {what v re} [list commit $commit {^[0-9a-f]{8}$} dirty $dirty {^[01]$} stamp $stamp {^[0-9]{14}$}] {
     if {![regexp $re $v]} { error "stamp-identity: $what '$v' is not of the form $re" }
 }
@@ -72,6 +73,7 @@ report_timing_summary -file $out/timing_summary.rpt
 # A bitstream only from a design that meets timing, as build.tcl writes one (the stamp changes no
 # path; this refuses a source that never met).
 set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
-if {$wns < 0} { puts "STAMP-REFUSED: WNS=$wns"; exit 1 }
-write_bitstream -force $out/rk_xcku5p.bit
+set whs [get_property SLACK [lindex [get_timing_paths -hold -max_paths 1] 0]]
+if {$wns < 0 || $whs < 0} { puts "STAMP-REFUSED: WNS=$wns WHS=$whs"; exit 1 }
+write_bitstream -force $out/$proj.bit
 puts "STAMP-DONE $commit dirty=$dirty stamp=$stamp WNS=$wns"

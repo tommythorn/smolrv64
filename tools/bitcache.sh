@@ -9,12 +9,14 @@
 #   tools/bitcache.sh start [<platform dir>]  record the tree a build starts from (make bit does this)
 #   tools/bitcache.sh key [<platform dir>]    the key the tree would be banked under
 #   tools/bitcache.sh content                 the content id of the tree's build inputs
-#   tools/bitcache.sh stampable <content id>  the newest met entry the gate may stamp (tools/gate.sh)
+#   tools/bitcache.sh stampable <content id> [<platform dir>]  the newest met entry of that board's
+#                                             the gate may stamp (tools/gate.sh)
 #
-# A key is <commit12>[-d<diff8>]-iw<IW>-div<DIV8>-<placer>: the commit, a hash of the tree's
+# A key is <commit12>[-d<diff8>]-iw<IW>-div<DIV8>-<placer>-<project>: the commit, a hash of the tree's
 # uncommitted changes to anything synthesized or used to build (src, core, the platform's sources
 # and scripts, the monitor), and the knobs the build used (the project file's defines, the
-# placer directive in impl_1's log). An entry holds the bitstream, the routed checkpoint (a probe
+# placer directive in impl_1's log), and the board's project, since every board builds its own
+# bitstream from one commit. "Met" is setup and hold both. An entry holds the bitstream, the routed checkpoint (a probe
 # build that differs by a knob or an ILA places incrementally against it: INCR_DCP=<entry>/routed.dcp
 # make), the routed timing summary, the build's defines, the diff of a dirty tree and meta.txt.
 set -eu
@@ -22,7 +24,7 @@ BITCACHE=${BITCACHE:-$HOME/bitcache}
 here=$(cd "$(dirname "$0")/.." && pwd)
 plat_default=$here/platforms/rk-xcku5p-f-v1.2
 
-diff_paths=(src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2 workloads/monitor)
+diff_paths=(src core platforms workloads/monitor)
 excl=(':(exclude)*.xpr' ':(exclude)third_party' ':(exclude)*.log' ':(exclude)src/mem.linehex')
 # Untracked files no build reads: logs, images, lock files, and what a Vivado run (an
 # out-of-context build, a report) writes into its working directory: clockInfo.txt, and the
@@ -70,11 +72,18 @@ key() {
     iw=$(define "$plat" SMOLRV64_IW);  div=$(define "$plat" PROBE_CLK_DIV8)
     # the LAST place_design: runme.log keeps the runs a reset_run left before this one's
     plc=$(grep -a -o 'place_design -directive [A-Za-z_]*' "$plat/$PROJ.runs/impl_1/runme.log" 2>/dev/null | tail -1 | awk '{print $3}')
-    echo "$tree-iw${iw:-?}-div${div:-?}-${plc:-?}"
+    echo "$tree-iw${iw:-?}-div${div:-?}-${plc:-?}-$PROJ"
 }
 
-PROJ=rk_xcku5p
+# A platform directory's project: its one .xpr.
+proj_of() {
+    local x; x=$(ls "$1"/*.xpr 2>/dev/null)
+    [ "$(echo "$x" | grep -c .)" = 1 ] || { echo "bitcache: $1 has no one .xpr" >&2; exit 1; }
+    basename "$x" .xpr
+}
+
 cmd=${1:-list}; shift || true
+case "$cmd" in key|start|put) PROJ=$(proj_of "${1:-$plat_default}");; esac
 case "$cmd" in
 key)
     plat=${1:-$plat_default}
@@ -115,7 +124,9 @@ put)
          commit=$(cd "$here" && git log -1 --format='%H %s'); fi
     [ -s "$d/dirty.diff" ] || rm -f "$d/dirty.diff"
     wns=$(grep -A2 'WNS(ns)' "$d/timing_summary.rpt" 2>/dev/null | sed -n 3p | awk '{print $1}')
+    whs=$(grep -A2 'WNS(ns)' "$d/timing_summary.rpt" 2>/dev/null | sed -n 3p | awk '{print $5}')
     { echo "key:     $k"
+      echo "project: $PROJ"
       echo "commit:  $commit"
       echo "tree:    $here"
       echo "built:   $(date '+%Y-%m-%d %H:%M:%S')"
@@ -123,7 +134,8 @@ put)
       # entry was built from the same sources
       echo "cid:     $(cat "$st/cid" 2>/dev/null || sed -n 's/^cid: *//p' "$prev/meta.txt" 2>/dev/null | grep . || echo ?)"
       echo "wns:     ${wns:-?}"
-      echo "met:     $(awk -v w="${wns:-x}" 'BEGIN{print (w ~ /^-?[0-9.]+$/ && w >= 0) ? "yes" : "NO"}')"
+      echo "whs:     ${whs:-?}"
+      echo "met:     $(awk -v w="${wns:-x}" -v h="${whs:-x}" 'BEGIN{print (w ~ /^-?[0-9.]+$/ && w >= 0 && h ~ /^-?[0-9.]+$/ && h >= 0) ? "yes" : "NO"}')"
     } > "$d/meta.txt"
     rm -rf "$st"
     echo "bitcache: banked $d (WNS ${wns:-?})"
@@ -138,9 +150,10 @@ stampable)
     # Placed with the directive the gate's own build would use (PLACE_DIRECTIVE, as build.tcl reads
     # it): a directive moves placement, not the netlist, and a met build is met.
     cid=${1:?content id}
+    PROJ=$(proj_of "${2:-$plat_default}")
     pl=${PLACE_DIRECTIVE:-AltSpreadLogic_medium}
     iw=$(sed -n 's/^ *`define SMOLRV64_IW \([0-9]*\).*/\1/p' "$here/core/smolrv64_width.vh")   # the shipping width
-    for d in $(ls -td "$BITCACHE"/*-iw$iw-div48-"$pl" "$BITCACHE"/*-iw$iw-div48-"$pl".* 2>/dev/null); do
+    for d in $(ls -td "$BITCACHE"/*-iw$iw-div48-"$pl"-"$PROJ" "$BITCACHE"/*-iw$iw-div48-"$pl"-"$PROJ".* 2>/dev/null); do
         grep -q "^cid: *$cid\$" "$d/meta.txt" 2>/dev/null || continue
         grep -q '^met: *yes' "$d/meta.txt" && [ -f "$d/routed.dcp" ] || continue
         extra=$(sed 's/=.*//' "$d/defines.txt" | grep -v -x -E 'MEM_BASEADDR|SOC_BOOT_HEX|PROBE_CLK_DIV8|SMOLRV64_HW|SMOLRV64_IW|SMOLRV64_GIT_COMMIT|SMOLRV64_GIT_DIRTY|SMOLRV64_BUILD_STAMP' || true)
@@ -153,7 +166,7 @@ stampable)
 get)
     pre=${1:?commit prefix}; filt=${2:-}
     for d in $(ls -td "$BITCACHE"/"$pre"* 2>/dev/null); do
-        case "$d" in *"$filt"*) grep -q '^met: *yes' "$d/meta.txt" 2>/dev/null && { echo "$d/$PROJ.bit"; exit 0; };; esac
+        case "$d" in *"$filt"*) grep -q '^met: *yes' "$d/meta.txt" 2>/dev/null && { ls "$d"/*.bit | head -1; exit 0; };; esac
     done
     echo "bitcache: no timing-clean bitstream for $pre${filt:+ ($filt)}" >&2; exit 1
     ;;

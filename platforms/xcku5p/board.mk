@@ -17,6 +17,13 @@ ifeq ($(strip $(PROJECT)),)
 $(error the board's Makefile sets PROJECT before including board.mk)
 endif
 export PROJECT FLASH_PART FLASH_MB MONITOR
+# A board may name the placer directive its builds use (PLACE_DIRECTIVE, as build.tcl reads it);
+# empty, build.tcl's default. tools/gate.sh asks for it with `make -s print-PLACE_DIRECTIVE`.
+ifneq ($(strip $(PLACE_DIRECTIVE)),)
+export PLACE_DIRECTIVE
+endif
+print-%:
+	@echo '$($*)'
 XPR      := $(PROJECT).xpr
 RUNS_DIR := $(PROJECT).runs
 BIT      := $(RUNS_DIR)/impl_1/$(PROJECT).bit

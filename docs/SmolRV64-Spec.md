@@ -1855,7 +1855,7 @@ dTLB's one walker. A sequential stream of 8-byte loads is held by the load queue
 | CLINT | `0x0200_0000` | 64 KiB |
 | PLIC | `0x0c00_0000` | 64 MiB |
 | UART (NS16550) | `0x1000_0000` | 8 byte registers |
-| ui_clk device pages, one 4 KiB page each: virtio-blk `0x1000_2000`, virtio-net `0x1000_3000`, virtio keyboard and mouse `0x1000_4000` (fed by `tools/hid-bridge` on header J1 pin 4, IO1_P), VGA scanout `0x1000_5000` (not in the DTB; RGB565 at `0xFF00_0000`, the base of the DTB's 16 MiB framebuffer region; its pixel clock comes up at 166.67 MHz, the clock it is timed at, and the monitor sets each mode's over DRP -- 640x480@60 at reset, another from an X11 modeline with its `V` command -- turns it on, and writes the mode into the framebuffer node of the device tree it starts a payload with), the board's keys `0x1000_6000` (`[3:0]` held now, `[11:8]` pressed since the CPU's reset, write 1 to clear; key[0] pressed at the monitor's prompt boots over TFTP (`go`), key[1] steers UART RX); page `0x1000_7000` reads 0 | `0x1000_2000` | 24 KiB |
+| ui_clk device pages, one 4 KiB page each: virtio-blk `0x1000_2000`, virtio-net `0x1000_3000`, virtio keyboard and mouse `0x1000_4000` (fed by `tools/hid-bridge` on the RK board's header J1 pin 4, IO1_P), VGA scanout `0x1000_5000` (not in the DTB; RGB565 at the framebuffer region, `0xFF00_0000` on the RK boards, `0xBF00_0000` on HDMI-XCKU5P, the base of the DTB's 16 MiB framebuffer region; its pixel clock comes up at 166.67 MHz, the clock it is timed at, and the monitor sets each mode's over DRP -- 640x480@60 at reset, another from an X11 modeline with its `V` command -- turns it on, and writes the mode into the framebuffer node of the device tree it starts a payload with), the board's keys `0x1000_6000` (`[3:0]` held now, `[11:8]` pressed since the CPU's reset, write 1 to clear; key[0] pressed at the monitor's prompt boots over TFTP (`go`), key[1] steers UART RX); page `0x1000_7000` reads 0 | `0x1000_2000` | 24 KiB |
 
 **virtio-net offers `VIRTIO_NET_F_MAC`**: its config space holds the board's MAC, the FPGA's
 96-bit device DNA (`DNA_PORTE2`, read once after the memory controller's reset) folded to 32
@@ -1890,9 +1890,10 @@ the time the device decides, and a suppressed interrupt then is a lost wakeup th
 only recovers from by a timeout -- NFS "server not responding" every few minutes on the
 board with bitstream O. `tb_virtio_net` toggles the flag mid-delivery both ways.
 | on-chip SRAM (boot/monitor) | `0x7000_0000` | 256 KiB |
-| DDR4 | `0x8000_0000` | 2 or 4 GiB (§13, DDR4) |
+| DDR4 | `0x8000_0000` | 1, 2 or 4 GiB (§13, DDR4) |
 
-UART is **3 Mbps, hardwired in RTL** — not derived from the DTS or the kernel printout.
+UART is **hardwired in RTL per board** (`smolrv64_shell`'s `UART_BAUD`): **3 Mbps** on the RK boards, **2 Mbps** on
+HDMI-XCKU5P, whose CP2105 stops there — not derived from the DTS or the kernel printout.
 Receive goes through a **4 KiB FIFO** behind RBR, 13.7 ms of input: the line has no flow
 control, so a byte that finds the FIFO full is dropped and sets LSR.OE. The THR is one byte
 (`fifo-size = <1>` in the DTS).
@@ -2028,7 +2029,7 @@ tag and the row.
 
 **The physical-address cap.** DRAM starts at `0x8000_0000` and is `2^DRAM_LG2` bytes, a
 configuration of the instance: 32 on the board (4 GiB, the DMA masters' window,
-`src/dram_window.vh`; a board DTS describes 2 or 4 GiB of it, §13, and `src/lint.sh` checks its
+`src/dram_window.vh`; a board DTS describes 1, 2 or 4 GiB of it, §13, and `src/lint.sh` checks its
 memory nodes against the cap with `tools/check-dts-memory.py`), the modeled DDR's size under
 cosim. A PA
 at or above `DRAM_TOP` = `0x8000_0000 + 2^DRAM_LG2` does not exist and takes an access fault
@@ -2399,7 +2400,7 @@ from the checkpoint's first instruction.
 | DDR-latency sweep (B7, 2026-09-17) | `tools/mem-sweep.sh docs/measurements/<date>-mem-sweep.txt` | the table of retires at 60 M for latency 4 / measured / 80 at IW=2 and IW=3; an MLP increment is judged by how much of the gap to latency 4 it closes |
 | glibc userspace (per batch) | `workloads/glibc/run-cosim.sh` | `GLIBC-TEST PASS` and `STOP-AFTER` (the runner's `STOP_AFTER` ends the lockstep 1 M cycles after that console marker, ~0.6 G cycles at 6f2bbf1f, instead of running out its 1.8 G budget) |
 | systemd userspace (per batch) | `workloads/sysd/run-cosim.sh` | `SYSD-TEST PASS` and `STOP-AFTER` (~0.45 G cycles of its 1.6 G at 6f2bbf1f) |
-| the board | `tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, the userspace stress (B10), the integrity log read back clean from Linux (§11.1, 2026-09-20), rtl= recorded — a `+` on it means a dirty tree and no commit's verdict (G12) |
+| the board | `BOARD=2g\|4g\|hdmi tools/board-gate.sh <dir>` | `BOARD: PASS`: `login:` with zero faults, the userspace stress (B10), the integrity log read back clean from Linux (§11.1, 2026-09-20), rtl= recorded — a `+` on it means a dirty tree and no commit's verdict (G12) |
 | a Geekbench 6 bisection step (2026-09-20) | `tools/gb6-bisect.sh <bit> <tag> [PASS_S]` | one line, `GB6-BISECT: PASS <tag> ... survived 16200 s` or `FAIL <tag> ... after <s> s at subtest <n>`; GB6's PDF Renderer kills 390d5028+ at 87 min where GB5 completes, so a pass is 3× that |
 
 **`CYC=300000000` is the required tiny128 cosim length.** At 40e6 the run reports `inj=0` — it
@@ -2443,7 +2444,7 @@ abort at that retire (the check's self-test; it does on retire 35, the boot's fi
 
 ---
 
-## 13. FPGA implementation (XCKU5P, `platforms/rk-xcku5p-f-v1.2`)
+## 13. FPGA implementation (XCKU5P, `platforms/rk-xcku5p-f-v1.2`, `platforms/hdmi-xcku5p`)
 
 | | |
 |---|---|
@@ -2457,7 +2458,34 @@ abort at that retire (the check's self-test; it does on retire 35, the boot's fi
 | Build | `make bit` (`SMOLRV64_CORE=1 SMOLRV64_HW=8 PROBE_CLK_DIV8=48` are the defaults; HW=4 until 2026-09-05) |
 
 Read `probe_clk` from the **Intra Clock Table**, not global WNS — global WNS is usually
-pinned by `ui_clk`'s paths.
+pinned by `ui_clk`'s paths. A build writes a bitstream only with **setup and hold** met (WNS ≥ 0
+and WHS ≥ 0: `build.tcl`, `physopt_close.tcl`, the gate's stamp and the bitcache's "met").
+
+### 13.0 Boards
+
+The SoC is `platforms/xcku5p/smolrv64_shell.v` (with its constraints, `smolrv64_shell.xdc`): the
+core, the DDR4 PHY-only IP and our controller, the devices and every clock. A board's top
+(`platforms/<board>/<project>.srcs`) gives it the pins and adapts its Ethernet PHY to GMII and its
+video connector to the scanout's pixel stream (RGB565, data enable, syncs, the pixel clock). The
+flow is shared: `platforms/xcku5p/` holds the scripts and `board.mk`, which a board's Makefile
+includes after naming its project, flash, console, monitor image and placer directive.
+`tools/boards.sh` names each board for the gate (`BOARD=2g|4g|hdmi`).
+
+| | RK-XCKU5P-F v1.2 (2g, 4g) | HDMI-XCKU5P |
+|---|---|---|
+| DDR4 | 2 or 4 GiB, 200 MHz reference | 1 GiB (two 4 Gb x16; the 16 Gb configuration, rows past A14 ignored), 100 MHz reference |
+| Video | TinyVGA RGB222 on the 40-pin header | HDMI, DVI-style TMDS through four component-mode OSERDESE3 at DIFF_SSTL12 (`src/hdmi_tx.v`): bank 65 holds the DDR4 command pins, whose PHY owns the bank's native-mode resources; the bit clock is 5x the pixel clock, from an MMCM fed by it, above the -2 OSERDESE3 rating at 1080p (the one waived pulse-width check, `probe_clk_check.tcl`) |
+| Pixel clock at configuration | 1000 MHz / 6 = 166.67 MHz | 1000 MHz / 7 = 142.86 MHz (`VID_CLK_D`), the monitor's 1080p60 at 57.7 Hz |
+| Ethernet | RTL8211F, RGMII (`gmii_to_rgmii`) | RTL8211EG strapped GMII (`src/gmii_phy.v`): the HD bank's RXCLK through BUFGCE_HDIO to an MMCM, sampled at -130.5 degrees; the PHY's reset is the FPGA's |
+| Console | 3 Mbps, the JTAG cable's second channel | 2 Mbps, a CP2105's interface 0 |
+| Monitor | `monitor.bin`: framebuffer `0xFF00_0000`, DTB `0xFEFF_F000` | `monitor-hdmi.bin`: framebuffer `0xBF00_0000`, DTB `0xBEFF_F000`, 1 GiB stated, 1080p at reset |
+| Device tree, NFS root | `ubuntu-nfs.dts`, `ubuntu-nfs-4g.dts`; `/srv/ubuntu-root-2g`, `-4g` | `ubuntu-nfs-hdmi.dts`; `/srv/ubuntu-root-hdmi` |
+| Flash | MX25U51245G | MT25QU128 (the schematic says MT25QU256) |
+| Placement | `AltSpreadLogic_medium` | `Explore` (the default missed by 0.055 ns at b2cc02fb) |
+
+**Measured on HDMI-XCKU5P** (b2cc02fb with `Explore`, WNS +0.044 ns; 763e1d3d's receive phase as an
+ECO, WHS +0.011 ns): the monitor's `M` over all 1 GiB, 0 errors, 240-450 MiB/s across its phases;
+`go hdmi` boots Ubuntu over TFTP and NFS to `login:` with zero faults (2026-11-05).
 
 ---
 

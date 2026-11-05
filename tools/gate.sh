@@ -17,14 +17,21 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
-PLAT=$REPO/platforms/rk-xcku5p-f-v1.2
 UB=$REPO/workloads/ubuntu
 BOOT_WAIT=${BOOT_WAIT:-1800}      # seconds to wait for login:
-# Two boards hang off coffee, so the board under test is named (tools/board-gate.sh) before the
-# gate spends its netlist boot and stamp on a bitstream it cannot then program.
-if [ "${NO_BOARD:-0}" = 0 ] && [ "${BOARD:-}" != 2g ] && [ "${BOARD:-}" != 4g ]; then
-   echo "GATE: BOARD=2g|4g names the board under test (NO_BOARD=1 stops before the board)"; exit 2
+# Three boards hang off coffee, so the board under test is named (tools/board-gate.sh) before the
+# gate spends its netlist boot and stamp on a bitstream it cannot then program; the board names
+# the platform the gate builds (tools/boards.sh). NO_BOARD=1 builds the RK board's unless BOARD says.
+if [ "${NO_BOARD:-0}" = 0 ] && [ -z "${BOARD:-}" ]; then
+   echo "GATE: BOARD=2g|4g|hdmi names the board under test (NO_BOARD=1 stops before the board)"; exit 2
 fi
+MAIN=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')
+. "$REPO/tools/boards.sh" || { echo "GATE: BOARD=$BOARD: 2g, 4g or hdmi"; exit 2; }
+PSRC=$PLAT/$PROJ.srcs            # the board's own design sources, as the build counts them
+PLAT=$REPO/$PLAT
+# The placer directive the board's builds use, which the stamp's lookup must match (its Makefile).
+P=$(make -s -C "$PLAT" print-PLACE_DIRECTIVE 2>/dev/null)
+[ -n "$P" ] && export PLACE_DIRECTIVE=${PLACE_DIRECTIVE:-$P}
 
 if [ $# -ge 1 ]; then
    git checkout -q --detach "$1" || { echo "GATE: cannot check out $1"; exit 2; }
@@ -40,8 +47,10 @@ echo "=== GATE: $WHAT ==="
 # A tree with uncommitted changes gets its own directory, named by its content as well: two
 # worktrees at one commit would otherwise bank their bitstreams over each other.
 SHA=$(git rev-parse --short HEAD)
-DIRTY=$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)
+DIRTY=$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p "$PSRC" workloads/ubuntu workloads/tiny128 workloads/monitor)
+# A board with another platform builds another bitstream from the same commit: its own directory.
 RES="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/gate-results/$SHA${DIRTY:+-c$("$REPO"/tools/bitcache.sh content)}"
+[ "$PROJ" = rk_xcku5p ] || RES=$RES-$PROJ
 mkdir -p "$RES"
 git log -1 --format='%H%n%s%n%ci' > "$RES/commit.txt"
 
@@ -96,10 +105,10 @@ fi
 # and becomes this commit's bitstream once the commit's identity is stamped into its routed
 # checkpoint (tools/stamp-identity.tcl) -- minutes instead of a build. Only a clean tree is
 # stamped (its identity: dirty 0, the commit's date, as build.tcl gives it); NO_STAMP=1 builds.
-BIT="$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit"
+BIT="$PLAT/$PROJ.runs/impl_1/$PROJ.bit"
 SRC=""
-if [ "${NO_STAMP:-0}" = 0 ] && [ -z "$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)" ]; then
-   SRC=$("$REPO"/tools/bitcache.sh stampable "$("$REPO"/tools/bitcache.sh content)") || SRC=""
+if [ "${NO_STAMP:-0}" = 0 ] && [ -z "$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p "$PSRC" workloads/ubuntu workloads/tiny128 workloads/monitor)" ]; then
+   SRC=$("$REPO"/tools/bitcache.sh stampable "$("$REPO"/tools/bitcache.sh content)" "$PLAT") || SRC=""
 fi
 if [ -n "$SRC" ]; then
    echo "--- stamping $(basename "$SRC") (these sources, met at WNS $(awk '/^wns:/ {print $2}' "$SRC/meta.txt")) ---"
@@ -107,9 +116,9 @@ if [ -n "$SRC" ]; then
    ( export LD_LIBRARY_PATH=$XIL/lib/lnx64.o/Ubuntu/24
      "$XIL/bin/vivado" -mode batch -nojournal -nolog -source "$REPO/tools/stamp-identity.tcl" -tclargs \
         "$SRC/routed.dcp" "$(git rev-parse --short=8 HEAD)" 0 \
-        "$(git log -1 --format=%cd --date=format:%Y%m%d%H%M%S HEAD)" "$RES/stamp" ) > "$RES/build.log" 2>&1
+        "$(git log -1 --format=%cd --date=format:%Y%m%d%H%M%S HEAD)" "$RES/stamp" "$PROJ" ) > "$RES/build.log" 2>&1
    # the stamp's own output, never a bitstream an earlier build left in the platform directory
-   BIT="$RES/stamp/rk_xcku5p.bit"
+   BIT="$RES/stamp/$PROJ.bit"
    if grep -q "^STAMP-DONE" "$RES/build.log"; then
       cat "$RES/stamp/identity.txt"
       echo "stamped from: $SRC" >> "$RES/commit.txt"
@@ -120,7 +129,7 @@ if [ -n "$SRC" ]; then
       echo "TIMING VIOLATION: $(grep -oE 'WNS=[-0-9.]+' "$RES/build.log" | tail -1)" >> "$RES/build.log"
    else
       echo "stamp failed ($(grep -E '^ERROR|stamp-identity:' "$RES/build.log" | head -1 | cut -c1-120)): building"
-      SRC=""; BIT="$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit"
+      SRC=""; BIT="$PLAT/$PROJ.runs/impl_1/$PROJ.bit"
    fi
 fi
 if [ -z "$SRC" ]; then
@@ -140,7 +149,7 @@ echo "$WNS" > "$RES/wns.txt"
 # The worst path is worth keeping WHETHER OR NOT it met: a pass at +0.019 ns names the path
 # the next change has to avoid, and that is the whole input to headroom work.
 if [ -n "$SRC" ]; then R="$RES/stamp/timing_summary.rpt"
-else R=$(ls -t "$PLAT"/rk_xcku5p.runs/impl_1/*timing_summary*.rpt 2>/dev/null | head -1); fi
+else R=$(ls -t "$PLAT"/$PROJ.runs/impl_1/*timing_summary*.rpt 2>/dev/null | head -1); fi
 [ -n "$R" ] && cp "$R" "$RES/timing_summary.rpt"
 # The first VIOLATED path, else the first path in the core clock's group: the first "Slack"
 # in the report is a debug-hub path with 11 ns to spare, which is what this printed for
@@ -167,7 +176,7 @@ echo "timing: $WNS"
 printf '%s\n' "$WORST" | sed 's/^/  /'
 # The bitstream is banked in the evidence directory, and that copy is the one the board gate
 # programs (tools/board-gate.sh <resultdir>).
-cp "$BIT" "$RES/rk_xcku5p.bit"
+cp "$BIT" "$RES/$PROJ.bit"
 # NO_BOARD=1: stop here -- for a build whose board is busy (a Geekbench run on the last gate's
 # bitstream); tools/board-gate.sh on the evidence directory finishes the gate later.
 if [ "${NO_BOARD:-0}" != 0 ]; then

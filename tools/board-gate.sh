@@ -26,22 +26,19 @@
 # (latency(), below): a record, never a verdict.
 set -u
 cd "$(dirname "$0")/.."
-REPO=$(pwd); PLAT=$REPO/platforms/rk-xcku5p-f-v1.2; UB=$REPO/workloads/ubuntu
+REPO=$(pwd); UB=$REPO/workloads/ubuntu
 # The device tree and the payload that boot are THIS tree's (UB); the serial console (`screen -L`,
 # screenlog.0) lives in ONE checkout's workloads/ubuntu -- the main one, which `git worktree list`
 # prints first. A gate run from a worktree reads the console there (gate V4, 2026-09-05: "BOARD:
 # FAIL (upload)" with the bitstream already on the board) and still boots its own tree.
-# Two boards hang off coffee. BOARD=2g|4g names the one under test and sets what must match it:
-# its console log and screen session, its JTAG cable, its device tree (the memory, and the NFS
-# root: each board has its own, so two boards never write one tree) and the MAC its FPGA's DNA
-# gives it, which the boot must show.
+# Three boards hang off coffee. BOARD=2g|4g|hdmi names the one under test and sets what must match
+# it (tools/boards.sh): its platform, its console log and screen session, its JTAG cable, its device
+# tree (the memory, and the NFS root: each board has its own, so two boards never write one tree)
+# and the MAC its FPGA's DNA gives it, which the boot must show.
 MAIN=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')
-case "${BOARD:-}" in
-   2g) CON=$MAIN/workloads/ubuntu/screenlog.2g; SCREEN=b2g; export JTAG=0ABC02A DTB=ubuntu-nfs.dtb;    BMAC=02:53:7c:76:21:25 ;;
-   4g) CON=$MAIN/workloads/ubuntu/screenlog.4g; SCREEN=b4g; export JTAG=0ABC01A DTB=ubuntu-nfs-4g.dtb; BMAC=02:53:64:12:43:42 ;;
-   "") BMAC="" ;;
-   *)  echo "BOARD=$BOARD: 2g or 4g"; exit 2 ;;
-esac
+. "$REPO/tools/boards.sh" || { echo "BOARD=$BOARD: 2g, 4g or hdmi"; exit 2; }
+PLAT=$REPO/$PLAT
+export JTAG DTB DTB_ADDR=$DTBA
 CON=${CON:-$UB/screenlog.0}
 [ -f "$CON" ] || CON=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu/screenlog.0
 # With several boards on one host, CON (the console log) and SCREEN (the `screen` session on
@@ -53,7 +50,7 @@ SCREEN=${SCREEN:-$(screen -ls | awk '/\t[0-9]+\./ {print $1; exit}')}
 # never grew (2026-11-04, after a power-on). The tty is named by the cable (ttyUSB numbers move).
 if [ -z "${REPLAY:-}" ] && ! screen -ls | grep -qE "^[[:space:]]+[0-9]+\.${SCREEN:-NONE}[[:space:]]"; then
    echo "BOARD: FAIL (no screen session '${SCREEN:-}' on the console; start it:"
-   echo "  screen -dmS ${SCREEN:-<name>} -L -Logfile $CON /dev/serial/by-id/usb-Xilinx_my_product_desc_${JTAG%A}-if01-port0 3000000)"
+   echo "  screen -dmS ${SCREEN:-<name>} -L -Logfile $CON ${TTYDEV:-<its console tty>} $BAUD)"
    exit 1
 fi
 # The board's address is read off ITS console (the kernel's IP-Config line, from byte $1 on),
@@ -62,7 +59,7 @@ con_ip() { tail -c +$(( ${1:-0} + 1 )) "$CON" | tr -d '\r' | grep -aoE 'ipaddr=1
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 # The bitstream: BIT=, else the one banked in the result directory (tools/gate.sh puts it there),
 # else the platform's last build -- which is only this result's when the same tree built it.
-[ -z "${BIT:-}" ] && [ -f "$RES/rk_xcku5p.bit" ] && BIT=$(cd "$RES" && pwd)/rk_xcku5p.bit
+[ -z "${BIT:-}" ] && [ -f "$RES/$PROJ.bit" ] && BIT=$(cd "$RES" && pwd)/$PROJ.bit
 # The board boots with the graphics console scanning out (ubuntu-boot.sh VGA): its memory
 # traffic is part of the machine every bitstream is judged on.
 export VGA=${VGA:-1}
@@ -210,16 +207,16 @@ XMODEM=""
 if [ -n "${BOARD:-}" ]; then
    # A named board boots over TFTP, as the monitor's `go` does: this tree's payload and the board's
    # device tree go to coffee's /srv/tftp/$BOARD with the boot.txt `go $BOARD` runs: 19.7 MB in a
-   # few seconds; XMODEM at 3 Mbaud takes a minute. VGA=1 turns the scanout on, as ubuntu-boot.sh does.
+   # few seconds; XMODEM at the console's baud takes a minute or two. VGA=1 turns the scanout on, as ubuntu-boot.sh does.
    T=/srv/tftp/$BOARD
    cp "$UB/fw_payload.bin" "$T/fw_payload.bin" && cp "$UB/$DTB" "$T/smolrv64.dtb" \
       || { echo "BOARD: FAIL (staging $T)"; exit 1; }
    { echo "# The gate's boot of $RTL_BANNER from $REPO ($DTB), staged by tools/board-gate.sh."
-     echo "N80000000 fw_payload.bin"; echo "Nfefff000 smolrv64.dtb"
+     echo "N80000000 fw_payload.bin"; echo "N$DTBA smolrv64.dtb"
      # the monitor turns the scanout on at every reset, in the mode its V command last set, and tells
      # the device tree that mode at the jump (workloads/monitor/video.c); VGA=0 turns it off
      [ "$VGA" = 0 ] && echo "WW10005000 0"
-     echo "X80000000 0 fefff000"; } > "$T/boot.txt"
+     echo "X80000000 0 $DTBA"; } > "$T/boot.txt"
    cp "$T/boot.txt" "$RES/boot.txt"
    # a character at a time: a bitstream older than the UART's receive FIFO drops a burst
    GO=$(wc -c < "$CON")
