@@ -23,7 +23,7 @@ TMPL  := ubuntu-nfs.dts.in
 	$(DTC) -I dts -O dtb < $^ > $@
 
 .PHONY: dtbs
-dtbs: ubuntu-nfs.dtb ubuntu-nfs-166.dtb ubuntu-nfs-polled.dtb ubuntu-sd.dtb ubuntu-nfs-4g.dtb ubuntu-sd-4g.dtb
+dtbs: ubuntu-nfs.dtb ubuntu-nfs-166.dtb ubuntu-nfs-polled.dtb ubuntu-sd.dtb ubuntu-nfs-4g.dtb ubuntu-sd-4g.dtb ubuntu-nfs-hdmi.dtb
 
 ubuntu-nfs.dts: $(TMPL) $(GEN)          # the one to boot
 	$(GEN) --gen $(GENRTL) $(DIV8) $(TMPL) $@
@@ -37,3 +37,5 @@ ubuntu-nfs-4g.dts: $(TMPL) $(GEN)       # 4 GiB: the board with 16 Gb DDR4 parts
 	$(GEN) --gen $(GENRTL) $(DIV8) --4g $(TMPL) $@
 ubuntu-sd-4g.dts: $(TMPL) $(GEN)
 	$(GEN) --gen $(GENRTL) $(DIV8) --sd-root --4g $(TMPL) $@
+ubuntu-nfs-hdmi.dts: $(TMPL) $(GEN)     # HDMI-XCKU5P: 1 GiB, the framebuffer under 0xC000_0000, its own NFS root
+	$(GEN) --gen $(GENRTL) $(DIV8) --hdmi $(TMPL) $@
