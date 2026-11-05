@@ -22,7 +22,7 @@ BITCACHE=${BITCACHE:-$HOME/bitcache}
 here=$(cd "$(dirname "$0")/.." && pwd)
 plat_default=$here/platforms/rk-xcku5p-f-v1.2
 
-diff_paths=(src core platforms/rk-xcku5p-f-v1.2 workloads/monitor)
+diff_paths=(src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2 workloads/monitor)
 excl=(':(exclude)*.xpr' ':(exclude)third_party' ':(exclude)*.log' ':(exclude)src/mem.linehex')
 # Untracked files no build reads: logs, images, lock files, and what a Vivado run (an
 # out-of-context build, a report) writes into its working directory: clockInfo.txt, and the

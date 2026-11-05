@@ -30,15 +30,15 @@ proc spread {label pattern} {
     puts [format "PLACE| %-26s %5d cells over %2d regions   %s" $label $n [llength $regions] $out]
 }
 
-spread "core (everything)"      "probe_core/core/*"
-spread "  core/u_sq"            "probe_core/core/u_sq/*"
-spread "  core/u_iq_i"          "probe_core/core/u_iq_i/*"
-spread "  core/u_prf"           "probe_core/core/u_prf/*"
-spread "  core/fe"              "probe_core/core/fe/*"
-spread "  core/u_lq"            "probe_core/core/u_lq/*"
-spread "caches (probe_core)"    "probe_core/u_*cache*/*"
+spread "core (everything)"      "shell/probe_core/core/*"
+spread "  core/u_sq"            "shell/probe_core/core/u_sq/*"
+spread "  core/u_iq_i"          "shell/probe_core/core/u_iq_i/*"
+spread "  core/u_prf"           "shell/probe_core/core/u_prf/*"
+spread "  core/fe"              "shell/probe_core/core/fe/*"
+spread "  core/u_lq"            "shell/probe_core/core/u_lq/*"
+spread "caches (probe_core)"    "shell/probe_core/u_*cache*/*"
 spread "ddr4"                   "*ddr4_0*"
 spread "virtio"                 "*virtio*"
-spread "u_mem (ddr4 ctl)"       "u_mem/*"
+spread "u_mem (ddr4 ctl)"       "shell/u_mem/*"
 spread "dbg_hub"                "dbg_hub/*"
 puts "PLACE-DONE"

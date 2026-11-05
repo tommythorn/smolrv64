@@ -46,7 +46,7 @@ BIN = 80                                                            # tag placem
 
 
 def block(name, memo={}):
-    head = name.rsplit('/', 1)[0] + '/'
+    head = re.sub(r'^shell/', '', name).rsplit('/', 1)[0] + '/'   # every board's SoC is `shell`
     if head not in memo:
         memo[head] = next(i for i, p in enumerate(PATS) if p.match(head))
     return memo[head]

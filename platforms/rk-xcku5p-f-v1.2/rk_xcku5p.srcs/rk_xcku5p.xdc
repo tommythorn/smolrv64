@@ -159,7 +159,7 @@ set_property PACKAGE_PIN P24 [ get_ports "c0_ddr4_act_n" ]
 set_property PACKAGE_PIN P19  [ get_ports "c0_ddr4_reset_n" ]
 
 # Timing waiver for DDR4 calibration IP internal signal
-create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-17} -description "Ignore the TIMING-17 Critical Warning for sl_iport_i" -objects [get_pins -quiet -leaf -of [get_nets -quiet u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/u_ddr_cal/U_XSDB_SLAVE/sl_iport_i*] -filter {DIRECTION==IN}]
+create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-17} -description "Ignore the TIMING-17 Critical Warning for sl_iport_i" -objects [get_pins -quiet -leaf -of [get_nets -quiet shell/u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/u_ddr_cal/U_XSDB_SLAVE/sl_iport_i*] -filter {DIRECTION==IN}]
 
 # CVFPU generated-clock and CDC constraints live in cvfpu_timing.tcl.  They
 # need normal Tcl conditionals, which Vivado's XDC parser rejects.
@@ -223,7 +223,7 @@ set_property PACKAGE_PIN M25 [get_ports eth_txc]
 # internally, so this path is a false path. Removing it recovers ~0.05 ns and
 # lifts the design WNS off zero (next path is the core npc->frontend path).
 set_false_path \
-    -from [get_cells mmio_clock_bridge_inst/fifo_reset_q_reg] \
+    -from [get_cells shell/mmio_clock_bridge_inst/fifo_reset_q_reg] \
     -through [get_pins -hier -filter {NAME =~ *mmio_clock_bridge_inst*xpm_fifo_rst_inst*/D}]
 
 
@@ -248,12 +248,12 @@ set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter 
 # the requirement -- that is what limited the design to the N x 3.000 ns ladder before.
 set_false_path -to [get_pins -hier -filter {NAME =~ *fbdiag_rst_sync_reg[0]/D}]
 
-# ddr4_mem (rk_xcku5p.v u_mem), our DDR4 controller, sits where the IP's own controller, UI and AXI
+# ddr4_mem (smolrv64_shell u_mem), our DDR4 controller, sits where the IP's own controller, UI and AXI
 # shim sat: the two clock regions of the DDR4 pins. The PHY-only IP is half the old IP's cells, and
 # left free the placer spread the controller toward the devices and reflowed the core around it
 # (f30ebc84/a47f5c1f: probe_clk -0.14 to -0.32 over most of the core's families).
 create_pblock pb_ddr4_mem
-add_cells_to_pblock [get_pblocks pb_ddr4_mem] [get_cells u_mem]
+add_cells_to_pblock [get_pblocks pb_ddr4_mem] [get_cells shell/u_mem]
 resize_pblock [get_pblocks pb_ddr4_mem] -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
 
 # rv_l2 (rv_soc_top u_l2), the L2, sits along its data array: all 64 URAM288, the part's one URAM
@@ -261,7 +261,7 @@ resize_pblock [get_pblocks pb_ddr4_mem] -add {CLOCKREGION_X0Y0:CLOCKREGION_X0Y1}
 # either side and the two block-RAM columns beside it for its tags. Left free, its logic spread over
 # the die between the column, the caches' arbiter and the DDR crossing (SLICE X0-X110).
 create_pblock pb_l2
-add_cells_to_pblock [get_pblocks pb_l2] [get_cells probe_core/u_l2]
+add_cells_to_pblock [get_pblocks pb_l2] [get_cells shell/probe_core/u_l2]
 resize_pblock [get_pblocks pb_l2] -add {SLICE_X74Y0:SLICE_X85Y239 URAM288_X0Y0:URAM288_X0Y63 RAMB36_X6Y0:RAMB36_X7Y47 RAMB18_X6Y0:RAMB18_X7Y95}
 
 # ddr_port_sync (rk_xcku5p.v probe_sync): the core's memory port into ui_clk as registers.

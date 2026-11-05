@@ -743,7 +743,7 @@ full boot cosim.
 `rs232.v` defined `rs232rx`/`rs232tx` a second time, with a different `rs232rx`
 port list and a different default baud. Verilator's glob took `rs232.v` first,
 so every simulation build bound a *different UART than the board*:
-`rk_xcku5p.v` instantiates the standalone pair with `.ready()`/`.overflow()`,
+`smolrv64_shell.v` instantiates the standalone pair with `.ready()`/`.overflow()`,
 which `rs232.v`'s five-port `rs232rx` does not have. It was harmless only
 because no sim TB instantiates the UART — the testbench drives
 `uart_rx_we`/`uart_tx_ready` directly. `rs232.v` is deleted; `MODDUP` is now a

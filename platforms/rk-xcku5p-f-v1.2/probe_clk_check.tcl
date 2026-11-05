@@ -50,7 +50,7 @@ if {[llength $probe_mmcm] == 1} {
    if {$vco < 600.0 || $vco > 1200.0} {
       error [format "probe_clk_check: MMCM VCO %.1f MHz is outside the 600-1200 MHz\
  window that holds for every speed grade of this part.  Fix CLKFBOUT_MULT_F /\
- DIVCLK_DIVIDE in rk_xcku5p.v." $vco]
+ DIVCLK_DIVIDE in platforms/xcku5p/smolrv64_shell.v." $vco]
    }
 }
 

@@ -40,7 +40,7 @@ echo "=== GATE: $WHAT ==="
 # A tree with uncommitted changes gets its own directory, named by its content as well: two
 # worktrees at one commit would otherwise bank their bitstreams over each other.
 SHA=$(git rev-parse --short HEAD)
-DIRTY=$(git status --porcelain --untracked-files=no -- src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)
+DIRTY=$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)
 RES="$(cd "$(git rev-parse --git-common-dir)/.." && pwd)/gate-results/$SHA${DIRTY:+-c$("$REPO"/tools/bitcache.sh content)}"
 mkdir -p "$RES"
 git log -1 --format='%H%n%s%n%ci' > "$RES/commit.txt"
@@ -98,7 +98,7 @@ fi
 # stamped (its identity: dirty 0, the commit's date, as build.tcl gives it); NO_STAMP=1 builds.
 BIT="$PLAT/rk_xcku5p.runs/impl_1/rk_xcku5p.bit"
 SRC=""
-if [ "${NO_STAMP:-0}" = 0 ] && [ -z "$(git status --porcelain --untracked-files=no -- src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)" ]; then
+if [ "${NO_STAMP:-0}" = 0 ] && [ -z "$(git status --porcelain --untracked-files=no -- src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor)" ]; then
    SRC=$("$REPO"/tools/bitcache.sh stampable "$("$REPO"/tools/bitcache.sh content)") || SRC=""
 fi
 if [ -n "$SRC" ]; then

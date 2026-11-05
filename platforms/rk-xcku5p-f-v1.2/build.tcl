@@ -111,6 +111,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir rgmii_rx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir rgmii_tx.v] Verilog
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
+    add_source_if_missing $fileset [file join $repo_root platforms xcku5p smolrv64_shell.v] Verilog
 
     add_source_if_missing $fileset [file join $src_dir alu.v] Verilog
     add_source_if_missing $fileset [file join $src_dir smolrv64_plic_arbiter.v] Verilog
@@ -151,7 +152,7 @@ proc ensure_ip_products {} {
         if {[file exists $dcp]} continue
         puts "  IP $ip: output products missing ($dcp) -- regenerating."
         # THE DDR4 IP IS ITS PHY ONLY (PG150's Physical Layer Only): src/ddr4_mem.v is the
-        # controller, on the IP's mc_*/rdData/wrData port (rk_xcku5p.v). Loading the custom part
+        # controller, on the IP's mc_*/rdData/wrData port (smolrv64_shell.v). Loading the custom part
         # from ddr4_part.csv once reset the AXI data width the .xci named, so the mode is set,
         # and checked, before every generate.
         if {$ip eq "ddr4_0"} {
@@ -306,7 +307,7 @@ if {[catch {exec git -C $repo_root rev-parse --short=8 HEAD} git_result] == 0} {
     set git_commit $git_result
 }
 set source_dirty 0
-set source_paths [list src core platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor]   ;# the monitor is baked into the SRAM
+set source_paths [list src core platforms/xcku5p platforms/rk-xcku5p-f-v1.2/rk_xcku5p.srcs workloads/ubuntu workloads/tiny128 workloads/monitor]   ;# the monitor is baked into the SRAM
 if {[catch {exec git -C $repo_root status --porcelain --untracked-files=no -- {*}$source_paths} git_status] == 0 &&
     [string trim $git_status] ne ""} {
     set source_dirty 1
@@ -438,7 +439,7 @@ if {[info exists env(ILA_CORE)] && $env(ILA_CORE) ne "" && $env(ILA_CORE) ne "0"
 }
 # ILA_MEM=1: two ILAs on the memory path (core port on probe_clk; CDC far end, core/device AXI
 # masters and the AXI into the controller on ui_clk), both triggered at the onset of a wedge by a
-# port watchdog in rk_xcku5p.v. Arm with `make ila-mem` before the board wedges.
+# port watchdog in smolrv64_shell.v. Arm with `make ila-mem` before the board wedges.
 if {[info exists env(ILA_MEM)] && $env(ILA_MEM) ne "" && $env(ILA_MEM) ne "0"} {
     puts "Enabling ILA_MEM: memory-path debug cores (ila_mem_p, ila_mem_m)."
     lappend vdefines "ILA_MEM"

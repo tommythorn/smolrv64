@@ -11,7 +11,7 @@ Then the families, those failing in the most draws first: draws, endpoints, wors
 import collections, os, re, sys
 
 def fam(pin):
-    p = pin.replace('probe_core/core/', '').replace('probe_core/', '')
+    p = re.sub(r'^shell/', '', pin).replace('probe_core/core/', '').replace('probe_core/', '')
     p = re.sub(r'_reg.*', '', p)
     p = re.sub(r'\[\d+\]', '[]', p)
     parts = p.split('/')

@@ -1,6 +1,6 @@
 # ila_mem.tcl -- ARMED capture of a memory-path wedge (a bit built with ILA_MEM=1).
 #
-# Both memory-path ILAs trigger on the port watchdog in rk_xcku5p.v (ila_trig: something owed at
+# Both memory-path ILAs trigger on the port watchdog in smolrv64_shell.v (ila_trig: something owed at
 # the core's port and no handshake for 2047 probe_clk cycles; ila_trig_m[2] on the ui_clk side).
 # The trigger sits at the end of the window, so each capture is the ~4000 samples leading into
 # the stop. Arm it after the board boots, then run the workload; it waits until the trigger

@@ -5,7 +5,7 @@
     tools/vga-mode.py --list
 
 The pixel clock is vga_mmcm_inst's CLKOUT0 = VCO / divider, with the VCO fixed at 1000 MHz
-(rk_xcku5p.v: ui_clk 333.33 MHz / 2 * 6), and the bitstream is timed at the divider it comes up
+(smolrv64_shell.v: ui_clk 333.33 MHz / 2 * 6), and the bitstream is timed at the divider it comes up
 at, 6 (166.67 MHz). The monitor's V command takes an X11 modeline, picks the integer divider
 nearest its clock and rewrites only CLKOUT0's divider over DRP (workloads/monitor/video.c). An
 integer divider cannot hit every VESA clock exactly; the refresh rate moves instead, and the
