@@ -68,6 +68,46 @@ Measured out of context (`smolrv64_frontend`, 6.000 ns with `clk2x` at 3.000 ns)
 | CLB LUTs | 17,262 | 15,939 (-1,323, -7.7%) |
 | registers | 2,472 | 3,158 (+686: the decoders' stage registers) |
 
+**The IR's read side does not follow cheaply.** Measured on increment 0's routed frontend: the
+read pointer reaches the IR's records in 3 levels but 4.4 ns of route (`q_rp` fans out to every
+bank's read address, 1,076 endpoints), so a first half could not deliver its records by 3 ns.
+The IR, rename and the dispatch decision are one combinational chain per `clk` cycle; they move
+together, with the lanes, or not at all.
+
+**The lanes: calibrated (2026-11-06, `~/claude-scratch-hdmi/2x/cal/stag2x.v`, out of context,
+3.000 ns).** One physical lane on `clk2x` with the staggered ALU and a 7-way bypass of registered
+halves (the PRF, its own last two results, the other lane's two, the load stream):
+
+| stage | slack | levels | logic / route |
+|---|---|---|---|
+| S1: bypass -> the low 32 bits (add/sub, Zba, logic, Zbs, sll, ext, the W forms whole, link), the low compare | +0.142 | 11 | 1.130 / 1.710 |
+| S2: bypass -> the high 32 bits from S1's carries, the compare's verdict | +0.105 | 14 | 0.989 / 1.887 |
+| S2: the late class whole (srl/sra/ror/rol/bext, slt, min/max, czero) from S1's low and S2's high | +0.148 | 12 | 1.063 / 1.771 |
+
+1,942 LUTs and 879 flops for the lane (main: `u_x` is 1,989 LUTs per lane, four of them, plus each
+lane's bypass in the core). Counts and rev8 (clz/ctz/cpop/rev8/orc.b) go to a slow pipe.
+
+**The lane step, cycle-identical where it can be.** Physical lane 0 executes logical lanes A
+and C, physical lane 1 B and D: the A/B op in `clk`'s first half, the C/D op in its second. The
+four schedulers, their select registers and the wake stay `clk`'s. With the staggered ALU a
+dependent issued at the next `clk` edge reads its producer's low half in its S1 and its high
+half in its S2, so every ALU -> ALU chain keeps today's timing whichever phase either op is in.
+The second phase's results reach full width 3 ns after today's, which only full-width consumers
+see: branch resolution (+1 `clk` cycle on a C/D-lane mispredict), the multiplier's and the other
+units' operands when the producer was a C/D op the cycle before, a late-class C/D result read by an
+A/B dependent the next cycle, and the PRF write (written on `clk2x`, before any read needs it).
+Those are the step's price, to measure on the SimPoints before it lands.
+
+**But the PRF read needs a stage of its own.** Today a lane reads the PRF inside its execute
+cycle (the select register's tags -> the LUTRAM shards -> the operand mux -> the ALU), using the
+6 ns. The calibration fed registered operands; with the LUTRAM read ahead of S1 that stage needs
+about 3.9 ns. So a `clk2x` lane is S0 (PRF read), S1, S2, and every lane's results move 3 ns later
+than in the calibration: ALU -> ALU chains still keep their timing (the dependent's own S0 covers
+the delay), but every branch's verdict lands 3 ns later, a `clk` cycle on every mispredict's
+restart, in all four lanes. The lane step is therefore not cycle-identical. Its main price is
+being measured as a knob: `exp/red1` (a lane's mispredict restarts the frontend one cycle late;
+the freeze still sets at once) against main, on the 77 GB5 SimPoints (`m390b-sp`, `red1-sp`).
+
 **Then, in order, each a contiguous step of the 2x domain toward the back:**
 
 1. The queue's read side and the IR: two heads a half instead of four a cycle (the read ports
