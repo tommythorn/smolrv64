@@ -189,12 +189,12 @@ def topdown(v, width, R):
         R.row(1, "- the redirect itself", pc(bs - drain))
     R.row(0, "front-end", pc(fe))
     sub(fe, [("latency: iMMU walk / no fetch bytes", "TD_FE_LAT")],
-        "bytes but no whole instruction, or not yet in the IR (tdfe splits)")
+        "bytes but no whole instruction, or not yet in the IR" + ("" if have3 else " (tdfe splits)"))
     R.row(0, "back-end", pc(be))
     sub(be, [("memory: a head op in M / an integer-load wait", "TD_BE_MEM"),
              ("no ROB room", "TD_BE_ROB"),
              ("no scheduler / load / store queue room", "TD_BE_IQ")],
-        "rename, serialising, FP results, the held IR (tdbe splits)")
+        "rename, serialising, FP results, the held IR" + ("" if have3 else " (tdbe splits)"))
     if v.get("DPATCH") is not None:
         slots = width * cyc
         R.text("\n  slots (%d x cycles)" % width)
@@ -209,9 +209,32 @@ def topdown(v, width, R):
         for l, k in got:
             R.row(0, l, "%.3f" % (1000.0 * g(k) / ins))
     if not have3:
-        R.text("\n  level 3: perf-smol tdbe (the back-end's causes) and perf-smol tdfe (bad speculation's,"
-               "\n  the front-end's, and the dispatch width), each a run of its own")
+        R.text("\n  level 3: perf-smol top (every cause in one run, on a bitstream with the fixed counters),"
+               "\n  or perf-smol tdbe and perf-smol tdfe, each a run of its own")
     return True
+
+# td_k's causes outside dispatching, one counter each (perf-smol top). Level 1 and level 2 are
+# sums of them, so a run that counted every one has no use for the TD_* events.
+STALL_TDK = [k for p in ("bad speculation", "front-end", "back-end") for k, _ in TDK[p]]
+
+def from_causes(v, cyc):
+    """Level 1 and 2 from td_k's causes, when the run counted every cause and not the TD_*
+    events: bad speculation, the front-end and the back-end are their causes' sums, and
+    dispatching 4 is the cycles every other cause leaves (td_k charges each cycle once)."""
+    if v.get("TD_BS") is not None or any(v.get(k) is None for k in STALL_TDK):
+        return
+    g = lambda k: v.get(k) or 0
+    v["TD_BS"] = g("TDK_REDIRECT") + g("TDK_DRAIN")
+    v["TD_FE"] = sum(g(k) for k, _ in TDK["front-end"])
+    v["TD_BE"] = sum(g(k) for k, _ in TDK["back-end"])
+    v["TD_FE_LAT"] = g("TDK_FE_IMMU") + g("TDK_FE_ICACHE")
+    v["TD_BE_MEM"] = g("TDK_BE_MMEM") + g("TDK_BE_DEPLD")
+    v["TD_BE_ROB"] = g("TDK_BE_ROB")
+    v["TD_BE_IQ"] = g("TDK_BE_IQ") + g("TDK_BE_SQ") + g("TDK_BE_LQ")
+    v["RD_WAIT"] = g("TDK_DRAIN")
+    if all(v.get(k) is not None for k in ("TDK_OK1", "TDK_OK2", "TDK_OK3")) and v.get("TDK_OK4") is None:
+        v["TDK_OK4"] = (cyc - v["TD_BS"] - v["TD_FE"] - v["TD_BE"]
+                        - g("TDK_OK1") - g("TDK_OK2") - g("TDK_OK3"))
 
 def tdk(v, parents, pc, R):
     """td_k's causes under their level-1 parent, as far as the run counted them; a parent whose
@@ -273,6 +296,7 @@ def main():
     cyc, ins = g("CYCLES"), g("INSTRET")
     if not cyc or not ins:
         sys.exit("error: need both cycles and instructions; got %s" % sorted(v))
+    from_causes(v, cyc)
     if topdown(v, width, R):
         if unknown:
             R.text("\n  ignored unrecognised events: %s" % ", ".join(sorted(set(unknown))))

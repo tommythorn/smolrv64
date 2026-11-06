@@ -7,11 +7,14 @@
 # report script and the event table beside it, into the boards' shared home. Then
 #   perf-smol td pi 100000 > /dev/null        # the program's output dropped, the report shown
 #
-# The DTB exposes 13 programmable counters (riscv,raw-event-to-mhpmcounters ... 0x0000fff8
-# = mhpmcounter3..15).  cycles and instructions ride the dedicated mcycle/minstret and are
-# free.  Ask for more than 13 raw events and perf MULTIPLEXES: every count becomes a scaled
-# estimate and the CPI-stack identity stops closing.  Hence sets, not one giant list.
+# The DTB exposes 13 general counters (riscv,raw-event-to-mhpmcounters ... 0x0000fff8 =
+# mhpmcounter3..15), any event each, and 16 fixed ones (16..31), each counting one top-down
+# cause (td_k 3-8, 10, 12-20) and only that.  cycles and instructions ride the dedicated
+# mcycle/minstret and are free.  Ask for more than 13 general events and perf MULTIPLEXES:
+# every count becomes a scaled estimate and the CPI-stack identity stops closing.  Hence sets.
 #
+#   perf-smol top  ./prog      TOP-DOWN, every level in one run: each td_k cause on its own
+#                              counter, the dispatch width, slots, redirects and misses    (16+10)
 #   perf-smol td   ./prog      TOP-DOWN: level 1 closes to 100% of cycles, depth under each
 #                              parent, slots, redirects and misses per 1k                  (13)
 #   perf-smol tdbe ./prog      TOP-DOWN level 3: the back-end's ten causes (td_k), which
@@ -42,6 +45,10 @@ case "$SET" in
   # td_k itself (the TDK_* events, 0x05nn = cycles with td_k == nn): level 1 again, and the
   # back-end's ten causes, which the report checks sum to TD_BE.
   tdbe) EV=r0401,r0407,r0402,r050a,r050c,r050d,r050e,r050f,r0510,r0511,r0512,r0513,r0514 ;;
+  # ALL of td_k in one session: the sixteen causes outside dispatching have a counter each
+  # (16..31, SmolRV64-Spec 11), dispatched 1/2/3 take general counters (4 is the rest), and the
+  # general counters left hold the redirects, the misses and DPATCH. 26 events, no multiplexing.
+  top) EV=r0503,r0504,r0505,r0506,r0507,r0508,r050a,r050c,r050d,r050e,r050f,r0510,r0511,r0512,r0513,r0514,r0500,r0501,r0502,r0006,r0007,r0008,r0102,r0112,r0104,r0408 ;;
   # ...and bad speculation's two causes, the front-end's four and dispatched 1/2/3, with DPATCH.
   tdfe) EV=r0401,r0407,r0402,r0503,r0504,r0505,r0506,r0507,r0508,r0500,r0501,r0502,r0408 ;;
   # ST_MEM..ST_ROB + FE_MMU/FE_IC/FE_ALN/FE_QUE + RD_WAIT + REDIR + DCMISS = 13, the whole
@@ -61,7 +68,7 @@ case "$SET" in
   all) EV=r0003,r0004,r0005,r0006,r0007,r0008,r0100,r0102,r0104,r0110,r0112,r0300,r0301,r0302,r0303,r0304,r0305,r0310,r0311,r0312,r0313,r0314,r0317,r0318
        echo "warning: 24 raw events > 13 counters -- perf will multiplex and every count is" >&2
        echo "         a scaled ESTIMATE.  The CPI-stack residual will not close.  Prefer 'cpi'." >&2 ;;
-  *)   echo "usage: $0 {td|tdbe|tdfe|cpi|hold|mem|memcpi|br|all} COMMAND..." >&2; exit 2 ;;
+  *)   echo "usage: $0 {top|td|tdbe|tdfe|cpi|hold|mem|memcpi|br|all} COMMAND..." >&2; exit 2 ;;
 esac
 
 # No sudo if the admin lowered perf_event_paranoid (see tools/perf-smol-setup.sh); fall back
