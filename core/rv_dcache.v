@@ -896,7 +896,8 @@ module rv_dcache #(
    //   4 two         two valid ways hold one line (the main lookup)
    //   5 st_two      two valid ways hold one line (the store lookup)
    //   6 tag_reuse   a requester tag reused while outstanding
-   //   7 dead_wait   a waiter parked on an MSHR that is not live
+   //   7 dead_wait   a waiter parked on an MSHR that is not live, or on any freeing with nothing
+   //                 left that can free
    //   8 ro_race     a fill beat written to the line being read out
    //   9 st_main     a store in both lookups, or a plain store that hits or joins in the main lookup
    //  10 rsv_vic     a victim an MSHR reserves or the store lookup writes, or no unreserved way
@@ -920,11 +921,25 @@ module rv_dcache #(
       $fatal(1, "rv_dcache: a read at %h, not a doubleword's address", rd_req ? rd_pa : f_pa);
    always @(posedge clk) if (!reset && ((rd_req && ({1'b0, rd_tag} >= NRQ[RTW:0])) || (f_req && ({1'b0, f_tag} >= NRQ[RTW:0]))))
       $fatal(1, "rv_dcache: a request tag %0d / %0d past the %0d the table holds", rd_tag, f_tag, NRQ);
-   reg  e_wdead;
+   // A waiter on ANY freeing is dead once nothing is left that can free: no MSHR, write-back, NC
+   // access or outside block is live, and the store queue holds nothing that can complete (empty, or
+   // its head is the parked waiter). A lookup still deciding makes that true for a cycle or two;
+   // DW_LIM cycles in a row is a deadlock.
+   localparam [4:0] DW_LIM = 5'd16;
+   reg  e_wdead, wany, live;
+   reg  [4:0] dw_n;
    always @* begin
-      e_wdead = 1'b0;
-      for (i = 0; i < NW; i = i + 1) if (wt_v[i] & ~wt_rdy[i] & ~wt_any[i] & ~ms_v[wt_m[i]]) e_wdead = 1'b1;
+      e_wdead = 1'b0;  wany = 1'b0;
+      live = nc_v | xb_v | ((sc != 2'd0) & ~(wt_v[ST] & ~wt_rdy[ST]));
+      for (i = 0; i < NW; i = i + 1) begin
+         if (wt_v[i] & ~wt_rdy[i] & ~wt_any[i] & ~ms_v[wt_m[i]]) e_wdead = 1'b1;
+         if (wt_v[i] & ~wt_rdy[i] &  wt_any[i]) wany = 1'b1;
+      end
+      for (i = 0; i < NMSHR; i = i + 1) live = live | ms_v[i];
+      for (i = 0; i < NWB; i = i + 1)   live = live | wb_v[i];
+      if (dw_n == DW_LIM) e_wdead = 1'b1;
    end
+   always @(posedge clk) dw_n <= (reset | ~wany | live) ? 5'd0 : dw_n + {4'd0, dw_n != DW_LIM};
    wire e_rorace  = fb_v & ro_on & (fb_set == ro_set) & (fb_way == ro_way);
    wire e_wr2     = (sb_hd & s1_v & s1_st) | (l1_v & k_st & (hit | (|ms_hitv)));
    wire e_vic     = m_alloc & ((|(rsv & vic_oh)) | ~(|cand) | (fp_wr & sb_set1 & (|(bhitv & vic_oh))));
