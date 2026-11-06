@@ -108,8 +108,10 @@ about 3.9 ns. So a `clk2x` lane is S0 (PRF read), S1, S2, and every lane's resul
 than in the calibration: ALU -> ALU chains still keep their timing (the dependent's own S0 covers
 the delay), but every branch's verdict lands 3 ns later, a `clk` cycle on every mispredict's
 restart, in all four lanes. The lane step is therefore not cycle-identical. Its main price is
-being measured as a knob: `exp/red1` (a lane's mispredict restarts the frontend one cycle late;
-the freeze still sets at once) against main, on the 77 GB5 SimPoints (`m390b-sp`, `red1-sp`).
+measured as a knob: `exp/red1` (a lane's mispredict restarts the frontend one cycle late; the
+freeze still sets at once) against main 390bed9c, on the 77 GB5 SimPoints: **+0.27% cycles**
+(the sum), Clang +1.65%, Text Compression +1.14%, Text Rendering +1.01%, Image Compression
++0.72%, the FP subtests +0.02% to +0.16%.
 
 **And a C/D-lane address is a cycle late.** With no address waiting, the oldest lane delivering a
 load or store bypasses its adder straight into M's register at the `clk` edge (`by_va`, "a cycle
@@ -128,6 +130,55 @@ in cycles: the design of `PLAN-2026-10-27-333mhz.md` behind an unchanged fronten
 equal today's in nanoseconds by construction (one crossing, at the decoupling queue). That is a
 redesign of the core's issue-to-writeback machinery, to be decided on its own: the
 calibrations above say its hardest stages close at 3 ns out of context.
+
+**The ceiling, measured (2026-11-06, `make ooc MODULE=smolrv64_core HIER=1`, synthesis only).**
+Main f5662859 at IW=4 against the same RTL at the end state's shape: IW=2 with the totals kept
+(two lanes of 20 entries, 128-register shards, 128 ROB rows of two; the FP shards went to 128 too,
+as the pending table needs one shard size, which slightly overstates IW=2):
+
+| | IW=4 | IW=2 | |
+|---|---|---|---|
+| **core** | **112,398** | **91,386** | **-21,012 (-18.7%)** |
+| rename | 8,181 | 2,504 | -5,677 |
+| the core's own logic (bypass, dispatch, staging) | 16,402 | 10,855 | -5,547 |
+| the lanes' ALUs (`u_x`) | 7,956 | 3,978 | -3,978 |
+| SQ, LQ | 18,317 | 15,453 | -2,864 |
+| frontend | 18,297 | 17,169 | -1,128 (stays IW=4 here; increment 0 takes -1,323 instead) |
+| the lane schedulers | 6,311 | 7,631 | +1,320 |
+| ROB, PRF, tq, the rest | | | -2,600 together |
+
+So the whole programme is worth about 21 K LUTs, a fifth of the core, before the extra pipeline
+registers the doubled latencies need. The FPU, the caches, the CSRs and the MMUs do not move.
+
+**Rename alone closes at 3 ns at IW=2** (`smolrv64_rename` out of context: IW=4 at 6 ns +1.268;
+IW=2, 128-register shards, at 3 ns +0.219, 15 levels). It is the largest single saving, and it
+can be an increment: the IR read on `clk2x` with a register after it, rename on `clk2x`, and a
+queue after rename (written mid-cycle like increment 0's), from which dispatch takes its group at
+`clk`. The price is one cycle between the decode queue and dispatch, exposed after every
+redirect and whenever the queue runs dry; the knob `exp/rn1` (the IR sees a bundle one cycle
+after it lands) measures it on the SimPoints (`rn1-sp`). Two costs the knob leaves out: rename recovers by walking the ROB back to
+the mispredicted branch, and an op renamed into the queue is not in the ROB yet, so the walk
+covers the queue first (at most two groups: a row or two more of walk under the redirect's
+freeze); and a half renames two lanes' slots, so each half reaches two of the four shards' free
+lists, a mux the IW=2 calibration (two shards) does not have.
+
+**The scheduler's one-cycle loop does not carry over (2026-11-06, `smolrv64_iq` out of context,
+NSRC=2, FIXEDL=1, OLDEST=1).** Main's lane scheduler (NENT=10, six wake ports) is +1.988 alone at
+6 ns, and in context the same loop sits on the critical families. At 3 ns, alone:
+
+| entries | wake ports | SPEC | WNS | |
+|---|---|---|---|---|
+| 10 | 4 | 1 | +0.218 | |
+| 12 | 4 | 1 | +0.191 | |
+| 16 | 4 | 1 | +0.045 | |
+| 20 | 4 | 0 | +0.102 | |
+| 20 | 4 | 1 | -0.138 | 11 levels: the wake compare, the pick, `sp_only[isel]` into `e_sp` |
+| 20 | 6 | 1 | -0.210 | |
+
+A margin that thin alone is gone in context, where the same structure loses about 2 ns today. So
+the 2x scheduler is the two-cycle loop of `PLAN-2026-10-27-333mhz.md` section 5 (pick in S0, the
+picked entry's wake broadcast in S1, +0.119 at 20 entries): a dependent picks two `clk2x` cycles
+after its producer, 6 ns, which is today's ALU -> ALU.
 
 **Then, in order, each a contiguous step of the 2x domain toward the back:**
 
