@@ -162,6 +162,15 @@ covers the queue first (at most two groups: a row or two more of walk under the 
 freeze); and a half renames two lanes' slots, so each half reaches two of the four shards' free
 lists, a mux the IW=2 calibration (two shards) does not have.
 
+**Measured, `exp/rn1` against main 390bed9c on the 77 SimPoints: +0.41% cycles** (the sum);
+Clang +1.91%, Text Rendering +1.73%, SQLite +1.34%, HTML5 +1.30%, Text Compression +1.28%, Image
+Compression +0.99%, Navigation +0.83%; the FP subtests +0.01% to +0.20%. About 1% of integer
+performance for 5.7 K LUTs, larger than the lane restart's price (+0.27%) because every redirect
+and every drained queue pays it, not only a lane's mispredicts. Against "the same performance"
+it does not land on its own. The same nanoseconds come back in the end state only if the IR read,
+rename and the dispatch decision, one 6 ns cycle today, fit two 3 ns stages together; the IR's
+read side alone (route-bound, above) says they take three.
+
 **The scheduler's one-cycle loop does not carry over (2026-11-06, `smolrv64_iq` out of context,
 NSRC=2, FIXEDL=1, OLDEST=1).** Main's lane scheduler (NENT=10, six wake ports) is +1.988 alone at
 6 ns, and in context the same loop sits on the critical families. At 3 ns, alone:
