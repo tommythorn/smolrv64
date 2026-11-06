@@ -122,6 +122,30 @@ module smolrv64_frontend
    wire [FW*PCW-1:0]  bp_tgts;                 // ...to here
    wire [1:0]         dq_pk;
 
+   // ------------------------------------------------------------- the two clocks
+   // THE FETCH SIDE IS clk's, EVERYTHING FROM DECODE ON clk2x's (smolrv64_x2.v has the rules): fetch,
+   // the predictor, the fetch ring and the bundle register run on clk; decode, the queue, the IR and
+   // the group's dispatch on clk2x. The redirect and the predictor's training arrive on clk2x and
+   // reach the fetch side through smolrv64_x2f2s (held for one clk cycle, the latest winning); the
+   // queue's room reaches it as a clk2x flop that changes only at clk edges (q_room_s).
+   wire h2;
+   smolrv64_x2ph u_ph (.clk(clk), .clk2x(clk2x), .h2(h2));
+   wire                s_red, red_busy;
+   wire [PCW-1:0]      s_red_pc;
+   wire [SEQW-1:0]     s_red_seq;
+   wire [RASB-1:0]     s_red_rsp;
+   wire [GHL-1:0]      s_red_ghr;
+   smolrv64_x2f2s #(.W(PCW + SEQW + RASB + GHL)) u_xred
+     (.clk2x(clk2x), .reset(reset), .h2(h2), .v(redirect), .d({redirect_pc, redirect_seq, redirect_rsp, redirect_ghr}),
+      .sv(s_red), .sd({s_red_pc, s_red_seq, s_red_rsp, s_red_ghr}), .busy(red_busy));
+   wire                s_res_v, s_res_cbr, s_res_call, s_res_ret, s_res_taken;
+   wire [PDW-1:0]      s_res_pdet;
+   wire [PCW-1:0]      s_res_tgt, s_res_last;
+   smolrv64_x2f2s #(.W(4 + PDW + 2*PCW)) u_xres
+     (.clk2x(clk2x), .reset(reset), .h2(h2), .v(res_v),
+      .d({res_cbr, res_call, res_ret, res_taken, res_pdet, res_tgt, res_last}),
+      .sv(s_res_v), .sd({s_res_cbr, s_res_call, s_res_ret, s_res_taken, s_res_pdet, s_res_tgt, s_res_last}), .busy());
+
    // ------------------------------------------------------------- the fetch ring
    wire                f_drop, f_rej, f_rej_np, f_take;
    wire [$clog2(FW+1)-1:0] f_pop;
@@ -153,11 +177,11 @@ module smolrv64_frontend
    wire [PQB:0]        pq_cnt;
    // A restart of the stream: reset, a redirect, or a freeze (fence.i, an I$ invalidation, a
    // mapping change, a rejected mark). It begins at the redirect's target, else at the PC.
-   wire                st_flush = reset | redirect | imem_freeze | rej_q;
+   wire                st_flush = reset | s_red | imem_freeze | rej_q;
    assign              imem_flush = st_flush;
-   wire [PCW-1:0]      st_rst_a = redirect ? redirect_pc : imem_addr;
+   wire [PCW-1:0]      st_rst_a = s_red ? s_red_pc : imem_addr;
    smolrv64_fring #(.HW(HW), .PQB(PQB), .PCW(PCW)) u_ring
-     (.clk(clk), .reset(reset), .freeze(imem_freeze | rej_q), .restart(reset | redirect),
+     (.clk(clk), .reset(reset), .freeze(imem_freeze | rej_q), .restart(reset | s_red),
       .adv_hw(f_adv_hw), .take(f_take), .drop(f_drop), .take_tgt(bp_tgt),
       .pc_va(imem_addr), .rst_a(st_rst_a), .pc_pa(imem_pa), .pc_lvl(imem_xlvl), .xlate_ok(imem_xlate_ok),
       .win(imem_data), .mk(imem_mk), .st(imem_st), .avail(imem_avail), .ok(imem_ok), .lvl(imem_lvl),
@@ -174,7 +198,7 @@ module smolrv64_frontend
 
    fetch #(.IW(FW), .HW(HW), .PCW(PCW), .SEQW(SEQW), .RESET_PC(RESET_PC)) u_fetch
      (.clk(clk), .reset(reset),
-      .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
+      .redirect(s_red), .redirect_pc(s_red_pc), .redirect_seq(s_red_seq),
       .solo_all(1'b0),                 // the aligner already cuts bundles at CTIs and SYSTEM ops
       .irq_inject(irq_inject), .irq_pres(irq_pres),
       .imem_mk(imem_mk), .imem_st(imem_st), .pq_tk(bp_tk), .pq_tgt(bp_tgts),
@@ -195,7 +219,7 @@ module smolrv64_frontend
    wire [FW-1:0]      or_tk;
    wire [FW*PCW-1:0]  or_tgt;
    smolrv64_oracle_fe #(.FW(FW), .PCW(PCW), .SEQW(SEQW), .BASE(64'h8000_0000)) u_or
-     (.clk(clk), .reset(reset), .redirect(redirect), .redirect_pc(redirect_pc), .redirect_seq(redirect_seq),
+     (.clk(clk), .reset(reset), .redirect(s_red), .redirect_pc(s_red_pc), .redirect_seq(s_red_seq),
       .irq_inject(irq_inject), .ready(pb_ready), .valid(dq_valid), .sv(dq_sv), .inst(dq_inst), .pc(dq_pc),
       .seq(dq_seq), .tk(or_tk), .tgt(or_tgt), .cur_seq(cur_seq));
 `else
@@ -224,25 +248,26 @@ module smolrv64_frontend
    // name it: while the backend stalls, `accept` is low but `fire` is not, so fetch
    // re-emitted the SAME interrupt every cycle with nothing to stop it.
    wire   irq_pres;                    // fetch presents the pseudo-op (a straddle finishes first)
-   assign irq_taken = irq_pres & fire;
+   wire   irq_fire = irq_pres & fire;     // clk's
+   assign irq_taken = irq_fire & ~h2;    // for clk2x logic: once
 
    // Sub-attribution for the frontend bubble (see smolrv64_core's fe_aln/fe_que).  dq_valid is
    // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not
    // the iMMU and not an empty fetch window splits into two very different problems:
    // fetch had BYTES but could not make an instruction (aligner/straddle), versus fetch
    // made one and the queue simply had nothing to hand over (refill latency).
-   assign fe_dq_valid = dq_valid;
+   assign fe_dq_valid = dq_valid & ~h2;   // clk2x's counters: once a clk cycle
 
    // ------------------------------------------------------- branch predictor
    wire [FW*PDW-1:0] pd_mk, pd_no;
    smolrv64_predictor #(.PCW(PCW), .PDW(PDW), .RASB(RASB), .GHL(GHL), .PQB(PQB), .IW(FW)) u_bp
      (.clk(clk), .reset(reset),
-      .flush(st_flush), .rst_a(st_rst_a), .rst_np(rej_np_q & ~redirect), .adv(pr_adv),
+      .flush(st_flush), .rst_a(st_rst_a), .rst_np(rej_np_q & ~s_red), .adv(pr_adv),
       .sa(st_sa), .sk(st_sk), .p_cut(), .p_end(p_end), .p_mk(p_mk), .pq_room(pq_room), .pq_cnt(pq_cnt),
       .pq_tk(bp_tk), .pq_tgt(bp_tgts), .pd_mk(pd_mk), .pd_no(pd_no), .pop(f_pop),
-      .rollback(redirect), .rb_rsp(redirect_rsp), .rb_ghr(redirect_ghr),
-      .res_v(res_v), .res_cbr(res_cbr), .res_call(res_call), .res_ret(res_ret),
-      .res_taken(res_taken), .res_pdet(res_pdet), .res_tgt(res_tgt), .res_last(res_last),
+      .rollback(s_red), .rb_rsp(s_red_rsp), .rb_ghr(s_red_ghr),
+      .res_v(s_res_v), .res_cbr(s_res_cbr), .res_call(s_res_call), .res_ret(s_res_ret),
+      .res_taken(s_res_taken), .res_pdet(s_res_pdet), .res_tgt(s_res_tgt), .res_last(s_res_last),
       .err(bp_err));
 
    // ------------------------------------------------------------- decoupling queue
@@ -284,7 +309,10 @@ module smolrv64_frontend
    localparam integer CW  = $clog2(FW + 1);             // a count of 0..FW slots
    reg  [QAW-1:0] q_rp, q_wp;
    reg  [QAW:0]   q_cnt;
-   wire           q_room  = (q_cnt <= QDEPTH[QAW:0] - FW[QAW:0]);   // room for a full bundle (<=FW)
+   // room for a full bundle (<=FW) as the clk edge left the queue: a clk2x flop that changes only at
+   // clk edges, so the bundle register (clk's) decides a push once for its whole cycle
+   reg            q_room_s = 1'b1;
+   wire           q_room  = q_room_s;
    wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
    reg  [QW-1:0]  pb_in [0:QNB-1];                       // slots FW.. are never loaded: constant
    // ...and what is the bundle's, once: the predicted target (the last slot's to use), and a fetch
@@ -296,8 +324,12 @@ module smolrv64_frontend
    reg  [3:0]     pb_cause;
    reg            pb_fhi;
    reg  [FW-1:0]  pb_sv;                                 // the bundle's slots (slot 0: whenever pb_v)
-   wire           q_push  = q_room & pb_v;
-   wire [FW-1:0]  q_wr    = {FW{q_push}} & pb_sv;        // the slots pushed this cycle: 0..n-1
+   wire           q_push  = q_room & pb_v;                // clk's: the bundle register lets go
+   // ...and what clk2x writes of it: nothing while a redirect is on its way to the fetch side (from
+   // the clk2x cycle it arrives in until the clk cycle the fetch side restarts in), as the bundle the
+   // register holds then is from the old path
+   wire           q_pf    = q_push & ~red_busy;
+   wire [FW-1:0]  q_wr    = {FW{q_pf}} & pb_sv;          // the slots pushed this clk cycle: 0..n-1
    function automatic [CW-1:0] cnt(input [FW-1:0] v);
       integer i;
       begin cnt = {CW{1'b0}}; for (i = 0; i < FW; i = i + 1) cnt = cnt + {{(CW-1){1'b0}}, v[i]}; end
@@ -335,7 +367,7 @@ module smolrv64_frontend
       $fatal(1, "smolrv64_frontend: a fetch fault at %h for the instruction at %h, neither it nor its high halfword",
              imem_addr, imem_ipc);
    always @(posedge clk) begin
-      if (reset | redirect)  pb_v <= 1'b0;
+      if (reset | s_red)     pb_v <= 1'b0;
       else if (pb_load)       pb_v <= 1'b1;
       else if (q_push)       pb_v <= 1'b0;
       // The data load whenever the register is free: pb_v alone says it holds a bundle, so its
@@ -373,12 +405,6 @@ module smolrv64_frontend
    localparam integer DLB = (ND > 1) ? $clog2(ND) : 1;
    initial if (QNB % ND != 0 || H0 + H1 > QNB)
       $fatal(1, "smolrv64_frontend: FW=%0d IW=%0d: %0d decoders must divide the %0d banks", FW, IW, ND, QNB);
-   // which half of clk's cycle clk2x is in: tg flips at every clk edge, tg2 is tg as clk2x last
-   // saw it, so they differ in the first half and agree in the second
-   reg            tg = 1'b0, tg2 = 1'b0;
-   always @(posedge clk)   tg  <= ~tg;
-   always @(posedge clk2x) tg2 <= tg;
-   wire           h2 = (tg2 == tg);
    wire [QLB:0]   hs = h2 ? H0[QLB:0] : {(QLB+1){1'b0}}; // the half's first slot
    wire [QLB:0]   hn = h2 ? H1[QLB:0] : H0[QLB:0];       // ...and its slots
    wire [QAW-1:0] hb = q_wp + hs[QAW-1:0];               // ...and its first position
@@ -391,7 +417,7 @@ module smolrv64_frontend
       wire [QLB:0]    s = hs + {{(QLB+1-DLB){1'b0}}, j};
       wire [QLB-1:0]  si = (s < QNB) ? s[QLB-1:0] : {QLB{1'b0}};
       reg             v2 = 1'b0;                          // stage B holds a slot that is pushed
-      always @(posedge clk2x) v2 <= ~reset & q_push & (j < hn) & pb_svq[s];
+      always @(posedge clk2x) v2 <= ~reset & q_pf & (j < hn) & pb_svq[s];
       wire [PDW-1:0]  pdet;  wire [PCW-1:0] pc;  wire [31:0] inst;  wire [SEQW-1:0] seq;
       wire [1:0]      pk;    wire fault_op;    wire imm_wide;
       assign {pdet, pc, inst, seq, pk, fault_op} = pb_in[si];
@@ -419,7 +445,7 @@ module smolrv64_frontend
       reg             bv2 = 1'b0;
       reg [QAW-1:0]   wp2;
       always @(posedge clk2x) begin
-         bv2 <= ~reset & q_push & ({1'b0, j} < hn) & pb_svq[hs + {1'b0, j}];
+         bv2 <= ~reset & q_pf & ({1'b0, j} < hn) & pb_svq[hs + {1'b0, j}];
          wp2 <= hb + {{(QAW-QLB){1'b0}}, j};
       end
       assign q_bv[gk] = bv2;
@@ -453,7 +479,7 @@ module smolrv64_frontend
       assign q_ro[(IW + gk)*QLB +: QLB] = {{(QLB-LB){1'b0}}, rsub(K, lc)};            // lane k's
    end endgenerate
    smolrv64_bankq #(.W(QRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_q
-     (.clk(clk), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_wd), .rp(q_rp), .ro(q_ro), .rd(q_rd2));
+     (.clk(clk2x), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_wd), .rp(q_rp), .ro(q_ro), .rd(q_rd2));
    // the heads' dispatch classes in program order (the queued record's last field), and lane k's
    // record, decoded from what the queue holds of it into the record dispatch takes
    wire [15:0]    g  [0:IW-1];
@@ -463,7 +489,7 @@ module smolrv64_frontend
       `QR_DECL(r_)
       assign `QR_REC(r_) = q_rd2[(IW + gk)*QRW +: QRW];
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hd
-        (.clk(clk), .pdet(r_pdet), .pc(r_pc), .inst(r_inst), .seq_in(r_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
+        (.clk(clk2x), .pdet(r_pdet), .pc(r_pc), .inst(r_inst), .seq_in(r_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
          .fault_op(r_fault), .cause(r_fault_cause), .fault_hi(r_fault_hi), .fs_off(1'b0),
          .q_rvc(r_rvc), .q_pnpc(r_pred_npc), .q_illegal(r_illegal), .q_mis_taken(r_mis_taken),
          .q_mis_nt(r_mis_nt), .q_gc(r_gc), .qrec(), .rec(ql[gk]), .imm_wide());
@@ -472,28 +498,35 @@ module smolrv64_frontend
    // the check below that the head rebuilds it bit for bit (synthesis removes it)
    wire [2*IW*IRW-1:0] q_frd;
    smolrv64_bankq #(.W(IRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_qsh
-     (.clk(clk), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_fwd), .rp(q_rp), .ro(q_ro), .rd(q_frd));
+     (.clk(clk2x), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_fwd), .rp(q_rp), .ro(q_ro), .rd(q_frd));
    // the head's record by name, for the bench's stall accounting (nothing here reads it)
    `QR_DECL(hq_)
    assign `QR_REC(hq_) = q_rd2[0 +: QRW];
    wire [IRW-1:0] h_rec;
    smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hh
-     (.clk(clk), .pdet(hq_pdet), .pc(hq_pc), .inst(hq_inst), .seq_in(hq_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
+     (.clk(clk2x), .pdet(hq_pdet), .pc(hq_pc), .inst(hq_inst), .seq_in(hq_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
       .fault_op(hq_fault), .cause(hq_fault_cause), .fault_hi(hq_fault_hi), .fs_off(1'b0),
       .q_rvc(hq_rvc), .q_pnpc(hq_pred_npc), .q_illegal(hq_illegal), .q_mis_taken(hq_mis_taken),
       .q_mis_nt(hq_mis_nt), .q_gc(hq_gc), .qrec(), .rec(h_rec), .imm_wide());
    `IR_DECL(h_)
    assign `IR_REC(h_) = h_rec;
    wire [CW-1:0]  q_pop;                          // entries leaving this cycle (the group's take)
-   wire [CW-1:0]  q_pushn = cnt(q_wr);            // entries pushed
-   always @(posedge clk) begin
+   wire [CW-1:0]  q_pushn = cnt(q_wr);            // entries pushed this clk cycle
+   // clk2x's: a pop every clk2x cycle, a bundle's push counted at the clk edge that ends its cycle
+   // (its first H0 slots are in the banks from that edge, the rest from the next: DECODE RUNS ON
+   // clk2x, above)
+   wire [CW-1:0]  q_pn    = h2 ? q_pushn : {CW{1'b0}};
+   wire [QAW:0]   q_cnt_n = (reset | redirect) ? {(QAW+1){1'b0}}
+                          : q_cnt + {{(QAW+1-CW){1'b0}}, q_pn} - {{(QAW+1-CW){1'b0}}, q_pop};
+   always @(posedge clk2x) begin
       if (reset | redirect) begin
-         q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
+         q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin
-         q_wp  <= q_wp + {{(QAW-CW){1'b0}}, q_pushn};
+         q_wp  <= q_wp + {{(QAW-CW){1'b0}}, q_pn};
          q_rp  <= q_rp + {{(QAW-CW){1'b0}}, q_pop};
-         q_cnt <= q_cnt + {{(QAW+1-CW){1'b0}}, q_pushn} - {{(QAW+1-CW){1'b0}}, q_pop};
       end
+      q_cnt <= q_cnt_n;
+      if (h2) q_room_s <= (q_cnt_n <= QDEPTH[QAW:0] - FW[QAW:0]);
    end
 
    // A slot without its predecessor, or a fault pseudo-op beside a real slot, is a fetch defect.
@@ -550,36 +583,37 @@ module smolrv64_frontend
    assign q_pop = cnt_iw(take);
    assign hd_v = rule[0];  assign hd_take = take[0];  assign hd_gc = g[0];
    assign hd_lane = g[0][G_PLAIN] ? lc : {LB{1'b0}};
-   always @(posedge clk) begin
+   always @(posedge clk2x) begin
       if (reset | redirect | realign) lc <= {LB{1'b0}};
       else                            lc <= radd(lc, q_pop);
    end
-   // THE MID-CYCLE WRITE IS NEVER READ IN ITS CYCLE (the shell's multicycle stands on it): in the
-   // cycle after a push, no head the IR takes is one of the bundle's slots past its first H0, which
-   // are written at the mid-cycle edge (DECODE RUNS ON clk2x, above).
-   reg            pushed_q = 1'b0;
+   // A BUNDLE'S LATER SLOTS ARE NEVER READ BEFORE THEY ARE WRITTEN: in the first half after its push
+   // is counted, no head the IR takes is one of its slots past the first H0, which are written at
+   // the mid-cycle edge (DECODE RUNS ON clk2x, above). It holds because the IR takes at most IW = H0
+   // heads a clk2x cycle and the bundle lands at the head or beyond.
+   reg            pushed_q = 1'b0;               // the first half after a push was counted
    reg [QAW-1:0]  pwb_q;
-   always @(posedge clk) begin
-      pushed_q <= ~reset & ~redirect & q_push;
-      pwb_q    <= q_wp;
+   always @(posedge clk2x) begin
+      pushed_q <= ~reset & ~redirect & h2 & (q_pn != {CW{1'b0}});
+      if (h2) pwb_q <= q_wp;
    end
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: mw
       wire [QAW-1:0] o = q_rp + gk[QAW-1:0] - pwb_q;     // the head's offset into the last bundle
-      always @(posedge clk) if (!reset & pushed_q & take[gk] & ({1'b0, o} >= H0) & ({1'b0, o} < FW))
-         $fatal(1, "smolrv64_frontend: head %0d takes slot %0d of the bundle pushed last cycle, written at the mid-cycle edge", gk, o);
+      always @(posedge clk2x) if (!reset & pushed_q & take[gk] & ({1'b0, o} >= H0) & ({1'b0, o} < FW))
+         $fatal(1, "smolrv64_frontend: head %0d takes slot %0d of the bundle pushed last, before the mid-cycle edge writes it", gk, o);
    end endgenerate
    // a group dispatches whole: all of the IR's lanes
    wire e_order = ~reset & (|consume) & (consume != d_valid);
-   always @(posedge clk)
+   always @(posedge clk2x)
       if (e_order) $fatal(1, "smolrv64_frontend: a group dispatched in part (consume %b, valid %b)", consume, d_valid);
    reg  [1:0] fe_err_q;
-   always @(posedge clk) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
+   always @(posedge clk2x) fe_err_q <= reset ? 2'd0 : {e_order, e_bundle};
    assign fe_err = {3'd0, fe_err_q, f_err, bp_err, ring_err};
    wire [IW-1:0] take_c = take;                   // the whole vector, for the loop below
    reg  [IW-1:0] take_l;                          // lane k's instruction is taken: j = (k - lc) % IW
    integer       tk;
    always @* for (tk = 0; tk < IW; tk = tk + 1) take_l[tk] = take_c[rsub(tk[LB-1:0], lc)];
-   always @(posedge clk) begin
+   always @(posedge clk2x) begin
       if (reset | redirect) d_valid <= {IW{1'b0}};
       else begin
          d_valid <= take_l;
@@ -587,7 +621,7 @@ module smolrv64_frontend
          for (k = 0; k < IW; k = k + 1) d_rec[k*IRW +: IRW] <= ql[k];
       end
    end
-   always @(posedge clk) if (!reset & !redirect)
+   always @(posedge clk2x) if (!reset & !redirect)
       for (k = 0; k < IW; k = k + 1)
          if (take_l[k] & (ql[k] != q_frd[(IW + k)*IRW +: IRW]))
             $fatal(1, "smolrv64_frontend: lane %0d's record rebuilt at the head differs from its decode before the queue (pc %h)", k, q_frd[(IW + k)*IRW + IRW - PDW - PCW +: PCW]);

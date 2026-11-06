@@ -58,13 +58,13 @@ module tb;
    wire [PCW-1:0]   redirect_target;
 
    wire [15:0]      lsu_err;   // the LSU's integrity-log bits: never nonzero in a passing run
-   always @(posedge clk) if (|lsu_err)
+   always @(posedge clk2x) if (|lsu_err)
       $fatal(1, "tb: smolrv64_lsu err=%h rose without its $fatal -- an integrity-log condition is wired wrong", lsu_err);
    wire [15:0]      fe_err;    // the frontend's integrity-log bits, likewise
-   always @(posedge clk) if (|fe_err)
+   always @(posedge clk2x) if (|fe_err)
       $fatal(1, "tb: smolrv64_frontend fe_err=%h rose without its $fatal -- an integrity-log condition is wired wrong", fe_err);
    smolrv64_core #(.PCW(PCW), .HW(HW), .RESET_PC(BASE)) dut
-     (.clk(clk), .clk2x(clk2x), .reset(reset),
+     (.clk(clk2x), .clk_fe(clk), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(), .ic_busy(1'b0),
       .ic_req(ic_req), .ic_va(), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(1'b1), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),
@@ -117,12 +117,12 @@ module tb;
    reg [`SMOLRV64_LQB-1:0]   ftag_q;
    reg [63:0]                fdata_q;
    initial fv_q = 1'b0;
-   always @(posedge clk) begin
+   always @(posedge clk2x) begin
       fv_q <= ~reset & dmem_ren & dmem_rfast;  ftag_q <= dmem_rtag;  fdata_q <= dmem_rdata;
    end
 
    // page-table walkers (instruction side + data side): registered PTE reads
-   always @(posedge clk) begin
+   always @(posedge clk2x) begin
       ptw_rvalid <= ptw_read;
       if (ptw_read) ptw_rdata <= rd64({{(64-PABITS){1'b0}}, ptw_addr});
       dptw_rvalid <= dptw_read;
@@ -156,7 +156,7 @@ module tb;
       // iverilog stops on the spot, but Verilator finishes the current time slot, so
       // a bare $finish here let the loop run on and print a bogus TIMEOUT after PASS.
       for (c=0; c<ncyc && !done; c=c+1) begin
-         @(negedge clk);
+         @(negedge clk2x);                 // the core's clock (its fetch side's is clk)
          for (rk = 0; rk < IW; rk = rk + 1) if (retire[rk]) begin
             nret = nret + 1;
             if (trace &&  dut.rf_we[rk]) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire_pc[rk*PCW +: PCW],
@@ -192,7 +192,7 @@ module tb;
    // pushes and drains for the first n cycles (from +lbfrom=<cycle>) a stream lands or its buffer holds an entry.
    integer lbpk [0:2], lb3, lbk, lbtrace = 0, lbcyc = 0, lbfrom = 0;
    initial begin lbpk[0] = 0; lbpk[1] = 0; lbpk[2] = 0; lb3 = 0; if ($value$plusargs("lbtrace=%d", lbtrace)) ; if ($value$plusargs("lbfrom=%d", lbfrom)) ; end
-   always @(posedge clk) if (!reset) begin
+   always @(posedge clk2x) if (!reset) begin
       lbcyc = lbcyc + 1;
       for (lbk = 0; lbk < 3; lbk = lbk + 1)
          if (dut.lb_n[lbk] > lbpk[lbk]) lbpk[lbk] = dut.lb_n[lbk];
@@ -206,7 +206,7 @@ module tb;
    end
 
    // apply stores after the monitor has seen them
-   always @(posedge clk) if (!reset && dmem_wen) begin
+   always @(posedge clk2x) if (!reset && dmem_wen) begin
       for (b2=0;b2<8;b2=b2+1)
          if (dmem_wmask[b2]) mem[(dmem_waddr-BASE)+b2] <= dmem_wdata[b2*8 +: 8];
       wtick <= ~wtick;

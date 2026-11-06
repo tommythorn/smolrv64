@@ -84,8 +84,10 @@ module smolrv64_core
     parameter        LRAM_LG2 = 18,
     parameter        PABITS   = `SMOLRV64_PABITS,  // the physical-address width (smolrv64_width.vh)
     parameter        LQ_IB    = `SMOLRV64_LQB)   // the load queue's index width: 1<<LQ_IB entries
+   // TWO CLOCKS (smolrv64_x2.v): clk_fe is the fetch side's -- the frontend's fetch, predictor, fetch
+   // ring and bundle register, and the iMMU -- and clk, twice clk_fe and phase-aligned, everything else.
    (input  wire                    clk,
-    input  wire                    clk2x,           // twice clk, phase-aligned: decode's clock (smolrv64_frontend)
+    input  wire                    clk_fe,
     input  wire                    reset,
     // ---- instruction memory: the fetch ring's stream into the I$ (rv_icache) ----
     output wire [PCW-1:0]          imem_addr,       // the fetch PC's PA (diagnostics)
@@ -230,7 +232,7 @@ module smolrv64_core
    // already answers for the new one, and the ring's freeze withholds the window.
    wire [$clog2(HW+2)-1:0]  imem_avail;
    wire                     imem_ok;
-   always @(posedge clk)
+   always @(posedge clk_fe)
       if (!reset && imem_ok && ~imem_ctx_chg && immu_ready && immu_fault)
          $fatal(1, "smolrv64_core: the fetch ring serves a window on a faulting translation (va=%h cause=%0d)", imem_va, immu_cause);
    // The count, for the counters only (FE_QUE's "no bytes" attribution below).
@@ -321,7 +323,7 @@ module smolrv64_core
    localparam integer DCR_BACK = 0;   // a conditional the BTB misses falls through: the BTB holds every branch once taken
    smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .FW(`SMOLRV64_FW), .PDW(PDW), .RASB(RASB), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK),
                   .QDEPTH(`SMOLRV64_QD), .QAW($clog2(`SMOLRV64_QD)), .RESET_PC(RESET_PC[PCW-1:0])) fe
-     (.clk(clk), .clk2x(clk2x), .reset(reset), .accept(accept), .consume(fe_consume),
+     (.clk(clk_fe), .clk2x(clk), .reset(reset), .accept(accept), .consume(fe_consume),
       .d_valid(fe_dv), .d_rec(fe_rec), .d_fc(fe_fc),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc), .hd_lane(fe_hd_lane),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
@@ -391,6 +393,20 @@ module smolrv64_core
    reg         mmu_flush_q;
    initial     mmu_flush_q = 1'b0;
    always @(posedge clk) mmu_flush_q <= ~reset & mmu_flush;
+   // ...and the fetch side's copy, held for clk_fe's cycle: it reaches the iMMU and the fetch freeze in
+   // the clk_fe cycle the op's redirect reaches the fetch side (both smolrv64_x2f2s, from one clk cycle)
+   wire        h2;
+   smolrv64_x2ph u_ph (.clk(clk_fe), .clk2x(clk), .h2(h2));
+   wire        mmu_flush_fe;
+   smolrv64_x2f2s #(.W(1)) u_xfl (.clk2x(clk), .reset(reset), .h2(h2), .v(mmu_flush_q), .d(1'b0),
+                                  .sv(mmu_flush_fe), .sd(), .busy());
+   // the iMMU's walk reads its PTE through the D$ (rv_soc_top's adapter, clk's): the request is a
+   // clk_fe pulse, counted once (the adapter latches it), and the answer a clk pulse, held for
+   // clk_fe's cycle (the adapter's data register holds until the next request)
+   wire        immu_ptw_read, ptw_rvalid_fe;
+   smolrv64_x2f2s #(.W(1)) u_xptw (.clk2x(clk), .reset(reset), .h2(h2), .v(ptw_rvalid), .d(1'b0),
+                                   .sv(ptw_rvalid_fe), .sd(), .busy());
+   assign      ptw_read = immu_ptw_read & ~h2;
    wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
    // M's access is untranslated (M-mode, or satp Bare): the queues keep it beside the page for
@@ -403,11 +419,11 @@ module smolrv64_core
    always @(posedge clk) m_bare <= m_bare_c;
 
    mmu #(.AW(PABITS), .DRAM_TOP(DRAM_TOP), .TLBN(64), .TLBI(6), .L2N(512), .L2I(9)) u_immu
-     (.clk(clk), .reset(reset),
+     (.clk(clk_fe), .reset(reset),
       .req_valid(1'b1), .req_vaddr(pc64(imem_va)), .req_access(2'd0),
-      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush_q),
-      .ptw_addr(ptw_addr), .ptw_read(ptw_read),
-      .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid),
+      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush_fe),
+      .ptw_addr(ptw_addr), .ptw_read(immu_ptw_read),
+      .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid_fe),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
       .t_cause(immu_cause), .t_lvl(immu_lvl), .t_uncached(), .t_ok(), .t_fault_raw(),
       .walk_ok(~walk_hold),
@@ -415,7 +431,7 @@ module smolrv64_core
    // a PA the iMMU delivers is below DRAM_TOP (Bare faults one above it), so it is a PC
    wire [63:0] immu_pa64 = {{(64-PABITS){1'b0}}, immu_pa};
    assign imem_addr = immu_pa64[PCW-1:0];
-   always @(posedge clk) if (!reset & immu_ready & ~immu_fault & (immu_pa64[63:PCW-1] != 0))
+   always @(posedge clk_fe) if (!reset & immu_ready & ~immu_fault & (immu_pa64[63:PCW-1] != 0))
       $fatal(1, "smolrv64_core: the iMMU delivers PA %h, wider than a PC", immu_pa);
 
    // ---- a mapping change ------------------------------------------------------------
@@ -429,16 +445,17 @@ module smolrv64_core
    wire csr_ifx_d;
    reg  ft;
    initial ft = 1'b0;
-   always @(posedge clk) begin
-      ft <= csr_ifx_d;
-      if (!reset && (ft != ((mmu_priv != 2'd3) & (mmu_satp[63:60] == 4'd8))))
+   // ft is the fetch side's (clk_fe): it agrees with the CSRs from each clk_fe edge to the next clk
+   // edge (the first half), where the CSRs may move without it; checked there
+   always @(posedge clk_fe) ft <= csr_ifx_d;
+   always @(posedge clk)
+      if (!reset && !h2 && (ft != ((mmu_priv != 2'd3) & (mmu_satp[63:60] == 4'd8))))
          $fatal(1, "smolrv64_core: the registered fetch regime %b is not priv %0d / satp MODE %0d's",
                 ft, mmu_priv, mmu_satp[63:60]);
-   end
    reg  ft_q;
    initial ft_q = 1'b0;
-   always @(posedge clk) ft_q <= ft;
-   assign imem_ctx_chg  = mmu_flush_q | (ft_q != ft);
+   always @(posedge clk_fe) ft_q <= ft;
+   assign imem_ctx_chg  = mmu_flush_fe | (ft_q != ft);
    assign fe_redirect   = fe_red_pulse;
 `ifndef SYNTHESIS
    reg [63:0] satp_chk_q;
@@ -3461,7 +3478,7 @@ module smolrv64_core
                          lsu_dtlb_walk_beg, lsu_dtlb_walking, rd_wait, st_rob, td_fe, td_bs,
                          fe_que, fe_aln, red_trap, red_jalr, red_br,
                          fe_ic, fe_mmu, fe_bub, st_ser, st_fpu, st_mul, st_div, st_mem,
-                         hpm_ic_miss, hpm_ic_access, hpm_dc_miss, hpm_dc_access,
+                         hpm_ic_miss & ~h2, hpm_ic_access & ~h2, hpm_dc_miss, hpm_dc_access,
                          // LOAD/STORE completions from REGISTERED landings (2026-09-17): the old
                          // `m_valid & m_is_mem & lsu_done` started at the dTLB compare (m_addr) and
                          // was the worst family of the C0 IW=3 census (m_addr_reg -> hpm_ev_q_reg).

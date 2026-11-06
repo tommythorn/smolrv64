@@ -77,7 +77,7 @@ if stale || [ "${BUILD:-0}" = 1 ]; then
       -DSMOLRV64_MEM_SIZE_LG2=$MEM_LG2 ${VDEFS:-} \
       -LDFLAGS "-lzstd $ZSTD_LD" -CFLAGS "$ZSTD_CF" \
       -I. -I../src --top-module tb --Mdir $OBJ -o tb_smolrv64_linux \
-      rv_soc_top.v smolrv64_core.v smolrv64_pending.v smolrv64_bankq.v smolrv64_mwram.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
+      rv_soc_top.v smolrv64_core.v smolrv64_pending.v smolrv64_bankq.v smolrv64_x2.v smolrv64_mwram.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
       -f ../src/cvfpu_sources.f \
       ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/dma_master.v ../src/sd_dpi.cpp \

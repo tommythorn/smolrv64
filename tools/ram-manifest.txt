@@ -35,7 +35,7 @@ fp[*].mem x2 : PRF FP file, a shard per writer (the load landing's, the F stage'
 # One generate block per shard, fl[shard], each with FLNB=next_pow2(IW) banks (one muxed write per
 # bank: a cycle's frees land at tail, tail+1, tail+2). Two copies of each map since retire-two /
 # dispatch-two (items 10b/10c): one write per bank per cycle is all a LUTRAM has.
-fl[*].u.bank[*].mem x{4*(IW+2)} : free lists, a shard per lane and SH_FL, SH_FF (the FP loads', the F stage's), 4 banks each at IW 3 and 4 (circular FIFO, head read / tail write)
+fl[*].u.bank[*].mem x{(1 << (IW-1).bit_length())*(IW+2)} : free lists, a shard per lane and SH_FL, SH_FF (the FP loads', the F stage's), next_pow2(IW) banks each (circular FIFO, head read / tail write)
 cp[*].rmap x{IW} : committed map, one copy per commit port; read at the sources + c_rd, written at one index (`rnewer` picks)
 cp[*].smap x{IW} : speculative map, one copy per rename port; flush clears `lv`, so no wholesale copy is needed (`newer` picks)
 cp[*].dmap.smap_d x{IW if IW >= 4 else 0} : its second copy past 15 reads (the destinations' and the commits' reads), at IW=4
@@ -51,7 +51,7 @@ rob_ffr : an FP op's exception flags by ROB slot: written when its result lands,
 # buffer's 2 (6 at IW=3), and next_pow2(IW) = 4 each for what a dispatch group's row writes: the
 # F stage's FIFO, the LQ's and SQ's dispatch records (spl_ld, spl_st), the LQ's PC (pcm), and the SQ's
 # PC and seq (two copies of the seq, one per read).
-bank[*].mem x{48+2*IW} : the decoupling queue's records, the fetch ring's halfwords, the training queue's payload, the landing buffers' data, the F FIFO, spl_ld, spl_st, the LQ's PC, the SQ's PC and seq
+bank[*].mem x{16 + 2*IW + 8*(1 << (IW-1).bit_length())} : the decoupling queue's records, the fetch ring's halfwords, the training queue's payload, the landing buffers' data, the F FIFO, spl_ld, spl_st, the LQ's PC, the SQ's PC and seq
 # Multi-writer arrays (smolrv64_mwram), a bank per writer: the arrived addresses' (a bank per lane,
 # the LQ's 3 and the SQ's 3) and the load queue's PA (M's fill, the walker's answer: 2).
 wb[*].mem x{2*IW+2} : a lane load's or store's VA by LQ/SQ entry (written by its lane, read at M's fill); a load's PA (written by the fill and the walk)

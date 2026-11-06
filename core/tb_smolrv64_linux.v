@@ -105,7 +105,7 @@ module tb;
    // The SoC's integrity log (rv_errlog). Every logged invariant also $fatals a cycle earlier
    // in simulation, so a sticky bit here means a condition is wired wrong, not that a rule
    // broke -- and that is exactly what must never reach a bitstream.
-   always @(posedge clk) if (|dut.u_errlog.sticky)
+   always @(posedge ui_clk) if (|dut.u_errlog.sticky)
       $fatal(1, "tb: integrity log sticky=%h first=%0d @%0d rose without a $fatal", dut.u_errlog.sticky, dut.u_errlog.first_idx, dut.u_errlog.first_cyc);
 `ifndef TB_DC_KB                 // the cache sizes, for an A/B: -DTB_DC_KB=<n>, -DTB_IC_KB=<n>
  `define TB_DC_KB 128
@@ -599,7 +599,7 @@ module tb;
    // looks healthy while userspace wedges in its first console write() -- a silent
    // failure that looks exactly like "slow". These counters make it visible.
    reg [63:0] n_inject, n_uirq, n_seip;
-   always @(posedge clk) if (!reset) begin
+   always @(posedge ui_clk) if (!reset) begin
       if (dut.core.irq_inject & dut.core.accept) n_inject <= n_inject + 1;
       if (dut.uart_irq)                          n_uirq   <= n_uirq   + 1;
       if (dut.plic_seip)                         n_seip   <= n_seip   + 1;
@@ -692,7 +692,7 @@ module tb;
       tro_fd = 0;
       if ($value$plusargs("trace_out=%s", tro_f)) tro_fd = $fopen(tro_f, "w");
    end
-   always @(posedge clk) if (tro_fd != 0 && !reset)
+   always @(posedge ui_clk) if (tro_fd != 0 && !reset)
       for (tro_k = 0; tro_k < `SMOLRV64_IW; tro_k = tro_k + 1)
          if (retire[tro_k]) $fwrite(tro_fd, "%h\n", dut.core.retire_pc[tro_k*40 +: 40]);
    // LQ-SIM: the load queue's occupancy summed per cycle, and the cycles the queue head has no
@@ -717,7 +717,7 @@ module tb;
          if (f < lq_bmin) lq_bmin = f;
       end
    end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       n_lqocc <= n_lqocc + 64'(lq_cnt);
       if (dut.core.st_lq) begin
          if (dut.core.cbo_any)     lq_cbo  <= lq_cbo + 1;
@@ -740,7 +740,7 @@ module tb;
    reg [63:0] n_stdoor, n_sqidle, n_sqwait;
    initial begin n_ldstart = 0; n_ldreord = 0; n_ldblk = 0; n_sqocc = 0; n_sqfull = 0;
                  n_stdoor = 0; n_sqidle = 0; n_sqwait = 0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (dut.core.lq_x_take)      n_ldstart <= n_ldstart + 1;
       if (dut.core.mem_reord)      n_ldreord <= n_ldreord + 1;
       if (dut.core.sq_ld_block)    n_ldblk   <= n_ldblk   + 1;
@@ -814,7 +814,7 @@ module tb;
    reg [63:0] td_sum, td_disp;        // the report's: cycles in a cause, the ok:N cycles' dispatches
    integer tdi;
    initial begin for (tdi = 0; tdi < TD_N; tdi = tdi + 1) td_cnt[tdi] = 64'd0; td_dn = 64'd0; td_drd = 64'd0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (td_k >= TD_N) $fatal(1, "tb: top-down cause td_k=%0d is outside the table (c=%0d)", td_k, c);
       td_cnt[td_k] <= td_cnt[td_k] + 64'd1;
       if (dut.core.redirect) td_drd <= td_drd + 64'($countones(dut.core.s_takev));
@@ -840,7 +840,7 @@ module tb;
    initial begin for (rli = 0; rli < 9; rli = rli + 1) rn_low[rli] = 64'd0; rn_fp = 9'd0; end
    wire [8:0] rn_now = {dut.core.u_rename.x_busy, dut.core.rn_shard_low};
    wire [8:0] rn_f = td_rf ? rn_fp : rn_now;
-   always @(posedge clk) begin
+   always @(posedge ui_clk) begin
       if (!td_rf) rn_fp <= rn_now;
       if (!reset && meas && (td_k == 5'd16)) begin
          if (rn_f == 9'd0) $fatal(1, "tb: a be:rename cycle with no shard low and no sweep (c=%0d)", c);
@@ -865,7 +865,7 @@ module tb;
    reg [63:0] rot_n [0:IW-1];
    reg [63:0] rot_ra;
    initial begin for (iqi = 0; iqi < IW; iqi = iqi + 1) rot_n[iqi] = 64'd0; rot_ra = 64'd0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       for (iqi = 0; iqi < IW; iqi = iqi + 1) if (dut.core.s_takev[iqi]) rot_n[iqi] <= rot_n[iqi] + 64'd1;
       if (dut.core.fe.realign) rot_ra <= rot_ra + 64'd1;
    end
@@ -873,7 +873,7 @@ module tb;
                          iq_gc[dut.core.GC_M] & ~dut.core.cr_div, iq_gc[dut.core.GC_FC] & ~dut.core.cr_f[0],
                          iq_gc[dut.core.GC_L] & ~dut.core.cr_l,   iq_gc[dut.core.GC_I]  & ~|(dut.core.cr_i & iq_hl)};
    wire [4:0]  iq_f   = td_rf ? iq_fp : iq_now;
-   always @(posedge clk) begin
+   always @(posedge ui_clk) begin
       if (!td_rf) iq_fp <= iq_now;
       if (!reset && meas && (td_k == 5'd15)) begin
          if (iq_f[3:0] == 4'd0) $fatal(1, "tb: a be:iq-full cycle whose queue head has every scheduler credit (c=%0d)", c);
@@ -922,7 +922,7 @@ module tb;
          else                                   dl_lq = 4'd11;
       end
    endfunction
-   always @(posedge clk) if (!reset && (td_k == 5'd13)) begin : depld
+   always @(posedge ui_clk) if (!reset && (td_k == 5'd13)) begin : depld
       reg [DL_PB-1:0] p;  reg pv;  reg [3:0] dc;  integer j;
       pv = 1'b0;  p = {DL_PB{1'b0}};  dc = dl_kp;
       if (!td_rf) begin
@@ -957,7 +957,7 @@ module tb;
    reg [39:0] trp_pc [0:15];  reg [4:0] trp_k [0:15];  reg [63:0] trp_n [0:15], trp_tv [0:15];
    integer    trp_used;
    initial trp_used = 0;
-   always @(posedge clk) if (!reset && meas && dut.core.u_csr.trap_v && !dut.core.u_csr.trap_to_s) begin : trappc
+   always @(posedge ui_clk) if (!reset && meas && dut.core.u_csr.trap_v && !dut.core.u_csr.trap_to_s) begin : trappc
       integer k, j, hit;
       k = (dut.core.u_csr.trap_is_intr ? 16 : 0) + 32'(dut.core.u_csr.trap_cause[3:0]);
       hit = -1;
@@ -968,7 +968,7 @@ module tb;
          trp_tv[trp_used] = dut.core.u_csr.trap_tval; trp_used = trp_used + 1;
       end
    end
-   always @(posedge clk) if (!reset && meas) begin : trapsim
+   always @(posedge ui_clk) if (!reset && meas) begin : trapsim
       integer k;
       k = (dut.core.u_csr.trap_is_intr ? 16 : 0) + 32'(dut.core.u_csr.trap_cause[3:0]);
       if (dut.core.u_csr.trap_v) trc_n[k][dut.core.u_csr.trap_to_s ? 1 : 0] <= trc_n[k][dut.core.u_csr.trap_to_s ? 1 : 0] + 1;
@@ -983,7 +983,7 @@ module tb;
    reg [63:0] pt_n [0:5];
    integer    pti;
    initial for (pti = 0; pti < 6; pti = pti + 1) pt_n[pti] = 0;
-   always @(posedge clk) if (!reset && meas && dut.core.lq_x_v && !dut.core.lq_x_take) begin
+   always @(posedge ui_clk) if (!reset && meas && dut.core.lq_x_v && !dut.core.lq_x_take) begin
       if (dut.core.sq_go)                                              pt_n[0] <= pt_n[0] + 1;
       else if (dut.core.u_lsu.st != 3'd0)                              pt_n[1] <= pt_n[1] + 1;
       else if (dut.core.u_lsu.mmu_walking && dut.core.u_lsu.pm_q)      pt_n[2] <= pt_n[2] + 1;
@@ -998,7 +998,7 @@ module tb;
    // address has arrived waiting for M's single translate pass -----------------------------
    reg [63:0] po_ld1, po_ld2, po_ldst, po_st, po_ar2;
    initial begin po_ld1 = 0; po_ld2 = 0; po_ldst = 0; po_st = 0; po_ar2 = 0; end
-   always @(posedge clk) if (!reset && meas) begin : portssim
+   always @(posedge ui_clk) if (!reset && meas) begin : portssim
       integer nl, na;
       nl = $countones(dut.core.u_lq.rdy_m) + ((dut.core.m_lq_fill && dut.core.lsu_xo_early) ? 1 : 0);
       na = $countones(dut.core.u_lq.v & ~dut.core.u_lq.av & dut.core.u_lq.ar);
@@ -1013,7 +1013,7 @@ module tb;
    // those the second level answers, the full walks after them and their PTE reads ---------
    reg [63:0] dt_busy, dt_lk, dt_l2, dt_walk, dt_pte;
    initial begin dt_busy = 0; dt_lk = 0; dt_l2 = 0; dt_walk = 0; dt_pte = 0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (dut.core.u_lsu.u_mmu.st != 2'd0)  dt_busy <= dt_busy + 1;
       if (dut.core.u_lsu.u_mmu.st == 2'd3) begin
          dt_lk <= dt_lk + 1;
@@ -1034,7 +1034,7 @@ module tb;
    initial begin sl_wr = 0; sl_s1ld = 0; sl_s1x = 0; sl_fb = 0; sl_flw = 0; sl_flx = 0; sl_miss = 0;
                  sl_back = 0; sl_full = 0; sl_main = 0; sl_idle = 0;
                  sm_alloc = 0; sm_wait = 0; sm_defer = 0; sl_mg = 0; sl_fw = 0; end
-   always @(posedge clk) if (!reset && meas) begin : stlk
+   always @(posedge ui_clk) if (!reset && meas) begin : stlk
       reg hb, s1s, fbc;
       hb  = dut.u_dcache.sb_hd & dut.u_dcache.bhit;
       s1s = dut.u_dcache.s1_v & (dut.u_dcache.s1_set == dut.u_dcache.sb_set);
@@ -1063,7 +1063,7 @@ module tb;
    // cycles over the fills is the mean wait (Little); cycles with two or more waiting ----------------
    reg [63:0] mf_wait, mf_fill, mf_c2, mf_c1;
    initial begin mf_wait = 0; mf_fill = 0; mf_c2 = 0; mf_c1 = 0; end
-   always @(posedge clk) if (!reset && meas) begin : mfun
+   always @(posedge ui_clk) if (!reset && meas) begin : mfun
       integer n;
       n = pop64(64'(dut.core.la_v)) + pop64(64'(dut.core.sa_v));
       mf_wait <= mf_wait + 64'(n);
@@ -1082,7 +1082,7 @@ module tb;
    reg [7:0]  lp_ix;
    integer    lpi;
    initial begin for (lpi = 0; lpi < 12; lpi = lpi + 1) lp_n[lpi] = 0;  lp_byp = 0;  lp_st = 0; end
-   always @(posedge clk) if (!reset) begin : ldpath
+   always @(posedge ui_clk) if (!reset) begin : ldpath
       reg [2:0] c;
       lp_byp <= dut.core.s_go & dut.core.s_byp & ~dut.core.s_st;   // M's next load came from its lane
       lp_st  <= 1'b0;
@@ -1106,7 +1106,7 @@ module tb;
       lt_on = $value$plusargs("ldtrace=%d", lt_ix);
       if (!$value$plusargs("ldtrace_from=%d", lt_from)) lt_from = 64'd0;
    end
-   always @(posedge clk) if (!reset && lt_on && c >= lt_from) begin : ldtr
+   always @(posedge ui_clk) if (!reset && lt_on && c >= lt_from) begin : ldtr
       reg al, fl, go, cn, ps, pf, ld, rs, kl;
       al = 1'b0;
       for (int k = 0; k < IW; k = k + 1) if (dut.core.g_ld[k] && (dut.core.s_lqi[k] == lt_ix)) al = 1'b1;
@@ -1130,7 +1130,7 @@ module tb;
    // the lane-cycles a waiting landing holds the lane are what a write-port collision costs.
    reg [63:0] ln_by, ln_buf, ln_hold;
    initial begin ln_by = 0;  ln_buf = 0;  ln_hold = 0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       ln_by   <= ln_by   + 64'(pop64(64'(dut.core.by0)));
       ln_buf  <= ln_buf  + 64'(pop64(64'(dut.core.en0)));
       ln_hold <= ln_hold + 64'(pop64(64'(dut.core.lb_any)));
@@ -1188,7 +1188,7 @@ module tb;
    reg [63:0] hs_n [0:2], hs_w [0:2], hs_o [0:2], hs_a [0:2], hs_ao [0:2];   // [right, cancelled, missed or waiting]
    integer    hsi;
    initial for (hsi = 0; hsi < 3; hsi = hsi + 1) begin hs_n[hsi] = 0;  hs_w[hsi] = 0;  hs_o[hsi] = 0;  hs_a[hsi] = 0;  hs_ao[hsi] = 0; end
-   always @(posedge clk) if (!reset && meas && hs_ld) begin : hspec
+   always @(posedge ui_clk) if (!reset && meas && hs_ld) begin : hspec
       integer k, c;  reg [15:0] w, o, a, ao;
       c = dut.u_dcache.ans ? 0 : (dut.u_dcache.s1_f & dut.u_dcache.f_cancel) ? 1 : 2;
       w = 0;  o = 0;  a = 0;  ao = 0;
@@ -1206,7 +1206,7 @@ module tb;
       assign sp_l[spg] = dut.core.ln[spg].sp1;
    end endgenerate
    initial begin sp_wake = 0;  sp_ok = 0;  sp_bad = 0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (dut.core.sw_v) sp_wake <= sp_wake + 1;
       if (dut.core.sv_ok) sp_ok <= sp_ok + 64'(pop64(64'(sp_l))); else sp_bad <= sp_bad + 64'(pop64(64'(sp_l)));
    end
@@ -1235,7 +1235,7 @@ module tb;
    initial begin rv_wk = 0; rv_wkq = 0; rv_cwe = 0; rv_nwk = 0; end
    reg [63:0] rv_set, rv_rows, rv_cwk, rv_dist;  integer rv_p;
    initial begin rv_set = 0; rv_rows = 0; rv_cwk = 0; rv_dist = 0; end
-   always @(posedge clk) if (!reset && meas) begin : rvwalk     // the walk's restored destinations
+   always @(posedge ui_clk) if (!reset && meas) begin : rvwalk     // the walk's restored destinations
       reg [63:0] nset;
       nset = rv_set;
       for (rv_p = 0; rv_p < RV_IW; rv_p = rv_p + 1)
@@ -1243,7 +1243,7 @@ module tb;
       if (dut.core.fr_rel || dut.core.cf_red_fire) begin rv_set <= 0;  rv_rows <= 0; end
       else begin rv_set <= nset;  if (dut.core.u_rob.wl_run) rv_rows <= rv_rows + 1; end
    end
-   always @(posedge clk) if (!reset && dut.core.fr_set)        // the resolve: the branch's wk_e bit still holds
+   always @(posedge ui_clk) if (!reset && dut.core.fr_set)        // the resolve: the branch's wk_e bit still holds
       rv_wkq <= dut.core.wk_e[((dut.core.cf_rob >> (RV_CB + 1)) << RV_CB) | (dut.core.cf_rob & (RV_NC - 1))];
    function automatic [63:0] ck_weak(input integer hr, input integer kb, input wk, input [63:0] fwd);
       integer r, col, n, last;
@@ -1273,7 +1273,7 @@ module tb;
       integer b; begin pop64 = 0; for (b = 0; b < 64; b = b + 1) pop64 = pop64 + x[b]; end
    endfunction
    localparam integer RV_IW = `SMOLRV64_IW;
-   always @(posedge clk) if (!reset && meas) begin : recov
+   always @(posedge ui_clk) if (!reset && meas) begin : recov
       reg [63:0] rec, fe, ex_now, ex_best, ex_ck, cwr;  integer k3;
       if (dut.core.u_rob.k_v) begin
          if (rv_on) rv_sup <= rv_sup + 1;
@@ -1321,7 +1321,7 @@ module tb;
    reg [63:0] ms_fill, ms_fills, ms_park, ms_stmem, ms_stmem_fill, ms_stmem_park, ms_live, ms_wbfull;
    initial begin ms_fill = 0; ms_fills = 0; ms_park = 0; ms_stmem = 0; ms_stmem_fill = 0; ms_stmem_park = 0;
                  ms_live = 0; ms_wbfull = 0; end
-   always @(posedge clk) if (!reset && meas) begin : memsim
+   always @(posedge ui_clk) if (!reset && meas) begin : memsim
       reg fv, park;
       fv   = (dut.u_dcache.ob_live != 0);
       park = dut.u_dcache.ob_wait;
@@ -1382,7 +1382,7 @@ module tb;
       end
       ds_grp = n;
    endfunction
-   always @(negedge clk) if (!reset && meas) begin : dispsim
+   always @(negedge ui_clk) if (!reset && meas) begin : dispsim
       reg [15:0] g;  reg [CRW-1:0] cr;  reg old;  integer k, j, e, nr, np, as, ae;
       cr = dut.core.fe.crd;
       for (k = 1; k < IW; k = k + 1)
@@ -1448,8 +1448,8 @@ module tb;
    reg [63:0] fw_go_n, fw_c [0:FW_N-1];      // busy, drain, LSU, older, start; next, unknown, several, partial, no-data, other, page-alias
    integer    fwi;
    initial begin fw_go_n = 0; for (fwi = 0; fwi < FW_N; fwi = fwi + 1) fw_c[fwi] = 0; end
-   always @(posedge clk) if (!reset && meas && dut.core.lq_x_take && dut.core.lq_x_fwd) fw_go_n <= fw_go_n + 1;   // forwards started
-   always @(negedge clk) if (!reset && meas) begin : fwdsim
+   always @(posedge ui_clk) if (!reset && meas && dut.core.lq_x_take && dut.core.lq_x_fwd) fw_go_n <= fw_go_n + 1;   // forwards started
+   always @(negedge ui_clk) if (!reset && meas) begin : fwdsim
       integer l, s, ys, nov, k;  reg unk;
       reg [FW_IB:0]   ld;
       reg [FW_IB-1:0] sd;
@@ -1503,7 +1503,7 @@ module tb;
          else                           ser_cls = 4'd15;   // not a serialising, CSR or CBO op
       end
    endfunction
-   always @(negedge clk) if (!reset) begin : sersim
+   always @(negedge ui_clk) if (!reset) begin : sersim
       reg [3:0] hk, ik;
       // the queue head's op (a held head is the op a be:serialize cycle waits on), and the IR's head
       // op (slot A's: a head op goes alone, to lane A)
@@ -1541,7 +1541,7 @@ module tb;
    // the ROB head (D$ plan increment 5b).
    reg [63:0] xs_hit, xs_aflt, xs_nopa, xs_wk, xs_wkf, xs_trap;
    initial begin xs_hit = 0; xs_aflt = 0; xs_nopa = 0; xs_wk = 0; xs_wkf = 0; xs_trap = 0; end
-   always @(negedge clk) if (!reset && meas) begin
+   always @(negedge ui_clk) if (!reset && meas) begin
       if (dut.core.u_lsu.xo_tv)  xs_hit  = xs_hit + 1;
       if (dut.core.u_lsu.xo_v &  dut.core.u_lsu.xo_flt) xs_aflt = xs_aflt + 1;
       if (dut.core.u_lsu.xo_v & ~dut.core.u_lsu.xo_tv & ~dut.core.u_lsu.xo_flt) xs_nopa = xs_nopa + 1;
@@ -1563,7 +1563,7 @@ module tb;
    reg [5:0]  im_wp;
    reg [63:0] im_n, im_waste;
    initial begin im_v = 0; im_u = 0; im_wp = 0; im_n = 0; im_waste = 0; end
-   always @(negedge clk) if (!reset && meas) begin
+   always @(negedge ui_clk) if (!reset && meas) begin
       for (iwi = 0; iwi < 64; iwi = iwi + 1)
          for (iwk = 0; iwk < dut.core.IW; iwk = iwk + 1)
             if (im_v[iwi] && retire[iwk] && dut.core.cs_pc[dut.core.rc_sx[iwk]][38:6] == im_ln[iwi])
@@ -1574,7 +1574,7 @@ module tb;
          im_wp = im_wp + 1; im_n = im_n + 1;
       end
    end
-   always @(negedge clk) if (!reset && meas) begin
+   always @(negedge ui_clk) if (!reset && meas) begin
       for (iwi = 0; iwi < 32; iwi = iwi + 1)
          for (iwk = 0; iwk < dut.core.IW; iwk = iwk + 1)
             if (iw_v[iwi] && retire[iwk] && dut.core.cs_pc[dut.core.rc_sx[iwk]][38:12] == iw_pg[iwi])
@@ -1599,13 +1599,13 @@ module tb;
    // a full queue drops.
    reg [63:0] tr_n, tr_drops;
    initial begin tr_n = 0; tr_drops = 0; end
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (dut.core.res_v) tr_n <= tr_n + 1;
       tr_drops <= tr_drops + 64'(dut.core.tr_drop);
    end
    wire fr_open = ~dut.core.fe.u_ring.freeze & dut.core.fe.u_ring.xlate_ok & dut.core.fe.u_ring.inpg;
    wire fr_rej  = dut.core.fe.f_rej;
-   always @(posedge clk) if (!reset && meas) begin
+   always @(posedge ui_clk) if (!reset && meas) begin
       if (dut.core.fe.u_ring.rq_acc) begin
          fr_req <= fr_req + 1;  fr_hw <= fr_hw + dut.core.fe.u_ring.rq_n;
       end
@@ -1628,7 +1628,7 @@ module tb;
    // the console to the UART.
    reg [63:0] tohost_addr, tohost_code;  reg tohost_on, tohost_done;
    initial begin tohost_on = $value$plusargs("tohost=%h", tohost_addr); tohost_done = 1'b0; tohost_code = 64'd0; end
-   always @(posedge clk) if (!reset && tohost_on && !tohost_done && dmem_wen
+   always @(posedge ui_clk) if (!reset && tohost_on && !tohost_done && dmem_wen
                              && dmem_waddr[63:3] == tohost_addr[63:3]) begin
       if (!dmem_wdata[0]) $fatal(1, "tb: HTIF syscall store to tohost (%h) -- not served; route the console to the UART", dmem_wdata);
       tohost_done <= 1'b1;  tohost_code <= dmem_wdata >> 1;
@@ -1640,7 +1640,7 @@ module tb;
    // bundle register, the queue, the IR and dispatch.
    reg fe_tr_on;
    initial fe_tr_on = $test$plusargs("fe_trace");
-   always @(posedge clk) if (!reset && fe_tr_on && trace_on)
+   always @(posedge ui_clk) if (!reset && fe_tr_on && trace_on)
       $display("FE c=%0d pc=%h avail=%0d ok=%b mk=%b adv=%0d taken=%b rej=%b pq=%0d fire=%b pb=%b q=%0d room=%b ir=%b disp=%b red=%b",
                c, dut.core.fe.u_fetch.pc_q, dut.core.fe.imem_avail, dut.core.fe.imem_ok,
                dut.core.fe.imem_mk, dut.core.fe.f_adv_hw, dut.core.fe.f_take,
@@ -1653,7 +1653,7 @@ module tb;
    // queue's live and filled entries, its tail and allocation, the kill and its release, a landing.
    reg mq_tr_on;
    initial mq_tr_on = $test$plusargs("mq_trace");
-   always @(posedge clk) if (!reset && mq_tr_on && trace_on)
+   always @(posedge ui_clk) if (!reset && mq_tr_on && trace_on)
       $display("MQ c=%0d M v=%b ld=%b seq=%0d rob=%0d lqi=%0d dead=%b adv=%b | go=%b byp=%b rwin=%b uld=%b sli=%0d pk=%b/%0d/%0d | lm=%b%b%b lqi=%0d,%0d,%0d seq=%0d,%0d,%0d rob=%0d,%0d,%0d | la_v=%b | lq v=%b av=%b alloc=%b@%h kmask=%b | kd=%b rel=%b frv=%b red=%b | land=%b@%0d",
                c, dut.core.m_valid, dut.core.m_ld_nb, dut.core.m_seq, dut.core.m_rob_idx, dut.core.m_lq_idx, dut.core.m_dead, dut.core.m_advance,
                dut.core.s_go, dut.core.s_byp, dut.core.r_win, dut.core.u_ld, dut.core.s_li, dut.core.lq_pk_v, dut.core.lq_pk_idx, dut.core.lq_pk_seq,
@@ -1671,7 +1671,7 @@ module tb;
    reg [63:0] watch_pc;  reg watch_on;  reg [15:0] watch_prd;  reg watch_prd_v;  reg [15:0] watch_rob;
    initial begin watch_on = $value$plusargs("watch_pc=%h", watch_pc); watch_prd_v = 1'b0; watch_prd = 16'd0; end
    integer ww;
-   always @(posedge clk) if (!reset && watch_on) begin
+   always @(posedge ui_clk) if (!reset && watch_on) begin
       if (dut.core.iss_f && dut.core.f_iss_pc == watch_pc[39:0]) begin   // a PC's 40 bits (smolrv64_pc.vh)
          $display("[c=%0d] watch F-issue pc=%h rob=%0d rd=x%0d rd_v=%b prd=%0d",
                   c, dut.core.f_iss_pc, dut.core.j_rob, dut.core.qf_rd, dut.core.qf_rd_v, dut.core.qf_prd);
@@ -1737,7 +1737,7 @@ module tb;
       // +cycles=0 runs unbounded (stop with an external interrupt / timeout wrapper)
       for (c = 0; ((ncyc == 0) || (c < ncyc)) && !tohost_done && ((max_ret == 0) || (nret < max_ret))
                   && !(stop_hit && (c >= stop_at)); c = c + 1) begin
-         @(negedge clk);
+         @(negedge ui_clk);                // the core's clock (its fetch side's is clk)
                   for (nrk = 0; nrk < `SMOLRV64_IW; nrk = nrk + 1) nret = nret + retire[nrk];
                   if (meas && dut.core.sq_r_v) fx_rd = fx_rd + 1;   // the store queue's data read
                   if (meas)
