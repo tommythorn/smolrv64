@@ -31,6 +31,7 @@ module tb;
    reg [63:0] off_dtb, off_initrd;
 
    reg clk = 0; always #5 clk = ~clk;
+   reg ui_clk = 1'b1;  always #2.5 ui_clk = ~ui_clk;          // twice clk, its rising edges on clk's
    reg reset;
    wire [`SMOLRV64_IW-1:0] retire;
    wire        dmem_wen;
@@ -115,7 +116,7 @@ module tb;
    reg tb_dma_wr = 1'b0;           // a device wrote memory this cycle (the virtio-blk slave, the DMA agent)
    wire        sn_p_valid, sn_p_keep, sn_p_ack, sn_p_rel;  wire [25:0] sn_p_line;   // the tb's DMA snoops (below)
    rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB), .SIZE_KB(`TB_IC_KB)) dut
-     (.clk(clk), .reset(reset), .retire(retire),
+     (.clk(clk), .clk2x(ui_clk), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
       .dmem_wmask(dmem_wmask),
       .ddr_q_valid(ddr_q_valid), .ddr_q_ready(ddr_q_ready), .ddr_q_id(ddr_q_id), .ddr_q_we(ddr_q_we),
@@ -206,7 +207,6 @@ module tb;
    // ddr_port_sync into a ui_clk of twice the core's, our controller (ddr4_mem) and the PHY-only
    // model, whose DRAM is lram at the controller's map (src/ddr4_phy_model.vh). The DMA masters'
    // port is idle: the testbench's DMA writes lram itself.
-   reg ui_clk = 1'b1;  always #2.5 ui_clk = ~ui_clk;          // its rising edges on clk's
    wire        mq_valid, mq_ready, mq_we, mr_valid, mr_ready, mr_last, mw_valid, mw_ready;
    wire [4:0]  mq_id, mr_id, mw_id;  wire [57:0] mq_addr;  wire [63:0] mq_wmask;  wire [511:0] mq_wdata;
    wire [1:0]  mr_beat;  wire [127:0] mr_data;

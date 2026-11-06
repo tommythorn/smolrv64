@@ -71,6 +71,17 @@ if {$hier} {
     return
 }
 create_clock -name clk -period $per [get_ports -quiet clk]
+# A module with a clk2x port (the frontend's decode, and every module above it) takes it at half the
+# period, edges aligned, and the decoupling queue's exception (smolrv64_shell.xdc, the same one).
+if {[llength [get_ports -quiet clk2x]]} {
+    create_clock -name clk2x -period [expr {$per / 2.0}] [get_ports clk2x]
+    set q2x [get_cells -quiet -hier -filter {(REF_NAME =~ RAMD* || REF_NAME =~ RAMS*) && NAME =~ *u_q/*}]
+    puts "OOC clk2x: [llength $q2x] queue RAMs written on clk2x"
+    if {[llength $q2x]} {
+        set_multicycle_path -setup 2 -start -from $q2x
+        set_multicycle_path -hold 1 -start -from $q2x
+    }
+}
 opt_design -quiet
 place_design -quiet
 route_design -quiet

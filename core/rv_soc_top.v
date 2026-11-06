@@ -53,6 +53,7 @@ module rv_soc_top #(
                                                  // 166.67 MHz may shrink it
 ) (
    input  wire             clk,
+   input  wire             clk2x,      // twice clk, phase-aligned (the core's decode)
    input  wire             reset,
    // observation for a TB (retire + the store stream, to watch tohost)
    output wire [IW-1:0]    retire,             // the core's commit ports that retired this cycle
@@ -167,7 +168,7 @@ module rv_soc_top #(
 
    smolrv64_core #(.HW(HW), .IW(IW), .PCW(PCW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
                .LQ_IB(LQ_IB)) core
-     (.clk(clk), .reset(reset),
+     (.clk(clk), .clk2x(clk2x), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip), .mtime(clint_mtime),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
       .ic_tag(ic_tag), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),

@@ -583,7 +583,7 @@ module smolrv64_lq
 
    // the load's PC, read at the fault pick: a bank of the allocation's, one write each
    smolrv64_bankq #(.W(VAW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(NB), .PICK(1), .AB(IDXB), .WLATE(1)) u_pcm
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(d_idx), .wd(d_pc), .rp(fi), .ro({BL{1'b0}}), .rd(f_pc));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(d_alloc), .wp(d_idx), .wd(d_pc), .rp(fi), .ro({BL{1'b0}}), .rd(f_pc));
 
    // D12 (2026-09-17): the "DRAM, idempotent, may issue speculatively" bit names the entry's OWN
    // address. smolrv64_lsu derives it from the translate; here it is recomputed from the PA the

@@ -18,6 +18,10 @@
 // bank pick -- ends at flops instead of the banks' write pins, and a read of a position written the
 // cycle before takes the registered data, so rd reads exactly as without it.
 //
+// THE WRITE CLOCK. The banks are written on wclk: clk for every queue but the frontend's, whose
+// decoders run on clk2x and write each half of a bundle at its own edge (smolrv64_frontend). The
+// reads are combinational and their users are on clk.
+//
 // THE READS. rd[k] is the entry at rp + ro[k], combinational, the value before this cycle's writes.
 // Bank b is read once, at the entry at or after rp in it, so any offset below NB names an entry
 // some bank holds, and a read port is an NB:1 pick of the banks by (rp + ro[k]) % NB. rp must be
@@ -35,6 +39,7 @@ module smolrv64_bankq
     parameter WLATE = 0,                  // 1: the writes land a cycle late, from registers (NR = 1)
     parameter AB    = $clog2(DEPTH))
    (input  wire               clk,
+    input  wire               wclk,       // the banks' write clock (clk, or the frontend's clk2x)
     input  wire               reset,      // only the invariant checks: the array has no reset
     input  wire [NW-1:0]      wv,
     input  wire [NW*AB-1:0]   wp,         // writer j's position at [j*AB +: AB]
@@ -61,7 +66,7 @@ module smolrv64_bankq
       reg [NW*AB-1:0] p_q;
       reg [NW*W-1:0]  d_q;
       initial v_q = {NW{1'b0}};
-      always @(posedge clk) begin
+      always @(posedge wclk) begin
          v_q <= reset ? {NW{1'b0}} : wv;
          p_q <= wp;  d_q <= wd;
       end
@@ -82,7 +87,7 @@ module smolrv64_bankq
       if (BYBANK) begin: own
          assign m   = bv & ({{(NW-1){1'b0}}, 1'b1} << gb);
          assign sel = gb[JB-1:0];
-         always @(posedge clk) if (!reset & bv[gb] & (bp[gb*AB +: BB] != gb[BB-1:0]))
+         always @(posedge wclk) if (!reset & bv[gb] & (bp[gb*AB +: BB] != gb[BB-1:0]))
             $fatal(1, "smolrv64_bankq: bank %0d's writer writes position %0d, of bank %0d", gb, bp[gb*AB +: AB], bp[gb*AB +: BB]);
       end else begin: pick
          reg [NW-1:0] mm;
@@ -99,8 +104,8 @@ module smolrv64_bankq
       end
       wire [AB-1:0] wpos = bp[sel*AB +: AB];
       wire [IB-1:0] widx = (BD > 1) ? wpos[AB-1 -: IB] : {IB{1'b0}};
-      always @(posedge clk) if (|m) mem[widx] <= bw[sel*W +: W];
-      always @(posedge clk) if (!reset & ((m & (m - 1'b1)) != {NW{1'b0}}))
+      always @(posedge wclk) if (|m) mem[widx] <= bw[sel*W +: W];
+      always @(posedge wclk) if (!reset & ((m & (m - 1'b1)) != {NW{1'b0}}))
          $fatal(1, "smolrv64_bankq: writers %b all land in bank %0d", m, gb);
       // its read: the entry at or after rp
       wire [BB-1:0] off  = gb[BB-1:0] - rp[BB-1:0];

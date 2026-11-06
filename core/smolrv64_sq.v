@@ -395,11 +395,11 @@ module smolrv64_sq
       assign al_wp[gaw*IDXB +: IDXB] = al_e[gaw];
    end endgenerate
    smolrv64_bankq #(.W(VAW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_pc
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_pc), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_pc));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_pc), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_pc));
    smolrv64_bankq #(.W(SEQW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_sqn_kc
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_seq));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_seq));
    smolrv64_bankq #(.W(SEQW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_sqn_pk
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(pk_idx), .ro({$clog2(SNB){1'b0}}), .rd(pk_seq));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(pk_idx), .ro({$clog2(SNB){1'b0}}), .rd(pk_seq));
 
    // c_v says the next entry to hand off is READY (address and data present). Committing in program order
    // is the core's job: it takes the entry only when c_rob is the ROB head, so a store

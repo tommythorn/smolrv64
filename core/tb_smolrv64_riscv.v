@@ -29,6 +29,7 @@ module tb;
    localparam        SIZE = 1<<22;
 
    reg  clk = 0; always #5 clk = ~clk;
+   reg  clk2x = 1; always #2.5 clk2x = ~clk2x;   // twice clk, its rising edges on clk's
    reg  reset;
 
    wire [PCW-1:0]   imem_addr;                 // the fetch PC's PA
@@ -63,7 +64,7 @@ module tb;
    always @(posedge clk) if (|fe_err)
       $fatal(1, "tb: smolrv64_frontend fe_err=%h rose without its $fatal -- an integrity-log condition is wired wrong", fe_err);
    smolrv64_core #(.PCW(PCW), .HW(HW), .RESET_PC(BASE)) dut
-     (.clk(clk), .reset(reset),
+     (.clk(clk), .clk2x(clk2x), .reset(reset),
       .imem_addr(imem_addr), .imem_ctx_chg(), .ic_busy(1'b0),
       .ic_req(ic_req), .ic_va(), .ic_pa(ic_pa), .ic_tag(ic_tag),
       .ic_ack(1'b1), .ic_valid(ic_valid), .ic_data(ic_data), .ic_rtag(ic_rtag),

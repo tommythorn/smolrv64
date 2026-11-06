@@ -189,7 +189,7 @@ module smolrv64_fring
       assign rg_ro[ga*3 +: 3] = ga[2:0];
    end endgenerate
    smolrv64_bankq #(.W(17), .DEPTH(RS), .NW(8), .NR(HW), .NB(8)) u_rg
-     (.clk(clk), .reset(reset), .wv(rp_wv), .wp(rp_wp), .wd(rp_wd), .rp(rg_head), .ro(rg_ro), .rd(rg_rd));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(rp_wv), .wp(rp_wp), .wd(rp_wd), .rp(rg_head), .ro(rg_ro), .rd(rg_rd));
    // The ring's head is the PC, what it holds and has in flight fits, and every mark held or in
    // flight has its prediction queued.
    integer k;

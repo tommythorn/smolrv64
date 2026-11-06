@@ -35,6 +35,17 @@ set_false_path \
 # an auto-derived name follows the net at the source pin and a lookup that matches nothing
 # fails SILENTLY.
 set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter {NAME =~ *probe_clk_buf/O}]]
+# The core's clk2x (core_clk2x_buf, the same BUFGCE_DIV at divide 1) takes the same root, so the two
+# trees match and a probe_clk <-> clk2x path sees no skew between them.
+set_property USER_CLOCK_ROOT X1Y1 [get_nets -of_objects [get_pins -hier -filter {NAME =~ *core_clk2x_buf/O}]]
+
+# The decoupling queue's banks (smolrv64_frontend u_q) are written on clk2x: a bundle's first IW
+# slots at probe_clk's edge, the rest at the mid-cycle edge. The mid-cycle write lands IW or more
+# positions past the IR's head, which no read port reaches that cycle (smolrv64_frontend's DECODE
+# RUNS ON clk2x), so the write clock -> read data arcs have probe_clk's whole period: the launch moves
+# back to the clk2x edge that coincides with the capturing probe_clk edge's predecessor.
+set_multicycle_path -setup 2 -start -from [get_cells -hier -filter {(REF_NAME =~ RAMD* || REF_NAME =~ RAMS*) && NAME =~ *fe/u_q/*}]
+set_multicycle_path -hold 1 -start -from [get_cells -hier -filter {(REF_NAME =~ RAMD* || REF_NAME =~ RAMS*) && NAME =~ *fe/u_q/*}]
 
 # fbdiag self-reset: probe_clk -> ui_clk 2-FF synchronizer.  These are RELATED clocks, so
 # without this exception Vivado times the crossing, and an off-integer period ratio collapses

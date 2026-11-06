@@ -6,6 +6,7 @@
 `include "smolrv64_width.vh"
 module tb;
    reg clk = 0; always #3 clk = ~clk;
+   reg clk2x = 1; always #1.5 clk2x = ~clk2x;   // twice clk, its rising edges on clk's
    reg reset = 1;
    wire [`SMOLRV64_IW-1:0] retire; wire dmem_wen; wire [63:0] dmem_waddr, dmem_wdata; wire [7:0] dmem_wmask;
    wire ddr_q_valid, ddr_q_we, ddr_r_ready, ddr_w_ready; wire [4:0] ddr_q_id; wire [57:0] ddr_q_addr;
@@ -15,7 +16,7 @@ module tb;
    wire fbdiag_reset_req; wire [14:0] virtio_addr; wire virtio_read, virtio_write; wire [31:0] virtio_wdata; wire [3:0] virtio_be;
    wire [17:0] irq_dbg; wire [1:0] cache_par_err; wire [63:0] cache_par_dbg;
    rv_soc_top `ifdef RTL_RUN #(.RESET_PC(64'h70000000)) `endif dut
-     (.clk(clk), .reset(reset), .retire(retire),
+     (.clk(clk), .clk2x(clk2x), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata), .dmem_wmask(dmem_wmask),
       .ddr_q_valid(ddr_q_valid), .ddr_q_ready(~d_busy), .ddr_q_id(ddr_q_id), .ddr_q_we(ddr_q_we), .ddr_q_addr(ddr_q_addr),
       .ddr_q_wmask(ddr_q_wmask), .ddr_q_wdata(ddr_q_wdata),

@@ -85,6 +85,7 @@ module smolrv64_core
     parameter        PABITS   = `SMOLRV64_PABITS,  // the physical-address width (smolrv64_width.vh)
     parameter        LQ_IB    = `SMOLRV64_LQB)   // the load queue's index width: 1<<LQ_IB entries
    (input  wire                    clk,
+    input  wire                    clk2x,           // twice clk, phase-aligned: decode's clock (smolrv64_frontend)
     input  wire                    reset,
     // ---- instruction memory: the fetch ring's stream into the I$ (rv_icache) ----
     output wire [PCW-1:0]          imem_addr,       // the fetch PC's PA (diagnostics)
@@ -320,7 +321,7 @@ module smolrv64_core
    localparam integer DCR_BACK = 0;   // a conditional the BTB misses falls through: the BTB holds every branch once taken
    smolrv64_frontend #(.PCW(PCW), .SEQW(SEQW), .HW(HW), .IW(IW), .FW(`SMOLRV64_FW), .PDW(PDW), .RASB(RASB), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK),
                   .QDEPTH(`SMOLRV64_QD), .QAW($clog2(`SMOLRV64_QD)), .RESET_PC(RESET_PC[PCW-1:0])) fe
-     (.clk(clk), .reset(reset), .accept(accept), .consume(fe_consume),
+     (.clk(clk), .clk2x(clk2x), .reset(reset), .accept(accept), .consume(fe_consume),
       .d_valid(fe_dv), .d_rec(fe_rec), .d_fc(fe_fc),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc), .hd_lane(fe_hd_lane),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
@@ -1398,7 +1399,7 @@ module smolrv64_core
       assign ft_wd[gfb*FSQW +: FSQW] = s_fpl[gfb];
    end endgenerate
    smolrv64_bankq #(.W(FSQW), .DEPTH(1 << FSQB), .NW(IW), .NR(1), .NB(FBN), .PICK(1), .AB(FSQB), .WLATE(1)) u_fsq
-     (.clk(clk), .reset(reset), .wv(ft_wv), .wp(ft_wp), .wd(ft_wd), .rp(fsq_hd), .ro({$clog2(FBN){1'b0}}), .rd(fsq_o));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(ft_wv), .wp(ft_wp), .wd(ft_wd), .rp(fsq_hd), .ro({$clog2(FBN){1'b0}}), .rd(fsq_o));
    // every entry's sources against the registered wakes, then the pushed entries' dispatch state
    integer fse;
    always @(posedge clk) begin
@@ -2364,9 +2365,9 @@ module smolrv64_core
    wire [SQ_IB-1:0]  s_si = r_win ? sq_pk_idx : by_si;
    wire              s_go = s_win & m_advance & ~redirect;
    smolrv64_bankq #(.W(SPW), .DEPTH(LQ_N), .NW(IW), .NR(1), .NB(QNB), .PICK(1), .AB(LQ_IB)) u_spl_ld
-     (.clk(clk), .reset(reset), .wv(g_ld), .wp(lq_d_idxv), .wd(spl_wd), .rp(s_li), .ro({$clog2(QNB){1'b0}}), .rd(spl_ld_rd));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(g_ld), .wp(lq_d_idxv), .wd(spl_wd), .rp(s_li), .ro({$clog2(QNB){1'b0}}), .rd(spl_ld_rd));
    smolrv64_bankq #(.W(SPW), .DEPTH(SQ_N), .NW(IW), .NR(1), .NB(QNB), .PICK(1), .AB(SQ_IB)) u_spl_st
-     (.clk(clk), .reset(reset), .wv(g_st), .wp(q_sqiv), .wd(spl_wd), .rp(s_si), .ro({$clog2(QNB){1'b0}}), .rd(spl_st_rd));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(g_st), .wp(q_sqiv), .wd(spl_wd), .rp(s_si), .ro({$clog2(QNB){1'b0}}), .rd(spl_st_rd));
    wire [SPW-1:0]    s_rec = s_st ? spl_st_rd : spl_ld_rd;
    // THE RECORD'S SHADOW: the whole payload per entry, read only by the identity check below
    reg  [ROB_IDXB+PLW-1:0] spl_ld_sh [0:LQ_N-1];
@@ -4100,7 +4101,7 @@ module smolrv64_core
                                       lr_br[tqg], l_call[tqg], l_ret[tqg], lr_taken[tqg]};
    end endgenerate
    smolrv64_bankq #(.W(TQW), .DEPTH(TQN), .NW(NL), .NR(1), .NB(1 << RKB), .WLATE(1)) u_tq
-     (.clk(clk), .reset(reset), .wv(tq_w & {NL{~reset}}), .wp(tq_wp), .wd(tq_wd), .rp(tq_h), .ro({RKB{1'b0}}), .rd(tq_hd));
+     (.clk(clk), .wclk(clk), .reset(reset), .wv(tq_w & {NL{~reset}}), .wp(tq_wp), .wd(tq_wd), .rp(tq_h), .ro({RKB{1'b0}}), .rd(tq_hd));
    wire [PCW-1:0] tq_hpc;
    wire           tq_hrvc;
    wire [PDW-1:0] tr_pdet;
@@ -4290,7 +4291,7 @@ module smolrv64_core
          // the entries' data: the LD stream's at the tail, the FE stream's after it, read at the head
          wire [63:0] lb_hd;
          smolrv64_bankq #(.W(64), .DEPTH(LBN), .NW(2), .NR(1), .NB(2)) u_lbd
-           (.clk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
+           (.clk(clk), .wclk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
             .wd({wb_fe, wb_ld}), .rp(hh), .ro(1'b0), .rd(lb_hd));
          assign lp[glp] = lb_any[glp] ? {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]}
                         :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
