@@ -108,6 +108,24 @@ restart, in all four lanes. The lane step is therefore not cycle-identical. Its 
 being measured as a knob: `exp/red1` (a lane's mispredict restarts the frontend one cycle late;
 the freeze still sets at once) against main, on the 77 GB5 SimPoints (`m390b-sp`, `red1-sp`).
 
+**And a C/D-lane address is a cycle late.** With no address waiting, the oldest lane delivering a
+load or store bypasses its adder straight into M's register at the `clk` edge (`by_va`, "a cycle
+sooner"). A C/D op's address is whole 3 ns after that edge, so it falls back to the arrival RAM
+(`u_la`/`u_sa`) and M a cycle later: half the loads lose a cycle of load -> use, a larger price
+than the mispredicts'. Keeping an AGU (and the branch compare) per logical lane at full rate,
+fed by its own operand mux, protects both, and leaves only the ALU proper double-pumped: about
+3K LUTs.
+
+**Where the increments stop.** Mixing a `clk2x` piece into the `clk` machine is cycle-identical only
+where the second half's result has slack before its consumer: a queue (decode, increment 0). Every
+other boundary pays the half-cycle misalignment where it crosses back into `clk`. The large saving
+-- rename's map reads and compares, the schedulers' wake fan-in, the bypass network, the PRF's read
+copies, the lanes -- needs the backend's loops on `clk2x` at once, two-wide, every latency doubled
+in cycles: the design of `PLAN-2026-10-27-333mhz.md` behind an unchanged frontend, whose latencies
+equal today's in nanoseconds by construction (one crossing, at the decoupling queue). That is a
+redesign of the core's issue-to-writeback machinery, to be decided on its own: the
+calibrations above say its hardest stages close at 3 ns out of context.
+
 **Then, in order, each a contiguous step of the 2x domain toward the back:**
 
 1. The queue's read side and the IR: two heads a half instead of four a cycle (the read ports
