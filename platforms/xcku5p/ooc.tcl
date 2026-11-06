@@ -70,16 +70,16 @@ if {$hier} {
     puts "OOC-DONE"
     return
 }
-create_clock -name clk -period $per [get_ports -quiet clk]
-# A module with a clk2x port (the frontend's decode, and every module above it) takes it at half the
-# period, edges aligned, and the decoupling queue's exception (smolrv64_shell.xdc, the same one).
-if {[llength [get_ports -quiet clk2x]]} {
-    create_clock -name clk2x -period [expr {$per / 2.0}] [get_ports clk2x]
-    set q2x [get_cells -quiet -hier -filter {(REF_NAME =~ RAMD* || REF_NAME =~ RAMS*) && NAME =~ *u_q/*}]
-    puts "OOC clk2x: [llength $q2x] queue RAMs written on clk2x"
-    if {[llength $q2x]} {
-        set_multicycle_path -setup 2 -start -from $q2x
-        set_multicycle_path -hold 1 -start -from $q2x
+# Two clocks, edges aligned (smolrv64_x2.v): a module with a clk_fe port (smolrv64_core) runs on clk
+# at half that period and its fetch side on clk_fe; one with a clk2x port (smolrv64_frontend) on clk
+# and clk2x at half its period.
+if {[llength [get_ports -quiet clk_fe]]} {
+    create_clock -name clk_fe -period $per [get_ports clk_fe]
+    create_clock -name clk -period [expr {$per / 2.0}] [get_ports clk]
+} else {
+    create_clock -name clk -period $per [get_ports -quiet clk]
+    if {[llength [get_ports -quiet clk2x]]} {
+        create_clock -name clk2x -period [expr {$per / 2.0}] [get_ports clk2x]
     }
 }
 opt_design -quiet

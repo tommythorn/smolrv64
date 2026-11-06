@@ -202,7 +202,7 @@ module smolrv64_shell #(
    // the buffer (~2.7 ns), which would leave a probe_clk -> clk2x path 0.3 ns.
    wire core_clk2x;
    BUFGCE_DIV #(
-      .BUFGCE_DIVIDE (1)
+      .BUFGCE_DIVIDE (`PROBE_CLK_DIVIDE / 2)        // twice probe_clk
    ) core_clk2x_buf (
       .I   (ui_clk),
       .CE  (1'b1),
@@ -1840,9 +1840,9 @@ module smolrv64_shell #(
    // the DMA port's snoops: ddr4_mem (ui_clk) -> probe_sync's snoop channel -> the D$ (probe_clk)
    wire        sn_m_valid, sn_m_keep, sn_m_ack, sn_m_rel, sn_p_valid, sn_p_keep, sn_p_ack, sn_p_rel;
    wire [25:0] sn_m_line, sn_p_line;
-   // The core's clk2x is ui_clk's rate, twice probe_clk only at the divide of 2.
-   initial if (`PROBE_CLK_DIVIDE != 2)
-      $fatal(1, "smolrv64_shell: the core's clk2x is ui_clk's rate, twice probe_clk only at PROBE_CLK_DIVIDE 2 (not %0d)", `PROBE_CLK_DIVIDE);
+   // The core's clk2x is ui_clk / (PROBE_CLK_DIVIDE / 2): twice probe_clk at an even divide only.
+   initial if (`PROBE_CLK_DIVIDE % 2 != 0)
+      $fatal(1, "smolrv64_shell: the core's clk2x is twice probe_clk only at an even PROBE_CLK_DIVIDE (not %0d)", `PROBE_CLK_DIVIDE);
    rv_soc_top #(.RESET_PC(64'h7000_0000)) probe_core (
       .clk(probe_clk), .clk2x(core_clk2x), .reset(probe_reset), .fbdiag_reset_req(fbdiag_reset_req),
       .retire(core_retire), .dmem_wen(), .dmem_waddr(), .dmem_wdata(), .dmem_wmask(),
