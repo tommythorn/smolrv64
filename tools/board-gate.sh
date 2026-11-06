@@ -113,12 +113,13 @@ stress() {
 # The design's own invariants, latched in hardware and read back from Linux once the stress is
 # over. A nonzero vector is a FAIL whatever the console says: a run can look clean and still
 # have broken a rule the core relies on -- and this is the only gate that sees a violation
-# whose consequence would have surfaced hours later. A bitstream without the log is reported
-# as such, not as clean.
+# whose consequence would have surfaced hours later. Only a read that says clean passes: a log
+# that could not be read (a root without /var/tmp/errlog, no ssh) or a bitstream without one
+# is a gate that saw nothing.
 errlog() {
    local out; out=$("$REPO/tools/errlog-read.sh" "$ip" 2>&1); echo "$out"
-   case "$out" in "errlog: FAULT"*) echo "BOARD: FAIL (integrity log)"; return 1;; esac
-   return 0
+   case "$out" in "errlog: clean"*) return 0;; esac
+   echo "BOARD: FAIL (integrity log)"; return 1
 }
 # ---- the memory latency (tools/board/membench), a record and never a verdict --------------------
 # No simulation sees the board's DRAM path (the DDR port's clock crossings, the MIG), so the gate
