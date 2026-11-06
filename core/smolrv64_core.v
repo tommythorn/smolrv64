@@ -407,7 +407,17 @@ module smolrv64_core
    smolrv64_x2f2s #(.W(1)) u_xptw (.clk2x(clk), .reset(reset), .h2(h2), .v(ptw_rvalid), .d(1'b0),
                                    .sv(ptw_rvalid_fe), .sd(), .busy());
    assign      ptw_read = immu_ptw_read & ~h2;
-   wire [63:0] satp_fetch = (mmu_priv  == 2'd3) ? 64'd0 : mmu_satp;
+   // THE FETCH SIDE'S REGIME: the CSRs the iMMU reads, as clk_fe sees them -- clk flops that change
+   // only at clk_fe edges, so the iMMU, the regime (ft) and the TLB flush (u_xfl, from the same edge's
+   // CSR write) move together: a trap into M-mode at a mid-cycle clk edge cannot show the iMMU the bare
+   // regime while the fetch side still serves the old one's window without the freeze
+   reg  [1:0]  priv_fe = 2'd3;
+   reg         sum_fe = 1'b0, mxr_fe = 1'b0;
+   reg  [63:0] satp_fe = 64'd0;
+   always @(posedge clk) if (h2) begin
+      priv_fe <= mmu_priv;  sum_fe <= mmu_sum;  mxr_fe <= mmu_mxr;  satp_fe <= mmu_satp;
+   end
+   wire [63:0] satp_fetch = (priv_fe == 2'd3) ? 64'd0 : satp_fe;
    wire [63:0] satp_data  = (mmu_dpriv == 2'd3) ? 64'd0 : mmu_satp;
    // M's access is untranslated (M-mode, or satp Bare): the queues keep it beside the page for
    // forwarding, which needs the regime as well as the VA to name the same memory. A register: the
@@ -421,7 +431,7 @@ module smolrv64_core
    mmu #(.AW(PABITS), .DRAM_TOP(DRAM_TOP), .TLBN(64), .TLBI(6), .L2N(512), .L2I(9)) u_immu
      (.clk(clk_fe), .reset(reset),
       .req_valid(1'b1), .req_vaddr(pc64(imem_va)), .req_access(2'd0),
-      .priv(mmu_priv), .sum(mmu_sum), .mxr(mmu_mxr), .satp(satp_fetch), .flush(mmu_flush_fe),
+      .priv(priv_fe), .sum(sum_fe), .mxr(mxr_fe), .satp(satp_fetch), .flush(mmu_flush_fe),
       .ptw_addr(ptw_addr), .ptw_read(immu_ptw_read),
       .ptw_rdata(ptw_rdata), .ptw_rvalid(ptw_rvalid_fe),
       .walking(), .t_ready(immu_ready), .t_paddr(immu_pa), .t_fault(immu_fault),
@@ -440,18 +450,9 @@ module smolrv64_core
    // between M-mode's bare translation and a translating satp (ft: the iMMU translates, satp's MODE
    // Sv39 outside M, its own test). It empties the fetch ring and advances the I$ epoch. A privilege
    // change alone does not: the iMMU checks permissions on every fetch. mstatus.SUM/MXR gate data
-   // accesses, not fetch. ft is a register beside the front end, loaded from csr_file's next values
-   // (o_ifx_d), so the CSR file's registers are no part of the fetch freeze's cone.
-   wire csr_ifx_d;
-   reg  ft;
-   initial ft = 1'b0;
-   // ft is the fetch side's (clk_fe): it agrees with the CSRs from each clk_fe edge to the next clk
-   // edge (the first half), where the CSRs may move without it; checked there
-   always @(posedge clk_fe) ft <= csr_ifx_d;
-   always @(posedge clk)
-      if (!reset && !h2 && (ft != ((mmu_priv != 2'd3) & (mmu_satp[63:60] == 4'd8))))
-         $fatal(1, "smolrv64_core: the registered fetch regime %b is not priv %0d / satp MODE %0d's",
-                ft, mmu_priv, mmu_satp[63:60]);
+   // accesses, not fetch. ft is the regime of the fetch side's own copies of the CSRs (priv_fe,
+   // satp_fe: flops), so the CSR file's registers are no part of the fetch freeze's cone.
+   wire ft = (priv_fe != 2'd3) & (satp_fe[63:60] == 4'd8);
    reg  ft_q;
    initial ft_q = 1'b0;
    always @(posedge clk_fe) ft_q <= ft;
@@ -3588,7 +3589,7 @@ module smolrv64_core
       .raddr(sy_addr), .rdata(csr_rdata),
       .redir_target(csr_redir_tgt), .redir_valid(csr_redir_v),
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
-      .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(csr_ifx_d), .o_dpriv(mmu_dpriv),
+      .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(), .o_dpriv(mmu_dpriv),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
