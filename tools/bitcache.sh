@@ -135,6 +135,8 @@ put)
       echo "cid:     $(cat "$st/cid" 2>/dev/null || sed -n 's/^cid: *//p' "$prev/meta.txt" 2>/dev/null | grep . || echo ?)"
       echo "wns:     ${wns:-?}"
       echo "whs:     ${whs:-?}"
+      # the monitor the boot BRAM holds: binline.py of workloads/monitor/<its MONITOR> hashes the same
+      echo "monitor: $(sha1sum < "$(sed -n 's/^SOC_BOOT_HEX="\(.*\)"$/\1/p' "$d/defines.txt")" 2>/dev/null | cut -c1-12)"
       echo "met:     $(awk -v w="${wns:-x}" -v h="${whs:-x}" 'BEGIN{print (w ~ /^-?[0-9.]+$/ && w >= 0 && h ~ /^-?[0-9.]+$/ && h >= 0) ? "yes" : "NO"}')"
     } > "$d/meta.txt"
     rm -rf "$st"

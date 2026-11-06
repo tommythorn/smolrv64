@@ -208,7 +208,8 @@ if {1} {
     set monitor_name monitor.bin
     if {[info exists ::env(MONITOR)] && $::env(MONITOR) ne ""} { set monitor_name $::env(MONITOR) }
     set monitor_bin [file join $repo_root workloads monitor $monitor_name]
-    set boot_hex    [file join $src_dir mem.linehex]
+    # in the board's own directory: two boards built from one tree each read their own monitor
+    set boot_hex    [file join [pwd] mem.linehex]
     if {![file exists $monitor_bin]} {
         error "Monitor binary missing: $monitor_bin\nRun 'make -C workloads/monitor' first."
     }

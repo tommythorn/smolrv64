@@ -65,7 +65,9 @@ workloads/ubuntu/*.img
 workloads/ubuntu/*.img.zst
 gate-results/
 
-# The monitor image build.tcl bakes into the boot BRAM, regenerated from workloads/monitor/monitor.bin.
+# The monitor image a board's build bakes into the boot BRAM (build.tcl, its Makefile's MONITOR),
+# and the one tools/netlist-boot.sh and tools/ooc-netlist.tcl read.
+platforms/*/mem.linehex
 src/mem.linehex
 workloads/brbench/brbench.bin
 workloads/brbench/brbench.elf
