@@ -68,6 +68,9 @@ Measured out of context (`smolrv64_frontend`, 6.000 ns with `clk2x` at 3.000 ns)
 | CLB LUTs | 17,262 | 15,939 (-1,323, -7.7%) |
 | registers | 2,472 | 3,158 (+686: the decoders' stage registers) |
 
+Cycle-identical: the 300 M Linux lockstep retires 379,230,245, main's count, with all 294
+per-million checkpoints (cycle, retires, pc) equal to main's.
+
 **The IR's read side does not follow cheaply.** Measured on increment 0's routed frontend: the
 read pointer reaches the IR's records in 3 levels but 4.4 ns of route (`q_rp` fans out to every
 bank's read address, 1,076 endpoints), so a first half could not deliver its records by 3 ns.
