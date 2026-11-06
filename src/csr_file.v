@@ -178,12 +178,19 @@ module csr_file
    (* dont_touch = "true" *) reg [31:0] mimpid_q = `SMOLRV64_GIT_COMMIT;
    always @(posedge clk) mimpid_q <= mimpid_q;
 
-   // Zihpm: HPMN programmable counters mhpmcounter3 .. mhpmcounter(2+HPMN) (matches the DTB's
-   // event->counter map, counters 3..15). Each counterN adds, per cycle, its mhpmeventN-selected
-   // event's increment: 1 for a bit that is high, or a count (retirements, occupancies, dispatches);
-   // an unknown event code adds 0.
-   localparam integer HPMN = 13;                                     // counters 3..15
-   localparam [63:0]  HPM_INHIBIT_MASK = (((64'h1 << (HPMN+3)) - 1) & ~64'h2); // 0,2,3..15 (not TIME)
+   // Zihpm: HPMN counters mhpmcounter3 .. mhpmcounter31, matching the DTB's event->counter map.
+   // The HPMG GENERAL counters (3..15) each count the event their mhpmeventN selects: 1 for a bit
+   // that is high, or a count (retirements, occupancies, dispatches); an unknown code adds 0. The
+   // HPMF FIXED counters (16..31) each count one top-down cause, counter 16+k the cycles with
+   // td_k == HPM_TDK[k]: every cause that can occur outside dispatching -- bad speculation's 3-4,
+   // the front-end's 5-8, the back-end's 10 and 12-20 (9, 11 and 21 cannot occur, asserted) -- so
+   // a session holds all of td_k with only the dispatch widths on general counters. Such a counter
+   // has no select, and counts only while its mhpmeventN holds its cause's code 0x05nn (WARL: the
+   // code field keeps that code or 0).
+   localparam integer HPMG = 13, HPMF = 16, HPMN = HPMG + HPMF;
+   localparam [79:0]  HPM_TDK = {5'd20, 5'd19, 5'd18, 5'd17, 5'd16, 5'd15, 5'd14, 5'd13,
+                                 5'd12, 5'd10, 5'd8,  5'd7,  5'd6,  5'd5,  5'd4,  5'd3};   // [5k +: 5]
+   localparam [63:0]  HPM_INHIBIT_MASK = (((64'h1 << (HPMN+3)) - 1) & ~64'h2); // 0,2,3..31 (not TIME)
    // THE event map. docs/smolrv64-perf-events.json is GENERATED from this block by
    // tools/gen-perf-events.py -- do not edit the JSON by hand, and keep one event per line
    // with a trailing // description, because that is what the generator parses.
@@ -319,7 +326,7 @@ module csr_file
       else if (sel <= 7'd45)     hpm_val = {5'd0, hpm_ev[sel[5:0] - 6'd2]};
       else                       hpm_val = 6'd0;
    endfunction
-   reg [6:0] hpm_esel [0:HPMN-1];
+   reg [6:0] hpm_esel [0:HPMG-1];
    function [5:0] hpm_inc;
       input [15:0] ev;
       case (ev)
@@ -379,17 +386,21 @@ module csr_file
    endfunction
    // The registered select is asserted equal to the code form every cycle (rule I3: a shadow
    // proves the cut before the oracle is deleted).
-   always @(posedge clk) if (!reset) for (i=0; i<HPMN; i=i+1)
+   always @(posedge clk) if (!reset) for (i=0; i<HPMG; i=i+1)
       if (!hpm_wev_q[i] && (hpm_val(hpm_esel[i]) != hpm_inc(mhpmevent[i][15:0])))
          $fatal(1, "csr_file: hpm counter %0d: registered select %0d gives %0d, the code form %0d", i, hpm_esel[i], hpm_val(hpm_esel[i]), hpm_inc(mhpmevent[i][15:0]));
    reg [63:0] mcountinhibit;
    reg [63:0] mhpmevent  [0:HPMN-1];
-   reg [63:0] mhpmcounter[0:HPMN-1];
    // Sscofpmf, in the top bits of mhpmeventN: OF(63) is set when counter N wraps and raises
    // LCOFIP on its 0 -> 1 edge only, so a set OF silences the counter's interrupt until software
    // clears it; MINH/SINH/UINH (62:60) stop the counter in that privilege. VSINH/VUINH (59:58)
    // are stored and never consulted (no H).
    localparam OF_B = 63, MINH_B = 62, SINH_B = 61, UINH_B = 60;
+   localparam [63:0] HPM_EV_MASK = {6'h3f, 42'd0, 16'hffff};   // WARL: OF, the INH bits, the event code
+   function [15:0] hpm_fix_code;    // a fixed counter's (index HPMG..) one event: its td_k cause
+      input integer n;
+      begin hpm_fix_code = {11'h028, HPM_TDK[5*(n-HPMG) +: 5]}; end
+   endfunction
    wire [HPMN-1:0] hpm_of;            // mhpmeventN.OF, N = 3.. (scountovf's bits)
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
@@ -495,10 +506,10 @@ module csr_file
                         : is_mc ? (raddr - MHPMCOUNTER3) : (raddr - HPMCOUNTER3);
    wire [4:0]  hpm_ri   = hpm_ri12[4:0];   // 0..28; the 12-bit difference is sliced, not truncated
    wire        hpm_sel   = is_ev | is_mc | is_hc;
-   wire [3:0]  hpm_rix   = (hpm_ri < HPMN) ? hpm_ri[3:0] : 4'd0;       // clamp to a valid entry
-   wire [63:0] hpm_rdata = (hpm_ri >= HPMN) ? 64'd0                    // counters 16..31 hardwired 0
-                         : is_ev            ? mhpmevent  [hpm_rix]
-                                            : mhpmcounter[hpm_rix];
+   wire [4:0]  hpm_rix   = (hpm_ri < HPMN) ? hpm_ri : 5'd0;            // clamp to a valid entry
+   wire [63:0] hpm_ctr_r;                                               // the counter's LUTRAM value (below)
+   wire [63:0] hpm_rdata = (hpm_ri >= HPMN) ? 64'd0                    // counters past HPMN hardwired 0
+                         : is_ev            ? mhpmevent[hpm_rix] : hpm_ctr_r;
 
    // ---- combinational read ----
    always @* begin
@@ -787,13 +798,12 @@ module csr_file
    // its event's *INH bit for the current privilege stops it; it wraps when the add carries out.
    wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal;
    wire [HPMN-1:0] hpm_wev, hpm_wct, hpm_run, hpm_wrap;
-   wire [63:0]     hpm_nxt [0:HPMN-1];
-   // A COUNTER WRITE LOADS A CYCLE LATE. A counter's next value is its adder's sum, and a CSR
-   // write's value comes through the read mux and the set/clear (newv): loading it the same cycle
-   // put that cone in front of every counter's carry chain. The write is registered here (cw_*)
-   // and loads the next cycle, over that cycle's sum; the sum of the write's own cycle is
-   // overwritten too. minstret's writer retires into the count a cycle after the write, so the
-   // load drops it, as a write must.
+   // A COUNTER WRITE LOADS A CYCLE LATE. A CSR write's value comes through the read mux and the
+   // set/clear (newv); loading it the same cycle would put that cone in front of the counters'
+   // adders. The write is registered here (cw_*) and loads the next cycle: mcycle and minstret
+   // over that cycle's sum (the sum of the write's own cycle is overwritten too), mhpmcounterN
+   // into the LUTRAM with that cycle's count left in its accumulator (below). minstret's writer
+   // retires into the count a cycle after the write, so the load drops it, as a write must.
    reg             cw_mcycle, cw_minstret;
    reg  [HPMN-1:0] cw_hpm;
    reg  [63:0]     cw_d;
@@ -812,21 +822,77 @@ module csr_file
    wire [6:0]      hpm_sel_w = hpm_sel_of(cw_d[15:0]);   // checked against the stored event below
    always @(posedge clk) begin
       hpm_wev_q <= reset ? {HPMN{1'b0}} : hpm_wev;
-      for (hi = 0; hi < HPMN; hi = hi + 1)
+      for (hi = 0; hi < HPMG; hi = hi + 1)
          if (reset) hpm_esel[hi] <= HSEL_NONE;
          else if (hpm_wev_q[hi]) hpm_esel[hi] <= hpm_sel_w;
+   end
+   // THE COUNTERS ARE SWEPT. A counter's value lives in one LUTRAM; what it counts goes first into
+   // its accumulator, and a sweep folds one accumulator a cycle into its value through one 64-bit
+   // adder, so every counter is folded at least once in HPMN cycles. A READ IS EXACT: it returns the
+   // value plus the counter's accumulator (one more adder, on the read port), so software that reads
+   // a counter and writes it back -- a sampling handler's stop, read, preload -- loses only the
+   // cycles between its read and its write, as with a live counter. A wrap is the fold's carry:
+   // OF and LCOFIP follow it at most a sweep late, which is skid, not lost counts. A counter write
+   // (cw_hpm, a cycle late as before) takes the write port that cycle, the sweep holds, and the
+   // written counter's accumulator restarts empty; a wrap of the value it replaces sets OF.
+   // After reset the sweep writes zeros once round.
+   localparam integer HSW = 5;                       // sweep index bits
+   localparam integer HAW = 12;                      // a general accumulator: 63 a cycle for 65 cycles
+   localparam integer HAF = 7;                       // a fixed one: 1 a cycle for 127 cycles
+   localparam integer HLI = HPMN - 1;
+   localparam [HSW-1:0] HLAST = HLI[HSW-1:0];
+   (* ram_style = "distributed" *) reg [63:0] hpm_ctr [0:(1<<HSW)-1];
+   wire [HAW-1:0] hpm_acc [0:HPMN-1];                // every accumulator, zero-extended
+   reg  [HSW-1:0] hpm_sp;                            // the counter the sweep folds this cycle
+   reg            hpm_clr;                           // the zeroing round after reset
+   reg  [HSW-1:0] cw_ix;
+   integer        ci;
+   always @* begin
+      cw_ix = {HSW{1'b0}};
+      for (ci = 0; ci < HPMN; ci = ci + 1) if (cw_hpm[ci]) cw_ix = ci[HSW-1:0];
+   end
+   // The adder sums the counter the write port writes: the sweep's, or a written counter's, so a
+   // wrap still in its accumulator sets OF before the written value replaces it.
+   wire           cw_any  = |cw_hpm;
+   wire [HSW-1:0] ctr_wa  = cw_any ? cw_ix : hpm_sp;
+   wire [64:0]    ctr_sum = {1'b0, hpm_ctr[ctr_wa]} + {{(65-HAW){1'b0}}, hpm_acc[ctr_wa]};
+   wire [63:0]    ctr_wd  = cw_any ? cw_d : hpm_clr ? 64'd0 : ctr_sum[63:0];
+   wire           wrap_v  = ctr_sum[64] & ~hpm_clr;  // the summed counter wrapped
+   assign hpm_ctr_r = hpm_ctr[hpm_rix] + {{(64-HAW){1'b0}}, hpm_acc[hpm_rix]};
+   always @(posedge clk) hpm_ctr[ctr_wa] <= ctr_wd;  // the one write
+   always @(posedge clk) begin
+      if (reset) begin hpm_sp <= {HSW{1'b0}};  hpm_clr <= 1'b1; end
+      else if (!cw_any) begin
+         hpm_sp <= (hpm_sp == HLAST) ? {HSW{1'b0}} : hpm_sp + 1'b1;
+         if (hpm_sp == HLAST) hpm_clr <= 1'b0;
+      end
    end
    genvar g;
    generate for (g = 0; g < HPMN; g = g + 1) begin : g_hpm
       localparam [11:0] EVA = MHPMEVENT3 + g, CTA = MHPMCOUNTER3 + g;
-      wire [64:0] sum = {1'b0, mhpmcounter[g]} + {59'd0, hpm_val(hpm_esel[g])};
+      localparam integer W = (g < HPMG) ? HAW : HAF;
       wire        inh = (priv == M) ? mhpmevent[g][MINH_B]
                       : (priv == S) ? mhpmevent[g][SINH_B] : mhpmevent[g][UINH_B];
+      wire        take = cw_hpm[g] | (~cw_any & (hpm_sp == g));   // the accumulator empties
+      wire [5:0]  inc;
+      reg  [W-1:0] acc;
+      wire [W:0]  nx = {1'b0, take ? {W{1'b0}} : acc} + {{(W-5){1'b0}}, inc};
+      always @(posedge clk) begin
+         acc <= reset ? {W{1'b0}} : nx[W-1:0];
+         if (!reset && nx[W]) $fatal(1, "csr_file: hpm counter %0d's accumulator overflowed", g + 3);
+      end
+      assign hpm_acc[g] = {{(HAW-W){1'b0}}, acc};
+      if (g < HPMG) begin : g_gen
+         assign inc        = hpm_run[g] ? hpm_val(hpm_esel[g]) : 6'd0;
+         assign hpm_run[g] = ~mcountinhibit[g+3] & ~inh & ~hpm_wev_q[g];
+      end else begin : g_fix
+         localparam [4:0]   TK  = HPM_TDK[5*(g-HPMG) +: 5];
+         assign inc        = {5'd0, hpm_run[g] & (hpm_tdk == TK)};
+         assign hpm_run[g] = ~mcountinhibit[g+3] & ~inh & (mhpmevent[g][15:0] == {11'h028, TK});
+      end
       assign hpm_wev[g]  = hpm_csr_we & (upd_addr == EVA);
       assign hpm_wct[g]  = hpm_csr_we & (upd_addr == CTA);
-      assign hpm_run[g]  = ~mcountinhibit[g+3] & ~inh & ~hpm_wev_q[g];
-      assign hpm_wrap[g] = hpm_run[g] & sum[64] & ~hpm_wct[g] & ~cw_hpm[g];
-      assign hpm_nxt[g]  = sum[63:0];
+      assign hpm_wrap[g] = wrap_v & (ctr_wa == g);
       assign hpm_of[g]   = mhpmevent[g][OF_B];
    end endgenerate
    // A wrap with OF clear sets OF and LCOFIP; an mhpmeventN write that cycle wins.
@@ -966,26 +1032,22 @@ module csr_file
          mcycle   <= cw_mcycle   ? cw_d : mcycle   + (mcountinhibit[0] ? 64'd0 : 64'd1);
          minstret <= cw_minstret ? cw_d : minstret + (mcountinhibit[2] ? 64'd0 : {58'd0, retire_cnt});
       end
-      // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
-      // mhpmeventN-selected event's count this cycle while it runs (hpm_run: mcountinhibit[N]
-      // and the event's *INH bit for the current privilege); an M-mode write loads the value a
-      // cycle late (cw_hpm). A wrap sets OF (Sscofpmf). mhpmeventN + mcountinhibit
-      // are plain WARL; an unimplemented event code contributes 0 (the counter holds).
+      // Zihpm events (the counters themselves are swept, above). A wrap sets OF (Sscofpmf);
+      // an mhpmeventN write that cycle wins. mhpmeventN and mcountinhibit are WARL: a general
+      // counter's event keeps OF, the INH bits and the code, a fixed one's code only its cause's
+      // or 0; an unimplemented code contributes 0 (the counter holds).
       if (reset) begin
          mcountinhibit <= 64'd0;
-         for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
+         for (i=0; i<HPMN; i=i+1) mhpmevent[i] <= 64'd0;
       end else begin
          if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= newv & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (hpm_wev[i])
-               mhpmevent[i] <= newv;
+               mhpmevent[i] <= (i < HPMG) ? (newv & HPM_EV_MASK)
+                             : {newv[63:58], 42'd0, (newv[15:0] == hpm_fix_code(i)) ? newv[15:0] : 16'd0};
             else if (hpm_wrap[i])
                mhpmevent[i][OF_B] <= 1'b1;
-            if (cw_hpm[i])
-               mhpmcounter[i] <= cw_d;
-            else if (hpm_run[i])
-               mhpmcounter[i] <= hpm_nxt[i];
          end
          // After the mip CSR write above: an overflow in the cycle software clears LCOFIP stays.
          if (hpm_lcof) mip[LCOFIP_B] <= 1'b1;

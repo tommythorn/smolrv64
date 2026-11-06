@@ -19,7 +19,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | ISA | RV64IMAFDC (`misa` = A, C, D, F, I, M, S, U; MXL=2) |
 | Privilege | M / S / U |
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
-| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (13 counters), Sscofpmf, Sstc, Smstateen, Ssvnapot |
+| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **four-wide** (`SMOLRV64_IW=4`, set once in `core/smolrv64_width.vh` for the RTL, the build and the benches; `SMOLRV64_IW=3` and `2` build the three- and two-wide machines); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops, multiplies, divides, branches and jumps issue in their slot's lane (a scheduler, an ALU and a multiplier per lane, four of each; a divide's operands go to the one MD stage) and reorder freely; a system op issues in lane A and fires from the SYSQ at the ROB head; FP ops reorder on the FP port (§7); loads, stores, AMOs, LR/SC and CBOs generate their address in their slot's lane and reach M through their LQ/SQ entry or the head-op register (§8) |
@@ -2087,10 +2087,30 @@ Not present in synthesis (`ifndef SYNTHESIS`), listed so nobody counts them as a
 
 ## 11. Counters and observability
 
-`Zihpm` with **13** programmable counters (`mhpmcounter3..15`), driven by a registered 44-bit
-`hpm_ev` bus, four per-cycle counts (the queue occupancies, the fast loads in flight and
-`DPATCH`) and the registered top-down cause `td_k`. A 13-event `perf stat` fills the counters;
-more is multiplexed, and its counts are estimates.
+`Zihpm` with **29** counters (`mhpmcounter3..31`). The **13 general** counters (3..15) each count
+the event their `mhpmeventN` selects from a registered 44-bit `hpm_ev` bus, four per-cycle counts
+(the queue occupancies, the fast loads in flight and `DPATCH`) and the registered top-down cause
+`td_k`. The **16 fixed** counters (16..31) each count one top-down cause and nothing else: counter
+16+k the cycles with `td_k` equal to the k-th of 3-8, 10, 12-20 -- every cause outside dispatching
+(9, 11 and 21 cannot occur) -- so one run counts all of `td_k` with the dispatch widths on three
+general counters. A fixed counter has no select: its `mhpmeventN` code field is WARL, keeping its
+cause's code (`0x05nn`) or 0, and it counts only while that code is written. The DTB's
+`riscv,raw-event-to-mhpmcounters` gives each cause its fixed counter only (OpenSBI takes the lowest
+free counter an event may use, so a cause the general counters could take would crowd them).
+`mhpmeventN` keeps OF, the INH bits and the code (63:58, 15:0); the other bits read 0 (WARL).
+Thirteen general events fill a `perf stat`; more is multiplexed, and its counts are estimates.
+
+**The counters are swept.** Their values live in one LUTRAM; each counter counts into an
+accumulator (12 bits general, 7 fixed), and a sweep folds one accumulator a cycle into its value
+through one 64-bit adder, every counter at least once in 29 cycles (an accumulator that would
+overflow is a `$fatal`). A read is exact: it returns the value plus the counter's accumulator.
+A wrap is the fold's carry, so OF and LCOFIP follow it by up to a sweep -- sampling skid, never a
+lost count; a counter write takes the adder that cycle, so a wrap still in the accumulator sets
+OF before the written value replaces it. Against the per-counter adders it replaced (13 counters,
+`csr_file` out of context at 6 ns): 3,909 LUTs (80 of them LUTRAM) against 4,267, 2,252 FFs
+against 3,182, 81 CARRY8 against 246, Fmax 215.5 MHz against 230.8 (the exact read's adder sits on
+the CSR read). `src/tb_hpm.v` holds all 29 to a cycle-exact model (random events and writes, every
+counter's wrap, and perf's stop/read/preload/restart sampling, which loses none).
 
 **Sscofpmf (sampling).** Each `mhpmeventN` carries OF (bit 63) and MINH/SINH/UINH (62:60);
 VSINH/VUINH (59:58) are stored and never consulted. A counter stops in a privilege whose INH bit
@@ -2102,9 +2122,10 @@ ranks last, after STI. `scountovf` (0xDA0) reads the OF bits; below M a bit read
 works (the kernel keeps frame pointers). The privilege filter compares the current privilege
 with the event bus, which runs two cycles late, so an event in the cycle of a privilege change
 may count on either side of it. A write of `mhpmeventN` selects its event from the stored
-register a cycle later, and the counter holds for that cycle; a write of a counter (`mcycle`,
-`minstret`, `mhpmcounterN`) loads a cycle late, over that cycle's increment, and a read (`csrr`)
-of one writes nothing. A read of `mhpmeventN` or
+register a cycle later, and a general counter holds for that cycle (a fixed counter has no
+select to wait for); a write of `mcycle` or `minstret` loads a cycle late, over that cycle's
+increment, and a write of `mhpmcounterN` loads a cycle late with that cycle's increment counted
+after it; a read (`csrr`) of one writes nothing. A read of `mhpmeventN` or
 `mhpmcounterN` (`csrr`) writes nothing, so it cannot swallow that cycle's increment or overflow. `core/directed/sscofpmf.S`
 checks overflow, OF's silence, the INH bits in M and S, LCOFI's priority and delegation, and
 `scountovf`'s masking and U-mode trap.
@@ -2122,8 +2143,10 @@ its leaves registered, with feedback of its own (`tdr_k`): `td_k` reads the cycl
 M and redirect signals, and its cone was the end of theirs. The copy is `td_k` delayed exactly (asserted
 every cycle), and its causes and depth events reach the counters at the same edge `td_k`'s did. A cycle whose IR group dispatches is a
 dispatching cycle whatever waits behind it (the queue head's credit is the next group's), so the
-dispatching cycles' instructions are exactly `DPATCH`. `perf-smol td CMD` prints the report: level 1, the depth under each parent, and the slots; the
-`tdbe` and `tdfe` sets add level 3, `td_k` itself.
+dispatching cycles' instructions are exactly `DPATCH`. `perf-smol top CMD` counts every cause in
+one run (the fixed counters) and prints all three levels, deriving level 1 and 2 from the causes;
+`perf-smol td CMD` prints level 1, the depth under each parent, and the slots from the `TD_*`
+events, and the `tdbe` and `tdfe` sets add level 3 on the general counters alone.
 
 | event | id | meaning |
 |---|---|---|
@@ -2195,13 +2218,15 @@ board (once, `tools/perf-smol-setup.sh` lowers `perf_event_paranoid` so no `sudo
 each run prints its report on stderr when the command ends and keeps the counts in
 `perf-smol.<set>.txt`:
 
+    perf-smol top    CMD > /dev/null    # every top-down level in one run
     perf-smol td     CMD > /dev/null    # where the cycles go
     perf-smol tdbe   CMD > /dev/null    # the back-end's causes
     perf-smol tdfe   CMD > /dev/null    # bad speculation, front-end, width
     perf-smol cpi    CMD > /dev/null    # the wait events, in depth
     perf-smol memcpi CMD > /dev/null    # the memory events, fast-load latency
 
-Each set is one run of 13 counters; never ask for more (`all`), which multiplexes. `perf stat`
+Each set is one run that fits the counters (`top`: 10 general events and the 16 fixed); never ask
+for more (`all`), which multiplexes. `perf stat`
 counts the whole command, so the answer is about the whole command: run the region of interest
 in a loop long enough to dominate start-up, or read it with a different window and say so. For
 Geekbench, `IV=1000 tools/board/gb5-run.sh <rtl>` counts each second as well (+0.12% cycles), and
