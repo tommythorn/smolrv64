@@ -203,6 +203,47 @@ after its producer, 6 ns, which is today's ALU -> ALU.
 At every step the 2x domain is contiguous and its crossing back into `clk` is one place. The
 step stops paying when the logic it moves is no longer width-proportional (arrays, the caches).
 
+## 3b. The whole stack at once (Tommy, 2026-11-06 morning)
+
+*"I think we should try the whole stack despite the IPC cost: decode through execution. It may
+be that we can recover some of the loss with some amount of redesign, but first let's see the
+savings on a full build."*
+
+Beyond decode-through-execution, only the LSU's ports (LQ, SQ: -2.9 K at IW=2) and the ROB's
+completion and commit ports (-0.6 K) are width-proportional, and both are inside the core. The
+FPU, the caches, the CSRs and the MMUs are one unit or one array each: `clk2x` buys them nothing.
+
+**The cut.** `clk`: fetch, the predictor, the fetch ring, the aligner and the bundle register
+(the fetch side of `smolrv64_frontend`), the iMMU, the I$, the memory arbiter, the L2, the
+devices. `clk2x`: decode, the queue, the IR and everything after it in `smolrv64_core`, and the
+D$ (`PLAN-2026-10-27-333mhz.md` pipelines it on the fast clock; its memory side is valid/ready
+channels, the cheapest place to cross).
+
+**The crossing rule.** A `clk2x` flop that `clk` logic reads changes only at the `clk2x` edges
+that are `clk` edges (the end of a second half, `h2`); a `clk` pulse that `clk2x` logic counts
+is counted in one half. Then:
+
+- fetch -> queue: the bundle register is `clk`'s; `q_room` is computed at the `clk` edge only, so
+  a push never changes its mind mid-cycle; the decoders already take the bundle in two halves.
+- redirect -> fetch: held until the `clk` edge, the latest redirect's payload winning; until the
+  fetch side has seen it, the queue drops the bundles fetch still pushes from the old path.
+- training: through the training queue, written on `clk2x`, read on `clk`.
+- the D$'s memory channels: a 2:1 valid/ready bridge.
+
+**M1: the area, functionally.** Today's RTL at IW=2 with the totals kept (two lanes of 20,
+128-register shards, 128 ROB rows of two), on `clk2x`, built at half speed (`clk` 83.33 MHz,
+`clk2x` 166.67 MHz) so the backend's single-cycle loops keep today's 6 ns: a full build that
+meets timing, shows the area, boots on the board and runs the lockstep. Its IPC is not the
+design's (the backend's latencies are single `clk2x` cycles).
+
+**M2: the same RTL at 166.67 / 333.33 MHz.** The timing census names the loops to redesign (the
+two-cycle scheduler, the staggered ALU, the PRF's read stage, the D$'s pipeline); then the
+redesign, and the SimPoints.
+
+Step A (the shape): IW=2, NI=20, 128-register shards (the pending table wants one shard size, so
+the FP shards are 128 too), 128 ROB rows. Two IW=4 assumptions fixed on the way (a lane index
+taken as two shard bits; the debug bus's ROB row field). riscv-tests 240/0, lint clean.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

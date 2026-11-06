@@ -463,6 +463,7 @@ module smolrv64_core
 `include "smolrv64_geom.vh"
 `include "smolrv64_shards.vh"
    localparam integer NL = IW;                     // the lanes: slot k's ALU-class ops go to lane k
+   localparam integer LNB = (NL > 1) ? $clog2(NL) : 1;   // a lane's index: an integer register's shard bits that name it
    function automatic [3:0] ones_nl(input [NL-1:0] v);   // how many of the lanes' bits are set
       integer i;
       begin ones_nl = 4'd0; for (i = 0; i < NL; i = i + 1) ones_nl = ones_nl + {3'd0, v[i]}; end
@@ -1577,7 +1578,7 @@ module smolrv64_core
             if (l_qv[f] & (ps2 == l_qprd[f])) bq2 = 1'b1;
          end
       end
-      always @(posedge clk) if (!reset & v & ((hq1 != bq1) | (hq2 != bq2) | (hq1 & (l_qprd[sh1] != ps1)) | (hq2 & (l_qprd[sh2] != ps2))))
+      always @(posedge clk) if (!reset & v & ((hq1 != bq1) | (hq2 != bq2) | (hq1 & (l_qprd[sh1[LNB-1:0]] != ps1)) | (hq2 & (l_qprd[sh2[LNB-1:0]] != ps2))))
          $fatal(1, "core: lane %0d's bypass (rs1 %b rs2 %b) is not its write registers' (%b %b) for p%0d p%0d (rob=%0d pc=%h)",
                 gl, hq1, hq2, bq1, bq2, ps1, ps2, rob, q_pc);
       wire [63:0] result, addr, target, taken_tgt;
@@ -2622,7 +2623,7 @@ module smolrv64_core
    reg         md_room;
    initial md_room = 1'b1;
    wire [RN_PBITS-1:0] md_prd_n = iss_md ? md_in_prd : md_prd;
-   always @(posedge clk) md_room <= reset | lb_fe_room_n[md_prd_n[RN_IDXB +: 2]];
+   always @(posedge clk) md_room <= reset | lb_fe_room_n[md_prd_n[RN_IDXB +: LNB]];
    assign      md_wb   = md_pend & (~md_rd_v | (~fp_wb & md_room));   // the op completes (ROB)
    wire        md_wr   = md_wb & md_rd_v;                                    // ...and writes its register
    // The divider starts a cycle after the issue, from registered operands: its start-cycle
@@ -2997,7 +2998,7 @@ module smolrv64_core
    // taken, else what it holds; an f-register's result always has room
    wire [FTAGW-1:0] icr_tag_n = fp_ret_int ? fp_res_tag : icr_take ? {1'b0, f_rd_v, f_rd, f_rob, f_prd} : icr_tag;
    wire             icr_int_n = icr_tag_n[FTAGW-2] & ~icr_tag_n[RN_PBITS-1];
-   always @(posedge clk) icr_room <= reset | ~icr_int_n | lb_fe_room_n[icr_tag_n[RN_IDXB +: 2]];
+   always @(posedge clk) icr_room <= reset | ~icr_int_n | lb_fe_room_n[icr_tag_n[RN_IDXB +: LNB]];
    wire        fi_isd = f_insn[25];                  // 0=single 1=double
    wire [2:0]  fi_f3  = f_insn[14:12];
    wire [31:0] fi_u1  = unbox_s(f_rs1_val);          // FMV.X.W is a raw bit-move: never unboxed
@@ -5059,12 +5060,13 @@ module smolrv64_core
    // [71:40] M's instruction, [39] the FPU busy, [38:0] hpm_ev[38:0] (this cycle's event and stall
    // attribution, the counters' bus; the top-down depth bits above 38 stay off this ILA).
    wire [15:0] fpu_dbg;
+   wire [ROB_IDXB+6:0] rh_pad = {7'd0, rob_head_idx};   // the head's row, seven bits of it
    assign core_dbg = {fpu_dbg, rob_empty, m_valid, m_done, m_at_head, head_block, m_needs_head,
                       irq_inject, inject_inflight, irq_taken, fe_dq_valid, d_take,
                       ic_req, ic_ack, ic_valid, ic_busy, imem_ok, immu_ready,
                       dmem_ren, dmem_idle, lq_x_devwait, redirect,
                       sq_occ6, lq_occ6,
-                      {(7-(ROB_IDXB-ROB_CB)){1'b0}}, rob_head_idx[ROB_IDXB-1:ROB_CB], m_insn, fpu_busy, hpm_ev[38:0]};
+                      rh_pad[ROB_CB +: 7], m_insn, fpu_busy, hpm_ev[38:0]};
 endmodule
 
 `undef PL_DECL

@@ -2,7 +2,7 @@
 // include it; the build (build.tcl), the runners and the bitstream cache read IW here.
 // A -DSMOLRV64_IW=<n> (or _FW, _QD) overrides one for a run or a build.
 `ifndef SMOLRV64_IW
- `define SMOLRV64_IW 4
+ `define SMOLRV64_IW 2
 `endif
 `ifndef SMOLRV64_FW
  `define SMOLRV64_FW 6                 // fetch width: instructions into the decoupling queue per cycle (IW..8)
