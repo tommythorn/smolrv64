@@ -244,6 +244,22 @@ Step A (the shape): IW=2, NI=20, 128-register shards (the pending table wants on
 the FP shards are 128 too), 128 ROB rows. Two IW=4 assumptions fixed on the way (a lane index
 taken as two shard bits; the debug bus's ROB row field). riscv-tests 240/0, lint clean.
 
+**M1, measured (2026-11-06, step A 31da50f8, the full build at 166.67 MHz, routed): the area
+answer.** Against main f5662859's shipped build:
+
+| | main (IW=4) | M1 (IW=2, totals kept) | |
+|---|---|---|---|
+| device CLB LUTs | 153,082 | 131,224 | **-21,858 (-14.3%)** |
+| `core` | 115,016 | 93,061 | **-21,955 (-19.1%)** |
+| LUT as memory | 16,513 | 13,931 | -2,582 |
+| DSPs | 76 | 44 | -32 (two lanes' multipliers) |
+| CLBs used | 93.3% | 84.9% | |
+
+By instance (a routed design moves logic across boundaries, so only the sum is exact): the
+frontend -6.4 K, the PRF -4.1 K, rename -3.1 K, the core's own logic -2.8 K, the LSU -2.5 K, the
+ROB -1.5 K; the FPU +0.7 K. It missed timing by 0.012 ns (TNS -0.051) at 6 ns, irrelevant here:
+no bitstream was wanted from it. The synthesis estimate (-21.0 K) was right.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
