@@ -121,8 +121,10 @@ endmodule
 // rv_mem_line_client -- a single-outstanding line requester (rv_cache's and rv_icache's `l2_*`
 // port) as a memory-port client. The requester pulses l2_req with we/addr/wdata held until its
 // ack, as the old line arbiter required; this presents that request until the arbiter takes it,
-// gathers the read beats into the line, and acks a read in the cycle of its last beat (that beat
-// merged into l2_rdata as it arrives) or a write in the cycle of its write done. One transaction
+// gathers the read beats into the line, and acks a read in the cycle of its last beat or a write
+// in the cycle of its write done. l2_rdata is the line register, whole from the edge after the
+// read's ack: a clk2x register that changes only at clk edges (the beats arrive at them), so the
+// I$ (clk's) reads it a clk cycle after the ack with clk's period (x2_cedge). One transaction
 // at a time, asserted: a request while one is owed is a requester that dropped its hold.
 module rv_mem_line_client #(
    parameter integer SW = 4,
@@ -154,7 +156,7 @@ module rv_mem_line_client #(
    reg pend;      // the request waits for the arbiter
    reg owed;      // taken; its response is outstanding
    reg we_q;
-   reg [511:0] line;   // the beats so far
+   (* x2_cedge = "yes" *) reg [511:0] line;   // the beats so far
    assign cq_valid = pend;
    assign cq_slot  = {SW{1'b0}};
    assign cq_we    = l2_we;         // held by the requester until its ack
@@ -162,10 +164,7 @@ module rv_mem_line_client #(
    assign cq_wmask = {64{1'b1}};
    assign cq_wdata = l2_wdata;
    assign l2_ack = (cr_valid & cr_last) | cw_valid;
-   genvar gq;
-   generate for (gq = 0; gq < 4; gq = gq + 1) begin : g_q
-      assign l2_rdata[gq*128 +: 128] = (cr_valid && cr_beat == gq) ? cr_data : line[gq*128 +: 128];
-   end endgenerate
+   assign l2_rdata = line;
    always @(posedge clk) begin
       if (reset) begin pend <= 1'b0; owed <= 1'b0; end
       else begin

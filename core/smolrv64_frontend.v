@@ -319,7 +319,7 @@ module smolrv64_frontend
    reg  [QAW:0]   q_cnt;
    // room for a full bundle (<=FW) as the clk edge left the queue: a clk2x flop that changes only at
    // clk edges, so the bundle register (clk's) decides a push once for its whole cycle
-   reg            q_room_s = 1'b1;
+   (* x2_cedge = "yes" *) reg q_room_s = 1'b1;
    wire           q_room  = q_room_s;
    reg  [QW-1:0]  pb_in [0:QNB-1];                       // slots FW.. are never loaded: constant
    // ...and what is the bundle's, once: the predicted target (the last slot's to use), and a fetch

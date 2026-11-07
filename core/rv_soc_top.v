@@ -242,7 +242,18 @@ module rv_soc_top #(
    wire [63:0] dv_raddr;
    smolrv64_x2f2s #(.W(64)) u_xdr (.clk2x(clk2x), .reset(x2_reset), .h2(h2), .v(dmem_ren & f_is_dev_r), .d(dmem_raddr),
                                    .sv(dv_ren), .sd(dv_raddr), .busy());
-   wire [63:0] dev_addr = dmem_wfsm ? dmem_wabase : dv_raddr;
+   // THE DEVICES' WRITE PORT IS clk2x REGISTERS THAT CHANGE ONLY AT clk EDGES (x2_cedge: the
+   // crossing's paths have clk's period): the LSU's write as it stood at the edge, dropped at the
+   // edge after its ack (registered in the ack's first half, dev_wack_f/vio_wack_f), so a device
+   // that wrote at the edge before sees it under its own ~dev_wack and never writes twice.
+   (* x2_cedge = "yes" *) reg        dw_v = 1'b0;
+   (* x2_cedge = "yes" *) reg [63:0] dw_a, dw_ab, dw_d;
+   (* x2_cedge = "yes" *) reg [7:0]  dw_m;
+   always @(posedge clk2x) if (h2) begin
+      dw_v <= ~x2_reset & dmem_wfsm & ~(dev_wack_f | vio_wack_f);
+      dw_a <= dmem_waddr;  dw_ab <= dmem_wabase;  dw_d <= dmem_wdata;  dw_m <= dmem_wmask;
+   end
+   wire [63:0] dev_addr = dw_v ? dw_ab : dv_raddr;
    always @(posedge clk2x) if (!x2_reset & dmem_ren & dmem_wfsm)
       $fatal(1, "rv_soc_top: dmem_ren & the state machine's write asserted together -- dev_addr select is ambiguous");
    // ...and a device write is never the straddling second beat, which is what makes decoding
@@ -265,12 +276,18 @@ module rv_soc_top #(
             | ((a & ~64'hff) == BUILDID_BASE) | ((a & ~64'hff) == FBDIAG_BASE);
    endfunction
    wire f_is_dev_r = dev_r(dmem_raddr);
-   wire is_clint_w = (dmem_wabase & ~64'hffff)     == CLINT_BASE;
-   wire is_uart_w  = (dmem_wabase & ~64'hf)        == UART_BASE;
-   wire is_plic_w  = (dmem_wabase & ~64'h3ff_ffff) == PLIC_BASE;
-   wire is_hpm_w   = (dmem_wabase & ~64'hff)        == HPM_BASE;
-   wire is_virtio_w = (dmem_wabase & ~64'h7fff)    == VIRTIO_BASE && dmem_wabase[14:13] != 2'b00;
-   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
+   // (the device decode of the LSU's live write is clk2x's, the D$'s port's; the devices' is dw_ab's)
+   function automatic dev_w(input [63:0] a);
+      dev_w = ((a & ~64'hffff) == CLINT_BASE) | ((a & ~64'hf) == UART_BASE) | ((a & ~64'h3ff_ffff) == PLIC_BASE)
+            | ((a & ~64'hff) == HPM_BASE) | (((a & ~64'h7fff) == VIRTIO_BASE) && (a[14:13] != 2'b00));
+   endfunction
+   wire is_dev_w   = dev_w(dmem_wabase);
+   wire is_clint_w = (dw_ab & ~64'hffff)     == CLINT_BASE;
+   wire is_uart_w  = (dw_ab & ~64'hf)        == UART_BASE;
+   wire is_plic_w  = (dw_ab & ~64'h3ff_ffff) == PLIC_BASE;
+   wire is_hpm_w   = (dw_ab & ~64'hff)        == HPM_BASE;
+   wire is_virtio_w = (dw_ab & ~64'h7fff)    == VIRTIO_BASE && dw_ab[14:13] != 2'b00;
+   wire is_dw_dev  = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
    // virtio-mmio register access: 32-bit. The probe LSU bus is byte-addressed and
    // RIGHT-ALIGNED -- it presents/consumes "8 bytes @ mem_*addr" with the addressed
    // bytes in the LOW lane and the byte mask low-aligned (store drain: sb_data=raw,
@@ -289,7 +306,7 @@ module rv_soc_top #(
    // serialises device ops), so the single virtio_rvalid completes whichever of read/write is pending.
    reg  vio_pending, vio_wpending;  initial begin vio_pending = 1'b0; vio_wpending = 1'b0; end
    wire vio_req  = dv_ren & is_virtio_r & ~vio_pending & ~vio_wpending;
-   wire vio_wreq = dmem_wfsm & is_virtio_w & ~vio_wpending & ~vio_pending;
+   wire vio_wreq = dw_v & is_virtio_w & ~vio_wpending & ~vio_pending;
    always @(posedge clk)
       if (reset) begin vio_pending <= 1'b0; vio_wpending <= 1'b0; end
       else begin
@@ -298,15 +315,15 @@ module rv_soc_top #(
       end
    assign virtio_read  = vio_req;
    assign virtio_write = vio_wreq;
-   assign virtio_wdata = dmem_wdata[31:0];   // right-aligned: 32b store data is always low lane
-   assign virtio_be    = dmem_wmask[3:0];    // and its byte mask is low-aligned (see note above)
+   assign virtio_wdata = dw_d[31:0];   // right-aligned: 32b store data is always low lane
+   assign virtio_be    = dw_m[3:0];    // and its byte mask is low-aligned (see note above)
    // clint/uart/plic: combinational rdata valid the cycle after the ren pulse (fixed 1-cycle
    // dev_rvalid). virtio is EXCLUDED here -- it completes via the virtio_rvalid req/rsp above.
    // device write accepts in 1 cycle (~dev_wack masks the held wen so it writes once).
    reg  dev_rvalid, dev_wack;
    always @(posedge clk) if (reset) begin dev_rvalid<=1'b0; dev_wack<=1'b0; end
       else begin dev_rvalid <= dv_ren & is_dev_r & ~is_virtio_r;
-                 dev_wack <= dmem_wfsm & is_dev_w & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
+                 dev_wack <= dw_v & is_dw_dev & ~is_virtio_w & ~dev_wack; end   // virtio: own req/rsp
    wire [63:0] clint_rdata;  wire clint_mtip, clint_msip;  wire [63:0] clint_mtime;
    // SCALE_DIV is DERIVED from the probe clock so it tracks a PROBE_CLK_DIV8 sweep: the DTB
    // declares timebase-frequency = 501253, so the CLINT must tick at that rate at ANY
@@ -320,9 +337,9 @@ module rv_soc_top #(
    // the sweep should PREFER frequencies where this divides cleanly.
    clint #(.SCALE_DIV(`PROBE_CLK_HZ / 501_253)) u_clint
      (.clk(clk), .reset(reset),
-      .we(dmem_wfsm & is_clint_w & ~dev_wack),
+      .we(dw_v & is_clint_w & ~dev_wack),
       .addr(dev_addr[15:0]),
-      .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
+      .wdata(dw_d), .wmask(dw_m), .rdata(clint_rdata),
       .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
    // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller.
    // Sources: 10 = UART (DTS interrupts=<10>), 11 = virtio_blk.
@@ -331,13 +348,13 @@ module rv_soc_top #(
    wire        uart_irq;
    plic u_plic
      (.clk(clk), .reset(reset),
-      .we(dmem_wfsm & is_plic_w & ~dev_wack), .re(dv_ren & is_plic_r),
-      .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
+      .we(dw_v & is_plic_w & ~dev_wack), .re(dv_ren & is_plic_r),
+      .addr(plic_addr[23:0]), .wdata(dw_d), .wmask(dw_m), .rdata(plic_rdata),
       .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.
-   assign irq_dbg = {dv_ren & is_plic_r, dmem_wfsm & is_plic_w, plic_addr[3:0], plic_dbg};
+   assign irq_dbg = {dv_ren & is_plic_r, dw_v & is_plic_w, plic_addr[3:0], plic_dbg};
 
    // ---- cache data-array integrity taps (see the port comment; -DCACHE_PARITY) ----
 `ifdef CACHE_PARITY
@@ -422,7 +439,7 @@ module rv_soc_top #(
    reg [14:0] stim_ctr;  initial stim_ctr = 15'd0;
    always @(posedge clk) begin
       stim_ctr <= stim_ctr + 1'b1;
-      if (dmem_wfsm & is_uart_w & ~dev_wack & (core.mmu_priv == 2'd1)) stim_on <= 1'b1;
+      if (dw_v & is_uart_w & ~dev_wack & (core.mmu_priv == 2'd1)) stim_on <= 1'b1;
    end
    assign    uart_irq = uart_rx_ip | uart_thre_ip | (stim_on & (stim_ctr[14:8] == 7'd0));
 `else
@@ -455,30 +472,30 @@ module rv_soc_top #(
                                     uart_ier, uart_iir, uart_mcr, uart_scr);
             if (uart_iir_rd & uart_iir_thre) uart_thre_pending <= 1'b0;
          end
-         if (dmem_wfsm & is_uart_w & ~dev_wack)
-            for (ub=0; ub<8; ub=ub+1) if (dmem_wmask[ub])
-               case ((dmem_waddr[2:0] + ub) & 3'h7)   // 16-aligned base, window bounded by is_uart_w: the low bits ARE the offset
+         if (dw_v & is_uart_w & ~dev_wack)
+            for (ub=0; ub<8; ub=ub+1) if (dw_m[ub])
+               case ((dw_a[2:0] + ub) & 3'h7)   // 16-aligned base, window bounded by is_uart_w: the low bits ARE the offset
                   3'd0: if (!uart_lcr[7]) begin // THR
-                           uart_thr <= dmem_wdata[ub*8 +: 8]; uart_thr_full <= 1'b1;
+                           uart_thr <= dw_d[ub*8 +: 8]; uart_thr_full <= 1'b1;
                            uart_thre_pending <= 1'b0;
-                           $write("%c", dmem_wdata[ub*8 +: 8]);   // sim-only; synth ignores
+                           $write("%c", dw_d[ub*8 +: 8]);   // sim-only; synth ignores
                         end
                   3'd1: if (!uart_lcr[7]) begin // IER: THRI enable edge w/ room -> immediate THRE
-                           uart_ier <= dmem_wdata[ub*8 +: 4];
-                           if (!dmem_wdata[ub*8+1])                 uart_thre_pending <= 1'b0;
+                           uart_ier <= dw_d[ub*8 +: 4];
+                           if (!dw_d[ub*8+1])                 uart_thre_pending <= 1'b0;
                            else if (!uart_ier[1] && !uart_thr_full) uart_thre_pending <= 1'b1;
                         end
                   3'd2: begin                   // FCR (write-only): FIFO enable + RX/TX resets
-                           uart_fcr_fifo <= dmem_wdata[ub*8];
-                           if (dmem_wdata[ub*8+1]) uart_rxq_r <= uart_rxq_wv;
-                           if (dmem_wdata[ub*8+2]) begin
+                           uart_fcr_fifo <= dw_d[ub*8];
+                           if (dw_d[ub*8+1]) uart_rxq_r <= uart_rxq_wv;
+                           if (dw_d[ub*8+2]) begin
                               uart_thr_full <= 1'b0;
                               if (uart_ier[1]) uart_thre_pending <= 1'b1;
                            end
                         end
-                  3'd3: uart_lcr <= dmem_wdata[ub*8 +: 8];
-                  3'd4: uart_mcr <= dmem_wdata[ub*8 +: 5];
-                  3'd7: uart_scr <= dmem_wdata[ub*8 +: 8];
+                  3'd3: uart_lcr <= dw_d[ub*8 +: 8];
+                  3'd4: uart_mcr <= dw_d[ub*8 +: 5];
+                  3'd7: uart_scr <= dw_d[ub*8 +: 8];
                   default: ;
                endcase
          uart_rxq_wv <= uart_rxq_w;
@@ -1171,7 +1188,7 @@ module rv_soc_top #(
       .r_done(ddr_r_valid & ddr_r_ready & ddr_r_last), .r_id(ddr_r_id),
       .w_done(ddr_w_valid & ddr_w_ready), .w_id(ddr_w_id),
       .raddr(dv_raddr[7:0]), .rdata(hpm_rdata),
-      .clr(dmem_wfsm & is_hpm_w & ~dev_wack));
+      .clr(dw_v & is_hpm_w & ~dev_wack));
 endmodule
 
 `default_nettype wire

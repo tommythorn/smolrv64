@@ -355,6 +355,16 @@ integer register's on its lane's port, straight through or at the drain. The lan
 eight deep and the FE stream's gate is LBN-6: with the lane four stages deep the drain starts
 within four cycles of the first entry, not one.
 
+**Step 7, second part: THE RULES AS CONSTRAINTS.** A clk2x register that changes only at clk edges
+carries `(* x2_cedge = "yes" *)`, one whose captures from clk logic take effect only at clk edges
+`(* x2_ccap = "yes" *)` (Vivado keeps both as cell properties: checked out of context), and
+`smolrv64_shell.xdc` gives each direction probe_clk's period. Marked: `smolrv64_x2f2s`'s held pulse
+and payload, the queue's room, the frontend's CSR copies (`priv_fe`, `satp_fe`, ...), the interrupt
+presentation and its interlock, the I$'s line register (`l2_rdata` is the register now: its one
+reader takes it a clk cycle after the ack), the fetch hold (`imem_hold`, now a register updated at
+clk edges), and the devices' write port: `dw_*`, the LSU's write as it stood at the clk edge,
+dropped at the edge after its (registered) ack, so a device never sees one write twice.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

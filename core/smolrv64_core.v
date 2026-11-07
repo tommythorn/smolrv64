@@ -415,9 +415,9 @@ module smolrv64_core
    // only at clk_fe edges, so the iMMU, the regime (ft) and the TLB flush (u_xfl, from the same edge's
    // CSR write) move together: a trap into M-mode at a mid-cycle clk edge cannot show the iMMU the bare
    // regime while the fetch side still serves the old one's window without the freeze
-   reg  [1:0]  priv_fe = 2'd3;
-   reg         sum_fe = 1'b0, mxr_fe = 1'b0;
-   reg  [63:0] satp_fe = 64'd0;
+   (* x2_cedge = "yes" *) reg  [1:0]  priv_fe = 2'd3;
+   (* x2_cedge = "yes" *) reg         sum_fe = 1'b0, mxr_fe = 1'b0;
+   (* x2_cedge = "yes" *) reg  [63:0] satp_fe = 64'd0;
    always @(posedge clk) if (h2) begin
       priv_fe <= mmu_priv;  sum_fe <= mmu_sum;  mxr_fe <= mmu_mxr;  satp_fe <= mmu_satp;
    end
@@ -4198,8 +4198,12 @@ module smolrv64_core
    end
    wire walk_hold = (|wk_e) & ~fr_v;
    // ...and the I$ holds a miss's line read on the same terms: the pending restart that ends the
-   // hold reaches the fetch ring in the cycle the hold drops, and the I$ takes the cancel first.
-   assign imem_hold = walk_hold;
+   // hold reaches the fetch ring in the cycle the hold drops, and the I$ takes the cancel first. The
+   // fetch side (clk's) reads it as of the clk edge, beside the restart (smolrv64_x2f2s's), so it is
+   // a register that changes only there.
+   (* x2_cedge = "yes" *) reg imem_hold_x = 1'b0;
+   always @(posedge clk) if (h2) imem_hold_x <= walk_hold;
+   assign imem_hold = imem_hold_x;
 
    // ---- writeback ----
    // FMAX: split so the BYPASS source excludes csr_rdata. Every CSR op is serializing
@@ -4635,7 +4639,11 @@ module smolrv64_core
    // could see it: cosim locksteps retired instruction RESULTS, and this is a duplicated
    // trap, not a wrong value. Found by hardware bisect (49eecf48 BAD, parent 9c298425
    // GOOD), 2026-08-20.
-   reg inject_inflight, irq_inject_q, irq_red;
+   // irq_inject_q changes only at clk edges, and what fetch's take (clk's) does to it and to the
+   // interlock is the second half's alone (irq_taken carries h2): x2_cedge and x2_ccap
+   (* x2_cedge = "yes", x2_ccap = "yes" *) reg irq_inject_q;
+   (* x2_ccap = "yes" *) reg inject_inflight;
+   reg irq_red;
    wire irq_taken;
    wire irq_red_n = redirect_q | fr_v | fe_red_q;   // a flush: the pseudo-op is withdrawn at the clk edge
    initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; irq_red = 1'b0; end

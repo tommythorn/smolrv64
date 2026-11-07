@@ -11,6 +11,11 @@
 //   - a valid/ready channel either way transfers only at a clk edge: the clk2x side sees the other
 //     side's valid or ready in the second half alone (`& h2`), and holds its own until the transfer.
 
+// THE CONSTRAINTS (smolrv64_shell.xdc) follow the rules: a clk2x register that changes only at clk
+// edges carries (* x2_cedge = "yes" *), and its paths into clk logic have clk's period; one whose
+// captures from clk logic take effect only at clk edges carries (* x2_ccap = "yes" *), and the paths
+// from clk logic into it have clk's period. A mark on a register that breaks its rule hides a real
+// path: the rule is the register's comment's to state.
 // h2: the clk2x cycle is the second half of clk's. tg flips at every clk edge and tg2 is tg as clk2x
 // last saw it, so they differ in the first half and agree in the second. In a `posedge clk2x` block,
 // `if (h2)` is "this edge is a clk edge".
@@ -42,23 +47,25 @@ module smolrv64_x2f2s #(parameter integer W = 1)
    input  wire         h2,
    input  wire         v,
    input  wire [W-1:0] d,
-   output reg          sv,
-   output reg  [W-1:0] sd,
+   output wire         sv,
+   output wire [W-1:0] sd,
    output wire         busy);     // a pulse is pending or held: the clk side has not finished with it
    reg         pv = 1'b0;
    reg [W-1:0] pd;
-   initial sv = 1'b0;
+   (* x2_cedge = "yes" *) reg         svr = 1'b0;   // they change only at clk edges
+   (* x2_cedge = "yes" *) reg [W-1:0] sdr;
    always @(posedge clk2x) begin
       if (reset) begin
-         pv <= 1'b0;  sv <= 1'b0;
+         pv <= 1'b0;  svr <= 1'b0;
       end else if (h2) begin
-         sv <= v | pv;  pv <= 1'b0;
-         if (v) sd <= d;  else if (pv) sd <= pd;
+         svr <= v | pv;  pv <= 1'b0;
+         if (v) sdr <= d;  else if (pv) sdr <= pd;
       end else if (v) begin
          pv <= 1'b1;  pd <= d;
       end
    end
-   assign busy = v | pv | sv;
+   assign sv = svr;  assign sd = sdr;
+   assign busy = v | pv | svr;
 endmodule
 
 `default_nettype wire

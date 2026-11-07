@@ -80,6 +80,16 @@ set_multicycle_path -setup 2 -end -from [get_clocks probe_clk] \
 set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] \
     -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg* || NAME =~ *probe_sync/m_tf_reg}]
 
+# The core's two clocks (core/smolrv64_x2.v): a clk2x register that changes only at the clk2x
+# edges that are probe_clk edges carries x2_cedge, and probe_clk logic reading it has probe_clk's
+# period; one whose captures from probe_clk logic take effect only at those edges carries x2_ccap,
+# and probe_clk logic reaching it has probe_clk's period. Vivado's default check of either
+# direction is one clk2x cycle (the launch or the capture at the edge between probe_clk's).
+set_multicycle_path -setup 2 -start -from [get_cells -hier -filter {x2_cedge == yes}] -to [get_clocks probe_clk]
+set_multicycle_path -hold 1 -start -from [get_cells -hier -filter {x2_cedge == yes}] -to [get_clocks probe_clk]
+set_multicycle_path -setup 2 -end -from [get_clocks probe_clk] -to [get_cells -hier -filter {x2_ccap == yes}]
+set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] -to [get_cells -hier -filter {x2_ccap == yes}]
+
 # The pixel clock is an MMCM output fed from ui_clk, so Vivado would time ui_clk <-> pixel clock
 # as RELATED clocks at an off-integer ratio (and DRP retunes it at run time anyway). Every
 # crossing is designed as asynchronous (vga_scanout's header):
