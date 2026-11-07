@@ -30,6 +30,7 @@ module tb;
    localparam NENT=4, IDXB=2, PAW=56, PBITS=9, ROBB=4, NWB=3;
    localparam NW=2;                           // a row: two ops dispatch together (the LQ's 2 banks of 2)
    reg clk=0, reset=1, flush=0;
+   wire [6:0] sq_err;   // the store queue's integrity-log bits: never nonzero in a passing run
    always #5 clk = ~clk;
 
    // ---- load queue ports ----
@@ -121,7 +122,8 @@ module tb;
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn(e_vpn),.l_fill_vpn({1'b0, lq_a_pa[38:12]}),.a_bare(1'b0),.l_fwd(sq_l_fwd),.f_go(lq_x_take & lq_x_fwd),.f_lix(lq_x_idx),.f_data(sq_f_data),.f_sbo(sq_f_sbo),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
-      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.lw_v(1'b0),.lw_idx({IDXB{1'b0}}),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(1'b0),.kh({ROBB{1'b0}}),.kb({ROBB{1'b0}}),.kmask(sq_kmask_nc));
+      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.lw_v(1'b0),.lw_idx({IDXB{1'b0}}),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(1'b0),.kh({ROBB{1'b0}}),.kb({ROBB{1'b0}}),.kmask(sq_kmask_nc),.err(sq_err));
+   always @(posedge clk) if (|sq_err) $fatal(1, "tb: smolrv64_sq err=%b rose without its $fatal", sq_err);
 
    // ------------------------------------------------------------- the program-order model
    // st: 0 dispatched (no address) | 1 address known (store: uncommitted; load: waiting)

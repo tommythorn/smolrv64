@@ -1875,6 +1875,7 @@ module smolrv64_core
    // the store register is empty, so stores reach memory in program order.
    wire sq_go     = sq_c_v & ~sq_c_fast & ~lsu_sp_busy;
    wire sq_sp_go  = sq_c_v &  sq_c_fast & (~lsu_sp_busy | lsu_sp_done);
+   wire [6:0]          sq_err;    wire [15:0] lsu_err_u;
    wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [PABITS-1:0] sq_kc_addr;
    wire [63:0]         sq_kc_data; wire [1:0] sq_kc_size;   // the cosim's store-data check
    wire [ROB_IDXB-1:0] rob_irr_idx;  wire rob_irr_v;
@@ -1961,7 +1962,8 @@ module smolrv64_core
       .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .lw_v(lsu_wk_done & ~wk_st), .lw_idx(wk_lk_li), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
       .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
-      .occupancy(sq_occ), .flush(redirect), .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(sq_kmask));
+      .occupancy(sq_occ), .flush(redirect), .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(sq_kmask),
+      .err(sq_err));
 
    // ------------------------------------------------------------------- LOAD QUEUE
    wire                lq_d_ready, lq_x_v, lq_x_signed, lq_x_fp, lq_x_unc, lq_x_head, lq_l_rd_v, lq_b_ok;
@@ -2547,7 +2549,9 @@ module smolrv64_core
       .cos_pa(lsu_cos_pa), .cos_kind(lsu_cos_kind), .cos_data(lsu_cos_data), .cos_size(lsu_cos_size),
       .started(lsu_started), .done(lsu_done), .done_acc(lsu_done_acc), .rd_val(lsu_rd_val), .fault(lsu_fault),
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_infl(lsu_ld_infl), .ld_sent(lsu_ld_sent), .ld_fkill(lsu_ld_fkill),
-      .err(lsu_err), .idle(lsu_idle));
+      .err(lsu_err_u), .idle(lsu_idle));
+   // the integrity log's LSU field: the LSU's eight bits, the store queue's seven above them
+   assign lsu_err = {1'b0, sq_err, lsu_err_u[7:0]};
    // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
    // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
    // only older stores, so the wait ends.

@@ -7,7 +7,7 @@
 #     errlog: FAULT  sticky=0000000000000040 first=dcache.replay (bit 6) at cycle 0x2f1a3b0c00
 #             bit 6  dcache.replay      a replay owed with no fill in flight
 #
-# The bit names are the INTEGRITY LOG tables in rv_dcache.v (D$), rv_icache.v (I$) and smolrv64_lsu.v,
+# The bit names are the INTEGRITY LOG tables in rv_dcache.v (D$), rv_icache.v (I$), smolrv64_lsu.v and smolrv64_sq.v,
 # in the SoC's fixed assignment (D$ [15:0], I$ [31:16], LSU [47:32]); keep them in step. On a
 # bitstream without the log the window reads zero and this says so instead of "clean".
 set -u
@@ -30,8 +30,8 @@ ICACHE=(dual unused1 l2_orphan align skid_full pa_offset l2_both stamp_dup rc_bo
 IDESC=("one line hits in both ways" "(unused)" "an L2 answer with no read outstanding" "a pair not 16-byte aligned" "a request into a full skid" "VA and PA disagree in the page offset" "a demand read and a prefetch outstanding together" "stamping a line the other way already holds" "one physical line resident in both ways")
 FE=(ring_head ring_over ring_hold ring_gen ring_orphan ring_marks pq_full pq_empty pair_end fetch_cap fetch_pc bundle slot_order be_zombie be_realloc fp_orphan)
 FDESC=("the fetch ring's head is not the fetch PC" "fetch consumed more halfwords than the ring holds" "the ring holds more than it reserved" "a kept I\$ answer from a stale generation" "an I\$ answer with no request in flight" "marks held + in flight != predictions queued" "a prediction pushed into a full queue" "the aligner popped an empty prediction queue" "a pair ends before the stream's address" "fetch's page cap disagrees with its oracle" "fetch's pc_q and ipc_q disagree" "a malformed bundle (slot without predecessor, fault beside a slot)" "a slot consumed out of order" "a writeback to a physical register that is not pending (a squashed op's result)" "a physical register allocated while still pending" "an FPU result with nothing in flight, or one overwriting an unconsumed result")
-LSU=(dev_spec dev_span tag_reissue tag_orphan tag_reuse ld_done req_early m_spec)
-LDESC=("a speculative access to a non-DRAM address" "a non-DRAM access straddling an 8-byte word" "a load tag reissued while its response is outstanding" "a fast response carrying a tag nothing is waiting on" "a tag lands and restarts in one cycle" "pt_ld_done disagrees with pt_done & ~store" "req_early on an access that is not a translate-only load" "an AMO or CBO started off the ROB head")
+LSU=(dev_spec dev_span tag_reissue tag_orphan tag_reuse ld_done req_early m_spec sq_free_early sq_handoff sq_commit sq_occupancy sq_stray sq_alloc_over sq_kill_order)
+LDESC=("a speculative access to a non-DRAM address" "a non-DRAM access straddling an 8-byte word" "a load tag reissued while its response is outstanding" "a fast response carrying a tag nothing is waiting on" "a tag lands and restarts in one cycle" "pt_ld_done disagrees with pt_done & ~store" "req_early on an access that is not a translate-only load" "an AMO or CBO started off the ROB head" "a store-queue entry freed before its handoff" "store-queue handoff pointer outside [head, first uncommitted]" "a store committed with no uncommitted, ready entry, or a dead one" "more stores committed than the store queue holds" "a store-queue entry live outside [head, tail)" "more stores allocated than the store queue had free" "a killed store-queue entry not among the youngest")
 name() {   # <bit> -> unit.name and description
    local b=$1
    if   [ "$b" -lt 16 ]; then echo "dcache.${CACHE[$b]:-?}|${CDESC[$b]:-}"

@@ -213,7 +213,10 @@ module smolrv64_sq
     input  wire                  kd_v,
     input  wire [ROBB-1:0]       kh,
     input  wire [ROBB-1:0]       kb,
-    output wire [NENT-1:0]       kmask);
+    output wire [NENT-1:0]       kmask,
+    // the pointer invariants below, for the SoC's integrity log: on hardware $fatal is a no-op,
+    // and a store the queue loses wedges the ROB head with nothing on the console (2026-11-07, 2g)
+    output wire [6:0]            err);
 
    reg [NENT-1:0]        v, av, dv;          // live / address known / data known
    // THE PA, in two copies of one write each -- M's fill (addr_m) and the walker's answer (addr_w)
@@ -906,6 +909,30 @@ module smolrv64_sq
    end
 `endif
 
+   // ---- INTEGRITY LOG (rv_errlog), the LSU's bits [12:8] ----------------------------
+   //   0 free_early  an entry freed before its handoff
+   //   1 handoff     more than one entry handed off, or the handoff pointer past the first uncommitted
+   //   2 commit      a commit with no uncommitted, ready entry, or of a dead store
+   //   3 occupancy   more entries committed than the queue holds
+   //   4 stray       an entry live outside [head, tail): a store the ROB waits on that can never commit
+   //   5 alloc_over  more stores allocate than the queue has free entries
+   //   6 kill_order  a dead entry that is not among the youngest
+   wire [NENT-1:0] stray, kold;
+   genvar gy;
+   generate for (gy = 0; gy < NENT; gy = gy + 1) begin : g_stray
+      wire [IDXB-1:0] sd = gy[IDXB-1:0] - head;
+      assign stray[gy] = v[gy] & ({1'b0, sd} >= (tailc - headc));
+      wire [IDXB-1:0] td = tail - 1'b1 - gy[IDXB-1:0];
+      assign kold[gy]  = kmk[gy] & ({1'b0, td} >= k_n);
+   end endgenerate
+   reg [6:0] err_q;
+   initial err_q = 7'd0;
+   always @(posedge clk)
+      err_q <= reset ? 7'd0
+             : {|kold, {1'b0, cnt} + {1'b0, n_alloc} > {1'b0, NENT[IDXB:0]}, |stray, (kcc - headc) > cnt, k_take & (~kc_v | kmk[kc]), (ho_n > 1) | (ho_n > kc_n),
+                c_done & (headc == hoc) & ~(c_v & c_take)};
+   assign err = err_q;
+
    // Invariants (docs/rtl-rules.md A1): anything the design would otherwise drop silently.
    always @(posedge clk) if (!reset) begin
       if ({1'b0, cnt} + {1'b0, n_alloc} > {1'b0, NENT[IDXB:0]})
@@ -970,6 +997,8 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: load entry %0d started with no fill, or with its address fault", l_fill_ix);
       if (c_take & ~tv[ho])
          $fatal(1, "smolrv64_sq: a store drained without a translation");
+      if (|stray)
+         $fatal(1, "smolrv64_sq: entries %b are live outside [head %0d, tail %0d)", stray, head, tail);
    end
 endmodule
 `default_nettype wire
