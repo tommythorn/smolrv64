@@ -187,7 +187,7 @@
       assign pl_m2[gpl]      = dut.core.ln[gpl].m2;   assign pl_mrob2[gpl] = ptx(16'(dut.core.ln[gpl].mrob2));
       for (gpe = 0; gpe < PT_NI; gpe = gpe + 1) begin: e
          assign pl_iq_v[gpl*PT_NI + gpe]   = dut.core.ln[gpl].u_iq.v[gpe];
-         assign pl_iq_rdy[gpl*PT_NI + gpe] = &dut.core.ln[gpl].u_iq.srdy[gpe*2 +: 2];
+         assign pl_iq_rdy[gpl*PT_NI + gpe] = &dut.core.ln[gpl].u_iq.e_r[gpe];
          assign pl_iq_rob[gpl*PT_NI + gpe] = ptx(16'(dut.core.ln[gpl].u_iq.e_rob[gpe]));
       end
    end endgenerate
@@ -218,7 +218,7 @@
          if (dut.core.u_iq_f.v[pj])
             put(ptx(16'(dut.core.u_iq_f.e_rob[pj])),
                 (dut.core.u_iq_f.iss_v && 32'(dut.core.u_iq_f.iss_ent) == pj) ? "p"
-                : (&dut.core.u_iq_f.srdy[pj*3 +: 3]) ? "s" : "w");
+                : (&dut.core.u_iq_f.e_r[pj]) ? "s" : "w");
       if (dut.core.j_v)     put(ptx(16'(dut.core.j_rob)), "j");
       for (pj = 0; pj < IW; pj = pj + 1) if (dut.core.hx_vv[pj]) put(ptx(16'(dut.core.hx_rob_l[pj])), "h");
       for (pj = 0; pj < dut.core.NFQ; pj = pj + 1) if (dut.core.fq_v[pj]) put(ptx(16'(dut.core.fq_rob[pj])), "F");

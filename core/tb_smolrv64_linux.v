@@ -1202,19 +1202,6 @@ module tb;
       hs_n[c] <= hs_n[c] + 1;  hs_w[c] <= hs_w[c] + 64'(w);  hs_o[c] <= hs_o[c] + 64'(o);
       hs_a[c] <= hs_a[c] + 64'(a);  hs_ao[c] <= hs_ao[c] + 64'(ao);
    end
-   // ---- SPEC-SIM: the speculative wake (D$ plan step 3a): wakes, and the address generators that
-   // executed on one -- their address delivered on the load's answer, or suppressed ------------
-   reg [63:0] sp_wake, sp_ok, sp_bad;
-   wire [IW-1:0] sp_l;
-   genvar spg;
-   generate for (spg = 0; spg < IW; spg = spg + 1) begin : spl
-      assign sp_l[spg] = dut.core.ln[spg].sp1;
-   end endgenerate
-   initial begin sp_wake = 0;  sp_ok = 0;  sp_bad = 0; end
-   always @(posedge ui_clk) if (!reset && meas) begin
-      if (dut.core.sw_v) sp_wake <= sp_wake + 1;
-      if (dut.core.sv_ok) sp_ok <= sp_ok + 64'(pop64(64'(sp_l))); else sp_bad <= sp_bad + 64'(pop64(64'(sp_l)));
-   end
    // ---- RECOV-SIM: each restart's recovery against a forward rebuild ---------------------------
    // A restart (the ROB's k_v) walks the map back from the tail row to the branch's, a row a cycle,
    // racing the branch to the ROB head, where a squash and the sweep (dirty registers, IW a cycle)
@@ -1896,7 +1883,6 @@ module tb;
                hs_n[0], hs_n[1], hs_n[2], hs_w[0], hs_w[1], hs_w[2], hs_o[0], hs_o[1], hs_o[2]);
       $display("HITSPEC-SIM of the consumers, address generators (a load or store), right/cancelled/missed-or-waiting: waiting=%0d/%0d/%0d, waiting on them alone=%0d/%0d/%0d",
                hs_a[0], hs_a[1], hs_a[2], hs_ao[0], hs_ao[1], hs_ao[2]);
-      $display("SPEC-SIM speculative wakes=%0d | address generators issued on one: delivered=%0d suppressed=%0d", sp_wake, sp_ok, sp_bad);
       $display("perf-stat-sim: begin");
       $display("%0d cycles", mc);          // the cycles counted: the window, or the whole run
       $display("%0d instructions", mr);

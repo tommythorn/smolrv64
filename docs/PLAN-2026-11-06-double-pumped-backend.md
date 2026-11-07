@@ -303,6 +303,14 @@ crossing has one `clk2x` cycle). The second pass:
 **The FPU: twice the pipeline registers.** fpnew's datapath closed 6 ns with five (`PIPE_REGS`, DISTRIBUTED);
 at 3 ns it takes ten, the same latency in ns. Still four ops in flight (`NFLIGHT`).
 
+**Step 3, first part: READY IS A REGISTER.** At M2 and step 1 the largest family is a load's landing
+through the wake compares, the pick and the payload read (`u_lsu/fw_n`, `k_f_q` -> `ln[].pl`,
+`e_sp`: 12-17 levels, -3.37 ns). A scheduler's pick now reads only flops: a wake (a writeback's
+compare, the dependency matrix's column) sets `e_r` at the edge and the entry is a candidate the
+cycle after. A writeback's consumer issues a cycle later than before; a one-cycle producer's
+consumer issues two cycles after it (the same 6 ns as main's back-to-back). The speculative
+load wake (D$ plan step 3a) is gone: its one-cycle verdict was built on a same-cycle pick.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

@@ -1003,19 +1003,6 @@ module smolrv64_core
             $fatal(1, "smolrv64_core: slot %0d's ALU op is in shard %0d, not its lane's", gs, shard);
    end endgenerate
 
-   // THE SPECULATIVE WAKE (D$ plan step 3a). An 8-byte integer load M starts in its own cycle wakes the
-   // address generators waiting on it a cycle later, at its compare, as if it hit: they issue then, take
-   // the D$'s answer as their base as it lands, and their address stands on the D$'s registered word
-   // that it answered this load (sv_ok), else it is not delivered and they wait for the landing.
-   reg                       sw_v, sv_v;
-   reg  [RN_PBITS-1:0]       sw_p;
-   initial begin sw_v = 1'b0; sv_v = 1'b0; end
-   always @(posedge clk) begin
-      sw_v <= ~reset & lsu_xo_early & (m_mem_size == 2'd3) & ~m_is_fp & m_rd_v;
-      sw_p <= m_prd;
-      sv_v <= ~reset & sw_v;
-   end
-   wire                      sv_ok = sv_v & dmem_fans;
    wire [NL-1:0]             wkv_l;          // the lanes' ports: their write registers' issue-timed writes
    wire [NL*RN_PBITS-1:0]    wkp_l;
    wire [NWB_C-1:0]          wkv  = {wk_fe, wk_ld, wkv_l};
@@ -1140,7 +1127,7 @@ module smolrv64_core
       .d_rob(stg_rob_f),
       .d_ps(stg_ps_f),.d_r(stg_r_f | wkq_f),
       .d_prd(stg_prd_f),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_ent(rf_d_ent),
-      .wb_v(wkv_fp),.wb_preg(wkp_fp),.s_v(1'b0),.s_preg({RN_PBITS{1'b0}}),.sv_v(1'b0),.sv_ok(1'b0),.iss_spec(),.iss_hq(),
+      .wb_v(wkv_fp),.wb_preg(wkp_fp),.iss_hq(),
       .unit_busy(j_v & ~j_adv),.hx_busy(1'b0),.ag_only(1'b0),   // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
      .iss_take(rf_take),
@@ -1502,7 +1489,7 @@ module smolrv64_core
       reg [RN_PBITS-1:0]   stg_prd;
       reg [LPLW-1:0]       stg_pl;
       initial stg_v = 1'b0;
-      wire                 ready, iss_v, iss_spec, blk_v;
+      wire                 ready, iss_v, blk_v;
       wire [IBI-1:0]       d_ent, iss_ent;
       wire [2*NI-1:0]      iss_hq;
       wire [ROB_IDXB-1:0]  iss_rob;
@@ -1532,12 +1519,12 @@ module smolrv64_core
       reg                  v;
       reg [IBI-1:0]        ent;
       smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
-                .FIXEDL(1),.INORDER(0),.SPEC(1),.OLDEST(1)) u_iq
+                .FIXEDL(1),.INORDER(0),.OLDEST(1)) u_iq
         (.clk(clk),.reset(reset),
          .d_valid(mv),.d_ready(ready),.d_rob(stg_rob),
          .d_ps(stg_ps[2*RN_PBITS-1:0]),.d_r(stg_r),.d_prd(stg_prd),.d_long(stg_late),.d_hx(stg_hx),
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
-         .wb_v(wkv_i),.wb_preg(wkp),.s_v(sw_v),.s_preg(sw_p),.sv_v(sv_v),.sv_ok(sv_ok),.iss_spec(iss_spec),.iss_hq(iss_hq),
+         .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
          .unit_busy(m1 | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
@@ -1556,10 +1543,8 @@ module smolrv64_core
       reg [RN_PBITS-1:0]   ps1, ps2;
       reg                  late;            // the op completes later than its issue (lane_late)
       reg [LPLW-1:0]       pl;
-      reg                  sp1;             // the op issued on a load's speculative wake: its base is the D$'s answer
-      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; sp1 = 1'b0; end
+      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
       always @(posedge clk) begin
-         sp1 <= ~reset & iss_spec;
          if (reset | redirect) v <= 1'b0;
          else begin
             v <= iss_v;      // a dead op picked as the kill lands executes once, in its own register
@@ -1589,7 +1574,6 @@ module smolrv64_core
             if (sh2 == f[1:0]) q2 = l_qval[f];
          end
          rs1 = hq1 ? q1 : l_rd1[gl];  rs2 = hq2 ? q2 : l_rd2[gl];
-         if (sp1) rs1 = dmem_rdata_c;   // the speculated load's doubleword, landing this very cycle
       end
       // the select against the write registers' tags, every executing op's sources
       reg        bq1, bq2;
@@ -1617,15 +1601,8 @@ module smolrv64_core
       // structurally -- an entry is not selectable until every source is ready); a store's rs2
       // is the store queue's
       always @(posedge clk) if (!reset & iss) begin
-         if (q_rs1_v & ~pnd_q[3*IW + 2*gl] & ~sp1)
+         if (q_rs1_v & ~pnd_q[3*IW + 2*gl])
             $fatal(1, "core: lane %0d executed with rs1 p%0d still pending (rob=%0d pc=%h)", gl, ps1, rob, q_pc);
-         // a speculative base that stands is this cycle's D$ response, by its own register (the
-         // landing is the response's unless a kill dropped it, and then its consumer is dead too)
-         if (sp1 & sv_ok & ~(dmem_rvalid_c & (lq_l_prd == ps1)))
-            $fatal(1, "core: lane %0d's speculative base p%0d is not this cycle's D$ response (pc=%h): response %b tag %0d its p%0d, landing %b (killed %b), rob %0d dead %b",
-                   gl, ps1, q_pc, dmem_rvalid_c, dmem_rtag_resp, lq_l_prd, ld_land_fast, u_lsu.r_kill, rob, dead(rob));
-         if (sp1 & ~(is_lmem(q_insn) & sv_v))
-            $fatal(1, "core: lane %0d issued a speculative op that generates no address, or without a verdict (pc=%h)", gl, q_pc);
          if (q_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(q_is_store & is_lmem(q_insn)))
             $fatal(1, "core: lane %0d executed with rs2 p%0d still pending (rob=%0d)", gl, ps2, rob);
       end
@@ -1784,8 +1761,7 @@ module smolrv64_core
       assign l_qvv[gl] = qv;  assign l_qprdv[gl*RN_PBITS +: RN_PBITS] = qprd;  assign l_qvalv[gl*64 +: 64] = qval;
       assign l_psv[(2*gl)*RN_PBITS +: RN_PBITS] = ps1;  assign l_psv[(2*gl+1)*RN_PBITS +: RN_PBITS] = ps2;
       assign l_rd1[gl] = l_opv[(2*gl)*64 +: 64];  assign l_rd2[gl] = l_opv[(2*gl+1)*64 +: 64];
-      // a speculative address stands only on its load's answer (sv_ok, a flop): else it is not delivered
-      assign l_lm[gl] = v & ~sys & is_lmem(q_insn) & ~(sp1 & ~sv_ok);  assign l_st[gl] = q_is_store;
+      assign l_lm[gl] = v & ~sys & is_lmem(q_insn);  assign l_st[gl] = q_is_store;
       assign l_br[gl] = q_is_branch;  assign l_jmp[gl] = q_is_jump;  assign l_jalr[gl] = q_is_jalr;
       assign l_rvc[gl] = q_rvc;  assign l_rdv[gl] = q_rd_v;  assign l_seq[gl] = q_seq;  assign l_pc[gl] = q_pc;
       assign l_pdet[gl] = q_pdet;  assign l_rd[gl] = q_rd;  assign l_lks[gl] = q_link_rs;  assign l_insn[gl] = q_insn;

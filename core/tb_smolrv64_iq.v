@@ -3,7 +3,8 @@
 //   1. a ready entry issues, and every dispatched entry issues exactly ONCE
 //   2. an entry whose source is not ready does NOT issue
 //   3. a wakeup arriving in the dispatch cycle is not lost (a producer broadcasts once)
-//   4. wake-at-select makes a dependent issuable the very next cycle (back to back)
+//   4. wake-at-select makes a dependent issuable two cycles after its producer's pick (ready is a
+//      register: the dependency matrix's column in the cycle after, the pick in the next)
 //   5. the entry held downstream is never reallocated
 //   6. full, and flush
 //   7. in order (the INORDER instance), and an entry that hands itself on (d_hx) waits while its
@@ -28,16 +29,13 @@ module tb;
    wire [IDXB:0] occupancy, free_n;
    integer errs=0;
 
-   // the speculative wake is off here (SPEC=0): nothing ever issues on it
-   wire iss_spec, io_iss_spec;
    wire [NENT*NSRC-1:0] iss_hq, io_iss_hq;   // the registered wake matches (the core's operand select)
-   always @(posedge clk) if (iss_spec | io_iss_spec) $fatal(1, "tb: a speculative issue with SPEC=0");
    smolrv64_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
              .FIXEDL(1),.OLDEST(1)) dut
      (.clk(clk),.reset(reset),
       .d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),.d_ps(d_ps),.d_r(d_r),
       .d_prd(d_prd),.d_long(1'b0),.d_hx(d_hx),.d_ag(1'b0),.d_ent(d_ent),
-      .wb_v(wb_v),.wb_preg(wb_preg),.s_v(1'b0),.s_preg({PBITS{1'b0}}),.sv_v(1'b0),.sv_ok(1'b0),.iss_spec(iss_spec),.iss_hq(iss_hq),
+      .wb_v(wb_v),.wb_preg(wb_preg),.iss_hq(iss_hq),
       .unit_busy(unit_busy),.hx_busy(hx_busy),.ag_only(1'b0),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
       .iss_take(iss_take),
       .hold_v(hold_v),.hold_ent(hold_ent),
@@ -56,7 +54,7 @@ module tb;
      (.clk(clk),.reset(reset),
       .d_valid(io_d_valid),.d_ready(io_d_ready),.d_rob(io_rob),.d_ps(io_ps),.d_r(io_r),
       .d_prd({PBITS{1'b0}}),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_ent(io_d_ent),
-      .wb_v(io_wb_v),.wb_preg(io_wb_preg),.s_v(1'b0),.s_preg({PBITS{1'b0}}),.sv_v(1'b0),.sv_ok(1'b0),.iss_spec(io_iss_spec),.iss_hq(io_iss_hq),
+      .wb_v(io_wb_v),.wb_preg(io_wb_preg),.iss_hq(io_iss_hq),
       .unit_busy(1'b0),.hx_busy(1'b0),.ag_only(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
       .iss_take(io_take),
       .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),
@@ -101,12 +99,13 @@ module tb;
       @(negedge clk); chk("wakeup during dispatch is not lost", 1'b1, 4'd2);
       take;
 
-      // 4. wake-at-select: a consumer of the issuing entry is ready the NEXT cycle
+      // 4. wake-at-select: a consumer of the issuing entry is ready two cycles after its pick
       disp(4'd3, 9'd0,  1'b1, 9'd200);          // producer, dest p200
       disp(4'd4, 9'd200,1'b0, 9'd201);          // consumer of p200
       @(negedge clk); chk("producer ready", 1'b1, 4'd3);
       take;                                      // issuing it wakes the consumer
-      @(negedge clk); chk("consumer issuable the very next cycle", 1'b1, 4'd4);
+      chk("consumer not issuable a cycle after the pick", 1'b0, 4'd0);
+      @(negedge clk); chk("consumer issuable the cycle after that", 1'b1, 4'd4);
       take;
 
       // 5. the held entry is never reallocated
