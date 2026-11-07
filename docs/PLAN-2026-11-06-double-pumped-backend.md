@@ -346,6 +346,15 @@ the SoC's clk2x side (the D$, the arbiter, the read door, the walkers' adapters,
 the crossings) takes its own clk2x reset flop, as the core does; a device's read answer and write
 ack are registered in the first half and taken by the LSU in the second.
 
+**Step 5, second part: THE LD STREAM IS REGISTERED.** A load's answer through the LSU's alignment
+was the stream's whole cycle into the lanes' landing buffers, the FP shard and the snoop
+(`u_dcache/rd_data` -> `g_lp[].u_lbd`, 7-11 levels, -3.16). What the stream writes, wakes, snoops and
+pushes into a lane is now a register a cycle after the landing, dropped by a redirect in the
+landing's cycle. Its ROB completion is not delayed: an FP register's on M's port at the landing, an
+integer register's on its lane's port, straight through or at the drain. The landing buffers are
+eight deep and the FE stream's gate is LBN-6: with the lane four stages deep the drain starts
+within four cycles of the first entry, not one.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
