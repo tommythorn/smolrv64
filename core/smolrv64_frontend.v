@@ -252,7 +252,12 @@ module smolrv64_frontend
    // re-emitted the SAME interrupt every cycle with nothing to stop it.
    wire   irq_pres;                    // fetch presents the pseudo-op (a straddle finishes first)
    wire   irq_fire = irq_pres & fire;     // clk's
-   assign irq_taken = irq_fire & ~h2;    // for clk2x logic: once
+   // for clk2x logic: once, in the second half -- the clk edge that ends it loads the bundle register
+   // (smolrv64_core's irq_inject_q changes only at clk edges, so fetch presents the pseudo-op for the
+   // whole cycle) -- and only when the bundle reaches the queue: not while a redirect is on its way to
+   // the fetch side (red_busy), which kills the bundle register or drops the push. Then the pseudo-op
+   // stays presented and is taken after the restart.
+   assign irq_taken = irq_fire & h2 & ~red_busy;
 
    // Sub-attribution for the frontend bubble (see smolrv64_core's fe_aln/fe_que).  dq_valid is
    // "fetch assembled a complete instruction this cycle".  With it, a bubble that is not

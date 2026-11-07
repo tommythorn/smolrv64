@@ -4583,14 +4583,15 @@ module smolrv64_core
    // could see it: cosim locksteps retired instruction RESULTS, and this is a duplicated
    // trap, not a wrong value. Found by hardware bisect (49eecf48 BAD, parent 9c298425
    // GOOD), 2026-08-20.
-   reg inject_inflight, irq_inject_q;
+   reg inject_inflight, irq_inject_q, irq_red;
    wire irq_taken;
-   initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; end
+   wire irq_red_n = redirect_q | fr_v | fe_red_q;   // a flush: the pseudo-op is withdrawn at the clk edge
+   initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; irq_red = 1'b0; end
    assign irq_inject = irq_inject_q;
    always @(posedge clk) begin
       if (reset) begin
          inject_inflight <= 1'b0;
-         irq_inject_q    <= 1'b0;
+         irq_inject_q    <= 1'b0;  irq_red <= 1'b0;
       end else begin
          // Present it until fetch actually TAKES it, then latch the interlock on that
          // same event. Scheduling and holding are separated so one interrupt can never be
@@ -4601,12 +4602,18 @@ module smolrv64_core
          // cycle is taken into a queue the redirect empties at the same edge; inject_inflight
          // is cleared by redirect_q the cycle after, and the interrupt, still pending, is
          // presented again.
-         irq_inject_q <= ~redirect_q & ~fr_v &
-                         (irq_inject_q ? ~irq_taken                     // hold until taken
-                                       : csr_irq_v & ~inject_inflight); // schedule
+         // THE PSEUDO-OP IS PRESENTED A WHOLE clk CYCLE: fetch (clk's) reads irq_inject_q, so it changes
+         // only at clk edges (smolrv64_x2.v), the edge at which fetch's take (irq_taken, the second
+         // half's) loads the bundle register. A flush in either half (irq_red) withdraws it.
+         irq_red <= ~h2 & (irq_red | irq_red_n);
+         if (h2) irq_inject_q <= ~(irq_red | irq_red_n) & (irq_inject_q ? ~irq_taken                     // hold until taken
+                                                                      : csr_irq_v & ~inject_inflight); // schedule
 
-         if (irq_taken)                               inject_inflight <= 1'b1;
-         else if (redirect_q | fr_v | ~csr_irq_v)     inject_inflight <= 1'b0;
+         // Any frontend flush (fe_red_q: a backend redirect, an early restart, the SYSQ's, a decode
+         // resteer) can drop the pseudo-op between fetch and dispatch: present it again. A flush by an
+         // op younger than it only presents a second one behind it, which its trap flushes.
+         if (irq_taken)                         inject_inflight <= 1'b1;
+         else if (irq_red_n | ~csr_irq_v)       inject_inflight <= 1'b0;
       end
    end
 
