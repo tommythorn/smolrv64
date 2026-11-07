@@ -673,6 +673,20 @@ were right. The fix keeps the entry until the state machine's last write, so eve
 present and future, orders against it in one place. An exemption argued from another unit's
 state ("nothing passes it") is re-derived when a new path reaches the same memory.
 
+**D21. An event moved a cycle later re-proves every consumer that orders itself against it.** A
+consumer that holds, blocks or retires around an event was proved against the cycle the event used
+to fire in; a register, a qualification or a narrowing that delays the event leaves that proof
+stale, and nothing local to the change says so. The store queue flagged a load for replay in the
+cycle the overlapping older store's address arrived -- "before the store can commit", the window
+the ROB's irrevocable-pointer hold (`rp_all`, a cycle behind the flag) was built for. c486aeec made
+the flag wait a cycle for the page bits to qualify it; the store, its data already snooped, could
+commit in exactly that cycle, the pointer crossed it and the load of its row, and a younger store
+then committed in the replay's redirect and was lost: two 2g hangs, 9 s and 2 min into a boot, while
+77 SimPoints and four userspace cosims passed (c49d79a7, `l_arr_q` holds the pointer that cycle). A
+change that moves when an event fires lists the event's consumers -- every hold, block, kill and
+commit that names it -- and re-derives each window in the same commit, with the hazard asserted
+(A6: the ROB now asserts that no flagged load is ever behind the pointer).
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**
@@ -926,6 +940,16 @@ module-level state, one per drawing process: Verilator does not copy a function'
 back. `src/lint.sh` rejects a seeded `$random`/`$urandom` in any bench. A pass is believed only
 alongside counts showing each case the bench exists for occurred. `tb_rv_dcache` fails when a miss
 outcome never occurs, and each of its fixes was re-broken once to watch the bench fail.
+
+**G14. A race fixed in the RTL ships with a directed test that forces the ORDER the race needs.**
+Random and sampled workloads reach an interleaving at the rate real code produces it, which for a
+one-cycle window can be never. The lost-store hang (D21) needed a store whose DATA arrived before its
+ADDRESS (snooped from a producer that writes back after the store allocates) with a younger load of
+its row already read: a store whose data comes from the register file commits two cycles later and
+misses the window, so 77 SimPoints ran the assertion clean on the broken RTL. `core/directed/lateflag.S`
+(2d5ae1d8) builds the order -- a divide delays the address, an add in the row supplies the data -- and
+fires the assertion on the first case before the fix. The test is written by tracing the race in the
+bench first: a first draft that left the data in the register file passed on the broken RTL.
 
 ## H. Process
 
