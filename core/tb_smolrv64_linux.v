@@ -717,14 +717,18 @@ module tb;
          if (f < lq_bmin) lq_bmin = f;
       end
    end
+   reg  [31:0]      lq_bmin_q = 0;
+   always @(posedge ui_clk) lq_bmin_q <= lq_bmin;
    always @(posedge ui_clk) if (!reset && meas) begin
       n_lqocc <= n_lqocc + 64'(lq_cnt);
       if (dut.core.st_lq) begin
          if (dut.core.cbo_any)     lq_cbo  <= lq_cbo + 1;
          else if (lq_cnt == LQS_N) lq_full <= lq_full + 1;
          else                      lq_two  <= lq_two + 1;
-         if (!dut.core.cbo_any && (lq_bmin >= 2))
-            $fatal(1, "tb: the load queue refuses a credit with two free entries in every bank (%0d live, IR loads %0d)", lq_cnt, dut.core.ir_ld);
+         // the credit is a cycle old: the banks then, net of that cycle's IR and P groups (one load
+         // a bank each), less one a load of P's group now -- three free in every bank leaves room
+         if (!dut.core.cbo_any && (lq_bmin_q >= 3))
+            $fatal(1, "tb: the load queue refuses a credit with three free entries in every bank a cycle ago (%0d live, IR loads %0d, P loads %0d)", lq_cnt, dut.core.ir_ld, dut.core.p_nld);
          lq_noa  <= lq_noa  + 64'($countones(lq_v & ~lq_av));
          lq_wait <= lq_wait + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m));
          lq_blk  <= lq_blk  + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m & dut.core.u_lq.e_block));
@@ -1479,7 +1483,8 @@ module tb;
    end
 
    // ---- SER-SIM: be:serialize's cycles by the class of the op that holds them --------------
-   // The serialising op in flight (its class captured as it dispatches), else the op at the queue
+   // The serialising op in flight (its class captured as it dispatches), else one the frontend's pick
+   // stage holds (in the IR the next cycle, when the cycle is classified), else the op at the queue
    // head. The IR's record loads the head's every cycle, so the head's record of a cycle is the
    // IR's the next: a cycle is classified one cycle late, when its head's record is in the IR.
    //   0 csr read, 1 csr write: a CSR op waiting for the CSR op before it
@@ -1490,9 +1495,10 @@ module tb;
    reg [63:0] ser_c [0:SER_N-1];
    reg [3:0]  ser_k_q, ser_kp, sp_k;          // the op in flight; the last classified cycle's; last cycle's in flight
    reg        sp_v, sp_rf, sp_inf, sp_m;      // last cycle: be:serialize, a refill, an op in flight, measured
+   reg        sp_p;                           // ...the pick stage held a serialising op (in the IR now)
    integer    seri;
    initial begin for (seri = 0; seri < SER_N; seri = seri + 1) ser_c[seri] = 0;
-                 ser_k_q = 0; ser_kp = 0; sp_k = 0; sp_v = 0; sp_rf = 0; sp_inf = 0; sp_m = 0; end
+                 ser_k_q = 0; ser_kp = 0; sp_k = 0; sp_v = 0; sp_rf = 0; sp_inf = 0; sp_m = 0; sp_p = 0; end
    function automatic [3:0] ser_cls(input [31:0] i, input amo, input csr, input fi, input ill);
       begin
          if (ill)                       ser_cls = 4'd8;
@@ -1512,13 +1518,14 @@ module tb;
       ik = ser_cls(dut.core.d_insn, dut.core.d_is_amo, dut.core.d_is_csr, dut.core.d_is_fencei,
                    dut.core.d_illegal | dut.core.d_fault);
       if (sp_v) begin                          // last cycle's class: a refill takes the one before it
-         ser_kp = sp_rf ? ser_kp : sp_inf ? sp_k : hk;
+         ser_kp = sp_rf ? ser_kp : sp_inf ? sp_k : sp_p ? ik : hk;
          if (sp_m) begin
             if (ser_kp >= SER_N) $fatal(1, "tb: be:serialize charged to %h, not a serialising, CSR or CBO op (c=%0d)", dut.core.fe.h_insn, c);
             ser_c[ser_kp] = ser_c[ser_kp] + 1;
          end
       end
       sp_v = (td_k == 5'd19);  sp_rf = td_rf;  sp_inf = dut.core.ser_inflight;  sp_k = ser_k_q;  sp_m = meas;
+      sp_p = |dut.core.p_ser;
       if (dut.core.rn_valid & dut.core.d_ser) ser_k_q = ik;   // the IR's op dispatches now
    end
 

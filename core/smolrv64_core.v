@@ -326,6 +326,7 @@ module smolrv64_core
      (.clk(clk_fe), .clk2x(clk), .reset(reset), .accept(accept), .consume(fe_consume),
       .d_valid(fe_dv), .d_rec(fe_rec), .d_fc(fe_fc),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc), .hd_lane(fe_hd_lane),
+      .drop(fe_drop), .p_v(fe_pv), .p_gc(fe_pgc),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -345,6 +346,9 @@ module smolrv64_core
    // the IR holds a group.
    localparam integer IRW = `IR_RECW;
    wire [IW-1:0]     fe_dv;
+   wire              fe_drop;           // dispatch is frozen: the frontend's pick stage drops its group
+   wire [IW-1:0]     fe_pv;             // the pick stage's group, by lane, and each lane's class
+   wire [IW*16-1:0]  fe_pgc;
    wire [IW*IRW-1:0] fe_rec;
    wire [ROB_CB-1:0] fe_fc;
    wire [IW-1:0]     fe_consume;
@@ -4815,27 +4819,54 @@ module smolrv64_core
    // scheduler, its dispatch-stage register. Every input is a flop or a sum over flops; this
    // cycle's frees are not credited. Each group allocates at most one entry in each scheduler,
    // the LQ, the SQ and each rename shard, which is what the per-resource checks rely on (and
-   // LOWAT=4 covers two groups per shard, so `low` is the rename credit as it stands).
+   // LOWAT=4 covers the three groups a shard's registered `low` does not count, so `low` is the
+   // rename credit as it stands). The frontend's PICK STAGE holds a second group between the head
+   // and the IR (taken last cycle, in the IR next): every credit counts it beside the IR's.
    wire [NL-1:0] ir_i = s_v & s_cls_i;              // the IR's group holds lane k's op
    wire       ir_l  = |(s_v & s_cls_l);
    wire [3:0] ir_f  = ones_nl(s_v & s_cls_fc);             // the IR group's FP ops: any number
    wire [3:0] ir_ld = ones_nl(s_v & s_ld_nb);             // the IR group's loads and stores: any number
    wire [3:0] ir_st = ones_nl(s_v & s_st_nb);
    wire [3:0] ir_n  = ones_nl(s_v);
-   wire [ROB_IDXB-ROB_CB:0] rob_inflt = {1'b0, rob_occ} + {{(ROB_IDXB-ROB_CB){1'b0}}, |s_v};   // rows: the ROB's and the IR group's
+   wire [IW-1:0] p_i, p_l, p_fc, p_m, p_ld, p_st, p_ser, p_csr;   // the pick stage's group, by lane
+   genvar gpk;
+   generate for (gpk = 0; gpk < IW; gpk = gpk + 1) begin: pk
+      wire [15:0] c = fe_pgc[gpk*16 +: 16];
+      assign p_i[gpk]  = fe_pv[gpk] & c[GC_I];    assign p_l[gpk]   = fe_pv[gpk] & c[GC_L];
+      assign p_fc[gpk] = fe_pv[gpk] & c[GC_FC];   assign p_m[gpk]   = fe_pv[gpk] & c[GC_M];
+      assign p_ld[gpk] = fe_pv[gpk] & c[GC_LD];   assign p_st[gpk]  = fe_pv[gpk] & c[GC_ST];
+      assign p_ser[gpk] = fe_pv[gpk] & c[GC_SER]; assign p_csr[gpk] = fe_pv[gpk] & c[GC_CSR];
+   end endgenerate
+   wire [3:0] p_nf = ones_nl(p_fc), p_nld = ones_nl(p_ld), p_nst = ones_nl(p_st);
+   assign fe_drop = redirect_q | fr_v | dec_red_q;   // d_take's freeze, a cycle earlier for P
+   wire [ROB_IDXB-ROB_CB:0] rob_inflt = {1'b0, rob_occ} + {{(ROB_IDXB-ROB_CB){1'b0}}, |s_v}
+                                      + {{(ROB_IDXB-ROB_CB){1'b0}}, |fe_pv};   // rows: the ROB's, the IR group's and P's
+   // THE COUNTING CREDITS ARE REGISTERED (the 2x domain's take cannot wait for a scheduler's free
+   // count, the LQ's banks, the SQ's or the F stage's room: each a sum over many flops). Each is the
+   // room as it stood a cycle ago net of everything in flight then -- the stage registers, the IR's
+   // group, P's group -- and the take compares it with the one group it has not seen, P's now (taken
+   // last cycle). Frees in between are not credited.
    reg  [NL-1:0] cr_i;                                 // ...and lane k has room for one more
+   reg  [IBI+1:0] mg_i [0:NL-1];                       // lane k's free entries net of what is in flight
    integer crk;
+   always @(posedge clk) for (crk = 0; crk < NL; crk = crk + 1)
+      mg_i[crk] <= ({1'b0, l_free[crk]} > {{(IBI+1){1'b0}}, l_stg_v[crk]} + {{(IBI+1){1'b0}}, ir_i[crk]} + {{(IBI+1){1'b0}}, p_i[crk]})
+                 ? {1'b0, l_free[crk]} - {{(IBI+1){1'b0}}, l_stg_v[crk]} - {{(IBI+1){1'b0}}, ir_i[crk]} - {{(IBI+1){1'b0}}, p_i[crk]}
+                 : {(IBI+2){1'b0}};
    always @* for (crk = 0; crk < NL; crk = crk + 1)
-      cr_i[crk] = {1'b0, l_free[crk]} > ({{(IBI+1){1'b0}}, l_stg_v[crk]} + {{(IBI+1){1'b0}}, ir_i[crk]});
-   wire cr_l  = ~ho_inf & ~ir_l;                       // one head op in flight
+      cr_i[crk] = mg_i[crk] > {{(IBI+1){1'b0}}, p_i[crk]};
+   wire cr_l  = ~ho_inf & ~ir_l & ~(|p_l);             // one head op in flight
    // the F stage: room for an FP op at slot position k with every one before it an FP op too. The
    // head register and the FIFO hold FQ; the IR's group lands in them this cycle; and when the
    // scheduler has room for two, one op leaves them for it now (the head, or the IR's first a cycle
    // later beside the head group's landing), so a full stage still takes one a cycle
-   wire [7:0]    cr_f_room = FQ[7:0] + {7'd0, rf_free >= 2};
+   // (registered: what the stage holds and the IR's and P's groups bring it, a cycle ago; an op
+   // leaving for the scheduler is not credited)
+   reg  [7:0]    fq_inf;
+   always @(posedge clk) fq_inf <= {{(8-FQB){1'b0}}, fpq_n} + {4'd0, ir_f} + {4'd0, p_nf};
    reg  [IW-1:0] cr_f;
    always @* for (crk = 0; crk < IW; crk = crk + 1)
-      cr_f[crk] = {{(8-FQB){1'b0}}, fpq_n} + {4'd0, ir_f} + crk[7:0] < cr_f_room;
+      cr_f[crk] = fq_inf + {4'd0, p_nf} + crk[7:0] < FQ[7:0];
    // A head op (an AMO, LR/SC or CBO) waits in M for the ROB head, so a CBO dispatches only once
    // every older load and store has its address (an AMO or LR/SC drains first), one head op is in
    // flight at a time (the head-op register holds one), and no load or store dispatches while one
@@ -4854,7 +4885,7 @@ module smolrv64_core
       if (d_valid & (d_cbo_g != d_is_cbo)) $fatal(1, "smolrv64_core: the dispatch class's CBO decode disagrees with is_cbo");
       if (ho_end & ~ho_inf) $fatal(1, "smolrv64_core: a head op completes with none in flight");
    end
-   wire cbo_any = ho_inf | ir_l;
+   wire cbo_any = ho_inf | ir_l | (|p_l);
    // TWO DIVIDES IN FLIGHT at most, each from its dispatch to the MD stage's writeback (or its
    // death): the stage and its queue register hold them, so a lane that issues one always finds a
    // place; a group holds at most one (smolrv64_frontend's divide rule)
@@ -4883,7 +4914,8 @@ module smolrv64_core
       if (md_wb & ~((dt_v[0] & (dt_rob[0] == md_rob)) | (dt_v[1] & (dt_rob[1] == md_rob))))
          $fatal(1, "smolrv64_core: the MD stage completes a divide (rob %0d) that is not in flight", md_rob);
    end
-   wire cr_div = ~(&dt_v) & ~((|dt_v) & ir_m);
+   wire p_mv   = |p_m;
+   wire cr_div = ~(&dt_v) & ~((|dt_v) & (ir_m | p_mv)) & ~(ir_m & p_mv);   // in flight + the IR's + P's < 2
    // A load or store at slot position k with every slot before it one too: the SQ has room past
    // the IR's stores; the LQ has k+1 banks with room past the IR's loads, each of which takes one
    // bank -- at worst one with a single free entry, so the banks left are those with two or more
@@ -4892,26 +4924,42 @@ module smolrv64_core
    reg  [IW-1:0] cr_ld, cr_st;
    reg  [3:0]    lb2, lb1, lbr;
    integer       crr;
+   reg  [3:0]    lb3, lbab, lbm;
    always @* begin
-      lb2 = 4'd0;  lb1 = 4'd0;
+      lb3 = 4'd0;  lb2 = 4'd0;  lb1 = 4'd0;
       for (crr = 0; crr < QNB; crr = crr + 1) begin
-         if (lq_bfree[crr*LBW +: LBW] >= 2) lb2 = lb2 + 4'd1;
+         if (lq_bfree[crr*LBW +: LBW] >= 3) lb3 = lb3 + 4'd1;
+         if (lq_bfree[crr*LBW +: LBW] == 2) lb2 = lb2 + 4'd1;
          if (lq_bfree[crr*LBW +: LBW] == 1) lb1 = lb1 + 4'd1;
       end
-      lbr = lb2 + ((lb1 > ir_ld) ? lb1 - ir_ld : 4'd0);
-      for (crk = 0; crk < IW; crk = crk + 1) begin
-         cr_ld[crk] = ~cbo_any & (lbr > crk[3:0]);
-         cr_st[crk] = ~cbo_any & ({{(7-SQ_IB){1'b0}}, sq_free} > {4'd0, ir_st} + crk[7:0]);
-      end
+      // A group's loads take one entry a bank, and two groups are in flight (the IR's, P's): a bank
+      // of three or more free survives both, one of two dies only where both groups hit it (at most
+      // the smaller group's count of them), one of one wherever either does
+      lbab = ir_ld + p_nld;
+      lbm  = (ir_ld < p_nld) ? ir_ld : p_nld;
+      lbr  = lb3 + ((lb2 > lbm) ? lb2 - lbm : 4'd0) + ((lb1 > lbab) ? lb1 - lbab : 4'd0);
    end
-   wire cr_cbo = ~lq_uf_any & ~sq_uf_any & (ir_ld == 4'd0) & (ir_st == 4'd0);
+   // (registered: the banks that survive the IR's and P's loads, a cycle ago, and the SQ's free
+   // entries net of their stores; each load of P's group now may empty one more bank)
+   reg  [3:0]    lbr_q;
+   reg  [7:0]    sq_mg;
+   wire [7:0]    sq_inf = {4'd0, ir_st} + {4'd0, p_nst};
+   always @(posedge clk) begin
+      lbr_q <= lbr;
+      sq_mg <= ({{(7-SQ_IB){1'b0}}, sq_free} > sq_inf) ? {{(7-SQ_IB){1'b0}}, sq_free} - sq_inf : 8'd0;
+   end
+   always @* for (crk = 0; crk < IW; crk = crk + 1) begin
+      cr_ld[crk] = ~cbo_any & (lbr_q > p_nld + crk[3:0]);
+      cr_st[crk] = ~cbo_any & (sq_mg > {4'd0, p_nst} + crk[7:0]);
+   end
+   wire cr_cbo = ~lq_uf_any & ~sq_uf_any & (ir_ld == 4'd0) & (ir_st == 4'd0) & (p_nld == 4'd0) & (p_nst == 4'd0);
    reg  [IW-1:0] cr_rob;                              // a ROB row for the group (every bit)
    always @* for (crk = 0; crk < IW; crk = crk + 1) cr_rob[crk] = rob_inflt < ROB_CAP;    // a row for the group, within the rows the ROB fills
    // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
    // is dropped), while a rename shard is low, or while a serialising op is in flight or in the IR
-   wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser);
-   wire cr_ser = drained & ~d_any & ~csr_infl;              // a serialising op drains first, alone
-   wire cr_csr = ~csr_infl & ~(d_valid & d_csr_op);         // a CSR op waits for the one before it
+   wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser) & ~(|p_ser);
+   wire cr_ser = drained & ~d_any & ~(|fe_pv) & ~csr_infl;  // a serialising op drains first, alone
+   wire cr_csr = ~csr_infl & ~(d_valid & d_csr_op) & ~(|p_csr);   // a CSR op waits for the one before it
    assign crd = {cr_div, cr_cbo, cr_csr, cr_ser, cr_pop, cr_rob, cr_st, cr_ld, cr_f, cr_l, cr_i};
    // what the credits guarantee, checked where it is used
    reg  [IW-1:0] s_noroom;                           // a slot's op has no room in what it allocates

@@ -53,6 +53,9 @@ module smolrv64_frontend
     output wire                    hd_take,           // ...and pops it this cycle
     output wire [15:0]             hd_gc,             // its dispatch class (the stall accounting's)
     output wire [$clog2(IW)-1:0]   hd_lane,           // ...and the lane it goes to
+    input  wire                    drop,              // dispatch is frozen: the group the pick stage holds dies
+    output reg  [IW-1:0]           p_v,               // the pick stage: the group taken last cycle, by lane...
+    output wire [IW*16-1:0]        p_gc,              // ...and each lane's dispatch class (the credits count it)
     input  wire [PCW-1:0]          redirect_pc,
     input  wire [SEQW-1:0]         redirect_seq,
     input  wire [RASB-1:0]         redirect_rsp,      // the RAS top the redirect restores
@@ -482,12 +485,18 @@ module smolrv64_frontend
      (.clk(clk2x), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_wd), .rp(q_rp), .ro(q_ro), .rd(q_rd2));
    // the heads' dispatch classes in program order (the queued record's last field), and lane k's
    // record, decoded from what the queue holds of it into the record dispatch takes
+   // THE PICK STAGE (P): the group the heads' rules take this cycle, lane k's queue record as read,
+   // registered; the record is rebuilt into the IR the next cycle. Between the take and the IR's
+   // dispatch two groups are in flight (P's and the IR's), and the credits count both.
+   reg  [QRW-1:0] p_raw [0:IW-1];
+   reg  [LB-1:0]  p_fc;
    wire [15:0]    g  [0:IW-1];
    wire [IRW-1:0] ql [0:IW-1];
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: hd
       assign g[gk] = q_rd2[gk*QRW +: 16];
+      assign p_gc[gk*16 +: 16] = p_raw[gk][15:0];
       `QR_DECL(r_)
-      assign `QR_REC(r_) = q_rd2[(IW + gk)*QRW +: QRW];
+      assign `QR_REC(r_) = p_raw[gk];
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hd
         (.clk(clk2x), .pdet(r_pdet), .pc(r_pc), .inst(r_inst), .seq_in(r_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
          .fault_op(r_fault), .cause(r_fault_cause), .fault_hi(r_fault_hi), .fs_off(1'b0),
@@ -613,18 +622,29 @@ module smolrv64_frontend
    reg  [IW-1:0] take_l;                          // lane k's instruction is taken: j = (k - lc) % IW
    integer       tk;
    always @* for (tk = 0; tk < IW; tk = tk + 1) take_l[tk] = take_c[rsub(tk[LB-1:0], lc)];
+   // P takes the group every cycle; the IR takes P's unless dispatch is frozen, when what P holds is
+   // younger than the op that froze it (every freeze is raised by an op already dispatched)
+   reg  [IRW-1:0] p_frd [0:IW-1];                 // the shadow's record, for the check below
+   initial p_v = {IW{1'b0}};
    always @(posedge clk2x) begin
-      if (reset | redirect) d_valid <= {IW{1'b0}};
-      else begin
-         d_valid <= take_l;
-         d_fc    <= lc;
-         for (k = 0; k < IW; k = k + 1) d_rec[k*IRW +: IRW] <= ql[k];
+      if (reset | redirect) begin
+         p_v <= {IW{1'b0}};  d_valid <= {IW{1'b0}};
+      end else begin
+         p_v     <= take_l;
+         d_valid <= p_v & {IW{~drop}};
+      end
+      p_fc <= lc;
+      d_fc <= p_fc;
+      for (k = 0; k < IW; k = k + 1) begin
+         p_raw[k] <= q_rd2[(IW + k)*QRW +: QRW];
+         p_frd[k] <= q_frd[(IW + k)*IRW +: IRW];
+         d_rec[k*IRW +: IRW] <= ql[k];
       end
    end
    always @(posedge clk2x) if (!reset & !redirect)
       for (k = 0; k < IW; k = k + 1)
-         if (take_l[k] & (ql[k] != q_frd[(IW + k)*IRW +: IRW]))
-            $fatal(1, "smolrv64_frontend: lane %0d's record rebuilt at the head differs from its decode before the queue (pc %h)", k, q_frd[(IW + k)*IRW + IRW - PDW - PCW +: PCW]);
+         if (p_v[k] & (ql[k] != p_frd[k]))
+            $fatal(1, "smolrv64_frontend: lane %0d's record rebuilt at the head differs from its decode before the queue (pc %h)", k, p_frd[k][IRW - PDW - PCW +: PCW]);
 endmodule
 
 `default_nettype wire

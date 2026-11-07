@@ -492,8 +492,9 @@ module smolrv64_rename
       wire [PW-1:0] avail = t - h;
       wire [PW-1:0] t_n = reset ? t : t + cnt(fq);
       wire [PW-1:0] h_n = reset ? hc : flush ? hc_n : h + cnt(sel) - cnt(wsel);
-      // a lane's shard gets one register a group, an FP shard up to IW: two groups' worth
-      localparam integer LW = (gL >= SH_FL) ? ((LOWAT > 2*IW) ? LOWAT : 2*IW) : LOWAT;
+      // a lane's shard gets one register a group, an FP shard up to IW: three groups' worth (the
+      // IR's, the frontend's pick stage's and the one taken now)
+      localparam integer LW = (gL >= SH_FL) ? ((LOWAT > 3*IW) ? LOWAT : 3*IW) : LOWAT;
       // THE LOW-WATER FLAG READS REGISTERS ONLY (see `stall`): the list's tail after this cycle's
       // frees (registered a cycle ago) and its head after the allocation of the group the IR holds
       // (sel_r: its slots' destinations, from the IR's registers), against the mark. The group
@@ -580,8 +581,9 @@ module smolrv64_rename
    // THE STALL IS A REGISTER: next cycle's low-water flags, from the pointers' registers and the
    // registered frees (fl.u.low_n), so neither the dispatch take nor the commit and flush cone
    // stands in front of it. It holds the queue's POP;
-   // a group already popped dispatches the next cycle whatever the stall says, and rename
-   // allocates for every slot that dispatches (LOWAT covers that group and the one dispatching).
+   // a group already popped dispatches two cycles later (the frontend's pick stage, then the IR)
+   // whatever the stall says, and rename allocates for every slot that dispatches (LOWAT covers
+   // those two groups and the one dispatching).
    // An allocation the stall suppressed would hand the next group the same registers.
    reg [NSH-1:0] low;
    initial low = {NSH{1'b0}};
@@ -722,6 +724,7 @@ module smolrv64_rename
       if (N_INT <= 32)  $fatal(1, "smolrv64_rename: N_INT=%0d must exceed 32", N_INT);
       if (N_FL <= 32 || N_FF <= 32) $fatal(1, "smolrv64_rename: N_FL=%0d and N_FF=%0d must exceed 32", N_FL, N_FF);
       if (LOWAT < IW)   $fatal(1, "smolrv64_rename: LOWAT=%0d must cover a group of %0d", LOWAT, IW);
+      if (LOWAT < 3)    $fatal(1, "smolrv64_rename: LOWAT=%0d must cover three groups (a lane's shard takes one a group)", LOWAT);
    end
 endmodule
 

@@ -14,14 +14,22 @@
 // h2: the clk2x cycle is the second half of clk's. tg flips at every clk edge and tg2 is tg as clk2x
 // last saw it, so they differ in the first half and agree in the second. In a `posedge clk2x` block,
 // `if (h2)` is "this edge is a clk edge".
+// h2 itself is a clk2x flop (h2r: next cycle's is this cycle's complement, from tg and tg2), so the
+// cones that read it start in the clk2x domain and not at tg's clk flop.
 module smolrv64_x2ph
   (input  wire clk,
    input  wire clk2x,
    output wire h2);
    reg tg = 1'b0, tg2 = 1'b0;
+   (* max_fanout = 64 *) reg h2r = 1'b1;
    always @(posedge clk)   tg  <= ~tg;
-   always @(posedge clk2x) tg2 <= tg;
-   assign h2 = (tg2 == tg);
+   always @(posedge clk2x) begin
+      tg2 <= tg;
+      h2r <= (tg2 != tg);
+   end
+   assign h2 = h2r;
+   always @(posedge clk2x) if (h2r != (tg2 == tg))
+      $fatal(1, "smolrv64_x2ph: the registered phase %0d is not the clocks' (tg %0d, tg2 %0d)", h2r, tg, tg2);
 endmodule
 
 // A clk2x pulse, with its payload, for clk logic: sv is high for exactly one clk cycle after a clk2x

@@ -166,9 +166,13 @@ module rv_soc_top #(
    wire                ptw_rvalid, dptw_rvalid;
    wire                redirect;  wire [PCW-1:0] redirect_target;
 
+   // the core's reset is a clk2x flop (replicated near its loads): the shell's synchronised reset is a
+   // clk flop, and its fan-out into the core's clk2x flops had half a clk cycle
+   (* max_fanout = 256 *) reg core_reset = 1'b1;
+   always @(posedge clk2x) core_reset <= reset;
    smolrv64_core #(.HW(HW), .IW(IW), .PCW(PCW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
                .LQ_IB(LQ_IB)) core
-     (.clk(clk2x), .clk_fe(clk), .reset(reset),
+     (.clk(clk2x), .clk_fe(clk), .reset(core_reset),
       .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip), .mtime(clint_mtime),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
       .ic_tag(ic_tag), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),

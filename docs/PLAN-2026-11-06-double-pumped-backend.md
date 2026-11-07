@@ -244,6 +244,38 @@ Step A (the shape): IW=2, NI=20, 128-register shards (the pending table wants on
 the FP shards are 128 too), 128 ROB rows. Two IW=4 assumptions fixed on the way (a lane index
 taken as two shard bits; the debug bus's ROB row field). riscv-tests 240/0, lint clean.
 
+**M2's census (routed, 2026-11-07): -2.722 ns, 72,438 failing endpoints of `clk2x`'s 178,133.** By
+clock pair: 62,096 `clk2x` -> `clk2x` (6 ns logic in a 3 ns cycle: the redesign below), 15,501
+`clk` -> `clk2x` and 8,188 `clk2x` -> `clk` (crossings timed at one `clk2x` cycle), 743 `clk` ->
+`clk`. By unit the most: the D$ 13.8 K, the FPU 5.8 K, the core's own logic 5.7 K, the SQ 5.7 K,
+the CSRs 6.4 K (3.6 K of them from `clk`), the PRF 5.4 K. The largest family starts at the phase
+flop: `h2` came combinationally from `tg`, a `clk` flop, into the D$'s answer, the LSU's completion
+and the schedulers' wake and select (18 levels into `e_sp`). Correctness first, IPC after: every
+stage that does not close gets a register, and the GB5 run on the board prices it.
+
+**Step 1, the queue's read side and the IR.** At M2 the take loop ran from the lanes' and the LQ's
+valid bits through the credits' counts into `q_rp` (-2.68 ns, 16 levels), and the head's record
+rebuild from the queue's read into `d_rec` (-2.36 ns, 8 levels). Now:
+
+- THE PICK STAGE (`smolrv64_frontend` P): the take registers the lane-ordered queue records it read
+  (`p_raw`), and the IR rebuilds them the next cycle. Two groups are in flight between the take and
+  dispatch; every credit and gate counts P's beside the IR's (`fe_pv`, `fe_pgc`, by lane), and P
+  passes its group to the IR only while dispatch is not frozen (`drop`: every freeze is raised by
+  an op already dispatched, so what P holds then is younger). The LQ's bank credit is the sound
+  bound for two groups (a bank of three or more survives both, of two only the smaller group's
+  count can die, of one any load's); rename's low-water mark covers three groups (the FP shard's
+  3*IW).
+- THE COUNTING CREDITS ARE REGISTERED: a scheduler's free entries, the LQ's surviving banks, the
+  SQ's and the F stage's room, each a cycle old net of everything in flight then; the take compares
+  them with P's group, the one it has not seen. Frees in between, and an op leaving the F stage,
+  are not credited.
+- `h2` is a `clk2x` flop (`smolrv64_x2ph`: `h2r <= tg2 != tg`, asserted equal to the clocks'),
+  and the core's reset a replicated `clk2x` flop.
+
+The benches: the Linux bench's LQ credit check is three free entries a bank a cycle ago, and its
+serialise accounting charges a cycle a serialising op in P held to that op (in the IR when the cycle
+is classified).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
