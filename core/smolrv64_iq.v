@@ -31,9 +31,10 @@ module smolrv64_iq
     parameter ROBB   = 4,
     parameter PBITS  = 9,
     parameter NWB    = 3,             // writeback ports watched, one per PRF shard
-    // 1 when this scheduler's unit has FIXED one-cycle latency. Its entries are then woken
-    // AT SELECT rather than at writeback: producer selected at N executes at N+1, its consumer is
-    // woken at N+1 (the dependency matrix's column) and selected at N+2 (READY IS A REGISTER).
+    // 1 when this scheduler's unit has a FIXED latency: its result is in the write register four
+    // cycles after its select (the lane's R, E1, E2). Its entries are then woken AT SELECT rather than
+    // at writeback: producer selected at N, its consumer's ready set at N+2 (the dependency matrix's
+    // column at N+1, swk_q) and selected at N+3 (READY IS A REGISTER), reading the result at N+4.
     parameter FIXEDL = 0,
     // 1 for a class that must keep PROGRAM ORDER among its own entries -- memory, until
     // there is disambiguation. Allocation becomes circular and only the head may issue, so
@@ -167,6 +168,8 @@ module smolrv64_iq
    initial begin sq_v = 1'b0;  sq_oh = {NENT{1'b0}};  sq_ix = {IDXB{1'b0}}; end
    reg  [NENT-1:0]  dep [0:NENT*NSRC-1];
    wire [NENT*NSRC-1:0] swk;            // the source's producer issued last cycle
+   reg  [NENT*NSRC-1:0] swk_q;          // ...a cycle on, for the entry live when the column was read
+   initial swk_q = {(NENT*NSRC){1'b0}};
 
    // ---- ready, and the pick ----
    // READY IS A REGISTER: a source is ready in the cycle after its wake (a writeback's compare, the
@@ -315,9 +318,14 @@ module smolrv64_iq
       end else begin
          sq_v  <= self_v & ~flush;
          sq_oh <= isel_oh;  sq_ix <= isel;
+         for (k = 0; k < NENT; k = k + 1)
+            for (q = 0; q < NSRC; q = q + 1)
+               swk_q[k*NSRC+q] <= ~flush & v[k] & swk[k*NSRC+q];
+         // (an entry freed after the column was read is not live; one allocated into its slot since
+         // is live only from the edge after its dispatch, and swk_q was cleared for it then)
          for (k = 0; k < NENT; k = k + 1) if (v[k])
             for (q = 0; q < NSRC; q = q + 1)
-               if (hit(e_ps[k][q*PBITS +: PBITS]) || swk[k*NSRC+q])
+               if (hit(e_ps[k][q*PBITS +: PBITS]) || swk_q[k*NSRC+q])
                   e_r[k][q] <= 1'b1;
          if (do_iss) begin
             v[isel] <= 1'b0;

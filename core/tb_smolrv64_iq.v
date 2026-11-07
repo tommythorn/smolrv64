@@ -3,8 +3,8 @@
 //   1. a ready entry issues, and every dispatched entry issues exactly ONCE
 //   2. an entry whose source is not ready does NOT issue
 //   3. a wakeup arriving in the dispatch cycle is not lost (a producer broadcasts once)
-//   4. wake-at-select makes a dependent issuable two cycles after its producer's pick (ready is a
-//      register: the dependency matrix's column in the cycle after, the pick in the next)
+//   4. wake-at-select makes a dependent issuable three cycles after its producer's pick (the column
+//      in the cycle after, its wake registered, the ready bit registered)
 //   5. the entry held downstream is never reallocated
 //   6. full, and flush
 //   7. in order (the INORDER instance), and an entry that hands itself on (d_hx) waits while its
@@ -99,13 +99,14 @@ module tb;
       @(negedge clk); chk("wakeup during dispatch is not lost", 1'b1, 4'd2);
       take;
 
-      // 4. wake-at-select: a consumer of the issuing entry is ready two cycles after its pick
+      // 4. wake-at-select: a consumer of the issuing entry is ready three cycles after its pick
       disp(4'd3, 9'd0,  1'b1, 9'd200);          // producer, dest p200
       disp(4'd4, 9'd200,1'b0, 9'd201);          // consumer of p200
       @(negedge clk); chk("producer ready", 1'b1, 4'd3);
       take;                                      // issuing it wakes the consumer
       chk("consumer not issuable a cycle after the pick", 1'b0, 4'd0);
-      @(negedge clk); chk("consumer issuable the cycle after that", 1'b1, 4'd4);
+      @(negedge clk); chk("nor two cycles after", 1'b0, 4'd0);
+      @(negedge clk); chk("consumer issuable three cycles after", 1'b1, 4'd4);
       take;
 
       // 5. the held entry is never reallocated

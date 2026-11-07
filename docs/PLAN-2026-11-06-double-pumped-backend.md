@@ -328,6 +328,16 @@ execute stage leaves E. The multiply's slot two cycles after its execute is rese
 the pick while it executes (`e_mul`); the int-to-FP handoff is busy while one is in R or E. A
 one-cycle producer's consumer still executes two cycles after it.
 
+**Step 4, second part: EXECUTE IS TWO STAGES** (`smolrv64_exec` PIPE=1). One stage of ALU from
+registered operands misses 3 ns alone (-0.638, the 333 MHz calibration). E1 runs the ALU's units
+(adder, shifter, compares, logic, count and permute) and registers them with the group select; E2
+selects the result, sign-extends a W form and runs the branch unit from registers. The address is
+E1's, so address generation, the multiply's start, a divide's and an int-to-FP op's hand-off stay
+in E1; the write register, the ROB completion and a CTI's resolution are E2's. The multiply's slot
+is kept by holding the pick while it is in R. A one-cycle producer's consumer issues three cycles
+after it (the dependency matrix's wake registered, `swk_q`) and executes three after it: 9 ns, a
+cycle more than main's 6 -- the staggered ALU (section 6 of the 333 MHz plan) is what wins it back.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

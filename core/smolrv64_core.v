@@ -1459,6 +1459,8 @@ module smolrv64_core
    wire [RN_PBITS-1:0]   l_ps1 [0:NL-1], l_ps2 [0:NL-1], l_wa [0:NL-1], l_qprd [0:NL-1], l_blk_pr [0:NL-1];
    wire [63:0]           l_wb [0:NL-1], l_qval [0:NL-1], l_res [0:NL-1], l_mres [0:NL-1], l_rs2 [0:NL-1];
    wire                  l_we [0:NL-1], l_qv [0:NL-1], l_wv [0:NL-1], l_cti [0:NL-1], l_mis [0:NL-1];
+   wire                  l_v2 [0:NL-1], l_iss2 [0:NL-1], l_late2 [0:NL-1];   // E2's (the lanes' E1 and E2: ln[])
+   wire [ROB_IDXB-1:0]   l_rob2 [0:NL-1];
    wire                  l_ready [0:NL-1], l_stg_v [0:NL-1], l_blk_v [0:NL-1], l_pick [0:NL-1];
    wire [IBI:0]          l_free [0:NL-1];
    wire [LPLW-1:0]       l_pl [0:NL-1];
@@ -1516,9 +1518,9 @@ module smolrv64_core
       end
       // ---- the scheduler: an index into the lane's payload and tag arrays ----
       reg                  m1;
-      reg                  v;               // E holds an op (below)
-      reg                  e_mul;           // ...a multiply: the lane's write slot two cycles on is its
+      reg                  v;               // E1 holds an op (below)
       reg                  r_v;             // R holds an op (below)
+      wire                 r_mul;           // ...a multiply (below)
       reg [IBI-1:0]        r_ent;
       smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
                 .FIXEDL(1),.INORDER(0),.OLDEST(1)) u_iq
@@ -1528,7 +1530,7 @@ module smolrv64_core
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
          .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
-         .unit_busy(e_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
+         .unit_busy(r_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
          .hold_v(r_v),.hold_ent(r_ent),
@@ -1540,7 +1542,10 @@ module smolrv64_core
       always @(posedge clk) if (mv) psmem[d_ent] <= {stg_late, stg_ps};
       always @(posedge clk) if (mv) plmem[d_ent] <= stg_pl;
       wire [3*RN_PBITS:0]   ps_out = psmem[iss_ent];
-      // THE LANE IS THREE STAGES: the pick, R (the picked op reads its operands), E (it executes).
+      // THE LANE IS FOUR STAGES: the pick, R (the picked op reads its operands), E1 and E2 (it
+      // executes: smolrv64_exec PIPE=1). E1 runs the ALU's units and generates an address, starts a
+      // multiply, hands a divide or an int-to-FP op on; E2 selects the result into the write
+      // register, completes the op and resolves a CTI.
       // ---- R: the picked op, its tags and payload as read at the pick ----
       reg [ROB_IDXB-1:0]   r_rob;
       reg [RN_PBITS-1:0]   r_ps1, r_ps2;
@@ -1561,6 +1566,9 @@ module smolrv64_core
       `LPL_DECL(rr_)
       assign `LPL_REC(rr_) = r_pl;
       wire r_sys = is_sysq(rr_insn, rr_illegal, rr_fault);
+      // a multiply in R: its write slot is the one an op picked now would write in (E2), so the pick
+      // waits (the scheduler's unit_busy)
+      assign r_mul = r_v & ~r_sys & is_mulop(rr_insn);
       // ---- R's operands: the PRF, or a lane's write register landing this cycle ----
       // A source written back in the op's pick cycle is in its producer's write register now, and
       // that is its shard's lane's: a lane writes only its own shard, and a stream lands a register
@@ -1599,25 +1607,38 @@ module smolrv64_core
          if (rr_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(rr_is_store & is_lmem(rr_insn)))
             $fatal(1, "core: lane %0d read rs2 p%0d still pending (rob=%0d)", gl, r_ps2, r_rob);
       end
-      // ---- E: the op executing, its operands registered ----
+      // ---- E1: the op executing, its operands registered ----
       reg [ROB_IDXB-1:0]   rob;
       reg [RN_PBITS-1:0]   ps1, ps2;
       reg                  late;            // the op completes later than its issue (lane_late)
       reg [LPLW-1:0]       pl;
       reg [63:0]           rs1, rs2;
-      initial begin v = 1'b0; e_mul = 1'b0; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
+      initial begin v = 1'b0; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
       always @(posedge clk) begin
-         if (reset | redirect) begin v <= 1'b0;  e_mul <= 1'b0; end
-         else begin v <= r_v;  e_mul <= r_v & ~r_sys & is_mulop(rr_insn); end
+         if (reset | redirect) v <= 1'b0;
+         else                  v <= r_v;
          rob <= r_rob;  ps1 <= r_ps1;  ps2 <= r_ps2;  late <= r_late;  pl <= r_pl;  rs1 <= r_rs1;  rs2 <= r_rs2;
       end
-      wire iss = v & ~redirect;                                  // completes here, always
+      wire iss = v & ~redirect;
       `LPL_DECL(q_)
       assign `LPL_REC(q_) = pl;
+      // ---- E2: the op's result and resolution ----
+      reg                  v2, late2;
+      reg [ROB_IDXB-1:0]   rob2;
+      reg [LPLW-1:0]       pl2;
+      initial begin v2 = 1'b0; late2 = 1'b0; rob2 = {ROB_IDXB{1'b0}}; end
+      always @(posedge clk) begin
+         if (reset | redirect) v2 <= 1'b0;
+         else                  v2 <= v;
+         rob2 <= rob;  late2 <= late;  pl2 <= pl;
+      end
+      wire iss2 = v2 & ~redirect;                                // completes here, always
+      `LPL_DECL(q2_)
+      assign `LPL_REC(q2_) = pl2;
       wire [63:0] result, addr, target, taken_tgt;
       wire        red, taken;
-      smolrv64_exec u_x
-        (.alu_op(q_alu_op), .alu_w(q_alu_w), .alu_uw(q_alu_uw), .op1_sel(q_op1_sel),
+      smolrv64_exec #(.PIPE(1)) u_x
+        (.clk(clk), .alu_op(q_alu_op), .alu_w(q_alu_w), .alu_uw(q_alu_uw), .op1_sel(q_op1_sel),
          .op2_imm(q_op2_imm), .res_link(q_res_link), .is_rvc(q_rvc),
          .is_branch(q_is_branch), .is_jump(q_is_jump), .is_jalr(q_is_jalr), .br_func(q_br_func),
          .rs1_val(rs1), .rs2_val(rs2), .imm(q_imm), .pc(pc64(q_pc)),
@@ -1625,14 +1646,14 @@ module smolrv64_core
          .result(result), .addr(addr), .redirect(red), .target(target),
          .taken(taken), .taken_tgt(taken_tgt));
       wire sys  = is_sysq(q_insn, q_illegal, q_fault);   // a system op or a trap: the SYSQ's, nothing here
-      wire cti  = iss & ~sys & (q_is_branch | q_is_jump | q_is_jalr);
+      wire sys2 = is_sysq(q2_insn, q2_illegal, q2_fault);
+      wire cti  = iss2 & ~sys2 & (q2_is_branch | q2_is_jump | q2_is_jalr);   // E2's
       wire mis  = cti & red;
       // ---- the multiplier (lanes step 5.2c) ----
-      // mul3 starts from the lane's registered operands in the execute cycle T, and the lane
-      // reserves its slot at T+2 for it: the scheduler selects nothing at T (e_mul is its
-      // unit_busy), so nothing else executes at T+2. That slot carries the multiply's wake, its
-      // ROB completion, and its result into the write register at the edge, which the PRF writes
-      // at T+3.
+      // mul3 starts from the lane's registered operands in E1 at T, and the lane reserves its write
+      // slot at T+2 for it: the scheduler selects nothing while the multiply is in R (r_mul is its
+      // unit_busy), so no op is in E2 at T+2. That slot carries the multiply's wake, its ROB
+      // completion, and its result into the write register at the edge, which the PRF writes at T+3.
       wire                 m_go = iss & ~sys & is_mulop(q_insn);
       reg                  m2, mrdv1, mrdv2;
       reg [ROB_IDXB-1:0]   mrob1, mrob2;
@@ -1687,14 +1708,14 @@ module smolrv64_core
       assign hx_val_l[gl] = hx_val;
       always @(posedge clk) if (!reset & hx_go & hx_v & ~f_hx_take[gl])
          $fatal(1, "smolrv64_core: lane %0d hands the F stage an op (rob %0d) while its register holds rob %0d", gl, rob, hx_rob);
-      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (r_v & dead(r_rob)) | (v & dead(rob)) | (m1 & dead(mrob1)) | (m2 & dead(mrob2))
+      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (r_v & dead(r_rob)) | (v & dead(rob)) | (v2 & dead(rob2)) | (m1 & dead(mrob1)) | (m2 & dead(mrob2))
                                                     | (hx_v & dead(hx_rob))))
          $fatal(1, "smolrv64_core: the release finds a dead op in lane %0d", gl);
-      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | r_v | v | m1 | m2 | hx_v))
-         $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d read %b execute %b mul %b%b handoff %b",
-                gl, stg_v, occ, r_v, v, m1, m2, hx_v);
+      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | r_v | v | v2 | m1 | m2 | hx_v))
+         $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d read %b execute %b%b mul %b%b handoff %b",
+                gl, stg_v, occ, r_v, v, v2, m1, m2, hx_v);
       always @(posedge clk) if (!reset) begin
-         if (m2 & v)    $fatal(1, "smolrv64_core: lane %0d executes an op in its multiply's reserved slot", gl);
+         if (m2 & v2)   $fatal(1, "smolrv64_core: lane %0d has an op in E2 in its multiply's reserved slot", gl);
          if (m2 & ~mpre) $fatal(1, "smolrv64_core: lane %0d's multiply is not at mul3's stage B in its slot", gl);
       end
       // ---- the landing slot: the entry the lane's landing buffer drains this cycle ----
@@ -1717,8 +1738,8 @@ module smolrv64_core
       // the streams land a register in the lane of its shard): the tag's shard bits are the
       // constant LANE, so every wake compare, pending clear and snoop of it sees three constants.
       localparam [2:0] SHK = gl;
-      wire                 we = (v & q_rd_v & ~late) | m_wr | d;
-      wire [RN_PBITS-1:0]  wa_src = d ? dprd : m2 ? mprd2 : q_prd;
+      wire                 we = (v2 & q2_rd_v & ~late2) | m_wr | d;
+      wire [RN_PBITS-1:0]  wa_src = d ? dprd : m2 ? mprd2 : q2_prd;
       wire [RN_PBITS-1:0]  wa = {SHK, wa_src[RN_IDXB-1:0]};
       wire [63:0]          wb = d ? ddat : m2 ? mres : result;
       wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld : wa_fe) : wa_src;
@@ -1743,7 +1764,7 @@ module smolrv64_core
       // column: every op a lane runs or lands is its slot's (an integer register is renamed in its
       // slot's lane), so the column is a constant and the ROB's other columns never compare this port
       localparam [ROB_CB-1:0] COL = gl;
-      assign l_wv[gl]  = (iss & ~cti & ~late) | m2 | dc;
+      assign l_wv[gl]  = (iss2 & ~cti & ~late2) | m2 | dc;
       // A CTI COMPLETES A CYCLE AFTER IT EXECUTES, from registers, on a port of its own: its compare
       // and target (two carry chains) decide whether it mispredicted, and then it completes at its
       // squash instead, so in its execute cycle that decision would stand in front of every ROB
@@ -1754,11 +1775,11 @@ module smolrv64_core
       initial ct_v = 1'b0;
       always @(posedge clk) begin
          ct_v   <= ~reset & ~redirect & cti & ~mis;
-         ct_rob <= {rob[ROB_IDXB-1:ROB_CB], COL};
+         ct_rob <= {rob2[ROB_IDXB-1:ROB_CB], COL};
       end
       assign rob_wv[NL + 5 + gl] = ct_v & ~redirect & ~dead(ct_rob);
       assign rob_wix[(NL + 5 + gl)*ROB_IDXB +: ROB_IDXB] = ct_rob;
-      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : rob;   // dp: registers and the SYSQ's fire
+      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : rob2;  // dp: registers and the SYSQ's fire
       assign l_wix[gl] = {wix[ROB_IDXB-1:ROB_CB], COL};
       always @(posedge clk) if (!reset && l_wv[gl] && wix[ROB_CB-1:0] != COL)
          $fatal(1, "smolrv64_core: lane %0d completes ROB entry %0d, outside its column", gl, wix);
@@ -1766,6 +1787,7 @@ module smolrv64_core
          assign rob_wv[3 + gl] = l_wv[gl];  assign rob_wix[(3 + gl)*ROB_IDXB +: ROB_IDXB] = l_wix[gl];
       end
       assign l_v[gl] = v;          assign l_iss[gl] = iss;      assign l_late[gl] = late;
+      assign l_v2[gl] = v2;        assign l_iss2[gl] = iss2;    assign l_late2[gl] = late2;   assign l_rob2[gl] = rob2;
       assign l_m1[gl] = m1;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
       assign l_mres[gl] = mres;    assign l_rob[gl] = rob;      assign l_ps1[gl] = ps1;
       assign l_ps2[gl] = ps2;      assign l_we[gl] = we;        assign l_wa[gl] = wa;
@@ -3179,19 +3201,30 @@ module smolrv64_core
    reg  [5:0]          lr_rd   [0:NL-1];
    reg                 lr_lks  [0:NL-1];
    reg  [NL-1:0]       lr_old  [0:NL-1];   // lr_old[j][k]: lane j's op is older than lane k's (older(lr_seq))
+   // (the lane resolves in E2: its op's own fields are E1's a cycle on, le_*; the resolution is E2's)
+   reg  [NL-1:0]       le_br, le_jmp, le_jalr, le_rvc, le_rdv, le_lks;
+   reg  [SEQW-1:0]     le_seq  [0:NL-1];
+   reg  [ROB_IDXB-1:0] le_rob  [0:NL-1];
+   reg  [PCW-1:0]      le_pc   [0:NL-1];
+   reg  [PDW-1:0]      le_pdet [0:NL-1];
+   reg  [5:0]          le_rd   [0:NL-1];
    initial lr_v = {NL{1'b0}};
    integer lrk, lrj;
    always @(posedge clk)
       for (lrk = 0; lrk < NL; lrk = lrk + 1) begin
-         lr_v[lrk] <= ~reset & ~redirect & l_cti[lrk] & ~dead(l_rob[lrk]);
+         le_br[lrk] <= l_br[lrk];  le_jmp[lrk] <= l_jmp[lrk];  le_jalr[lrk] <= l_jalr[lrk];
+         le_rvc[lrk] <= l_rvc[lrk];  le_rdv[lrk] <= l_rdv[lrk];  le_lks[lrk] <= l_lks[lrk];
+         le_seq[lrk] <= l_seq[lrk];  le_rob[lrk] <= l_rob[lrk];  le_pc[lrk] <= l_pc[lrk];
+         le_pdet[lrk] <= l_pdet[lrk];  le_rd[lrk] <= l_rd[lrk];
+         lr_v[lrk] <= ~reset & ~redirect & l_cti[lrk] & ~dead(le_rob[lrk]);
          lr_mis[lrk] <= l_mis[lrk];
-         lr_br[lrk] <= l_br[lrk];  lr_jmp[lrk] <= l_jmp[lrk];  lr_jalr[lrk] <= l_jalr[lrk];
-         lr_taken[lrk] <= l_taken[lrk];  lr_rvc[lrk] <= l_rvc[lrk];  lr_rdv[lrk] <= l_rdv[lrk];
-         lr_seq[lrk] <= l_seq[lrk];   lr_rob[lrk] <= l_rob[lrk];
-         lr_pc[lrk]  <= l_pc[lrk];    lr_tgt[lrk] <= pcpack(l_tgt[lrk]);
-         lr_ttgt[lrk] <= pcpack(l_ttgt[lrk]);  lr_pdet[lrk] <= l_pdet[lrk];
-         lr_rd[lrk]  <= l_rd[lrk];    lr_lks[lrk] <= l_lks[lrk];
-         for (lrj = 0; lrj < NL; lrj = lrj + 1) lr_old[lrk][lrj] <= older(l_seq[lrk], l_seq[lrj]);
+         lr_br[lrk] <= le_br[lrk];  lr_jmp[lrk] <= le_jmp[lrk];  lr_jalr[lrk] <= le_jalr[lrk];
+         lr_taken[lrk] <= l_taken[lrk];  lr_rvc[lrk] <= le_rvc[lrk];  lr_rdv[lrk] <= le_rdv[lrk];
+         lr_seq[lrk] <= le_seq[lrk];   lr_rob[lrk] <= le_rob[lrk];
+         lr_pc[lrk]  <= le_pc[lrk];    lr_tgt[lrk] <= pcpack(l_tgt[lrk]);
+         lr_ttgt[lrk] <= pcpack(l_ttgt[lrk]);  lr_pdet[lrk] <= le_pdet[lrk];
+         lr_rd[lrk]  <= le_rd[lrk];    lr_lks[lrk] <= le_lks[lrk];
+         for (lrj = 0; lrj < NL; lrj = lrj + 1) lr_old[lrk][lrj] <= older(le_seq[lrk], le_seq[lrj]);
       end
    // the lanes' ages, each pair compared a cycle early from the registers lr_seq is loaded from:
    // the restart's oldest mispredict and the training queue's ranks read flops, not subtractors
@@ -4275,7 +4308,7 @@ module smolrv64_core
       assign pl[glk] = pl_v & (ldw_sh == K);
       assign p2[glk] = few_int & (few_sh == K);
       assign p1[glk] = (glk == 0) & sp_f;
-      assign lb_free[glk] = ~(l_v[glk] & ~l_late[glk]) & ~l_m2[glk];
+      assign lb_free[glk] = ~(l_v2[glk] & ~l_late2[glk]) & ~l_m2[glk];
       assign lb_any[glk] = lb_n[glk] != 0;
    end endgenerate
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
@@ -4490,8 +4523,8 @@ module smolrv64_core
       for (csk = 0; csk < NL; csk = csk + 1) begin
          // a lane's multiply in its reserved slot, and an op completed at issue (never saw M)
          if (l_m2[csk]) begin cs_val[rsi(l_mrob2[csk])] <= l_mres[csk]; cs_mkind[rsi(l_mrob2[csk])] <= 2'd0; cs_mpa[rsi(l_mrob2[csk])] <= {PABITS{1'b0}}; end
-         if (l_iss[csk] & ~l_late[csk]) begin
-            cs_val[rsi(l_rob[csk])] <= l_res[csk];  cs_mkind[rsi(l_rob[csk])] <= 2'd0;  cs_mpa[rsi(l_rob[csk])] <= {PABITS{1'b0}};
+         if (l_iss2[csk] & ~l_late2[csk]) begin
+            cs_val[rsi(l_rob2[csk])] <= l_res[csk];  cs_mkind[rsi(l_rob2[csk])] <= 2'd0;  cs_mpa[rsi(l_rob2[csk])] <= {PABITS{1'b0}};
          end
       end
    end
@@ -4505,7 +4538,7 @@ module smolrv64_core
    always @* for (chi = 0; chi < IW; chi = chi + 1) begin
       cs_hl[chi] = 1'b0;  cs_hl_v[chi] = 64'd0;
       for (chk = NL - 1; chk >= 0; chk = chk - 1)
-         if (l_iss[chk] & (l_rob[chk] == rc_idx[chi])) begin
+         if (l_iss2[chk] & (l_rob2[chk] == rc_idx[chi])) begin
             cs_hl[chi] = 1'b1;  cs_hl_v[chi] = l_res[chk];
          end
    end

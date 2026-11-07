@@ -28,8 +28,12 @@
 
 `default_nettype none
 
-module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
-   (input  wire [   5:0] op,    // ALU_* operation
+// PIPE=1: two stages on clk. The units (adder, shifter, compare, logic, count/permute) are the first,
+// registered with the group select; the select, the W sign extension and eq/lt/ltu come out of the
+// register in the second. `sum` (the address) is the first stage's.
+module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1, parameter PIPE = 0)
+   (input  wire          clk,
+    input  wire [   5:0] op,    // ALU_* operation
     input  wire          w,     // 1 = 32-bit word op (RV64 *W instructions)
     input  wire          uw,    // 1 = zero-extend op1 from 32 bits (Zba .uw / slli.uw)
     input  wire [MSB:0]  op1,
@@ -38,8 +42,8 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
     output reg  [MSB:0]  result,
     output wire [MSB:0]  sum,   // op1 + op2 (kept live for address gen / branches)
     output wire          eq,
-    output wire          lt,    // signed  op1 < op2
-    output wire          ltu);  // unsigned op1 < op2
+    output wire          lt_o,  // signed  op1 < op2
+    output wire          ltu_o);  // unsigned op1 < op2
 
    localparam SHW = $clog2(XLEN);   // shift-amount width (6 for XLEN=64)
 
@@ -56,9 +60,9 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    // -------- shared adder / comparator --------
    assign      sum = op1 + op2;
    wire [XLEN:0] dif = {1'b0, op1} - {1'b0, op2};
-   assign      eq  = op1 == op2;
-   assign      ltu = dif[XLEN];
-   assign      lt  = (op1[MSB] == op2[MSB]) ? dif[MSB] : op1[MSB];
+   wire        eq1  = op1 == op2;
+   wire        ltu1 = dif[XLEN];
+   wire        lt1  = (op1[MSB] == op2[MSB]) ? dif[MSB] : op1[MSB];
 
    // -------- arithmetic --------
    // Plain ADD/SUB feed op1/op2 straight into the (shared) sum/dif adders, so
@@ -137,12 +141,12 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    // -------- result groups (each a small mux, computed in parallel) --------
    reg [MSB:0] r_cmp;     // compares + min/max (from the subtractor)
    always @(*) case (op)
-        `ALU_SLT:   r_cmp = {{MSB{1'b0}}, lt};
-        `ALU_SLTU:  r_cmp = {{MSB{1'b0}}, ltu};
-        `ALU_MIN:   r_cmp = lt  ? op1 : op2;
-        `ALU_MINU:  r_cmp = ltu ? op1 : op2;
-        `ALU_MAX:   r_cmp = lt  ? op2 : op1;
-        default:    r_cmp = ltu ? op2 : op1;   // MAXU
+        `ALU_SLT:   r_cmp = {{MSB{1'b0}}, lt1};
+        `ALU_SLTU:  r_cmp = {{MSB{1'b0}}, ltu1};
+        `ALU_MIN:   r_cmp = lt1  ? op1 : op2;
+        `ALU_MINU:  r_cmp = ltu1 ? op1 : op2;
+        `ALU_MAX:   r_cmp = lt1  ? op2 : op1;
+        default:    r_cmp = ltu1 ? op2 : op1;   // MAXU
    endcase
 
    reg [MSB:0] r_bit;     // logic (Zbb negated-logic, Zbs single-bit)
@@ -197,16 +201,36 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    wire is_zba    = (op == `ALU_SH1ADD)||(op == `ALU_SH2ADD)||(op == `ALU_SH3ADD)||
                     (op == `ALU_ADD && uw);   // add.uw rides the r_arith group
 
-   wire [MSB:0] r_g0 = is_cmp  ? r_cmp   : r_ext;     // fast groups, deepest
-   wire [MSB:0] r_g1 = is_bit  ? r_bit   : r_g0;
-   wire [MSB:0] r_g2 = is_zba  ? r_arith : r_g1;
-   wire [MSB:0] r_g3 = is_shift ? shift_res : r_g2;   // shifter: one 2:1
-   wire [MSB:0] r_pre = is_addsub ? addsub : r_g3;    // adder: one 2:1
+   // -------- the stage boundary (PIPE) --------
+   wire [MSB:0] g_cmp, g_ext, g_bit, g_arith, g_shift, g_addsub;
+   wire         g_iscmp, g_isbit, g_iszba, g_isshift, g_isaddsub, g_w;
+   generate if (PIPE) begin: st
+      reg [MSB:0] q_cmp, q_ext, q_bit, q_arith, q_shift, q_addsub;
+      reg         q_iscmp, q_isbit, q_iszba, q_isshift, q_isaddsub, q_w, q_eq, q_lt, q_ltu;
+      always @(posedge clk) begin
+         q_cmp <= r_cmp;  q_ext <= r_ext;  q_bit <= r_bit;  q_arith <= r_arith;  q_shift <= shift_res;  q_addsub <= addsub;
+         q_iscmp <= is_cmp;  q_isbit <= is_bit;  q_iszba <= is_zba;  q_isshift <= is_shift;  q_isaddsub <= is_addsub;
+         q_w <= w;  q_eq <= eq1;  q_lt <= lt1;  q_ltu <= ltu1;
+      end
+      assign {g_cmp, g_ext, g_bit, g_arith, g_shift, g_addsub} = {q_cmp, q_ext, q_bit, q_arith, q_shift, q_addsub};
+      assign {g_iscmp, g_isbit, g_iszba, g_isshift, g_isaddsub, g_w} = {q_iscmp, q_isbit, q_iszba, q_isshift, q_isaddsub, q_w};
+      assign eq = q_eq;  assign lt_o = q_lt;  assign ltu_o = q_ltu;
+   end else begin: cb
+      assign {g_cmp, g_ext, g_bit, g_arith, g_shift, g_addsub} = {r_cmp, r_ext, r_bit, r_arith, shift_res, addsub};
+      assign {g_iscmp, g_isbit, g_iszba, g_isshift, g_isaddsub, g_w} = {is_cmp, is_bit, is_zba, is_shift, is_addsub, w};
+      assign eq = eq1;  assign lt_o = lt1;  assign ltu_o = ltu1;
+   end endgenerate
+
+   wire [MSB:0] r_g0 = g_iscmp  ? g_cmp   : g_ext;     // fast groups, deepest
+   wire [MSB:0] r_g1 = g_isbit  ? g_bit   : r_g0;
+   wire [MSB:0] r_g2 = g_iszba  ? g_arith : r_g1;
+   wire [MSB:0] r_g3 = g_isshift ? g_shift : r_g2;     // shifter: one 2:1
+   wire [MSB:0] r_pre = g_isaddsub ? g_addsub : r_g3;  // adder: one 2:1
 
    always @(*) begin
       result = r_pre;
       // *W instructions: sign-extend the low 32 bits of the result.
-      if (XLEN != 32 && w)
+      if (XLEN != 32 && g_w)
          result = {{XLEN/2{result[XLEN/2-1]}}, result[XLEN/2-1:0]};
    end
 endmodule
