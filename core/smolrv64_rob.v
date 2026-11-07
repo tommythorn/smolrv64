@@ -448,6 +448,12 @@ module smolrv64_rob
       if ((irr - head) > (tail - head))
          $fatal(1, "smolrv64_rob: the irrevocable pointer left [head, tail]: head=%0d irr=%0d tail=%0d", head, irr, tail);
    end
+   // A LOAD FLAGGED FOR REPLAY IS NEVER BEHIND THE IRREVOCABLE POINTER: a younger store would be
+   // irrevocable ahead of the replay that squashes it (and commit in the replay's redirect cycle).
+   wire [RB-1:0] rp_row = rp_ix[IDXB-1:CB+1];
+   wire [SB-1:0] rp_rel = {rp_row, pos_of(fc[rp_row], rp_ix[CB:0])} - head[SB-1:0];
+   always @(posedge clk) if (!reset && rp_v && v[six(rp_ix)] && ({1'b0, rp_rel} < (irr - head)))
+      $fatal(1, "smolrv64_rob: the irrevocable pointer (%0d) passed entry %0d, a load flagged for replay (head %0d)", irr, rp_ix, head);
 
    // ---- invariants (always on: docs/rtl-rules.md A1) --------------------------------
    always @(posedge clk) if (!reset) begin

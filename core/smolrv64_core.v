@@ -1875,6 +1875,7 @@ module smolrv64_core
    // the store register is empty, so stores reach memory in program order.
    wire sq_go     = sq_c_v & ~sq_c_fast & ~lsu_sp_busy;
    wire sq_sp_go  = sq_c_v &  sq_c_fast & (~lsu_sp_busy | lsu_sp_done);
+   wire                sq_l_arr_q;   // the store queue's arrival hold (the irrevocable pointer's rp_all)
    wire [6:0]          sq_err;    wire [15:0] lsu_err_u;
    wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [PABITS-1:0] sq_kc_addr;
    wire [63:0]         sq_kc_data; wire [1:0] sq_kc_size;   // the cosim's store-data check
@@ -1949,7 +1950,7 @@ module smolrv64_core
       // THE ALIAS TEST LIVES HERE, not at issue: smolrv64_lq exports its entries, smolrv64_sq keeps
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
       .l_off(lq_e_off), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
-      .l_wt(lq_e_wt), .l_acc(lq_e_acc), .l_unk_q(sq_l_unk_q), .l_viol(sq_l_viol), .l_res_c(sq_l_res_c), .l_res_a(sq_l_res_a),
+      .l_wt(lq_e_wt), .l_acc(lq_e_acc), .l_unk_q(sq_l_unk_q), .l_viol(sq_l_viol), .l_arr_q(sq_l_arr_q), .l_res_c(sq_l_res_c), .l_res_a(sq_l_res_a),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx), .l_fill_go(m_lq_fill & lsu_xo_early), .l_cancel(sq_l_cancel),
       .l_fill_off(m_addr[11:0]), .l_fill_size(m_mem_size), .l_fill_flt(lsu_xo_flt),
       .l_fill_tv(lsu_xo_tv & ~lsu_xo_flt), .l_fill_pa(lsu_xo_pa),
@@ -2161,6 +2162,11 @@ module smolrv64_core
    // compare it, so it names a load flagged two cycles back; for the cycle after a flag, which it
    // does not name yet, nothing that completed commits and the pointer holds (rp_new_q: any flag, a
    // rare event; smolrv64_rob c_hold -- a head finishing with its own redirect still commits).
+   // The flag itself rises the cycle AFTER the store's address arrives (the page bits qualify it
+   // then), and in that cycle the store can commit and the pointer cross both it and the load: the
+   // store queue's l_arr_q (an arriving address overlapped a load that had read) holds the pointer
+   // that cycle. Retirement needs no such hold: the load cannot be the head while an older store's
+   // address is arriving.
    reg                rp_new_q, rp_f_q;
    reg [ROB_IDXB-1:0] rp_rob_q;
    initial begin rp_new_q = 1'b0; rp_f_q = 1'b0; end
@@ -2192,7 +2198,7 @@ module smolrv64_core
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
       .c_kill(rc_kill), .c_hold(rp_new_q), .c_valid(rc_v), .c_head(rc_head), .c_idx(rc_idxv), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd), .c_pold(rc_pold), .c_noret(rc_noret),
       .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx), .head_n_idx(rob_head_n_idx),
-      .irr_idx(rob_irr_idx), .irr_v(rob_irr_v), .rp_v(rp_f_q), .rp_ix(rp_rob_q), .rp_all(rp_new_q),
+      .irr_idx(rob_irr_idx), .irr_v(rob_irr_v), .rp_v(rp_f_q), .rp_ix(rp_rob_q), .rp_all(rp_new_q | sq_l_arr_q),
       .d_pold(rn_poldv),
       // the walk starts the cycle after the resolve, from the registered branch
       .k_v(fr_set_q), .k_idx(fr_rob),

@@ -146,6 +146,10 @@ module smolrv64_sq
     input  wire [LQN-1:0]        l_acc,
     output wire [LQN-1:0]        l_unk_q,     // per entry, REGISTERED: an older store's address is unknown
     output wire [LQN-1:0]        l_viol,      // per entry: it went ahead of an older store that overlaps it
+    // REGISTERED: last cycle a store's address arrived overlapping (by offset) a load that has reached
+    // memory. That load's flag, which the page bits qualify, is THIS cycle's l_viol, and the store can
+    // commit this cycle: the ROB's irrevocable pointer holds, so it cannot cross the load first.
+    output wire                  l_arr_q,
     output wire [LQN-1:0]        l_res_c,     // per entry, a pulse: the last unknown older address came in, and it did not overlap
     output wire [LQN-1:0]        l_res_a,     // ...and it did (the load had to wait, or has replayed)
     input  wire                  l_fill,      // a load's address arrives this cycle...
@@ -596,6 +600,7 @@ module smolrv64_sq
       if (dep_ra[dpi]) begin sp_alias = sp_alias + 1; sp_alias_cyc = sp_alias_cyc + dep_cy[dpi*16 +: 16]; end
    end
 `endif
+   wire [LQN-1:0] arr_acc;   // a store's address arriving against a load that has read (l_arr_q)
    generate
       for (gl = 0; gl < LQN; gl = gl + 1) begin : g_lblk
          wire [IDXB:0]   l_dist = l_tag[gl*(IDXB+1) +: IDXB+1] - headc;
@@ -629,6 +634,7 @@ module smolrv64_sq
          // address becoming a known overlap) in the same edge the matrix's bit does
          wire arr_ov = l_av[gl] & a_v & oldm[a_idx]
                      & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], a_va[11:0], a_size);
+         assign arr_acc[gl] = arr_ov & l_acc[gl];
          reg blk_q;  initial blk_q = 1'b0;
          always @(posedge clk)
             blk_q <= (l_fill & (l_fill_ix == gl[LQIB-1:0]))
@@ -763,6 +769,9 @@ module smolrv64_sq
       end
    endgenerate
    assign ld_older = |oldv;
+   reg arr_q;  initial arr_q = 1'b0;
+   always @(posedge clk) arr_q <= ~reset & (|arr_acc);
+   assign l_arr_q = arr_q;
 
    always @(posedge clk) begin
       if (reset) begin

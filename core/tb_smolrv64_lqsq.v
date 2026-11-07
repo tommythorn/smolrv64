@@ -24,6 +24,7 @@ module tb;
    localparam NENT=4, IDXB=2, PAW=56, PBITS=9, ROBB=4, NWB=3;
    reg clk=0, reset=1, flush=0;
    wire [6:0] sq_err;   // the store queue's integrity-log bits: never nonzero in a passing run
+   wire       sq_arr_q;  // the store queue's arrival hold (the ROB's; no ROB here)
    always #5 clk = ~clk;
 
    // ---- load queue ports ----
@@ -112,7 +113,7 @@ module tb;
       .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
       .c_fast(sq_c_fast_nc),.c_take(sq_c_take),.c_done(sq_c_take),
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
-      .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),.l_wt(e_wt),.l_acc(e_acc),.l_unk_q(sq_unk_q),.l_viol(sq_viol),.l_res_c(sq_res_c),.l_res_a(sq_res_a),
+      .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),.l_wt(e_wt),.l_acc(e_acc),.l_unk_q(sq_unk_q),.l_viol(sq_viol),.l_arr_q(sq_arr_q),.l_res_c(sq_res_c),.l_res_a(sq_res_a),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn({(NENT*28){1'b0}}),.l_fill_vpn(28'd0),.a_bare(1'b0),.l_fwd(l_fwd_nc),.f_go(1'b0),.f_lix({IDXB{1'b0}}),.f_data(f_data_nc),.f_sbo(f_sbo_nc),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),

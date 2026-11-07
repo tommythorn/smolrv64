@@ -1496,7 +1496,12 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
     (`rp_f_q`, `rp_rob_q`), so the commit ports compare against a load flagged two cycles back; for
     the one cycle after a NEW flag (the LQ's `f_new`, rare), nothing that merely completed commits
     (the ROB's `c_hold`; a head finishing with its own redirect still does) and the irrevocable
-    pointer holds (`rp_all`). Asserted: no commit port ever retires the load the live pick names.
+    pointer holds (`rp_all`). The flag itself rises the cycle after the older store's address
+    arrives (the page bits qualify it then), a cycle in which that store can already commit and
+    the pointer cross it and a done load of its row; so `rp_all` also holds the pointer that cycle
+    when the arriving address overlapped, by offset, a load that had read (the store queue's
+    `l_arr_q`). Asserted: no commit port ever retires the load the live pick names, and the
+    pointer is never past the flagged load the registers name.
     (The live pick into every commit slot was a 24-level cone, -0.48 ns in the oldest-first pick's
     builds; the registered one cost the 60 M boot 0.24% of its retires.)
   - *The wait table.* `mdw`: a 2-bit saturating counter per load-PC hash (PC[8:1], 256 entries),
