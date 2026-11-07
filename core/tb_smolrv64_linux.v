@@ -725,10 +725,11 @@ module tb;
          if (dut.core.cbo_any)     lq_cbo  <= lq_cbo + 1;
          else if (lq_cnt == LQS_N) lq_full <= lq_full + 1;
          else                      lq_two  <= lq_two + 1;
-         // the credit is a cycle old: the banks then, net of that cycle's IR and P groups (one load
-         // a bank each), less one a load of P's group now -- three free in every bank leaves room
-         if (!dut.core.cbo_any && (lq_bmin_q >= 3))
-            $fatal(1, "tb: the load queue refuses a credit with three free entries in every bank a cycle ago (%0d live, IR loads %0d, P loads %0d)", lq_cnt, dut.core.ir_ld, dut.core.p_nld);
+         // the credit is a cycle old: four groups take one entry a bank at most from the banks it
+         // read (that cycle's IR and P groups, P's now, the take) -- four free in every bank
+         // leaves room
+         if (!dut.core.cbo_any && (lq_bmin_q >= 4))
+            $fatal(1, "tb: the load queue refuses a credit with four free entries in every bank a cycle ago (%0d live, IR loads %0d, P loads %0d)", lq_cnt, dut.core.ir_ld, dut.core.p_nld);
          lq_noa  <= lq_noa  + 64'($countones(lq_v & ~lq_av));
          lq_wait <= lq_wait + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m));
          lq_blk  <= lq_blk  + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m & dut.core.u_lq.e_block));

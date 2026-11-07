@@ -261,18 +261,20 @@ rebuild from the queue's read into `d_rec` (-2.36 ns, 8 levels). Now:
   (`p_raw`), and the IR rebuilds them the next cycle. Two groups are in flight between the take and
   dispatch; every credit and gate counts P's beside the IR's (`fe_pv`, `fe_pgc`, by lane), and P
   passes its group to the IR only while dispatch is not frozen (`drop`: every freeze is raised by
-  an op already dispatched, so what P holds then is younger). The LQ's bank credit is the sound
-  bound for two groups (a bank of three or more survives both, of two only the smaller group's
-  count can die, of one any load's); rename's low-water mark covers three groups (the FP shard's
-  3*IW).
-- THE COUNTING CREDITS ARE REGISTERED: a scheduler's free entries, the LQ's surviving banks, the
+  an op already dispatched, so what P holds then is younger). A group's loads take one entry a
+  bank, so the LQ's bank credit counts, net of the IR's and P's loads, the banks sure to keep two
+  free entries and those sure to keep one (a bank drops a level where both groups hit it -- at most
+  the smaller group's count of banks -- or either does); rename's low-water mark covers three
+  groups (the FP shard's 3*IW).
+- THE COUNTING CREDITS ARE REGISTERED: a scheduler's free entries, the LQ's two bank counts, the
   SQ's and the F stage's room, each a cycle old net of everything in flight then; the take compares
-  them with P's group, the one it has not seen. Frees in between, and an op leaving the F stage,
+  them with P's group, the one it has not seen (whose loads can empty only banks sure of one). Frees in between, and an op leaving the F stage,
   are not credited.
 - `h2` is a `clk2x` flop (`smolrv64_x2ph`: `h2r <= tg2 != tg`, asserted equal to the clocks'),
   and the core's reset a replicated `clk2x` flop.
 
-The benches: the Linux bench's LQ credit check is three free entries a bank a cycle ago, and its
+The benches: the Linux bench's LQ credit check is four free entries a bank a cycle ago (four
+groups can hit a bank: that cycle's IR and P, P's now, the take), and its
 serialise accounting charges a cycle a serialising op in P held to that op (in the IR when the cycle
 is classified).
 

@@ -4924,32 +4924,40 @@ module smolrv64_core
    reg  [IW-1:0] cr_ld, cr_st;
    reg  [3:0]    lb2, lb1, lbr;
    integer       crr;
-   reg  [3:0]    lb3, lbab, lbm;
+   reg  [3:0]    lb4, lb3, lbab, lbm, lbs2;
    always @* begin
-      lb3 = 4'd0;  lb2 = 4'd0;  lb1 = 4'd0;
+      lb4 = 4'd0;  lb3 = 4'd0;  lb2 = 4'd0;  lb1 = 4'd0;
       for (crr = 0; crr < QNB; crr = crr + 1) begin
-         if (lq_bfree[crr*LBW +: LBW] >= 3) lb3 = lb3 + 4'd1;
+         if (lq_bfree[crr*LBW +: LBW] >= 4) lb4 = lb4 + 4'd1;
+         if (lq_bfree[crr*LBW +: LBW] == 3) lb3 = lb3 + 4'd1;
          if (lq_bfree[crr*LBW +: LBW] == 2) lb2 = lb2 + 4'd1;
          if (lq_bfree[crr*LBW +: LBW] == 1) lb1 = lb1 + 4'd1;
       end
       // A group's loads take one entry a bank, and two groups are in flight (the IR's, P's): a bank
-      // of three or more free survives both, one of two dies only where both groups hit it (at most
-      // the smaller group's count of them), one of one wherever either does
+      // loses one entry to each group that hits it. A bank of f free keeps f - 2 at worst; it drops
+      // a level only where the groups hit it -- both of them (at most the smaller group's count of
+      // banks) for f - 2, either (at most both groups' count) for f - 1.
       lbab = ir_ld + p_nld;
       lbm  = (ir_ld < p_nld) ? ir_ld : p_nld;
-      lbr  = lb3 + ((lb2 > lbm) ? lb2 - lbm : 4'd0) + ((lb1 > lbab) ? lb1 - lbab : 4'd0);
+      // banks sure to keep one free entry (lbr) and two (lbs2) after both groups
+      lbr  = lb4 + lb3 + ((lb2 > lbm) ? lb2 - lbm : 4'd0) + ((lb1 > lbab) ? lb1 - lbab : 4'd0);
+      lbs2 = lb4 + ((lb3 > lbm) ? lb3 - lbm : 4'd0) + ((lb2 > lbab) ? lb2 - lbab : 4'd0);
    end
-   // (registered: the banks that survive the IR's and P's loads, a cycle ago, and the SQ's free
-   // entries net of their stores; each load of P's group now may empty one more bank)
-   reg  [3:0]    lbr_q;
+   // (registered: those two counts a cycle ago, and the SQ's free entries net of the IR's and P's
+   // stores. P's group now, one load a bank, can empty only a bank sure of just one: the take's
+   // loads have the banks sure of two and those of one P's loads leave.)
+   reg  [3:0]    lbr_q, lbs2_q;
    reg  [7:0]    sq_mg;
    wire [7:0]    sq_inf = {4'd0, ir_st} + {4'd0, p_nst};
    always @(posedge clk) begin
-      lbr_q <= lbr;
-      sq_mg <= ({{(7-SQ_IB){1'b0}}, sq_free} > sq_inf) ? {{(7-SQ_IB){1'b0}}, sq_free} - sq_inf : 8'd0;
+      lbr_q  <= lbr;
+      lbs2_q <= lbs2;
+      sq_mg  <= ({{(7-SQ_IB){1'b0}}, sq_free} > sq_inf) ? {{(7-SQ_IB){1'b0}}, sq_free} - sq_inf : 8'd0;
    end
+   wire [3:0]    lb_one = lbr_q - lbs2_q;                            // sure of exactly one
+   wire [3:0]    lb_now = lbs2_q + ((lb_one > p_nld) ? lb_one - p_nld : 4'd0);
    always @* for (crk = 0; crk < IW; crk = crk + 1) begin
-      cr_ld[crk] = ~cbo_any & (lbr_q > p_nld + crk[3:0]);
+      cr_ld[crk] = ~cbo_any & (lb_now > crk[3:0]);
       cr_st[crk] = ~cbo_any & (sq_mg > {4'd0, p_nst} + crk[7:0]);
    end
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & (ir_ld == 4'd0) & (ir_st == 4'd0) & (p_nld == 4'd0) & (p_nst == 4'd0);
