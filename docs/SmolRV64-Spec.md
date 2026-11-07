@@ -1501,7 +1501,8 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
     the pointer cross it and a done load of its row; so `rp_all` also holds the pointer that cycle
     when the arriving address overlapped, by offset, a load that had read (the store queue's
     `l_arr_q`). Asserted: no commit port ever retires the load the live pick names, and the
-    pointer is never past the flagged load the registers name.
+    pointer is never past the flagged load the registers name (`core/directed/lateflag.S` drives a
+    store that commits in its flag's cycle).
     (The live pick into every commit slot was a 24-level cone, -0.48 ns in the oldest-first pick's
     builds; the registered one cost the 60 M boot 0.24% of its retires.)
   - *The wait table.* `mdw`: a 2-bit saturating counter per load-PC hash (PC[8:1], 256 entries),
