@@ -311,6 +311,14 @@ cycle after. A writeback's consumer issues a cycle later than before; a one-cycl
 consumer issues two cycles after it (the same 6 ns as main's back-to-back). The speculative
 load wake (D$ plan step 3a) is gone: its one-cycle verdict was built on a same-cycle pick.
 
+**Step 5, first part: THE ROB'S COMPLETIONS ARE REGISTERED.** The completion ports' cones (a
+landing, the walker's answer through the SQ's take, a lane's resolution) ended at `done` (`wk_lk_va`
+-> `u_rob/done`, 16-17 levels). They end at a register now, and `done` is set the cycle after, if the
+entry still holds that op (a kill or a flush in between frees the slot, which may be allocated
+again). The irrevocable pointer's forward (the store's take) reads the registered completion, in
+the cycle its `done` is written. `done`'s consumers -- commit, the irrevocable pointer, the replay
+flag -- all only move later (rule D21); `h_fin` (the head committing in its flush cycle) is live.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

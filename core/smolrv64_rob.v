@@ -209,12 +209,22 @@ module smolrv64_rob
             if (w_v[q] && (w_ix[q*IDXB +: IDXB] == ix)) w_hits = 1'b1;
       end
    endfunction
+   // THE COMPLETIONS ARE REGISTERED (the 2x clock: a completion's cone -- a landing, the walker, a
+   // lane's resolution -- ends at these flops, not at `done`): an entry's done is set in the cycle
+   // after its completion, if it still holds that op (a kill or a flush in between frees the slot,
+   // which may be allocated again). h_fin is not delayed: the head commits in its flush cycle.
+   reg  [NW-1:0]      wq_v = {NW{1'b0}};
+   reg  [NW*IDXB-1:0] wq_ix;
+   always @(posedge clk) begin
+      wq_v  <= (reset | flush) ? {NW{1'b0}} : w_v;
+      wq_ix <= w_ix;
+   end
    wire head_done = v[hsx] & ((done[hsx] & ~c_hold) | h_fin);
    wire [RB-1:0] irow = irr[SB-1:CB];
    assign irr_idx = tag_of(irow, ifc, irr[CB-1:0]);
    assign irr_v   = (irr != tail);
    // A row per cycle: the pointer crosses every position of its row, from its own on, that is done
-   // or completing on an IRR_FWD port (a position with no op is skipped), and stops at the first
+   // or having its done written on an IRR_FWD port (a position with no op is skipped), and stops at the first
    // that is not; past the row's last it goes to the next row.
    wire [NCOL-1:0]    ir_wait;                 // the position's op is not done
    genvar gic;
@@ -226,7 +236,7 @@ module smolrv64_rob
       always @* begin
          fw = 1'b0;
          for (q = 0; q < NW; q = q + 1)
-            if (IRR_FWD[q] && w_v[q] && (six(w_ix[q*IDXB +: IDXB]) == ix)) fw = 1'b1;
+            if (IRR_FWD[q] && wq_v[q] && (six(wq_ix[q*IDXB +: IDXB]) == ix)) fw = 1'b1;
       end
       assign ir_wait[gic] = v[ix] & ((~done[ix] & ~fw) | (rp_v & (ix == six(rp_ix)))) & (gic >= irr[CB-1:0]);
    end endgenerate
@@ -415,7 +425,7 @@ module smolrv64_rob
             if (do_alloc[ri]) begin v[{trow, ri[CB-1:0]}] <= 1'b1;  done[{trow, ri[CB-1:0]}] <= 1'b0; end
          if (|do_alloc) begin tail <= tail + ROW1;  fc[trow] <= d_fc; end
          for (ri = 0; ri < NW; ri = ri + 1)
-            if (w_v[ri]) done[six(w_ix[ri*IDXB +: IDXB])] <= 1'b1;
+            if (wq_v[ri] & v[six(wq_ix[ri*IDXB +: IDXB])]) done[six(wq_ix[ri*IDXB +: IDXB])] <= 1'b1;
          for (ri = 0; ri < IW; ri = ri + 1)
             if (cvv[ri]) v[{hrow, col_of(hfc, ri[CB-1:0])}] <= 1'b0;
          head <= head_n;
@@ -463,10 +473,13 @@ module smolrv64_rob
             $fatal(1, "smolrv64_rob: entry %0d completed twice", w_ix[ri*IDXB +: IDXB]);
          if (w_ix[ri*IDXB + CB] != (w_ix[ri*IDXB +: CB] < fc[w_ix[ri*IDXB + CB + 1 +: RB]]))
             $fatal(1, "smolrv64_rob: completion for entry %0d with the wrong wrap bit", w_ix[ri*IDXB +: IDXB]);
-         for (rj = 0; rj < NW; rj = rj + 1)
+         for (rj = 0; rj < NW; rj = rj + 1) begin
             if (rj > ri && w_v[rj] && (w_ix[rj*IDXB +: IDXB] == w_ix[ri*IDXB +: IDXB]))
                $fatal(1, "smolrv64_rob: two ports completing entry %0d in one cycle",
                       w_ix[ri*IDXB +: IDXB]);
+            if (wq_v[rj] && (wq_ix[rj*IDXB +: IDXB] == w_ix[ri*IDXB +: IDXB]))
+               $fatal(1, "smolrv64_rob: entry %0d completed twice (a cycle apart)", w_ix[ri*IDXB +: IDXB]);
+         end
       end
       if (~empty & ~v[hsx])
          $fatal(1, "smolrv64_rob: the head (%0d) holds no live op", head);
