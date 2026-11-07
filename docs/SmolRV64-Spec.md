@@ -1390,9 +1390,20 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
     store never commits), so its op reaches the head and stays. Its record -- cause, the VA as
     `tval`, the op's PC and seq, which each entry keeps from dispatch -- then loads the SYSQ as a
     trap from dispatch does, and fires through `sy_fire`, the one trap gate.
-  - **The alias matrix compares page offsets,** VA[11:0] = PA[11:0]. No queued access crosses a
-    page, so two in one page compare exactly; synonyms share the offset, so they never miss each
-    other; and the test runs the cycle the VA arrives, whatever the walker does.
+  - **The alias matrix compares page offsets,** VA[11:0] = PA[11:0], **narrowed a cycle later by
+    PA[19:12]** (`smolrv64_sq` THE PAGE BITS). No queued access crosses a page, so two in one page
+    compare exactly; synonyms share the offset, so they never miss each other; and the test runs
+    the cycle the VA arrives, whatever the walker does. Each translated entry keeps the low 8 bits
+    of its PA's page number, from M's lookup or the walker's answer; the cycle after, the entry's
+    row (a load) or column (a store) is ANDed with the bits' match, and every read of the matrix
+    applies the narrowings due that cycle. Differing bits prove two accesses apart, synonyms
+    included (they share the whole page number); equal bits, or an entry without a translation,
+    leave the offsets' answer. The cycle an address arrives still answers from the offsets (the
+    PA is too late for it): a start M makes then is cancelled by a store in another page at its
+    offset, and restarts. *Measured* (GB5 SimPoints, 57ea88c8 vs 390bed9c): single-core -0.31%
+    cycles (N-Body Physics -1.81%, HTML5 -1.24%, Ray Tracing -1.16%, Navigation -1.00%); load-
+    cycles held by a store in another page 99.2 M -> 7.4 M, of which 5.6 M are a store the walker
+    has not translated yet (it takes only the first uncommitted one) and 0.12 M equal bits.
 - **A load takes any free entry of its bank; program order is an age matrix.** The LQ is four
   banks (an entry's low bits); a group's loads take the banks that have a free entry in turn from
   a bank pointer, in program order, each the lowest free entry of its bank, so a row of loads
@@ -1504,8 +1515,8 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
   forwarding).** Without it such a load waits for the store's commit and drain and then reads the
   D$. `smolrv64_sq` keeps a second matrix beside `conf`, written at the same sites: `cov[i][g]`,
   store g holds every byte of load i -- the same page as well as the same offset, as
-  `{bare, VA[38:12]}` (`conf` compares offsets only, so another page at the same offset overlaps
-  there; `bare`, the access was not translated, keeps a user store's VA apart from an M-mode load's
+  `{bare, VA[38:12]}` (`conf` compares offsets and 8 PA page-number bits, so another page at the
+  same offset can overlap there; `bare`, the access was not translated, keeps a user store's VA apart from an M-mode load's
   PA of the same value, since a committed store outlives a trap's flush), its bytes covering the
   load's inside one doubleword. A load is forwardable (`l_fwd`, a register per load) when exactly
   one older live store overlaps it, `cov` holds for that store, its data is in, it is translated,

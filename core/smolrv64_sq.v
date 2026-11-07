@@ -511,12 +511,13 @@ module smolrv64_sq
    reg [LQIB-1:0] nr_ix, wr_ix;
    reg [IDXB-1:0] nc_ix, wc_ix;
    reg [PGB-1:0]  nc_pg, wc_pg;             // the column's store's page bits (its spg, as a copy)
+   reg [PGB-1:0]  nr_pg, wr_pg;             // the row's load's (its lpg, as a copy: no mux by the index)
    initial begin spv = {NENT{1'b0}}; lpv = {LQN{1'b0}}; nr_v = 1'b0; nc_v = 1'b0; wr_v = 1'b0; wc_v = 1'b0; end
    reg [NENT-1:0] nr_pm, wr_pm;             // a row's page match against every store
    integer        np;
    always @* for (np = 0; np < NENT; np = np + 1) begin
-      nr_pm[np] = ~spv[np] | (spg[np] == lpg[nr_ix]);
-      wr_pm[np] = ~spv[np] | (spg[np] == lpg[wr_ix]);
+      nr_pm[np] = ~spv[np] | (spg[np] == nr_pg);
+      wr_pm[np] = ~spv[np] | (spg[np] == wr_pg);
    end
    wire [LQN-1:0] nc_pm, wc_pm;             // a column's page match against every load
    genvar         gnp;
@@ -568,9 +569,9 @@ module smolrv64_sq
    end
    // the page bits' writes and the narrowing they schedule (THE PAGE BITS, above)
    always @(posedge clk) begin
-      nr_v <= ~reset & l_fill & l_fill_tv & ~l_fill_flt;  nr_ix <= l_fill_ix;
+      nr_v <= ~reset & l_fill & l_fill_tv & ~l_fill_flt;  nr_ix <= l_fill_ix;  nr_pg <= l_fill_pa[12 +: PGB];
       nc_v <= ~reset & a_v & a_tv & ~a_flt;               nc_ix <= a_idx;  nc_pg <= a_addr[12 +: PGB];
-      wr_v <= ~reset & lw_v & ~w_flt;                     wr_ix <= lw_idx;
+      wr_v <= ~reset & lw_v & ~w_flt;                     wr_ix <= lw_idx;     wr_pg <= w_pa[12 +: PGB];
       wc_v <= ~reset & w_v & ~w_flt;                      wc_ix <= w_idx;  wc_pg <= w_pa[12 +: PGB];
       if (l_fill) begin lpg[l_fill_ix] <= l_fill_pa[12 +: PGB]; lpv[l_fill_ix] <= l_fill_tv & ~l_fill_flt; end
       if (lw_v)   begin lpg[lw_idx]    <= w_pa[12 +: PGB];      lpv[lw_idx]    <= ~w_flt; end
@@ -671,13 +672,22 @@ module smolrv64_sq
             if (fd_go) fd_s <= f_s;
          end
          wire [NENT-1:0] fdm = fd_v ? ({{(NENT-1){1'b0}}, 1'b1} << fd_s) : {NENT{1'b0}};
-         wire [NENT-1:0] ovr = oldm & cf & ~fdm;   // older stores overlapping it, its forwarding store aside
+         // older stores overlapping it, its forwarding store aside. Of the narrowings due now only M's
+         // column can matter here: a row M narrows is a load whose start the offsets cancelled, or
+         // one with nothing to narrow; a row the walker narrows, a load not yet sent; a column the
+         // walker narrows, a store whose overlaps were flagged the cycle after it arrived. So the
+         // violation reads conf and that one column (cf's other three terms stay off this path).
+         wire [NENT-1:0] ovr = oldm & conf[gl] & ~fdm & ~((nc_v & ~nc_pm[gl]) ? onehot_nc : {NENT{1'b0}});
+`ifndef SYNTHESIS
+         always @(posedge clk) if (!reset && l_av[gl] && l_acc[gl] && !l_cancel[gl] && ((ovr & ~cf) != {NENT{1'b0}}))
+            $fatal(1, "smolrv64_sq: load %0d is flagged by older stores %b the page bits clear", gl, ovr & ~cf);
+`endif
          reg unk_q;  initial unk_q = 1'b0;      // MEM_ALIAS_UNK: the unknown-address arm alone, a cycle old
          always @(posedge clk) unk_q <= l_av[gl] & (|(oldm & ~av));
          assign l_block_unk_q[gl] = unk_q;
          assign l_unk_q[gl]       = unk_q;
          // ...evaluated on the matrix's bit alone, from the cycle after the store's address arrives:
-         // the page bits narrow that cycle (cf), not the arrival's. Nothing is missed meanwhile: a
+         // the page bits narrow that cycle (ovr), not the arrival's. Nothing is missed meanwhile: a
          // load that reached memory with an older store's address unknown stays watched while unk_q
          // says so, and unk_q, a cycle old, still says so in the cycle after the address arrived.
          // THE START THE BLOCK CANCELS. M starts a load's access before the alias test can answer

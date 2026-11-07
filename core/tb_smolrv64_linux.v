@@ -1475,8 +1475,16 @@ module tb;
               : (nov == 1 && !dut.core.u_sq.dv[ys]) ? 9 : 10;
          end
          fw_c[k] = fw_c[k] + 1;
+         // the page-alias class by why the page bits did not clear it: the store, the load untranslated;
+         // their bits equal; their bits differ (the narrowing not yet done)
+         if (k == 11) pga_c[!dut.core.u_sq.spv[ys] ? 0 : !dut.core.u_sq.lpv[l] ? 1
+                            : (dut.core.u_sq.spg[ys] == dut.core.u_sq.lpg[l]) ? 2 : 3]
+                       = pga_c[!dut.core.u_sq.spv[ys] ? 0 : !dut.core.u_sq.lpv[l] ? 1
+                            : (dut.core.u_sq.spg[ys] == dut.core.u_sq.lpg[l]) ? 2 : 3] + 1;
       end
    end
+   reg [63:0] pga_c [0:3];
+   initial begin pga_c[0] = 0; pga_c[1] = 0; pga_c[2] = 0; pga_c[3] = 0; end
 
    // ---- SER-SIM: be:serialize's cycles by the class of the op that holds them --------------
    // The serialising op in flight (its class captured as it dispatches), else the op at the queue
@@ -1831,6 +1839,8 @@ module tb;
       $display("XLATE-SIM M's translate passes: dtlb-hits=%0d address-faults=%0d to-the-walker=%0d | walker answers=%0d (faults %0d) | queue-entry traps=%0d",
                xs_hit, xs_aflt, xs_nopa, xs_wk, xs_wkf, xs_trap);
       $display("ITLB-SIM walks=%0d unused=%0d (a walked page nothing retired from before 32 more walks)", iw_n, iw_waste);
+      $display("PGA-SIM page-alias held load-cycles: store-untranslated=%0d load-untranslated=%0d bits-equal=%0d narrowing=%0d",
+               pga_c[0], pga_c[1], pga_c[2], pga_c[3]);
       $display("FWD-SIM forwards=%0d | held load-cycles, forwardable: busy=%0d drain=%0d lsu=%0d older-load=%0d start=%0d | not forwardable: next-cycle=%0d unknown-address=%0d several-stores=%0d partial=%0d page-alias=%0d no-data=%0d other=%0d",
                fw_go_n, fw_c[0], fw_c[1], fw_c[2], fw_c[3], fw_c[4], fw_c[5], fw_c[6], fw_c[7], fw_c[8], fw_c[11], fw_c[9], fw_c[10]);
       for (dsi = 1; dsi < IW; dsi = dsi + 1)
