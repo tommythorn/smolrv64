@@ -19,8 +19,8 @@ open_board_target   ;# JTAG=<cable serial> picks the board (hw_target.tcl)
 
 set dev [lindex [get_hw_devices] 0]
 current_hw_device $dev
-refresh_hw_device $dev
-
+# No refresh before programming: it scans the running design's debug cores, and a design stopped
+# by a readback capture answers that scan with a core hw_server rejects.
 set_property PROGRAM.FILE $bitfile $dev
 program_hw_devices $dev
 refresh_hw_device $dev
