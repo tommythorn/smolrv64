@@ -278,6 +278,28 @@ groups can hit a bank: that cycle's IR and P, P's now, the take), and its
 serialise accounting charges a cycle a serialising op in P held to that op (in the IR when the cycle
 is classified).
 
+Step 1's build (3a4e0b98): -3.315 ns overall; in the step's region the phase flop's 8,269 paths are
+gone and the take loop is -2.04 ns (9 levels, from P's class bits through the credits' compares
+into `q_rp`), the queue read into P -1.23 ns at 4 levels (wire: 3 ns is not enough for a read of
+eight banks plus a pick), and the bundle register into the decoders -1.64 ns (a `clk` -> `clk2x`
+crossing has one `clk2x` cycle). The second pass:
+
+- THE HEADS ARE REGISTERED (`hr`): the queue reads its 2*IW oldest entries every cycle into flops
+  and the next cycle's take works on them (the heads are `hr[n..]` after a take of n), so the take's
+  loop starts and ends at flops of the frontend: the heads' classes, the rules, the pop, `q_rp`.
+  A head is valid (`hv`) when the read saw it: the count less the pop, chosen by the pop among
+  compares of `q_cnt`.
+- THE COUNTING CREDITS ARE REGISTERED BITS: each is the compare done a cycle early against the most
+  P's group can hold (one entry a scheduler, IW FP ops, IW stores, a ROB row; for the LQ only the
+  banks sure of two free entries count). Only P's class gates stay live (a head op, a CBO, a
+  divide, a serialising or CSR op in P), each an OR of flops.
+- DECODE IS THREE `clk2x` STAGES: a register takes each decoder's raw slot (`px`), so the crossing
+  from the bundle register is the slot's pick alone. A bundle is placed (`q_wp`) at the `clk` edge
+  that ends its push and counted at the mid-cycle edge after it, when its first H0 slots are
+  written; the rest are written at the next edge. `q_room` counts the bundle placed and not yet
+  counted, and no pop. READ BEFORE WRITTEN (asserted): no slot of a bundle is taken in the cycle
+  after its count, and none past the first H0 in the cycle after that.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

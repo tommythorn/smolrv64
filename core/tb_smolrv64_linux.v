@@ -1379,7 +1379,7 @@ module tb;
          gk = dut.core.fe.g[k];
          rm = (~gk[dut.core.GC_I] | dut.core.fe.ia[k]) & (~gk[dut.core.GC_L] | cr[CR_L]) & (~gk[dut.core.GC_LD] | cr[CR_LD + k])
             & (~gk[dut.core.GC_ST] | cr[CR_ST + k]) & (~gk[dut.core.GC_FC] | cr[CR_F + k]) & (~gk[dut.core.GC_M] | cr[CR_DIV]);
-         ok = ok & (32'(dut.core.fe.q_cnt) > k) & g0[dut.core.GC_PLAIN] & gk[dut.core.GC_PLAIN]
+         ok = ok & dut.core.fe.hv[k] & g0[dut.core.GC_PLAIN] & gk[dut.core.GC_PLAIN]
             & ~dut.core.fe.g[k-1][dut.core.GC_DCR] & ~(ds_unit(gk) & fc & ~rx[2])
             & cr[CR_ROB1 + k] & rm;
          if (ok) n = n + 1;
@@ -1391,7 +1391,7 @@ module tb;
       reg [15:0] g;  reg [CRW-1:0] cr;  reg old;  integer k, j, e, nr, np, as, ae;
       cr = dut.core.fe.crd;
       for (k = 1; k < IW; k = k + 1)
-         if (dut.core.fe.take[k-1] && !dut.core.fe.take[k] && (32'(dut.core.fe.q_cnt) > k)) begin
+         if (dut.core.fe.take[k-1] && !dut.core.fe.take[k] && dut.core.fe.hv[k]) begin
             g = dut.core.fe.g[k];
             if (!dut.core.fe.rule[k])
                dsj = (!dut.core.fe.g[0][dut.core.GC_PLAIN] || !g[dut.core.GC_PLAIN]) ? 0

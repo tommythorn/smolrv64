@@ -4841,32 +4841,28 @@ module smolrv64_core
    assign fe_drop = redirect_q | fr_v | dec_red_q;   // d_take's freeze, a cycle earlier for P
    wire [ROB_IDXB-ROB_CB:0] rob_inflt = {1'b0, rob_occ} + {{(ROB_IDXB-ROB_CB){1'b0}}, |s_v}
                                       + {{(ROB_IDXB-ROB_CB){1'b0}}, |fe_pv};   // rows: the ROB's, the IR group's and P's
-   // THE COUNTING CREDITS ARE REGISTERED (the 2x domain's take cannot wait for a scheduler's free
-   // count, the LQ's banks, the SQ's or the F stage's room: each a sum over many flops). Each is the
-   // room as it stood a cycle ago net of everything in flight then -- the stage registers, the IR's
-   // group, P's group -- and the take compares it with the one group it has not seen, P's now (taken
-   // last cycle). Frees in between are not credited.
-   reg  [NL-1:0] cr_i;                                 // ...and lane k has room for one more
-   reg  [IBI+1:0] mg_i [0:NL-1];                       // lane k's free entries net of what is in flight
+   // THE COUNTING CREDITS ARE REGISTERED BITS (the 2x domain's take cannot wait for a scheduler's
+   // free count, the LQ's banks, the SQ's, the F stage's or the ROB's room: each a sum over many
+   // flops, and a compare). Each is the room as it stood a cycle ago net of everything in flight
+   // then -- the stage registers, the IR's group, P's group -- less the most the one group it has
+   // not seen, P's now (taken last cycle), can hold: so the take reads a flop. Frees in between are
+   // not credited.
+   reg  [NL-1:0] cr_i;                                 // lane k has room for one more past P's (at most one)
    integer crk;
    always @(posedge clk) for (crk = 0; crk < NL; crk = crk + 1)
-      mg_i[crk] <= ({1'b0, l_free[crk]} > {{(IBI+1){1'b0}}, l_stg_v[crk]} + {{(IBI+1){1'b0}}, ir_i[crk]} + {{(IBI+1){1'b0}}, p_i[crk]})
-                 ? {1'b0, l_free[crk]} - {{(IBI+1){1'b0}}, l_stg_v[crk]} - {{(IBI+1){1'b0}}, ir_i[crk]} - {{(IBI+1){1'b0}}, p_i[crk]}
-                 : {(IBI+2){1'b0}};
-   always @* for (crk = 0; crk < NL; crk = crk + 1)
-      cr_i[crk] = mg_i[crk] > {{(IBI+1){1'b0}}, p_i[crk]};
+      cr_i[crk] <= {1'b0, l_free[crk]} > {{(IBI+1){1'b0}}, l_stg_v[crk]} + {{(IBI+1){1'b0}}, ir_i[crk]}
+                                       + {{(IBI+1){1'b0}}, p_i[crk]} + {{(IBI+1){1'b0}}, 1'b1};
    wire cr_l  = ~ho_inf & ~ir_l & ~(|p_l);             // one head op in flight
    // the F stage: room for an FP op at slot position k with every one before it an FP op too. The
    // head register and the FIFO hold FQ; the IR's group lands in them this cycle; and when the
    // scheduler has room for two, one op leaves them for it now (the head, or the IR's first a cycle
    // later beside the head group's landing), so a full stage still takes one a cycle
-   // (registered: what the stage holds and the IR's and P's groups bring it, a cycle ago; an op
-   // leaving for the scheduler is not credited)
-   reg  [7:0]    fq_inf;
-   always @(posedge clk) fq_inf <= {{(8-FQB){1'b0}}, fpq_n} + {4'd0, ir_f} + {4'd0, p_nf};
+   // (registered: what the stage holds and the IR's and P's groups bring it, a cycle ago, and
+   // P's now at IW FP ops; an op leaving for the scheduler is not credited)
+   wire [7:0]    fq_inf = {{(8-FQB){1'b0}}, fpq_n} + {4'd0, ir_f} + {4'd0, p_nf};
    reg  [IW-1:0] cr_f;
-   always @* for (crk = 0; crk < IW; crk = crk + 1)
-      cr_f[crk] = fq_inf + {4'd0, p_nf} + crk[7:0] < FQ[7:0];
+   always @(posedge clk) for (crk = 0; crk < IW; crk = crk + 1)
+      cr_f[crk] <= fq_inf + IW[7:0] + crk[7:0] < FQ[7:0];
    // A head op (an AMO, LR/SC or CBO) waits in M for the ROB head, so a CBO dispatches only once
    // every older load and store has its address (an AMO or LR/SC drains first), one head op is in
    // flight at a time (the head-op register holds one), and no load or store dispatches while one
@@ -4922,16 +4918,15 @@ module smolrv64_core
    // and those with one beyond the IR's loads
    localparam integer LBW = LQ_IB - $clog2(QNB) + 1;
    reg  [IW-1:0] cr_ld, cr_st;
-   reg  [3:0]    lb2, lb1, lbr;
+   reg  [3:0]    lb2;
    integer       crr;
    reg  [3:0]    lb4, lb3, lbab, lbm, lbs2;
    always @* begin
-      lb4 = 4'd0;  lb3 = 4'd0;  lb2 = 4'd0;  lb1 = 4'd0;
+      lb4 = 4'd0;  lb3 = 4'd0;  lb2 = 4'd0;
       for (crr = 0; crr < QNB; crr = crr + 1) begin
          if (lq_bfree[crr*LBW +: LBW] >= 4) lb4 = lb4 + 4'd1;
          if (lq_bfree[crr*LBW +: LBW] == 3) lb3 = lb3 + 4'd1;
          if (lq_bfree[crr*LBW +: LBW] == 2) lb2 = lb2 + 4'd1;
-         if (lq_bfree[crr*LBW +: LBW] == 1) lb1 = lb1 + 4'd1;
       end
       // A group's loads take one entry a bank, and two groups are in flight (the IR's, P's): a bank
       // loses one entry to each group that hits it. A bank of f free keeps f - 2 at worst; it drops
@@ -4939,30 +4934,28 @@ module smolrv64_core
       // banks) for f - 2, either (at most both groups' count) for f - 1.
       lbab = ir_ld + p_nld;
       lbm  = (ir_ld < p_nld) ? ir_ld : p_nld;
-      // banks sure to keep one free entry (lbr) and two (lbs2) after both groups
-      lbr  = lb4 + lb3 + ((lb2 > lbm) ? lb2 - lbm : 4'd0) + ((lb1 > lbab) ? lb1 - lbab : 4'd0);
+      // banks sure to keep two free entries after both groups
       lbs2 = lb4 + ((lb3 > lbm) ? lb3 - lbm : 4'd0) + ((lb2 > lbab) ? lb2 - lbab : 4'd0);
    end
-   // (registered: those two counts a cycle ago, and the SQ's free entries net of the IR's and P's
-   // stores. P's group now, one load a bank, can empty only a bank sure of just one: the take's
-   // loads have the banks sure of two and those of one P's loads leave.)
-   reg  [3:0]    lbr_q, lbs2_q;
-   reg  [7:0]    sq_mg;
+   // (registered: that count a cycle ago -- P's group now, one load a bank, leaves each of those
+   // banks one free entry at least, for the take's -- and the SQ's free entries net of the IR's
+   // and P's stores and IW more, P's now at most)
+   reg  [IW-1:0] ld_ok, st_ok;
    wire [7:0]    sq_inf = {4'd0, ir_st} + {4'd0, p_nst};
-   always @(posedge clk) begin
-      lbr_q  <= lbr;
-      lbs2_q <= lbs2;
-      sq_mg  <= ({{(7-SQ_IB){1'b0}}, sq_free} > sq_inf) ? {{(7-SQ_IB){1'b0}}, sq_free} - sq_inf : 8'd0;
+   always @(posedge clk) for (crk = 0; crk < IW; crk = crk + 1) begin
+      ld_ok[crk] <= lbs2 > crk[3:0];
+      st_ok[crk] <= {{(7-SQ_IB){1'b0}}, sq_free} > sq_inf + IW[7:0] + crk[7:0];
    end
-   wire [3:0]    lb_one = lbr_q - lbs2_q;                            // sure of exactly one
-   wire [3:0]    lb_now = lbs2_q + ((lb_one > p_nld) ? lb_one - p_nld : 4'd0);
    always @* for (crk = 0; crk < IW; crk = crk + 1) begin
-      cr_ld[crk] = ~cbo_any & (lb_now > crk[3:0]);
-      cr_st[crk] = ~cbo_any & (sq_mg > {4'd0, p_nst} + crk[7:0]);
+      cr_ld[crk] = ~cbo_any & ld_ok[crk];
+      cr_st[crk] = ~cbo_any & st_ok[crk];
    end
    wire cr_cbo = ~lq_uf_any & ~sq_uf_any & (ir_ld == 4'd0) & (ir_st == 4'd0) & (p_nld == 4'd0) & (p_nst == 4'd0);
-   reg  [IW-1:0] cr_rob;                              // a ROB row for the group (every bit)
-   always @* for (crk = 0; crk < IW; crk = crk + 1) cr_rob[crk] = rob_inflt < ROB_CAP;    // a row for the group, within the rows the ROB fills
+   // a ROB row for the group (every bit), within the rows the ROB fills: the rows in flight a cycle
+   // ago and P's now (a group is a row)
+   reg  [IW-1:0] cr_rob;
+   always @(posedge clk) for (crk = 0; crk < IW; crk = crk + 1)
+      cr_rob[crk] <= rob_inflt + {{(ROB_IDXB-ROB_CB){1'b0}}, 1'b1} < ROB_CAP;
    // the head pops nothing while dispatch is frozen (what the IR holds then is the wrong path and
    // is dropped), while a rename shard is low, or while a serialising op is in flight or in the IR
    wire cr_pop = ~redirect_q & ~fr_v & ~dec_red_q & ~rn_stall & ~ser_inflight & ~(d_valid & d_ser) & ~(|p_ser);

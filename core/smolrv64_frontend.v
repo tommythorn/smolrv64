@@ -316,7 +316,6 @@ module smolrv64_frontend
    // clk edges, so the bundle register (clk's) decides a push once for its whole cycle
    reg            q_room_s = 1'b1;
    wire           q_room  = q_room_s;
-   wire           q_empty = (q_cnt == {(QAW+1){1'b0}});
    reg  [QW-1:0]  pb_in [0:QNB-1];                       // slots FW.. are never loaded: constant
    // ...and what is the bundle's, once: the predicted target (the last slot's to use), and a fetch
    // fault's cause and straddle bit (the fault pseudo-op's, slot 0)
@@ -387,16 +386,14 @@ module smolrv64_frontend
       end
    end
    // ---- the storage: QNB banks, a slot's record at q_wp + its slot, the heads read from q_rp ----
-   // DECODE RUNS ON clk2x, HALF A BUNDLE AT A TIME, IN TWO STAGES. The bundle register is clk's. In
-   // clk's first half ND decoders take its first IW slots, in the second half the rest (FW - IW);
-   // each decoder is two clk2x stages (smolrv64_dslot REG=1), so the first IW slots' records are
-   // written at clk's edge -- exactly when a whole bundle's were -- and the rest's 3 ns later, at the
-   // mid-cycle edge. Nothing is late: the IR reads at most IW positions past its head and a bundle
-   // lands at the head or beyond, so in the cycle after a push the IR can need only the bundle's
-   // first IW slots; the rest it reads a cycle later at the soonest, and they are written by then.
-   // The same fact makes the mid-cycle write invisible: it lands IW or more positions past the
-   // head, which no read port reaches that cycle, so the RAMs' write clock -> read data arcs into
-   // clk's flops have clk's whole period (the shell's constraint).
+   // DECODE RUNS ON clk2x, HALF A BUNDLE AT A TIME, IN THREE STAGES. The bundle register is clk's. In
+   // clk's first half ND decoders take its first IW slots, in the second half the rest (FW - IW):
+   // each takes its raw slot into a clk2x register (px: the crossing from clk is the slot's pick
+   // alone), then decodes it in two clk2x stages (smolrv64_dslot REG=1). So the first IW slots'
+   // records are written at the next cycle's mid-cycle edge, where the bundle is counted, and the
+   // rest's 3 ns later, at the clk edge. Nothing is late: the take reads at most IW positions past
+   // its head and a bundle lands at the head or beyond, so in the cycle after the count it can need
+   // only the bundle's first IW slots (READ BEFORE WRITTEN, below).
    // ND is a power of two at least either half's slots, so a half's consecutive positions are
    // distinct mod ND: decoder d serves the banks b with b % ND == d, its record goes to all of them,
    // and a bank's enable picks it -- no data mux. The slots are rotated to the decoders raw (QW
@@ -419,25 +416,32 @@ module smolrv64_frontend
       wire [DLB-1:0]  j = D - hb[DLB-1:0];               // the half's slot this decoder takes
       wire [QLB:0]    s = hs + {{(QLB+1-DLB){1'b0}}, j};
       wire [QLB-1:0]  si = (s < QNB) ? s[QLB-1:0] : {QLB{1'b0}};
-      reg             v2 = 1'b0;                          // stage B holds a slot that is pushed
-      always @(posedge clk2x) v2 <= ~reset & q_pf & (j < hn) & pb_svq[s];
+      reg             v1 = 1'b0, v2 = 1'b0;               // px, then stage B, holds a slot that is pushed
+      reg  [QW-1:0]   px;                                 // the slot, and what is the bundle's
+      reg  [PCW-1:0]  px_tgt;  reg [3:0] px_cause;  reg px_fhi;
+      always @(posedge clk2x) begin
+         v1 <= ~reset & ~redirect & q_pf & (j < hn) & pb_svq[s];
+         v2 <= ~reset & ~redirect & v1;
+         px <= pb_in[si];  px_cause <= pb_cause;  px_fhi <= pb_fhi;
+`ifdef SMOLRV64_ORACLE_FE
+         px_tgt <= pb_otgt[si];
+`else
+         px_tgt <= pb_tgt;
+`endif
+      end
       wire [PDW-1:0]  pdet;  wire [PCW-1:0] pc;  wire [31:0] inst;  wire [SEQW-1:0] seq;
       wire [1:0]      pk;    wire fault_op;    wire imm_wide;
-      assign {pdet, pc, inst, seq, pk, fault_op} = pb_in[si];
+      assign {pdet, pc, inst, seq, pk, fault_op} = px;
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .REG(1)) u_ds
-`ifdef SMOLRV64_ORACLE_FE
-        (.clk(clk2x), .pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_otgt[si]), .fault_op(fault_op),
-`else
-        (.clk(clk2x), .pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_tgt), .fault_op(fault_op),
-`endif
-         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off),
+        (.clk(clk2x), .pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(px_tgt), .fault_op(fault_op),
+         .cause(px_cause), .fault_hi(px_fhi), .fs_off(fs_off),
          .q_rvc(1'b0), .q_pnpc({PCW{1'b0}}), .q_illegal(1'b0), .q_mis_taken(1'b0), .q_mis_nt(1'b0), .q_gc(16'd0),
          .qrec(dc_q[gk*QRW +: QRW]), .rec(dc_f[gk*IRW +: IRW]), .imm_wide(imm_wide));
       always @(posedge clk2x) if (!reset & v2 & imm_wide)
          $fatal(1, "smolrv64_frontend: decoder %0d's immediate does not fit the record's 32 bits (record %h)",
                 gk, dc_q[gk*QRW +: QRW]);
    end endgenerate
-   // the banks' writes: chosen in stage A from this half's position, applied in stage B
+   // the banks' writes: chosen with px from this half's position, applied in stage B
    wire [QNB*QAW-1:0] q_wpos;
    wire [QNB*QRW-1:0] q_wd;
    wire [QNB*IRW-1:0] q_fwd;                            // ...and the whole record (the shadow's, below)
@@ -445,14 +449,16 @@ module smolrv64_frontend
    generate for (gk = 0; gk < QNB; gk = gk + 1) begin: sl
       localparam [QLB-1:0] B = gk;
       wire [QLB-1:0]  j = B - hb[QLB-1:0];               // the half's slot landing in this bank
-      reg             bv2 = 1'b0;
-      reg [QAW-1:0]   wp2;
+      reg             bv2 = 1'b0, bv3 = 1'b0;
+      reg [QAW-1:0]   wp2, wp3;
       always @(posedge clk2x) begin
-         bv2 <= ~reset & q_pf & ({1'b0, j} < hn) & pb_svq[hs + {1'b0, j}];
+         bv2 <= ~reset & ~redirect & q_pf & ({1'b0, j} < hn) & pb_svq[hs + {1'b0, j}];
+         bv3 <= ~reset & ~redirect & bv2;
          wp2 <= hb + {{(QAW-QLB){1'b0}}, j};
+         wp3 <= wp2;
       end
-      assign q_bv[gk] = bv2;
-      assign q_wpos[gk*QAW +: QAW] = wp2;
+      assign q_bv[gk] = bv3;
+      assign q_wpos[gk*QAW +: QAW] = wp3;
       assign q_wd[gk*QRW +: QRW]   = dc_q[(gk % ND)*QRW +: QRW];
       assign q_fwd[gk*IRW +: IRW]  = dc_f[(gk % ND)*IRW +: IRW];
    end endgenerate
@@ -461,9 +467,7 @@ module smolrv64_frontend
    // groups' sizes and every lane takes every IW-th instruction: the schedulers fill evenly with no
    // steering. A head op (not plain) goes alone to lane A, waiting for lc to be 0 -- it sets lc to 0
    // in a cycle it does not pop, the head ops' paths stay lane A's, and the next instruction takes
-   // lane B. The queue reads the heads twice: in program order for the group rules (their classes),
-   // and at q_rp + (k - lc) % IW for lane k's record, so the rotation selects among the banks'
-   // outputs by flops and the record goes straight into the IR.
+   // lane B.
    localparam integer LB = $clog2(IW);
    function automatic [LB-1:0] radd(input [LB-1:0] a, input [CW-1:0] b);   // (a + b) % IW, a < IW, b <= IW
       reg [CW:0] t;
@@ -474,18 +478,28 @@ module smolrv64_frontend
    endfunction
    reg  [LB-1:0]     lc;
    initial lc = {LB{1'b0}};
+   // THE HEADS ARE REGISTERED (hr): the queue reads its 2*IW oldest entries every cycle and the
+   // next cycle's take works on them, so the take's loop -- the heads' classes, the rules, the pop,
+   // the read pointer -- starts at flops, not at the banks' read. The cycle after a take of n, the
+   // heads are hr[n ..] (hr_o = n <= IW, so 2*IW entries cover them). An entry the read did not see
+   // is not a head: hv counts what the queue held as the read saw it, the count less the pop (a
+   // bundle counted at an edge is a head from the cycle after; READ BEFORE WRITTEN, below).
    wire [2*IW*QLB-1:0] q_ro;
    wire [2*IW*QRW-1:0] q_rd2;
-   generate for (gk = 0; gk < IW; gk = gk + 1) begin: ro
-      localparam [LB-1:0] K = gk;
-      assign q_ro[gk*QLB +: QLB]        = gk[QLB-1:0];                                // program order
-      assign q_ro[(IW + gk)*QLB +: QLB] = {{(QLB-LB){1'b0}}, rsub(K, lc)};            // lane k's
+   generate for (gk = 0; gk < 2*IW; gk = gk + 1) begin: ro
+      assign q_ro[gk*QLB +: QLB] = gk[QLB-1:0];
    end endgenerate
    smolrv64_bankq #(.W(QRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_q
      (.clk(clk2x), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_wd), .rp(q_rp), .ro(q_ro), .rd(q_rd2));
-   // the heads' dispatch classes in program order (the queued record's last field), and lane k's
-   // record, decoded from what the queue holds of it into the record dispatch takes
-   // THE PICK STAGE (P): the group the heads' rules take this cycle, lane k's queue record as read,
+   localparam integer HB = $clog2(2*IW);
+   reg  [QRW-1:0] hr [0:2*IW-1];
+   reg  [HB-1:0]  hr_o = {HB{1'b0}};
+   reg  [IW-1:0]  hv = {IW{1'b0}};
+   wire [QRW-1:0] hh [0:IW-1];                    // head j, in program order
+   generate for (gk = 0; gk < IW; gk = gk + 1) begin: hj
+      assign hh[gk] = hr[hr_o + gk[HB-1:0]];
+   end endgenerate
+   // THE PICK STAGE (P): the group the heads' rules take this cycle, lane k's queue record,
    // registered; the record is rebuilt into the IR the next cycle. Between the take and the IR's
    // dispatch two groups are in flight (P's and the IR's), and the credits count both.
    reg  [QRW-1:0] p_raw [0:IW-1];
@@ -493,7 +507,7 @@ module smolrv64_frontend
    wire [15:0]    g  [0:IW-1];
    wire [IRW-1:0] ql [0:IW-1];
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: hd
-      assign g[gk] = q_rd2[gk*QRW +: 16];
+      assign g[gk] = hh[gk][15:0];
       assign p_gc[gk*16 +: 16] = p_raw[gk][15:0];
       `QR_DECL(r_)
       assign `QR_REC(r_) = p_raw[gk];
@@ -508,9 +522,10 @@ module smolrv64_frontend
    wire [2*IW*IRW-1:0] q_frd;
    smolrv64_bankq #(.W(IRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_qsh
      (.clk(clk2x), .wclk(clk2x), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_fwd), .rp(q_rp), .ro(q_ro), .rd(q_frd));
+   reg  [IRW-1:0] hrf [0:2*IW-1];
    // the head's record by name, for the bench's stall accounting (nothing here reads it)
    `QR_DECL(hq_)
-   assign `QR_REC(hq_) = q_rd2[0 +: QRW];
+   assign `QR_REC(hq_) = hh[0];
    wire [IRW-1:0] h_rec;
    smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hh
      (.clk(clk2x), .pdet(hq_pdet), .pc(hq_pc), .inst(hq_inst), .seq_in(hq_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
@@ -521,21 +536,43 @@ module smolrv64_frontend
    assign `IR_REC(h_) = h_rec;
    wire [CW-1:0]  q_pop;                          // entries leaving this cycle (the group's take)
    wire [CW-1:0]  q_pushn = cnt(q_wr);            // entries pushed this clk cycle
-   // clk2x's: a pop every clk2x cycle, a bundle's push counted at the clk edge that ends its cycle
-   // (its first H0 slots are in the banks from that edge, the rest from the next: DECODE RUNS ON
-   // clk2x, above)
-   wire [CW-1:0]  q_pn    = h2 ? q_pushn : {CW{1'b0}};
+   // clk2x's: a pop every clk2x cycle; a bundle's slots placed at the clk edge that ends its cycle
+   // (q_wp) and counted at the mid-cycle edge after it (q_pn: its first H0 slots are in the banks
+   // from that edge, the rest from the next -- DECODE RUNS ON clk2x, above)
+   wire [CW-1:0]  q_pw    = h2 ? q_pushn : {CW{1'b0}};
+   reg  [CW-1:0]  q_pn    = {CW{1'b0}};
    wire [QAW:0]   q_cnt_n = (reset | redirect) ? {(QAW+1){1'b0}}
                           : q_cnt + {{(QAW+1-CW){1'b0}}, q_pn} - {{(QAW+1-CW){1'b0}}, q_pop};
    always @(posedge clk2x) begin
       if (reset | redirect) begin
          q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin
-         q_wp  <= q_wp + {{(QAW-CW){1'b0}}, q_pn};
+         q_wp  <= q_wp + {{(QAW-CW){1'b0}}, q_pw};
          q_rp  <= q_rp + {{(QAW-CW){1'b0}}, q_pop};
       end
+      q_pn  <= (reset | redirect) ? {CW{1'b0}} : q_pw;
       q_cnt <= q_cnt_n;
-      if (h2) q_room_s <= (q_cnt_n <= QDEPTH[QAW:0] - FW[QAW:0]);
+      // the room as the clk edge leaves the queue: what it counts and the bundle placed at that
+      // edge (q_pn is zero in a second half); the pop is not credited, as it only makes room
+      if (h2) q_room_s <= (reset | redirect) | (q_cnt + {{(QAW+1-CW){1'b0}}, q_pushn} <= QDEPTH[QAW:0] - FW[QAW:0]);
+   end
+   // the heads: the 2*IW entries from q_rp as this cycle reads them, the pop, and which of the
+   // entries after it the queue holds (q_cnt - q_pop > j, chosen by the pop among compares of flops)
+   reg  [IW-1:0] hv_n;
+   integer       hp, hj2;
+   always @* begin
+      hv_n = {IW{1'b0}};
+      for (hp = 0; hp <= IW; hp = hp + 1)
+         if (q_pop == hp[CW-1:0])
+            for (hj2 = 0; hj2 < IW; hj2 = hj2 + 1) hv_n[hj2] = {1'b0, q_cnt} > hp[QAW+1:0] + hj2[QAW+1:0];
+   end
+   always @(posedge clk2x) begin
+      for (k = 0; k < 2*IW; k = k + 1) begin
+         hr[k]  <= q_rd2[k*QRW +: QRW];
+         hrf[k] <= q_frd[k*IRW +: IRW];
+      end
+      if (reset | redirect) begin hr_o <= {HB{1'b0}};  hv <= {IW{1'b0}}; end
+      else                  begin hr_o <= q_pop[HB-1:0]; hv <= hv_n; end
    end
 
    // A slot without its predecessor, or a fault pseudo-op beside a real slot, is a fetch defect.
@@ -575,13 +612,12 @@ module smolrv64_frontend
       assign ia[gk] = crd_ia[radd(lc, gk[CW-1:0])];
    end endgenerate
    wire realign = rule[0] & ~g[0][G_PLAIN] & (lc != {LB{1'b0}});   // a head op waits for lane A
-   assign rule[0] = ~q_empty;
+   assign rule[0] = hv[0];
    assign take[0] = rule[0] & crd[CR_POP] & head_go & ~realign & crd[CR_ROB1]
                   & room(g[0], ia[0], crd[CR_L], crd[CR_LD], crd[CR_ST], crd[CR_F], crd[CR_DIV]);
    assign c_dv[0] = g[0][G_M];
    generate for (gk = 1; gk < IW; gk = gk + 1) begin: rl
-      localparam [QAW:0] K = gk;
-      assign rule[gk] = rule[gk-1] & (q_cnt > K) & g[0][G_PLAIN] & g[gk][G_PLAIN] & ~g[gk-1][G_DCR]
+      assign rule[gk] = rule[gk-1] & hv[gk] & g[0][G_PLAIN] & g[gk][G_PLAIN] & ~g[gk-1][G_DCR]
                       & ~(g[gk][G_M] & c_dv[gk-1]);
       assign take[gk] = rule[gk] & take[gk-1] & crd[CR_ROB1 + gk]
                       & room(g[gk], ia[gk], crd[CR_L], crd[CR_LD + gk], crd[CR_ST + gk], crd[CR_F + gk], crd[CR_DIV]);
@@ -596,20 +632,29 @@ module smolrv64_frontend
       if (reset | redirect | realign) lc <= {LB{1'b0}};
       else                            lc <= radd(lc, q_pop);
    end
-   // A BUNDLE'S LATER SLOTS ARE NEVER READ BEFORE THEY ARE WRITTEN: in the first half after its push
-   // is counted, no head the IR takes is one of its slots past the first H0, which are written at
-   // the mid-cycle edge (DECODE RUNS ON clk2x, above). It holds because the IR takes at most IW = H0
-   // heads a clk2x cycle and the bundle lands at the head or beyond.
-   reg            pushed_q = 1'b0;               // the first half after a push was counted
-   reg [QAW-1:0]  pwb_q;
+   // READ BEFORE WRITTEN: a head is taken the cycle after the queue read it (hr), and a bundle's first
+   // H0 slots are written at the edge that counts it, the rest at the next (DECODE RUNS ON clk2x,
+   // above). So in the cycle after the count no slot of the bundle is taken (hv does not count it
+   // yet), and in the cycle after that none past the first H0. The second holds because a take is
+   // at most IW = H0 heads and the bundle lands at the head or beyond: what was taken before it
+   // was older.
+   reg            pushed_q = 1'b0, pushed_q2 = 1'b0;   // the cycle after a bundle's count, and the next
+   reg [QAW-1:0]  pwb_q, pwb_q2;                       // ...and its first position
    always @(posedge clk2x) begin
-      pushed_q <= ~reset & ~redirect & h2 & (q_pn != {CW{1'b0}});
+      pushed_q  <= ~reset & ~redirect & (q_pn != {CW{1'b0}});
+      pushed_q2 <= ~reset & ~redirect & pushed_q;
       if (h2) pwb_q <= q_wp;
+      pwb_q2 <= pwb_q;
    end
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: mw
-      wire [QAW-1:0] o = q_rp + gk[QAW-1:0] - pwb_q;     // the head's offset into the last bundle
-      always @(posedge clk2x) if (!reset & pushed_q & take[gk] & ({1'b0, o} >= H0) & ({1'b0, o} < FW))
-         $fatal(1, "smolrv64_frontend: head %0d takes slot %0d of the bundle pushed last, before the mid-cycle edge writes it", gk, o);
+      wire [QAW-1:0] o  = q_rp + gk[QAW-1:0] - pwb_q;    // the head's offset into the bundle
+      wire [QAW-1:0] o2 = q_rp + gk[QAW-1:0] - pwb_q2;
+      always @(posedge clk2x) if (!reset) begin
+         if (pushed_q & take[gk] & ({1'b0, o} < FW))
+            $fatal(1, "smolrv64_frontend: head %0d takes slot %0d of the bundle counted at this cycle's edge, which the read did not see", gk, o);
+         if (pushed_q2 & take[gk] & ({1'b0, o2} >= H0) & ({1'b0, o2} < FW))
+            $fatal(1, "smolrv64_frontend: head %0d takes slot %0d of the bundle counted last cycle, before the read saw it written", gk, o2);
+      end
    end endgenerate
    // a group dispatches whole: all of the IR's lanes
    wire e_order = ~reset & (|consume) & (consume != d_valid);
@@ -636,8 +681,8 @@ module smolrv64_frontend
       p_fc <= lc;
       d_fc <= p_fc;
       for (k = 0; k < IW; k = k + 1) begin
-         p_raw[k] <= q_rd2[(IW + k)*QRW +: QRW];
-         p_frd[k] <= q_frd[(IW + k)*IRW +: IRW];
+         p_raw[k] <= hr[hr_o + {{(HB-LB){1'b0}}, rsub(k[LB-1:0], lc)}];
+         p_frd[k] <= hrf[hr_o + {{(HB-LB){1'b0}}, rsub(k[LB-1:0], lc)}];
          d_rec[k*IRW +: IRW] <= ql[k];
       end
    end
