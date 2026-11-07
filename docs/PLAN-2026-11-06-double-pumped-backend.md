@@ -300,6 +300,9 @@ crossing has one `clk2x` cycle). The second pass:
   counted, and no pop. READ BEFORE WRITTEN (asserted): no slot of a bundle is taken in the cycle
   after its count, and none past the first H0 in the cycle after that.
 
+**The FPU: twice the pipeline registers.** fpnew's datapath closed 6 ns with five (`PIPE_REGS`, DISTRIBUTED);
+at 3 ns it takes ten, the same latency in ns. Still four ops in flight (`NFLIGHT`).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

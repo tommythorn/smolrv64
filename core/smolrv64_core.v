@@ -2887,7 +2887,7 @@ module smolrv64_core
    // than be matched against "the one in flight".
    // PIPE_REGS 5 (fp_unit's default is 4): fpnew's own datapath was a 25-level, -0.51 ns
    // family at IW=3. One more cycle of FP latency; the integer side does not pay.
-   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(5), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
+   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(10), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
      (.clk(clk), .reset(reset),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
       .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
