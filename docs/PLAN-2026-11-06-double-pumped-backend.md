@@ -338,6 +338,14 @@ is kept by holding the pick while it is in R. A one-cycle producer's consumer is
 after it (the dependency matrix's wake registered, `swk_q`) and executes three after it: 9 ns, a
 cycle more than main's 6 -- the staggered ALU (section 6 of the 333 MHz plan) is what wins it back.
 
+**Step 7, first part: the clk -> clk2x levels and pulses take a clk2x register at the boundary.**
+Step 1's build had 11,969 clk -> clk2x failing endpoints: the PLIC's arbitration (`has_irq`, 5 K into
+the CSRs and through them the whole core), the shell's reset into the D$ (1.7 K), the devices'
+answers into the lanes. The interrupt levels and `mtime` reach the core through a clk2x register;
+the SoC's clk2x side (the D$, the arbiter, the read door, the walkers' adapters, the line client,
+the crossings) takes its own clk2x reset flop, as the core does; a device's read answer and write
+ack are registered in the first half and taken by the LSU in the second.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

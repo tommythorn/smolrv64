@@ -170,10 +170,14 @@ module rv_soc_top #(
    // clk flop, and its fan-out into the core's clk2x flops had half a clk cycle
    (* max_fanout = 256 *) reg core_reset = 1'b1;
    always @(posedge clk2x) core_reset <= reset;
+   // ...and the SoC's clk2x side (the D$, its walkers' adapters and read door, the arbiter, the I$'s
+   // line client, the crossings) takes its own: the reset was the largest clk -> clk2x family
+   (* max_fanout = 256 *) reg x2_reset = 1'b1;
+   always @(posedge clk2x) x2_reset <= reset;
    smolrv64_core #(.HW(HW), .IW(IW), .PCW(PCW), .RESET_PC(RESET_PC), .LBASE(LBASE), .LRAM_LG2(LRAM_LG2),
                .LQ_IB(LQ_IB)) core
      (.clk(clk2x), .clk_fe(clk), .reset(core_reset),
-      .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip), .mtime(clint_mtime),
+      .imem_addr(imem_addr), .imem_ctx_chg(imem_ctx_chg), .imem_hold(imem_hold), .imem_cancel(imem_cancel), .hw_ip(hw_ip_x), .mtime(mtime_x),
       .ic_busy(fi_stall | ic_inv_busy), .ic_req(ic_rd_req), .ic_va(ic_rd_addr), .ic_pa(ic_rd_pa),
       .ic_tag(ic_tag), .ic_ack(ic_rd_ack), .ic_valid(ic_rd_valid), .ic_data(ic_rd_data), .ic_rtag(ic_rsp_tag),
       .fe_redirect(fe_redirect),
@@ -236,14 +240,14 @@ module rv_soc_top #(
    // address (the LSU starts no other read until it is answered, so the address holds until then)
    wire        dv_ren;
    wire [63:0] dv_raddr;
-   smolrv64_x2f2s #(.W(64)) u_xdr (.clk2x(clk2x), .reset(reset), .h2(h2), .v(dmem_ren & f_is_dev_r), .d(dmem_raddr),
+   smolrv64_x2f2s #(.W(64)) u_xdr (.clk2x(clk2x), .reset(x2_reset), .h2(h2), .v(dmem_ren & f_is_dev_r), .d(dmem_raddr),
                                    .sv(dv_ren), .sd(dv_raddr), .busy());
    wire [63:0] dev_addr = dmem_wfsm ? dmem_wabase : dv_raddr;
-   always @(posedge clk2x) if (!reset & dmem_ren & dmem_wfsm)
+   always @(posedge clk2x) if (!x2_reset & dmem_ren & dmem_wfsm)
       $fatal(1, "rv_soc_top: dmem_ren & the state machine's write asserted together -- dev_addr select is ambiguous");
    // ...and a device write is never the straddling second beat, which is what makes decoding
    // from the base equivalent. If this ever fires, the decode above is addressing the wrong word.
-   always @(posedge clk2x) if (!reset & dmem_wfsm & is_dev_w & (dmem_waddr != dmem_wabase))
+   always @(posedge clk2x) if (!x2_reset & dmem_wfsm & is_dev_w & (dmem_waddr != dmem_wabase))
       $fatal(1, "rv_soc_top: device write straddled a word (beat %h base %h)", dmem_waddr, dmem_wabase);
    wire is_clint_r = (dv_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dv_raddr & ~64'hf)        == UART_BASE;
@@ -354,6 +358,11 @@ module rv_soc_top #(
 `endif
    wire [11:0] hw_ip = (clint_mtip ? 12'h080 : 12'h0) | (clint_msip ? 12'h008 : 12'h0)
                      | (plic_meip  ? 12'h800 : 12'h0) | (plic_seip  ? 12'h200 : 12'h0);
+   // the interrupt levels and the time, clk's, into the core (clk2x's) through a clk2x register: a
+   // level read by clk2x logic every half, and the PLIC's arbitration was a cone into the whole core
+   reg  [11:0] hw_ip_x = 12'd0;
+   reg  [63:0] mtime_x = 64'd0;
+   always @(posedge clk2x) begin hw_ip_x <= hw_ip;  mtime_x <= clint_mtime; end
    // NS16550A UART. Semantics ported from the scalar core's Ubuntu-proven model
    // (src/smolrv64.v): full register file (IER/IIR/FCR/MCR/SCR readback), the THRE-pending
    // protocol (set when the THR drains or on a THRI enable edge with the THR empty; cleared
@@ -582,7 +591,7 @@ module rv_soc_top #(
    assign       dmem_rbusy     = rq_hv;
 `ifdef LSUDBG
    reg [63:0] soc_dbg_line; initial if (!$value$plusargs("dbg_line=%h", soc_dbg_line)) soc_dbg_line = 64'hFFFF_FFFF_FFFF_FFFF;
-   always @(posedge clk2x) if (!reset) begin
+   always @(posedge clk2x) if (!x2_reset) begin
       if (dcr_req && (dcr_addr[55:6] == soc_dbg_line[55:6]))
          $display("[soc t=%0t DOOR req addr=%h tag=%h ack=%b waiting=%0d ren=%b fast=%b]", $time, dcr_addr, dcr_tag, dc_rd_ack, rq_n, dmem_ren, dmem_rfast);
       if (dc_rd_valid && (dc_rd_resp_addr[55:6] == soc_dbg_line[55:6]))
@@ -602,12 +611,18 @@ module rv_soc_top #(
    //   c_rd_req     = a waiting read, or dmem_ren & ~is_dev_r  (no cache req for a device)
    //   vio_pending <= set only by dmem_ren & is_virtio_r
    wire         vio_rack   = virtio_rvalid & vio_pending;   // not a write's completion (clk's)
-   // the devices answer for clk's cycle; the LSU (clk2x's) takes the answer in its first half
-   wire         vio_rack_f = vio_rack & ~h2;
-   wire         dev_rv_f   = dev_rvalid_q & ~h2;
+   // the devices answer for clk's cycle; a clk2x register takes the answer in its first half and the
+   // LSU (clk2x's) in the second
+   reg          vio_rack_f = 1'b0, dev_rv_f = 1'b0;
+   reg  [63:0]  dev_rd_f;
+   always @(posedge clk2x) begin
+      vio_rack_f <= ~x2_reset & vio_rack & ~h2;
+      dev_rv_f   <= ~x2_reset & dev_rvalid_q & ~h2;
+      dev_rd_f   <= vio_rack ? {virtio_rdata, virtio_rdata} : dev_rdata_q;   // 32b, valid at virtio_rvalid
+   end
    wire         raw_rvalid = vio_rack_f | dev_rv_f | dc_rv_ok;
    always @(posedge clk2x)
-      if (!reset & ((vio_rack_f & dev_rv_f) | (vio_rack_f & dc_rv_ok) | (dev_rv_f & dc_rv_ok)))
+      if (!x2_reset & ((vio_rack_f & dev_rv_f) | (vio_rack_f & dc_rv_ok) | (dev_rv_f & dc_rv_ok)))
          $fatal(1, "rv_soc_top: two read responses at once (vio=%b dev=%b dc=%b) -- rvalid ambiguous",
                 vio_rack_f, dev_rv_f, dc_rv_ok);
    // ...and raw_rDATA selects the same way, for the same reason. The note that used to stand
@@ -625,9 +640,7 @@ module rv_soc_top #(
    // A device answers aligned to the access, the addressed byte in lane 0: the LSU sends a device
    // load's exact address and does not shift it (the UART's read, virtio-input's and virtio-net's
    // config spaces build their data from the address; virtio's 32-bit registers are read whole).
-   wire [63:0]  raw_rdata  = vio_rack_f   ? {virtio_rdata, virtio_rdata}  // 32b, valid at virtio_rvalid
-                           : dev_rv_f     ? dev_rdata_q
-                           :                dc_rd_data;
+   wire [63:0]  raw_rdata  = (vio_rack_f | dev_rv_f) ? dev_rd_f : dc_rd_data;
    // THE READ DOOR. The LSU presents a read for one cycle (dmem_ren) and may present the next one
    // the cycle after, so the reads the cache has not yet accepted wait here, oldest first: up to
    // two, the one presented while the LSU saw the door clear and the one behind it. The LSU starts
@@ -654,9 +667,9 @@ module rv_soc_top #(
       if (rq_pop) begin rq_a0 <= rq_a1;  rq_t0 <= rq_t1;  rq_u0 <= rq_u1; end
       if (rq_push & (rq_left == 2'd0)) begin rq_a0 <= dmem_raddr;  rq_t0 <= lsu_tag_req;  rq_u0 <= dmem_runcached; end
       if (rq_push & (rq_left == 2'd1)) begin rq_a1 <= dmem_raddr;  rq_t1 <= lsu_tag_req;  rq_u1 <= dmem_runcached; end
-      if (reset) rq_n <= 2'd0;
+      if (x2_reset) rq_n <= 2'd0;
       else       rq_n <= rq_left + {1'b0, rq_push};
-      if (!reset & rq_push & (rq_left == 2'd2))
+      if (!x2_reset & rq_push & (rq_left == 2'd2))
          $fatal(1, "rv_soc_top: a third D$ read waits for its accept (addr %h tag %h): the LSU started past dmem_rbusy",
                 dmem_raddr, lsu_tag_req);
    end
@@ -665,15 +678,15 @@ module rv_soc_top #(
    wire         dmem_ren_slow = dmem_ren & ~dmem_rfast;
    // ...and c_rd_pend keeps its old meaning and its old users (c_st_ok below reads it as
    // "a response is outstanding"), so it is still cleared by the response, not the accept.
-   always @(posedge clk2x) if (reset) c_rd_pend<=1'b0;
+   always @(posedge clk2x) if (x2_reset) c_rd_pend<=1'b0;
       else if (dmem_ren_slow) c_rd_pend<=1'b1; else if (raw_rvalid) c_rd_pend<=1'b0;
    // A slow response nobody asked for is a read that changed its tag while it waited for the
    // accept: the FSM is idle and would drop it. And the request must not move while it waits:
    // the cache samples address and tag on the accept, not when the LSU first presented them.
-   always @(posedge clk2x) if (!reset & dc_rv_ok & ~c_rd_pend)
+   always @(posedge clk2x) if (!x2_reset & dc_rv_ok & ~c_rd_pend)
       $fatal(1, "rv_soc_top: D$ slow response with no slow read outstanding");
    reg          c_rdv_st;  reg [63:0] c_rdd_st;
-   always @(posedge clk2x) if (reset) c_rdv_st<=1'b0;
+   always @(posedge clk2x) if (x2_reset) c_rdv_st<=1'b0;
       else if (dmem_ren_slow) c_rdv_st<=1'b0;
       else if (raw_rvalid) begin c_rdv_st<=1'b1; c_rdd_st<=raw_rdata; end
    wire         c_st_ok = c_rdv_st & ~c_rd_pend & ~dmem_ren_slow;
@@ -699,13 +712,16 @@ module rv_soc_top #(
    // LSU waits on a device or virtio store started since, completing THAT one early. The D$
    // raises wr_cpl only for the writes whose requester waits (CBO, uncached), which the LSU
    // serializes, so the three terms stay exclusive (asserted).
-   wire         vio_wack_f = vio_wack & ~h2;          // the devices' acks are clk's: taken once
-   wire         dev_wack_f = dev_wack & ~h2;
+   reg          vio_wack_f = 1'b0, dev_wack_f = 1'b0;   // the devices' acks are clk's: registered once, in the first half
+   always @(posedge clk2x) begin
+      vio_wack_f <= ~x2_reset & vio_wack & ~h2;
+      dev_wack_f <= ~x2_reset & dev_wack & ~h2;
+   end
    assign       dmem_wready = vio_wack_f | dev_wack_f | dc_wr_cpl;
    // The D$ takes no write in a cycle it completes one (its wr_req), and the LSU's store register
    // counts its store taken on dc_wr_room alone: a completion comes only while the state machine
    // waits for it, so the store register is never writing then.
-   always @(posedge clk2x) if (!reset & dmem_wen & ~dmem_wfsm & dc_wr_cpl)
+   always @(posedge clk2x) if (!x2_reset & dmem_wen & ~dmem_wfsm & dc_wr_cpl)
       $fatal(1, "rv_soc_top: a D$ write completion while the LSU's store register writes (the D$ would not take it)");
    // The DEVICE ACCEPT, for the LSU's plain store to a device: done at the device's own ack.
    // A device store carries no NC bit when there are no page tables (bare M-mode has no PBMT),
@@ -716,7 +732,7 @@ module rv_soc_top #(
    // flight.
    assign       dmem_waccept = dev_wack_f | vio_wack_f;
    always @(posedge clk2x)
-      if (!reset & ((vio_wack_f & dev_wack_f) | (vio_wack_f & dc_wr_cpl) | (dev_wack_f & dc_wr_cpl)))
+      if (!x2_reset & ((vio_wack_f & dev_wack_f) | (vio_wack_f & dc_wr_cpl) | (dev_wack_f & dc_wr_cpl)))
          $fatal(1, "rv_soc_top: two write acks at once (vio=%b dev=%b dc=%b) -- wready ambiguous",
                 vio_wack_f, dev_wack_f, dc_wr_cpl);
 
@@ -749,7 +765,7 @@ module rv_soc_top #(
    // by its dTLB entry, so it never meets the device decode; it carries a load-queue tag.
    wire                dc_rd_quiet;
    rv_dcache #(.SIZE_KB(DC_KB), .RTW(DRTW), .NRQ(DC_NRQ), .PABITS(PABITS), .SW(MSW)) u_dcache
-     (.clk(clk2x), .reset(reset),
+     (.clk(clk2x), .reset(x2_reset),
       .rd_req(dcr_req), .rd_pa(dcr_addr), .rd_tag(dcr_tag), .rd_ack(dc_rd_ack),
       .rd_quiet(dc_rd_quiet), .f_hint(dmem_fhint), .f_req(dmem_fv), .f_pa(dmem_fpa),
       .f_tag({1'b0, dmem_ftag}), .f_ok(dmem_fok), .f_cancel(dmem_fcancel), .rd_f(dmem_fans),
@@ -825,7 +841,7 @@ module rv_soc_top #(
    wire [7:0]  err_first_idx;
    wire [47:0] err_first_cyc;
    rv_errlog #(.N(64), .CW(48)) u_errlog
-     (.clk(clk2x), .reset(reset),
+     (.clk(clk2x), .reset(x2_reset),
       .err({fe_err, lsu_err, ic_err, dc_err}),
       .sticky(err_sticky), .first_idx(err_first_idx), .first_cyc(err_first_cyc));
 
@@ -855,22 +871,22 @@ module rv_soc_top #(
    // predictions follow its redirect. A device write since the last fence.i clears the I$ as well:
    // device writes do not probe.
    reg        ic_pb_v;  reg [63:0] ic_pb_pa;
-   always @(posedge clk2x) begin ic_pb_v <= ~reset & dmem_wen;  ic_pb_pa <= dmem_waddr; end
+   always @(posedge clk2x) begin ic_pb_v <= ~x2_reset & dmem_wen;  ic_pb_pa <= dmem_waddr; end
    // The probes are clk2x's and the I$ takes one a clk cycle: the later of two in one clk cycle is
    // the one it takes, and the earlier is LOST -- which costs the same as a device's write: the
    // next fence.i clears the whole I$ (pb_lost sets dma_dirty below). A probe still on its way
    // (s_pb_busy) is one fence.i must wait for.
    wire        s_pb_v, s_pb_busy;  wire [63:0] s_pb_pa;
-   smolrv64_x2f2s #(.W(64)) u_xpb (.clk2x(clk2x), .reset(reset), .h2(h2), .v(ic_pb_v), .d(ic_pb_pa),
+   smolrv64_x2f2s #(.W(64)) u_xpb (.clk2x(clk2x), .reset(x2_reset), .h2(h2), .v(ic_pb_v), .d(ic_pb_pa),
                                    .sv(s_pb_v), .sd(s_pb_pa), .busy(s_pb_busy));
    reg         pb_first;                           // a probe waits for this clk cycle's edge
-   always @(posedge clk2x) pb_first <= ~reset & ~h2 & ic_pb_v;
+   always @(posedge clk2x) pb_first <= ~x2_reset & ~h2 & ic_pb_v;
    wire        pb_lost = h2 & pb_first & ic_pb_v;  // ...and another came in the second half
    reg        dma_dirty;                           // a device wrote memory since the I$ was last cleared
    localparam FI_IDLE=0, FI_DRAIN=1, FI_INV=2, FI_WAIT=3;
    reg [1:0] fi;  assign fi_stall = (fi != FI_IDLE);
    reg fi_inv;
-   always @(posedge clk2x) if (reset) begin fi<=FI_IDLE; fi_inv<=1'b0; dma_dirty<=1'b0; end
+   always @(posedge clk2x) if (x2_reset) begin fi<=FI_IDLE; fi_inv<=1'b0; dma_dirty<=1'b0; end
       else begin
          fi_inv <= 1'b0;
          if (dma_wr_f | pb_lost) dma_dirty <= 1'b1;
@@ -888,7 +904,7 @@ module rv_soc_top #(
       end
    wire dma_wr_f = dma_wr & ~h2;                   // the device's pulse is clk's: once
    wire ic_inv_req, s_inv_busy;   // fence.i AND mapping changes go through fi (after the D$ clean-flush)
-   smolrv64_x2f2s #(.W(1)) u_xinv (.clk2x(clk2x), .reset(reset), .h2(h2), .v(fi_inv), .d(1'b0),
+   smolrv64_x2f2s #(.W(1)) u_xinv (.clk2x(clk2x), .reset(x2_reset), .h2(h2), .v(fi_inv), .d(1'b0),
                                    .sv(ic_inv_req), .sd(), .busy(s_inv_busy));
 
    // The read-only VHPR I$ (core/rv_icache.v): a pair per cycle, hit on the virtual tag alone.
@@ -924,7 +940,7 @@ module rv_soc_top #(
       assign pw_match[g] = dc_rd_valid & pw_busy[g]
                          & (dc_rd_resp_tag == PT);
       assign pw_ack[g] = dc_rd_ack & ~c_rd_req & (g ? (~pw_rq[0] & pw_rq[1]) : pw_rq[0]);
-      always @(posedge clk2x) if (reset) begin pw_busy[g]<=1'b0; pw_sent[g]<=1'b0; pw_rvalid[g]<=1'b0; end
+      always @(posedge clk2x) if (x2_reset) begin pw_busy[g]<=1'b0; pw_sent[g]<=1'b0; pw_rvalid[g]<=1'b0; end
          else begin
             pw_rvalid[g] <= 1'b0;
             if (pw_read[g] & ~pw_busy[g] & ~pw_rvalid[g]) begin
@@ -941,7 +957,7 @@ module rv_soc_top #(
    end endgenerate
    assign ptw_rdata=pw_rdata[0];   assign ptw_rvalid=pw_rvalid[0];
    assign dc_rd_quiet = ~rq_hv & ~dmem_ren & ~(|pw_rq);
-   always @(posedge clk2x) if (!reset && dmem_fv && (dmem_fpa < BASE))
+   always @(posedge clk2x) if (!x2_reset && dmem_fv && (dmem_fpa < BASE))
       $fatal(1, "rv_soc_top: M's load presented to the D$ at pa=%h, below DRAM", dmem_fpa);
    assign dptw_rdata=pw_rdata[1];  assign dptw_rvalid=pw_rvalid[1];
 
@@ -982,7 +998,7 @@ module rv_soc_top #(
    wire ic_rr   = ic_p & ~ic_rd & (ic_ak | dc_ic_ack);
    wire ic_l2_req_f = ic_l2_req & ~h2;            // the I$'s request is clk's: once
    always @(posedge clk2x)
-      if (reset) begin ic_p <= 1'b0;  ic_ak <= 1'b0;  ic_cl <= 1'b0;  ic_rd <= 1'b0; end
+      if (x2_reset) begin ic_p <= 1'b0;  ic_ak <= 1'b0;  ic_cl <= 1'b0;  ic_rd <= 1'b0; end
       else begin
          if (ic_l2_req_f) begin ic_p <= 1'b1;  ic_ak <= 1'b0;  ic_rd <= 1'b1; end
          else begin
@@ -996,7 +1012,7 @@ module rv_soc_top #(
    assign ic_l2_ack = ic_use;
    // ...and the answer, held for the I$'s clk cycle (the line client's data register holds the line)
    wire   ic_l2_ack_s;
-   smolrv64_x2f2s #(.W(1)) u_xica (.clk2x(clk2x), .reset(reset), .h2(h2), .v(ic_use), .d(1'b0),
+   smolrv64_x2f2s #(.W(1)) u_xica (.clk2x(clk2x), .reset(x2_reset), .h2(h2), .v(ic_use), .d(1'b0),
                                    .sv(ic_l2_ack_s), .sd(), .busy());
    // THE D$'S OUTSIDE REQUEST: the I$'s clean and a DMA master's clean or flush, each held until its
    // answer. A requester owns the port from its first cycle to the answer, and the two take turns.
@@ -1012,22 +1028,22 @@ module rv_soc_top #(
    assign ox_keep = ~ox_sel | dma_sn_keep;
    assign dc_ic_ack  = ox_ack & ~ox_dma;
    always @(posedge clk2x)
-      if (reset) begin ox_own <= 1'b0;  ox_dma <= 1'b0;  ox_last <= 1'b0;  l2_sn <= 1'b0; end
+      if (x2_reset) begin ox_own <= 1'b0;  ox_dma <= 1'b0;  ox_last <= 1'b0;  l2_sn <= 1'b0; end
       else begin
          if (ox_ack) begin ox_own <= 1'b0;  ox_last <= ox_dma; end
          else if (ox_req & ~ox_own) begin ox_own <= 1'b1;  ox_dma <= ox_pick; end
          if (ox_ack & ox_dma) l2_sn <= 1'b1;  else if (dma_sn_ack & h2) l2_sn <= 1'b0;
       end
-   always @(posedge clk2x) if (!reset) begin
+   always @(posedge clk2x) if (!x2_reset) begin
       if (ox_ack & ~ox_own) $fatal(1, "rv_soc_top: the D$ answered an outside request no one owns");
       if (ox_own & ~(ox_dma ? dma_sn_valid : dc_ic_req) & ~ox_ack)
          $fatal(1, "rv_soc_top: the outside request's owner (%s) let go before its answer", ox_dma ? "DMA" : "I$");
       if (l2_sn & ~dma_sn_valid) $fatal(1, "rv_soc_top: the DMA let go of its line before the L2 answered");
    end
-   always @(posedge clk2x) if (!reset & ic_l2_req_f & ic_p)
+   always @(posedge clk2x) if (!x2_reset & ic_l2_req_f & ic_p)
       $fatal(1, "rv_soc_top: an I$ line read asked while the last one is still owed");
    rv_mem_line_client #(.SW(MSW), .AW(LAW)) u_ic_mem
-     (.clk(clk2x), .reset(reset),
+     (.clk(clk2x), .reset(x2_reset),
       .l2_req(ic_l2_req_f | ic_rr), .l2_we(ic_l2_we), .l2_addr(ic_l2_addr), .l2_wdata(ic_l2_wdata),
       .l2_ack(ic_mack), .l2_rdata(ic_l2_rdata),
       .cq_valid(mc_q_valid[1]), .cq_ready(mc_q_ready[1]), .cq_slot(mc_q_slot[1*MSW +: MSW]),
@@ -1041,7 +1057,7 @@ module rv_soc_top #(
    wire            m_r_valid, m_r_ready, m_r_last, m_w_valid, m_w_ready;
    wire [MIDW-1:0] m_r_id, m_w_id;  wire [1:0] m_r_beat;  wire [127:0] m_r_data;
    rv_mem_arbiter #(.NC(MC), .CB(MCB), .SW(MSW), .AW(LAW)) u_arb
-     (.clk(clk2x), .reset(reset),
+     (.clk(clk2x), .reset(x2_reset),
       .cq_valid(mc_q_valid), .cq_ready(mc_q_ready), .cq_slot(mc_q_slot), .cq_we(mc_q_we),
       .cq_addr(mc_q_addr), .cq_wmask(mc_q_wmask), .cq_wdata(mc_q_wdata),
       .cr_valid(mc_r_valid), .cr_slot(mc_r_slot), .cr_beat(mc_r_beat), .cr_last(mc_r_last),
