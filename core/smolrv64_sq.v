@@ -675,12 +675,17 @@ module smolrv64_sq
          // older stores overlapping it, its forwarding store aside. Of the narrowings due now only M's
          // column can matter here: a row M narrows is a load whose start the offsets cancelled, or
          // one with nothing to narrow; a row the walker narrows, a load not yet sent; a column the
-         // walker narrows, a store whose overlaps were flagged the cycle after it arrived. So the
-         // violation reads conf and that one column (cf's other three terms stay off this path).
+         // walker narrows, a store whose overlaps were flagged the cycle after it arrived (those
+         // loads stay flagged, the queue's rpl, until they replay). So the violation reads conf and
+         // that one column (cf's other three terms stay off this path).
          wire [NENT-1:0] ovr = oldm & conf[gl] & ~fdm & ~((nc_v & ~nc_pm[gl]) ? onehot_nc : {NENT{1'b0}});
 `ifndef SYNTHESIS
-         always @(posedge clk) if (!reset && l_av[gl] && l_acc[gl] && !l_cancel[gl] && ((ovr & ~cf) != {NENT{1'b0}}))
-            $fatal(1, "smolrv64_sq: load %0d is flagged by older stores %b the page bits clear", gl, ovr & ~cf);
+         // a load's FIRST flag is never one the page bits clear (fl_q: flagged before, as rpl)
+         reg fl_q;  initial fl_q = 1'b0;
+         always @(posedge clk)
+            fl_q <= ~reset & ~flush & ~(l_fill & (l_fill_ix == gl[LQIB-1:0])) & (fl_q | l_viol[gl]);
+         always @(posedge clk) if (!reset && !fl_q && l_av[gl] && l_acc[gl] && !l_cancel[gl] && ((ovr & ~cf) != {NENT{1'b0}}))
+            $fatal(1, "smolrv64_sq: load %0d is first flagged by older stores %b the page bits clear", gl, ovr & ~cf);
 `endif
          reg unk_q;  initial unk_q = 1'b0;      // MEM_ALIAS_UNK: the unknown-address arm alone, a cycle old
          always @(posedge clk) unk_q <= l_av[gl] & (|(oldm & ~av));
