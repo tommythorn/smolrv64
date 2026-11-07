@@ -191,6 +191,8 @@ module smolrv64_sq
     input  wire                  w_v,        // the walker's answer for entry w_idx
     input  wire [IDXB-1:0]       w_idx,
     input  wire [PAW-1:0]        w_pa,
+    input  wire                  lw_v,       // ...or for load-queue entry lw_idx (one walker: w_pa, w_flt are its)
+    input  wire [LQIB-1:0]       lw_idx,
     input  wire                  w_unc,
     input  wire                  w_mem,
     input  wire                  w_flt,
@@ -494,26 +496,33 @@ module smolrv64_sq
    // ANY bit cannot alias, synonyms included: comparing a few low bits is a test that only errs
    // toward "may alias". Each translated entry keeps PA[12 +: PGB]; the PA comes from M's lookup,
    // too late for the cycle the address arrives, so the matrix is written from the offsets as before
-   // and NARROWED one cycle later: the row of the load that filled last cycle, the column of the
-   // store that arrived last cycle, each ANDed with its page match. An entry without a translation
-   // (a lookup miss, the walker's answer, a fault) never narrows. A narrowing only clears cells, and
-   // every write of a cell from the offsets is placed after it below, so the newer value wins.
+   // and NARROWED one cycle later: the row of a load and the column of a store that got their page
+   // bits last cycle -- from M's lookup as the address arrived, or from the walker's answer -- each
+   // ANDed with its page match. Every read of the matrix sees the narrowing already in that cycle
+   // (cf, below), so it costs the cycle the address arrives and no more. An entry whose translation
+   // faulted never narrows. A narrowing only clears cells, and every write of a cell from the offsets
+   // is placed after it below, so the newer value wins.
    reg [PGB-1:0]  spg [0:NENT-1];           // a store's page bits, valid with spv
    reg [NENT-1:0] spv;
    reg [PGB-1:0]  lpg [0:LQN-1];            // a load's, valid with lpv
    reg [LQN-1:0]  lpv;
-   reg            nr_v, nc_v;               // narrow this row / this column now
-   reg [LQIB-1:0] nr_ix;
-   reg [IDXB-1:0] nc_ix;
-   reg [PGB-1:0]  nc_pg;                    // the column's store's page bits (spg[nc_ix], as a copy)
-   initial begin spv = {NENT{1'b0}}; lpv = {LQN{1'b0}}; nr_v = 1'b0; nc_v = 1'b0; end
-   reg [NENT-1:0] nr_pm;                    // the row's page match against every store
+   // the narrowings due now: two rows and two columns -- M's (nr, nc) and the walker's (wr, wc)
+   reg            nr_v, nc_v, wr_v, wc_v;
+   reg [LQIB-1:0] nr_ix, wr_ix;
+   reg [IDXB-1:0] nc_ix, wc_ix;
+   reg [PGB-1:0]  nc_pg, wc_pg;             // the column's store's page bits (its spg, as a copy)
+   initial begin spv = {NENT{1'b0}}; lpv = {LQN{1'b0}}; nr_v = 1'b0; nc_v = 1'b0; wr_v = 1'b0; wc_v = 1'b0; end
+   reg [NENT-1:0] nr_pm, wr_pm;             // a row's page match against every store
    integer        np;
-   always @* for (np = 0; np < NENT; np = np + 1) nr_pm[np] = ~spv[np] | (spg[np] == lpg[nr_ix]);
-   wire [LQN-1:0] nc_pm;                    // the column's page match against every load
+   always @* for (np = 0; np < NENT; np = np + 1) begin
+      nr_pm[np] = ~spv[np] | (spg[np] == lpg[nr_ix]);
+      wr_pm[np] = ~spv[np] | (spg[np] == lpg[wr_ix]);
+   end
+   wire [LQN-1:0] nc_pm, wc_pm;             // a column's page match against every load
    genvar         gnp;
    generate for (gnp = 0; gnp < LQN; gnp = gnp + 1) begin : g_ncpm
       assign nc_pm[gnp] = ~lpv[gnp] | (lpg[gnp] == nc_pg);
+      assign wc_pm[gnp] = ~lpv[gnp] | (lpg[gnp] == wc_pg);
    end endgenerate
 
    // FORWARDING. cov[i][g]: store g holds every byte of load i -- the same VA page (the offsets
@@ -561,8 +570,12 @@ module smolrv64_sq
    always @(posedge clk) begin
       nr_v <= ~reset & l_fill & l_fill_tv & ~l_fill_flt;  nr_ix <= l_fill_ix;
       nc_v <= ~reset & a_v & a_tv & ~a_flt;               nc_ix <= a_idx;  nc_pg <= a_addr[12 +: PGB];
+      wr_v <= ~reset & lw_v & ~w_flt;                     wr_ix <= lw_idx;
+      wc_v <= ~reset & w_v & ~w_flt;                      wc_ix <= w_idx;  wc_pg <= w_pa[12 +: PGB];
       if (l_fill) begin lpg[l_fill_ix] <= l_fill_pa[12 +: PGB]; lpv[l_fill_ix] <= l_fill_tv & ~l_fill_flt; end
+      if (lw_v)   begin lpg[lw_idx]    <= w_pa[12 +: PGB];      lpv[lw_idx]    <= ~w_flt; end
       if (a_v)    begin spg[a_idx]     <= a_addr[12 +: PGB];  spv[a_idx]     <= a_tv & ~a_flt; end
+      if (w_v)    begin spg[w_idx]     <= w_pa[12 +: PGB];    spv[w_idx]     <= ~w_flt; end
    end
    // the stores' address-valid bits as they will stand next cycle (a store only gains one)
    wire [NENT-1:0] av_next = av | (a_v ? ({{(NENT-1){1'b0}}, 1'b1} << a_idx) : {NENT{1'b0}});
@@ -587,9 +600,17 @@ module smolrv64_sq
             wire [IDXB-1:0] sd = gs[IDXB-1:0] - head;      // slot distance from the head
             assign oldm[gs] = v[gs] & ({1'b0, sd} < l_dist);
          end
+         // THE ROW AS READ: conf with the narrowings due now applied (THE PAGE BITS)
+         wire [NENT-1:0] onehot_nc = {{(NENT-1){1'b0}}, 1'b1} << nc_ix;
+         wire [NENT-1:0] onehot_wc = {{(NENT-1){1'b0}}, 1'b1} << wc_ix;
+         wire [NENT-1:0] cf = conf[gl]
+                            & ~((nr_v & (nr_ix == gl[LQIB-1:0])) ? ~nr_pm : {NENT{1'b0}})
+                            & ~((wr_v & (wr_ix == gl[LQIB-1:0])) ? ~wr_pm : {NENT{1'b0}})
+                            & ~((nc_v & ~nc_pm[gl]) ? onehot_nc : {NENT{1'b0}})
+                            & ~((wc_v & ~wc_pm[gl]) ? onehot_wc : {NENT{1'b0}});
          // An older store whose address has not arrived cannot be compared, so it blocks --
          // conservative and correct, and the same rule the compare form used.
-         assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | (~av & {NENT{l_wt[gl]}}))));
+         assign l_block[gl] = l_av[gl] & (|(oldm & (cf | (~av & {NENT{l_wt[gl]}}))));
          // THE BLOCK, TOO, IS A REGISTER PER LOAD (plan item T1 (L) step 2, 2026-09-07). The
          // live l_block above fed the load queue's candidate select and so the LSU's start
          // and, through the shared completion term, the landing wake: gate W6's worst path
@@ -608,7 +629,7 @@ module smolrv64_sq
          always @(posedge clk)
             blk_q <= (l_fill & (l_fill_ix == gl[LQIB-1:0]))
                    ? (|(oldm & (fill_row | (~av_next & {NENT{l_wt[gl]}}))))
-                   : ((l_av[gl] & (|(oldm & (conf[gl] | (~av & {NENT{l_wt[gl]}}))))) | arr_ov);
+                   : ((l_av[gl] & (|(oldm & (cf | (~av & {NENT{l_wt[gl]}}))))) | arr_ov);
          assign l_block_q[gl] = blk_q;
          // FORWARDABLE: exactly one older live store overlaps the load, it holds all the load's bytes
          // (cov), its data is in, it is translated, cached and not faulting, and no older store's
@@ -621,14 +642,12 @@ module smolrv64_sq
          integer ck;
          always @(posedge clk) if (!reset & l_av[gl])
             for (ck = 0; ck < NENT; ck = ck + 1)
-               // between the offsets' overlap and that overlap narrowed by the page bits (exact
-               // from the cycle after the narrowing; until then, still the offsets')
-               if (oldm[ck] && ((conf[gl][ck] & ~(av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])))
-                                | (~conf[gl][ck] & av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])
-                                   & (~lpv[gl] | ~spv[ck] | (lpg[gl] == spg[ck])))))
-                  $fatal(1, "smolrv64_sq: load %0d's overlap with older store %0d reads %b", gl, ck, conf[gl][ck]);
+               // the offsets' overlap, narrowed by whatever page bits the two have
+               if (oldm[ck] && cf[ck] != (av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])
+                                          & (~lpv[gl] | ~spv[ck] | (lpg[gl] == spg[ck]))))
+                  $fatal(1, "smolrv64_sq: load %0d's overlap with older store %0d reads %b", gl, ck, cf[ck]);
 `endif
-         wire [NENT-1:0] kov = oldm & conf[gl];
+         wire [NENT-1:0] kov = oldm & cf;
          wire            k1  = (kov != {NENT{1'b0}}) & ((kov & (kov - 1'b1)) == {NENT{1'b0}});
          wire            fwn = l_av[gl] & k1 & (|(kov & cov[gl] & dv & tv & ~flt & ~unc))
                              & ~(l_wt[gl] & (|(oldm & ~av))) & ~(c_done & (enc1(kov) == head));   // k1: kov is one-hot
@@ -652,16 +671,13 @@ module smolrv64_sq
             if (fd_go) fd_s <= f_s;
          end
          wire [NENT-1:0] fdm = fd_v ? ({{(NENT-1){1'b0}}, 1'b1} << fd_s) : {NENT{1'b0}};
-         // older stores overlapping it, its forwarding store aside -- the column being narrowed this
-         // cycle read as narrowed, so a store in another page is no violation from its first cycle in
-         wire [NENT-1:0] ncm = (nc_v & ~nc_pm[gl]) ? ({{(NENT-1){1'b0}}, 1'b1} << nc_ix) : {NENT{1'b0}};
-         wire [NENT-1:0] ovr = oldm & conf[gl] & ~fdm & ~ncm;
+         wire [NENT-1:0] ovr = oldm & cf & ~fdm;   // older stores overlapping it, its forwarding store aside
          reg unk_q;  initial unk_q = 1'b0;      // MEM_ALIAS_UNK: the unknown-address arm alone, a cycle old
          always @(posedge clk) unk_q <= l_av[gl] & (|(oldm & ~av));
          assign l_block_unk_q[gl] = unk_q;
          assign l_unk_q[gl]       = unk_q;
          // ...evaluated on the matrix's bit alone, from the cycle after the store's address arrives:
-         // the page bits narrow that cycle (ncm), not the arrival's. Nothing is missed meanwhile: a
+         // the page bits narrow that cycle (cf), not the arrival's. Nothing is missed meanwhile: a
          // load that reached memory with an older store's address unknown stays watched while unk_q
          // says so, and unk_q, a cycle old, still says so in the cycle after the address arrived.
          // THE START THE BLOCK CANCELS. M starts a load's access before the alias test can answer
@@ -740,8 +756,11 @@ module smolrv64_sq
          // THE PAGE BITS narrow last cycle's row and column -- before this cycle's writes from the
          // offsets, which win any cell both touch (a newer address arrived there)
          if (nr_v) conf[nr_ix] <= conf[nr_ix] & nr_pm;
-         if (nc_v)
-            for (li = 0; li < LQN; li = li + 1) conf[li][nc_ix] <= conf[li][nc_ix] & nc_pm[li];
+         if (wr_v) conf[wr_ix] <= conf[wr_ix] & wr_pm;
+         for (li = 0; li < LQN; li = li + 1) begin
+            if (nc_v) conf[li][nc_ix] <= conf[li][nc_ix] & nc_pm[li];
+            if (wc_v) conf[li][wc_ix] <= conf[li][wc_ix] & wc_pm[li];
+         end
          // A STORE's address arrives: its COLUMN, against every queued load.
          if (a_v)
             for (li = 0; li < LQN; li = li + 1) begin

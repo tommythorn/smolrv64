@@ -115,7 +115,7 @@ module tb;
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn({(NENT*28){1'b0}}),.l_fill_vpn(28'd0),.a_bare(1'b0),.l_fwd(l_fwd_nc),.f_go(1'b0),.f_lix({IDXB{1'b0}}),.f_data(f_data_nc),.f_sbo(f_sbo_nc),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
-      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(sq_kd_v),.kh(sq_kh),.kb(sq_kb),.kmask(sq_kmask_nc));
+      .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.lw_v(1'b0),.lw_idx({IDXB{1'b0}}),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(sq_kd_v),.kh(sq_kh),.kb(sq_kb),.kmask(sq_kmask_nc));
 
    integer pass=0, fail=0;
    task chk(input [255:0] nm, input got, input exp);
