@@ -319,6 +319,15 @@ again). The irrevocable pointer's forward (the store's take) reads the registere
 the cycle its `done` is written. `done`'s consumers -- commit, the irrevocable pointer, the replay
 flag -- all only move later (rule D21); `h_fin` (the head committing in its flush cycle) is live.
 
+**Step 4, first part: THE LANE IS THREE STAGES** -- the pick, R, E. `PLAN-2026-10-27-333mhz.md`
+section 5 measured the operand read (-0.024) and a one-stage ALU (-0.638) each against 3 ns alone;
+M2 had both in one stage after the pick (`ln[].ent` -> `ln[].qval`, 15-24 levels). R holds the
+picked op, reads the PRF and the write registers' bypass (the scheduler's registered matches at its
+entry, as before) and registers the operands; E executes from flops. Everything that left the
+execute stage leaves E. The multiply's slot two cycles after its execute is reserved by holding
+the pick while it executes (`e_mul`); the int-to-FP handoff is busy while one is in R or E. A
+one-cycle producer's consumer still executes two cycles after it.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

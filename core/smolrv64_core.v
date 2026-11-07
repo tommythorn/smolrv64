@@ -1516,8 +1516,10 @@ module smolrv64_core
       end
       // ---- the scheduler: an index into the lane's payload and tag arrays ----
       reg                  m1;
-      reg                  v;
-      reg [IBI-1:0]        ent;
+      reg                  v;               // E holds an op (below)
+      reg                  e_mul;           // ...a multiply: the lane's write slot two cycles on is its
+      reg                  r_v;             // R holds an op (below)
+      reg [IBI-1:0]        r_ent;
       smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
                 .FIXEDL(1),.INORDER(0),.OLDEST(1)) u_iq
         (.clk(clk),.reset(reset),
@@ -1526,10 +1528,10 @@ module smolrv64_core
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
          .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
-         .unit_busy(m1 | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
+         .unit_busy(e_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
-         .hold_v(v),.hold_ent(ent),
+         .hold_v(r_v),.hold_ent(r_ent),
          .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.kd_v(rob_kd_v),.kh(rob_kh),.kb(rob_kb),.occupancy(occ),.free_n(free));
       // the tags, and whether the op completes later than its issue (lane_late), read at the pick
       reg  [3*RN_PBITS:0]   psmem [0:NI-1];
@@ -1538,34 +1540,35 @@ module smolrv64_core
       always @(posedge clk) if (mv) psmem[d_ent] <= {stg_late, stg_ps};
       always @(posedge clk) if (mv) plmem[d_ent] <= stg_pl;
       wire [3*RN_PBITS:0]   ps_out = psmem[iss_ent];
-      // ---- the select register: the picked op, executing the next cycle ----
-      reg [ROB_IDXB-1:0]   rob;
-      reg [RN_PBITS-1:0]   ps1, ps2;
-      reg                  late;            // the op completes later than its issue (lane_late)
-      reg [LPLW-1:0]       pl;
-      initial begin v = 1'b0; ent = {IBI{1'b0}}; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
+      // THE LANE IS THREE STAGES: the pick, R (the picked op reads its operands), E (it executes).
+      // ---- R: the picked op, its tags and payload as read at the pick ----
+      reg [ROB_IDXB-1:0]   r_rob;
+      reg [RN_PBITS-1:0]   r_ps1, r_ps2;
+      reg                  r_late;
+      reg [LPLW-1:0]       r_pl;
+      initial begin r_v = 1'b0; r_ent = {IBI{1'b0}}; r_rob = {ROB_IDXB{1'b0}}; r_ps1 = {RN_PBITS{1'b0}}; r_ps2 = {RN_PBITS{1'b0}}; r_late = 1'b0; end
       always @(posedge clk) begin
-         if (reset | redirect) v <= 1'b0;
+         if (reset | redirect) r_v <= 1'b0;
          else begin
-            v <= iss_v;      // a dead op picked as the kill lands executes once, in its own register
+            r_v <= iss_v;    // a dead op picked as the kill lands executes once, in its own registers
             if (iss_v) begin
-               ent <= iss_ent;  rob <= iss_rob;
-               ps1 <= ps_out[0 +: RN_PBITS];  ps2 <= ps_out[RN_PBITS +: RN_PBITS];  late <= ps_out[3*RN_PBITS];
+               r_ent <= iss_ent;  r_rob <= iss_rob;
+               r_ps1 <= ps_out[0 +: RN_PBITS];  r_ps2 <= ps_out[RN_PBITS +: RN_PBITS];  r_late <= ps_out[3*RN_PBITS];
             end
          end
       end
-      always @(posedge clk) if (iss_v) pl <= plmem[iss_ent];   // the payload, read at the pick
-      wire iss = v & ~redirect;                                  // completes here, always
-      `LPL_DECL(q_)
-      assign `LPL_REC(q_) = pl;
-      // ---- operands: the PRF, or a lane's write register landing this cycle ----
+      always @(posedge clk) if (iss_v) r_pl <= plmem[iss_ent];   // the payload, read at the pick
+      `LPL_DECL(rr_)
+      assign `LPL_REC(rr_) = r_pl;
+      wire r_sys = is_sysq(rr_insn, rr_illegal, rr_fault);
+      // ---- R's operands: the PRF, or a lane's write register landing this cycle ----
       // A source written back in the op's pick cycle is in its producer's write register now, and
       // that is its shard's lane's: a lane writes only its own shard, and a stream lands a register
       // in the lane of its shard. So the select is the scheduler's registered match at the op's
       // entry (iss_hq) and the source's shard bits, both flops: no tag compare here.
-      wire       hq1 = iss_hq[2*ent], hq2 = iss_hq[2*ent + 1];
-      wire [1:0] sh1 = ps1[RN_IDXB +: 2], sh2 = ps2[RN_IDXB +: 2];
-      reg [63:0] rs1, rs2, q1, q2;
+      wire       hq1 = iss_hq[2*r_ent], hq2 = iss_hq[2*r_ent + 1];
+      wire [1:0] sh1 = r_ps1[RN_IDXB +: 2], sh2 = r_ps2[RN_IDXB +: 2];
+      reg [63:0] r_rs1, r_rs2, q1, q2;
       integer f;
       always @* begin
          q1 = 64'd0;  q2 = 64'd0;
@@ -1573,20 +1576,44 @@ module smolrv64_core
             if (sh1 == f[1:0]) q1 = l_qval[f];
             if (sh2 == f[1:0]) q2 = l_qval[f];
          end
-         rs1 = hq1 ? q1 : l_rd1[gl];  rs2 = hq2 ? q2 : l_rd2[gl];
+         r_rs1 = hq1 ? q1 : l_rd1[gl];  r_rs2 = hq2 ? q2 : l_rd2[gl];
       end
-      // the select against the write registers' tags, every executing op's sources
+      // the select against the write registers' tags, every reading op's sources
       reg        bq1, bq2;
       always @* begin
          bq1 = 1'b0;  bq2 = 1'b0;
          for (f = 0; f < NL; f = f + 1) begin
-            if (l_qv[f] & (ps1 == l_qprd[f])) bq1 = 1'b1;
-            if (l_qv[f] & (ps2 == l_qprd[f])) bq2 = 1'b1;
+            if (l_qv[f] & (r_ps1 == l_qprd[f])) bq1 = 1'b1;
+            if (l_qv[f] & (r_ps2 == l_qprd[f])) bq2 = 1'b1;
          end
       end
-      always @(posedge clk) if (!reset & v & ((hq1 != bq1) | (hq2 != bq2) | (hq1 & (l_qprd[sh1[LNB-1:0]] != ps1)) | (hq2 & (l_qprd[sh2[LNB-1:0]] != ps2))))
+      always @(posedge clk) if (!reset & r_v & ((hq1 != bq1) | (hq2 != bq2) | (hq1 & (l_qprd[sh1[LNB-1:0]] != r_ps1)) | (hq2 & (l_qprd[sh2[LNB-1:0]] != r_ps2))))
          $fatal(1, "core: lane %0d's bypass (rs1 %b rs2 %b) is not its write registers' (%b %b) for p%0d p%0d (rob=%0d pc=%h)",
-                gl, hq1, hq2, bq1, bq2, ps1, ps2, rob, q_pc);
+                gl, hq1, hq2, bq1, bq2, r_ps1, r_ps2, r_rob, rr_pc);
+      // THE READ CHECK: nothing reads a source still pending (the scheduler enforces it
+      // structurally -- an entry is not selectable until every source is ready); a store's rs2
+      // is the store queue's
+      always @(posedge clk) if (!reset & r_v & ~redirect) begin
+         if (rr_rs1_v & ~pnd_q[3*IW + 2*gl])
+            $fatal(1, "core: lane %0d read rs1 p%0d still pending (rob=%0d pc=%h)", gl, r_ps1, r_rob, rr_pc);
+         if (rr_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(rr_is_store & is_lmem(rr_insn)))
+            $fatal(1, "core: lane %0d read rs2 p%0d still pending (rob=%0d)", gl, r_ps2, r_rob);
+      end
+      // ---- E: the op executing, its operands registered ----
+      reg [ROB_IDXB-1:0]   rob;
+      reg [RN_PBITS-1:0]   ps1, ps2;
+      reg                  late;            // the op completes later than its issue (lane_late)
+      reg [LPLW-1:0]       pl;
+      reg [63:0]           rs1, rs2;
+      initial begin v = 1'b0; e_mul = 1'b0; rob = {ROB_IDXB{1'b0}}; ps1 = {RN_PBITS{1'b0}}; ps2 = {RN_PBITS{1'b0}}; late = 1'b0; end
+      always @(posedge clk) begin
+         if (reset | redirect) begin v <= 1'b0;  e_mul <= 1'b0; end
+         else begin v <= r_v;  e_mul <= r_v & ~r_sys & is_mulop(rr_insn); end
+         rob <= r_rob;  ps1 <= r_ps1;  ps2 <= r_ps2;  late <= r_late;  pl <= r_pl;  rs1 <= r_rs1;  rs2 <= r_rs2;
+      end
+      wire iss = v & ~redirect;                                  // completes here, always
+      `LPL_DECL(q_)
+      assign `LPL_REC(q_) = pl;
       wire [63:0] result, addr, target, taken_tgt;
       wire        red, taken;
       smolrv64_exec u_x
@@ -1597,24 +1624,15 @@ module smolrv64_core
          .pred_npc(pc64(q_pred_npc)), .mis_taken(q_mis_taken), .mis_nt(q_mis_nt),
          .result(result), .addr(addr), .redirect(red), .target(target),
          .taken(taken), .taken_tgt(taken_tgt));
-      // THE ISSUE CHECK: nothing executes with a source still pending (the scheduler enforces it
-      // structurally -- an entry is not selectable until every source is ready); a store's rs2
-      // is the store queue's
-      always @(posedge clk) if (!reset & iss) begin
-         if (q_rs1_v & ~pnd_q[3*IW + 2*gl])
-            $fatal(1, "core: lane %0d executed with rs1 p%0d still pending (rob=%0d pc=%h)", gl, ps1, rob, q_pc);
-         if (q_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(q_is_store & is_lmem(q_insn)))
-            $fatal(1, "core: lane %0d executed with rs2 p%0d still pending (rob=%0d)", gl, ps2, rob);
-      end
       wire sys  = is_sysq(q_insn, q_illegal, q_fault);   // a system op or a trap: the SYSQ's, nothing here
       wire cti  = iss & ~sys & (q_is_branch | q_is_jump | q_is_jalr);
       wire mis  = cti & red;
       // ---- the multiplier (lanes step 5.2c) ----
-      // mul3 starts from the lane's forwarded operands in the execute cycle T, and the lane
-      // reserves its slot at T+2 for it: the scheduler selects nothing at T+1 (m1 is its
-      // unit_busy), so nothing else executes at T+2. That slot carries the multiply's wake (its
-      // consumers execute at T+3 off the write register), its ROB completion, and its result
-      // into the write register at the edge, which the PRF writes at T+3.
+      // mul3 starts from the lane's registered operands in the execute cycle T, and the lane
+      // reserves its slot at T+2 for it: the scheduler selects nothing at T (e_mul is its
+      // unit_busy), so nothing else executes at T+2. That slot carries the multiply's wake, its
+      // ROB completion, and its result into the write register at the edge, which the PRF writes
+      // at T+3.
       wire                 m_go = iss & ~sys & is_mulop(q_insn);
       reg                  m2, mrdv1, mrdv2;
       reg [ROB_IDXB-1:0]   mrob1, mrob2;
@@ -1644,7 +1662,7 @@ module smolrv64_core
       // lane reads it and hands the op whole to the F stage -- into the stage itself in its execute
       // cycle when the stage takes it (hl_vv), else into this register, which the stage takes
       // first. hx_busy keeps every such op in the scheduler while the register is taken or about
-      // to be (its op in the select register): a lane never executes one into a full register,
+      // to be (its op in R or E): a lane never executes one into a full register,
       // and nothing waits at dispatch. Flops only.
       wire                 hx_go = iss & ~sys & is_i2fop(q_insn);
       reg                  hx_v, hx_rdv;
@@ -1663,18 +1681,18 @@ module smolrv64_core
          if (reset | redirect) hx_v <= 1'b0;                // last (rule I11)
       end
       assign hl_vv[gl] = v & ~sys & is_i2fop(q_insn);
-      assign hx_busy = hx_v | hl_vv[gl];
+      assign hx_busy = hx_v | hl_vv[gl] | (r_v & ~r_sys & is_i2fop(rr_insn));
       assign hx_vv[gl] = hx_v;      assign hx_insn_l[gl] = hx_insn;  assign hx_rd_l[gl] = hx_rd;
       assign hx_rdv_l[gl] = hx_rdv; assign hx_prd_l[gl] = hx_prd;    assign hx_rob_l[gl] = hx_rob;
       assign hx_val_l[gl] = hx_val;
       always @(posedge clk) if (!reset & hx_go & hx_v & ~f_hx_take[gl])
          $fatal(1, "smolrv64_core: lane %0d hands the F stage an op (rob %0d) while its register holds rob %0d", gl, rob, hx_rob);
-      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (v & dead(rob)) | (m1 & dead(mrob1)) | (m2 & dead(mrob2))
+      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (r_v & dead(r_rob)) | (v & dead(rob)) | (m1 & dead(mrob1)) | (m2 & dead(mrob2))
                                                     | (hx_v & dead(hx_rob))))
          $fatal(1, "smolrv64_core: the release finds a dead op in lane %0d", gl);
-      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | v | m1 | m2 | hx_v))
-         $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d select %b mul %b%b handoff %b",
-                gl, stg_v, occ, v, m1, m2, hx_v);
+      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | r_v | v | m1 | m2 | hx_v))
+         $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d read %b execute %b mul %b%b handoff %b",
+                gl, stg_v, occ, r_v, v, m1, m2, hx_v);
       always @(posedge clk) if (!reset) begin
          if (m2 & v)    $fatal(1, "smolrv64_core: lane %0d executes an op in its multiply's reserved slot", gl);
          if (m2 & ~mpre) $fatal(1, "smolrv64_core: lane %0d's multiply is not at mul3's stage B in its slot", gl);
@@ -1759,7 +1777,7 @@ module smolrv64_core
       assign l_addr[gl] = addr;    assign l_tgt[gl] = target;   assign l_ttgt[gl] = taken_tgt;
       assign l_red[gl] = red;      assign l_taken[gl] = taken;
       assign l_qvv[gl] = qv;  assign l_qprdv[gl*RN_PBITS +: RN_PBITS] = qprd;  assign l_qvalv[gl*64 +: 64] = qval;
-      assign l_psv[(2*gl)*RN_PBITS +: RN_PBITS] = ps1;  assign l_psv[(2*gl+1)*RN_PBITS +: RN_PBITS] = ps2;
+      assign l_psv[(2*gl)*RN_PBITS +: RN_PBITS] = r_ps1;  assign l_psv[(2*gl+1)*RN_PBITS +: RN_PBITS] = r_ps2;   // R's reads
       assign l_rd1[gl] = l_opv[(2*gl)*64 +: 64];  assign l_rd2[gl] = l_opv[(2*gl+1)*64 +: 64];
       assign l_lm[gl] = v & ~sys & is_lmem(q_insn);  assign l_st[gl] = q_is_store;
       assign l_br[gl] = q_is_branch;  assign l_jmp[gl] = q_is_jump;  assign l_jalr[gl] = q_is_jalr;
