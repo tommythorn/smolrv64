@@ -1951,6 +1951,7 @@ module smolrv64_core
       .l_wt(lq_e_wt), .l_acc(lq_e_acc), .l_unk_q(sq_l_unk_q), .l_viol(sq_l_viol), .l_res_c(sq_l_res_c), .l_res_a(sq_l_res_a),
       .l_fill(m_lq_fill), .l_fill_ix(m_lq_idx), .l_fill_go(m_lq_fill & lsu_xo_early), .l_cancel(sq_l_cancel),
       .l_fill_off(m_addr[11:0]), .l_fill_size(m_mem_size), .l_fill_flt(lsu_xo_flt),
+      .l_fill_tv(lsu_xo_tv & ~lsu_xo_flt), .l_fill_pa(lsu_xo_pa),
       .l_block(sq_l_block_live), .l_block_q(lq_e_block), .l_older(sq_l_older),
       .ld_tag(lq_q_tag), .ld_older(sq_ld_older),
       .l_block_unk_q(sq_l_block_unk_q),

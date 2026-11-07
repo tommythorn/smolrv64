@@ -37,6 +37,7 @@ module smolrv64_sq
     parameter LQN   = 4,               // smolrv64_lq's NENT
     parameter LQIB  = 2,               // smolrv64_lq's IDXB
     parameter VAW   = 39,              // Sv39: the VA an entry keeps beside its PA
+    parameter PGB   = 8,               // the PA page-number bits the alias test narrows by (THE PAGE BITS)
     parameter SEQW  = 8,               // the op's sequence number (a trap restarts fetch at it)
     parameter NW    = 1,               // stores allocated a cycle: a dispatch group's row
     parameter RKB   = (NW > 1) ? $clog2(NW) : 1)   // derived: a rank among a row's stores
@@ -152,6 +153,8 @@ module smolrv64_sq
     input  wire [11:0]           l_fill_off,
     input  wire [1:0]            l_fill_size,
     input  wire                  l_fill_flt,  // ...and faults on its address alone (never reaches memory)
+    input  wire                  l_fill_tv,   // ...and is translated (M's lookup hit, no fault)...
+    input  wire [PAW-1:0]        l_fill_pa,   // ...to this PA (THE PAGE BITS read its page number's low bits)
     input  wire                  l_fill_go,   // ...and its access started in the same cycle (smolrv64_lsu f_v)
     output wire [LQN-1:0]        l_cancel,    // per entry, of registers: the access it started last cycle
                                               // is void, an older store blocks it (that store's overlap,
@@ -485,6 +488,34 @@ module smolrv64_sq
    reg [NENT-1:0] conf [0:LQN-1];
    integer        li;
 
+   // THE PAGE BITS. conf compares page offsets, so a load also waits for a store in another page at
+   // the same offset -- until that store drains (GB5 SimPoints, 2026-11-06: 99 M of 348 M held
+   // load-cycles). Equal PAs have equal page numbers, so two accesses whose PA page numbers differ in
+   // ANY bit cannot alias, synonyms included: comparing a few low bits is a test that only errs
+   // toward "may alias". Each translated entry keeps PA[12 +: PGB]; the PA comes from M's lookup,
+   // too late for the cycle the address arrives, so the matrix is written from the offsets as before
+   // and NARROWED one cycle later: the row of the load that filled last cycle, the column of the
+   // store that arrived last cycle, each ANDed with its page match. An entry without a translation
+   // (a lookup miss, the walker's answer, a fault) never narrows. A narrowing only clears cells, and
+   // every write of a cell from the offsets is placed after it below, so the newer value wins.
+   reg [PGB-1:0]  spg [0:NENT-1];           // a store's page bits, valid with spv
+   reg [NENT-1:0] spv;
+   reg [PGB-1:0]  lpg [0:LQN-1];            // a load's, valid with lpv
+   reg [LQN-1:0]  lpv;
+   reg            nr_v, nc_v;               // narrow this row / this column now
+   reg [LQIB-1:0] nr_ix;
+   reg [IDXB-1:0] nc_ix;
+   reg [PGB-1:0]  nc_pg;                    // the column's store's page bits (spg[nc_ix], as a copy)
+   initial begin spv = {NENT{1'b0}}; lpv = {LQN{1'b0}}; nr_v = 1'b0; nc_v = 1'b0; end
+   reg [NENT-1:0] nr_pm;                    // the row's page match against every store
+   integer        np;
+   always @* for (np = 0; np < NENT; np = np + 1) nr_pm[np] = ~spv[np] | (spg[np] == lpg[nr_ix]);
+   wire [LQN-1:0] nc_pm;                    // the column's page match against every load
+   genvar         gnp;
+   generate for (gnp = 0; gnp < LQN; gnp = gnp + 1) begin : g_ncpm
+      assign nc_pm[gnp] = ~lpv[gnp] | (lpg[gnp] == nc_pg);
+   end endgenerate
+
    // FORWARDING. cov[i][g]: store g holds every byte of load i -- the same VA page (the offsets
    // alone also match other pages), its bytes covering the load's, and itself inside one
    // doubleword. Written at exactly the sites conf is and read only through conf, so a stale cell
@@ -525,6 +556,13 @@ module smolrv64_sq
          fill_row[fk] = (a_v && (fk[IDXB-1:0] == a_idx))
                       ? ovl_ab(l_fill_off, l_fill_size, a_va[11:0], a_size)
                       : (av[fk] & ovl_ab(l_fill_off, l_fill_size, va[fk][11:0], sz[fk]));
+   end
+   // the page bits' writes and the narrowing they schedule (THE PAGE BITS, above)
+   always @(posedge clk) begin
+      nr_v <= ~reset & l_fill & l_fill_tv & ~l_fill_flt;  nr_ix <= l_fill_ix;
+      nc_v <= ~reset & a_v & a_tv & ~a_flt;               nc_ix <= a_idx;  nc_pg <= a_addr[12 +: PGB];
+      if (l_fill) begin lpg[l_fill_ix] <= l_fill_pa[12 +: PGB]; lpv[l_fill_ix] <= l_fill_tv & ~l_fill_flt; end
+      if (a_v)    begin spg[a_idx]     <= a_addr[12 +: PGB];  spv[a_idx]     <= a_tv & ~a_flt; end
    end
    // the stores' address-valid bits as they will stand next cycle (a store only gains one)
    wire [NENT-1:0] av_next = av | (a_v ? ({{(NENT-1){1'b0}}, 1'b1} << a_idx) : {NENT{1'b0}});
@@ -583,7 +621,11 @@ module smolrv64_sq
          integer ck;
          always @(posedge clk) if (!reset & l_av[gl])
             for (ck = 0; ck < NENT; ck = ck + 1)
-               if (oldm[ck] && conf[gl][ck] != (av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])))
+               // between the offsets' overlap and that overlap narrowed by the page bits (exact
+               // from the cycle after the narrowing; until then, still the offsets')
+               if (oldm[ck] && ((conf[gl][ck] & ~(av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])))
+                                | (~conf[gl][ck] & av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])
+                                   & (~lpv[gl] | ~spv[ck] | (lpg[gl] == spg[ck])))))
                   $fatal(1, "smolrv64_sq: load %0d's overlap with older store %0d reads %b", gl, ck, conf[gl][ck]);
 `endif
          wire [NENT-1:0] kov = oldm & conf[gl];
@@ -610,22 +652,25 @@ module smolrv64_sq
             if (fd_go) fd_s <= f_s;
          end
          wire [NENT-1:0] fdm = fd_v ? ({{(NENT-1){1'b0}}, 1'b1} << fd_s) : {NENT{1'b0}};
-         wire [NENT-1:0] ovr = oldm & conf[gl] & ~fdm;   // older stores overlapping it, its forwarding store aside
+         // older stores overlapping it, its forwarding store aside -- the column being narrowed this
+         // cycle read as narrowed, so a store in another page is no violation from its first cycle in
+         wire [NENT-1:0] ncm = (nc_v & ~nc_pm[gl]) ? ({{(NENT-1){1'b0}}, 1'b1} << nc_ix) : {NENT{1'b0}};
+         wire [NENT-1:0] ovr = oldm & conf[gl] & ~fdm & ~ncm;
          reg unk_q;  initial unk_q = 1'b0;      // MEM_ALIAS_UNK: the unknown-address arm alone, a cycle old
          always @(posedge clk) unk_q <= l_av[gl] & (|(oldm & ~av));
          assign l_block_unk_q[gl] = unk_q;
          assign l_unk_q[gl]       = unk_q;
-         // ...evaluated in two places that together leave no cycle uncovered: the matrix's bit (the
-         // store's address arrived earlier, or the load reached memory after it), and the store
-         // address ARRIVING this cycle against a load that already has (the flag is then a flop in
-         // the cycle the store's address is visible, before the store can commit and retire)
+         // ...evaluated on the matrix's bit alone, from the cycle after the store's address arrives:
+         // the page bits narrow that cycle (ncm), not the arrival's. Nothing is missed meanwhile: a
+         // load that reached memory with an older store's address unknown stays watched while unk_q
+         // says so, and unk_q, a cycle old, still says so in the cycle after the address arrived.
          // THE START THE BLOCK CANCELS. M starts a load's access before the alias test can answer
          // (its row is this cycle's whole path); the block that row writes says, a cycle later,
          // whether the access stands. A cancelled load never read memory, so it is no violation.
          reg go_q;  initial go_q = 1'b0;
          always @(posedge clk) go_q <= ~reset & l_fill_go & (l_fill_ix == gl[LQIB-1:0]);
          assign l_cancel[gl]      = go_q & blk_q;
-         assign l_viol[gl]        = l_av[gl] & l_acc[gl] & ~l_cancel[gl] & ((|ovr) | arr_ov);
+         assign l_viol[gl]        = l_av[gl] & l_acc[gl] & ~l_cancel[gl] & (|ovr);
          // RESOLUTION: the cycle the last older store with an unknown address gets one, the load
          // learns whether it overlaps an older store. A pulse (registered), one of two: it did not
          // (l_res_c) or it did (l_res_a) -- the training signal of the wait table, whether the load
@@ -692,6 +737,11 @@ module smolrv64_sq
          headc <= {(IDXB+1){1'b0}}; tailc <= {(IDXB+1){1'b0}}; kcc <= {(IDXB+1){1'b0}};
          hoc <= {(IDXB+1){1'b0}}; cnt <= {(IDXB+1){1'b0}};
       end else begin
+         // THE PAGE BITS narrow last cycle's row and column -- before this cycle's writes from the
+         // offsets, which win any cell both touch (a newer address arrived there)
+         if (nr_v) conf[nr_ix] <= conf[nr_ix] & nr_pm;
+         if (nc_v)
+            for (li = 0; li < LQN; li = li + 1) conf[li][nc_ix] <= conf[li][nc_ix] & nc_pm[li];
          // A STORE's address arrives: its COLUMN, against every queued load.
          if (a_v)
             for (li = 0; li < LQN; li = li + 1) begin

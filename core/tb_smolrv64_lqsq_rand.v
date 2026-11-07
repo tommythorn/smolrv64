@@ -118,7 +118,7 @@ module tb;
       .c_fast(sq_c_fast_nc),.c_take(sq_c_take),.c_done(sq_c_take),
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
       .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),.l_wt(e_wt),.l_acc(e_acc),.l_unk_q(sq_unk_q),.l_viol(sq_viol),.l_res_c(sq_res_c),.l_res_a(sq_res_a),
-      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0),
+      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn(e_vpn),.l_fill_vpn({1'b0, lq_a_pa[38:12]}),.a_bare(1'b0),.l_fwd(sq_l_fwd),.f_go(lq_x_take & lq_x_fwd),.f_lix(lq_x_idx),.f_data(sq_f_data),.f_sbo(sq_f_sbo),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(l_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
       .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(1'b0),.kh({ROBB{1'b0}}),.kb({ROBB{1'b0}}),.kmask(sq_kmask_nc));
@@ -168,11 +168,14 @@ module tb;
          n_err = n_err + 1;
       end
    endtask
-   // an older store still in the queue (not dead, not drained) that overlaps it?
+   // an older store still in the queue (not dead, not drained) whose page offsets overlap it? --
+   // what cancels a start: the cycle a load's address arrives the queue compares offsets alone (its
+   // PA's page bits narrow the answer a cycle later)
    function older_ovl(input integer o);
       integer k; begin older_ovl = 0;
          for (k = 0; k < o; k = k + 1)
-            if (is_st[k] && (st[k] == 1 || st[k] == 2) && ovl(addr[k], sz[k], addr[o], sz[o])) older_ovl = 1;
+            if (is_st[k] && (st[k] == 1 || st[k] == 2)
+                && ovl({{(PAW-12){1'b0}}, addr[k][11:0]}, sz[k], {{(PAW-12){1'b0}}, addr[o][11:0]}, sz[o])) older_ovl = 1;
       end
    endfunction
    // an older store that is live in the queue (allocated, uncommitted, not dead)?
@@ -191,12 +194,15 @@ module tb;
       if (!$value$plusargs("vto=%d", vto)) vto = 1 << 30;
       if (nops > MAXOPS) nops = MAXOPS;
       $display("tb_smolrv64_lqsq_rand: NENT=%0d both queues, PAW=%0d, seed=%0d, nops=%0d", NENT, PAW, seed, nops);
-      // the program: 45% stores, addresses in one 64-byte line at 0x1000, natural alignment
+      // the program: 45% stores, natural alignment, addresses in the 64-byte line at 0x1000 -- rarely
+      // the next line, and a quarter of them at the same offsets one page up
       for (i = 0; i < nops; i = i + 1) begin
          is_st[i] = (rnd(0) % 100) < 45;
          sz[i]    = rnd(0) % 4;
          addr[i]  = 56'h1000 + ((rnd(0) % (64 >> sz[i])) << sz[i]);
          if ((rnd(0) % 16) == 0) addr[i] = addr[i] + 56'h40;   // the next line, rarely
+         if ((rnd(0) % 4) == 0)  addr[i] = addr[i] + 56'h1000;  // the same offset in the next page:
+                                                               // only the page bits tell them apart
          sgn[i]   = rnd(0) % 2;  unc[i] = (rnd(0) % 32) == 0;
          st[i]    = 0;
       end

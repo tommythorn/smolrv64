@@ -112,7 +112,7 @@ module tb;
       .c_fast(sq_c_fast_nc),.c_take(sq_c_take),.c_done(sq_c_take),
       .kc_v(sq_kc_v),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
       .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),.l_wt(e_wt),.l_acc(e_acc),.l_unk_q(sq_unk_q),.l_viol(sq_viol),.l_res_c(sq_res_c),.l_res_a(sq_res_a),
-      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0),
+      .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn({(NENT*28){1'b0}}),.l_fill_vpn(28'd0),.a_bare(1'b0),.l_fwd(l_fwd_nc),.f_go(1'b0),.f_lix({IDXB{1'b0}}),.f_data(f_data_nc),.f_sbo(f_sbo_nc),
       .l_block(e_block),.l_block_unk_q(sq_l_block_unk_q),.l_block_q(l_block_q),.l_older(e_older),.ld_tag(lq_q_tag),.ld_older(ld_older),
       .k_v(sk_v),.k_idx(sk_idx),.k_va(sk_va),.w_v(1'b0),.w_idx({IDXB{1'b0}}),.w_pa({PAW{1'b0}}),.w_unc(1'b0),.w_mem(1'b1),.w_flt(1'b0),.w_fc(4'd0),.f_v(sf_v),.f_rob(sf_rob),.f_fc(sf_fc),.f_pc(sf_pc),.f_seq(sf_seq),.occupancy(sq_occ),.flush(flush),.kd_v(sq_kd_v),.kh(sq_kh),.kb(sq_kb),.kmask(sq_kmask_nc));
@@ -182,17 +182,27 @@ module tb;
       take; land(L0); commit;
       chk("2 both drained", lq_occ==0 && sq_occ==0, 1'b1);
 
-      // ---- 2b. the alias test reads page offsets: a store at the load's offset in ANOTHER page
-      // holds it (it could be a synonym of the load's page), until it commits ----
+      // ---- 2b. the alias test reads page offsets, narrowed by the PA page number's low bits a
+      // cycle later: a store at the load's offset in a page whose low bits differ releases it ----
       disp_store(9'd7, 4'd2, S0);
       disp_load(9'd41, 4'd3, L0);
       load_addr(L0, 56'h3010, 2);
       store_addr(S0, 56'h7010, 2, 1'b1, 64'h12);
-      chk("2b the same offset in another page blocks", !lq_x_v && lq_x_block, 1'b1);
-      commit;
-      chk("2b the store gone, the load released", lq_x_v, 1'b1);
-      take; land(L0);
+      chk("2b the same offset, the page bits differ: released", lq_x_v, 1'b1);
+      take; land(L0); commit;
       chk("2b both drained", lq_occ==0 && sq_occ==0, 1'b1);
+
+      // ---- 2c. ...and one whose page number differs only above those bits (it could be a synonym,
+      // as far as the bits show) holds it until it commits ----
+      disp_store(9'd7, 4'd2, S0);
+      disp_load(9'd41, 4'd3, L0);
+      load_addr(L0, 56'h3010, 2);
+      store_addr(S0, 56'h103010, 2, 1'b1, 64'h12);
+      chk("2c the same offset and page bits blocks", !lq_x_v && lq_x_block, 1'b1);
+      commit;
+      chk("2c the store gone, the load released", lq_x_v, 1'b1);
+      take; land(L0);
+      chk("2c both drained", lq_occ==0 && sq_occ==0, 1'b1);
 
       // ---- 3. an OVERLAPPING older store holds the load until it commits ----
       disp_store(9'd7, 4'd4, S0);
