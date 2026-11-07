@@ -60,6 +60,8 @@ RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 # The bitstream: BIT=, else the one banked in the result directory (tools/gate.sh puts it there),
 # else the platform's last build -- which is only this result's when the same tree built it.
 [ -z "${BIT:-}" ] && [ -f "$RES/$PROJ.bit" ] && BIT=$(cd "$RES" && pwd)/$PROJ.bit
+# make program runs in the platform directory: a given BIT= is read from the caller's.
+[ -n "${BIT:-}" ] && BIT=$(realpath "$BIT")
 # The board boots with the graphics console scanning out (ubuntu-boot.sh VGA): its memory
 # traffic is part of the machine every bitstream is judged on.
 export VGA=${VGA:-1}
