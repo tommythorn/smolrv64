@@ -607,6 +607,11 @@ wait out their base's cycle).
 start for an AMO, LR/SC or CBO). The lookup's answer is registered; `xl_fp` (M held the port the
 cycle before too) makes it M's own, at the same address (asserted: two such accesses always have a
 cycle without a request between them, the latched completion withdrawing it). A cycle each.
+
+**THE LQ's FAULT REPORT IS PICKED A CYCLE AHEAD** (m2l: `u_lq/av -> qfr_pc`, 10 levels: the age pick
+of the oldest faulting entry and its PC read into the queue-fault record). `fi` is registered and
+reported while that entry still faults; the core takes a report only at the ROB head, so a stale
+pick waits a cycle.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
