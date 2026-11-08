@@ -546,6 +546,14 @@ file's trap and redirect decode as upd_valid, then on into the ROB's commit kill
 redir_valid, redir_is_trap and the target from the op's registered fields alone (asserted equal to
 the gated terms when it fires); the core ANDs its fire last, with upd_valid's own qualifiers (not a
 dispatch trap, a fence or a replay: a fence.i's immediate decodes as ecall).
+
+**THE D$'s QUEUED CBO/NC STORE IS A COUNT** (m2j: `u_dcache/sq_hp -> sf_pa` write enables, 224
+endpoints, -1.33: the store port's take scanned the queue's slots for a CBO or NC store held for
+its completion). `cn_n` counts them as they are taken and leave (asserted equal to the scan).
+
+**AN AMO COMPUTES ITS WRITE A CYCLE AFTER ITS READ** (m2j: `u_lsu/rfast_q -> u_lsu/amo_wd_q`, 11
+levels, -1.63: the SoC's held-data select in front of the AMO's adder). S_ARD registers the word
+as read (`amo_mem_q`); a new state S_ACP computes the write value from it; S_AWR writes.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

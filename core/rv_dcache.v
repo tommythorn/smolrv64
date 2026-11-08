@@ -404,12 +404,17 @@ module rv_dcache #(
    wire           a_nc  = rp_v ? pk_nc       : st_go ? (sf_nc[sq_ps] & ~sf_cbo[sq_ps]) : f_ok ? 1'b0 : rd_nc;
    wire [63:0]    a_pa  = rp_v ? pk_pa       : st_go ? sf_pa[sq_ps] : f_ok ? f_pa : rd_pa;
    wire [5:0]     n1_set = a_cap ? a_pa[11:6] : s1_pa[11:6];   // the lookup's set after this edge
-   // taking a store: a CBO or NC store held for its completion is the one already queued
-   reg            sq_cn;                          // a CBO or an NC store is queued
+   // taking a store: a CBO or NC store held for its completion is the one already queued -- a
+   // count of them, kept as they are taken and leave (the scan over the queue's slots is its check)
+   reg  [2:0]     cn_n;
+   wire           sq_cn = (cn_n != 3'd0);         // a CBO or an NC store is queued
+   reg            sq_cn_scan;
    always @* begin
-      sq_cn = 1'b0;
-      for (i = 0; i < SD; i = i + 1) if ((i < sc) & (sf_cbo[sq_hp + i[1:0]] | sf_nc[sq_hp + i[1:0]]) & ~sf_ox[sq_hp + i[1:0]]) sq_cn = 1'b1;
+      sq_cn_scan = 1'b0;
+      for (i = 0; i < SD; i = i + 1) if ((i < sc) & (sf_cbo[sq_hp + i[1:0]] | sf_nc[sq_hp + i[1:0]]) & ~sf_ox[sq_hp + i[1:0]]) sq_cn_scan = 1'b1;
    end
+   always @(posedge clk) if (!reset && (sq_cn != sq_cn_scan))
+      $fatal(1, "rv_dcache: the CBO/NC store count %0d disagrees with the queue's slots", cn_n);
    // a store is taken when the store port was promised room (wr_room: sc != SD, unless an outside
    // request has it)
    wire           wr_take = wr_req & wr_room & ~((cbo_req | wr_nc) & sq_cn);
@@ -798,7 +803,7 @@ module rv_dcache #(
    always @(posedge clk) begin
       if (reset) begin
          door <= 1'b0;  sdoor <= 1'b0;  s1_v <= 1'b0;  c2_v <= 1'b0;  s1_f <= 1'b0;  sa_v <= 1'b0;  sb_v <= 1'b0;  rd_valid <= 1'b0;  rd_f <= 1'b0;  wr_acc <= 1'b0;  wr_cpl <= 1'b0;
-         sc <= 2'd0;  sq_hp <= 2'd0;  wr_room <= 1'b0;  ox_w <= 3'd0;  oxq <= 1'b0;  xb_v <= 1'b0;  ox_ack <= 1'b0;  ox_dty <= 1'b0;  ox_slow <= 1'b0;
+         sc <= 2'd0;  cn_n <= 3'd0;  sq_hp <= 2'd0;  wr_room <= 1'b0;  ox_w <= 3'd0;  oxq <= 1'b0;  xb_v <= 1'b0;  ox_ack <= 1'b0;  ox_dty <= 1'b0;  ox_slow <= 1'b0;
          nc_v <= 1'b0;  nc_rdy <= 1'b0;  cl_pend <= 1'b0;  cl_on <= 1'b0;  cl_wait <= 1'b0;
          scan_on <= 1'b1;  scan <= 6'd0;  fl_p <= 1'b0;  fl_v <= 1'b0;  ra_m <= {NW{1'b0}};  w1_v <= 1'b0;
          st_age <= 3'd0;  fp_age <= 3'd0;
@@ -847,6 +852,7 @@ module rv_dcache #(
          end
          if (sq_bk) sf_iss[sq_h1] <= 1'b0;
          sc      <= sc + {1'b0, sq_take} - {1'b0, st_done};
+         cn_n    <= cn_n + {2'd0, wr_take & (cbo_req | wr_nc)} - {2'd0, st_done & (sf_cbo[sq_hp] | sf_nc[sq_hp]) & ~sf_ox[sq_hp]};
          wr_room <= ((sc + {1'b0, sq_take} - {1'b0, st_done}) != SD) & ~ox_pri;
          ox_w    <= (ox_pend & ~ox_take) ? ((ox_w == 3'd7) ? ox_w : ox_w + 3'd1) : 3'd0;
          // a load's answer: from the lookup, else the NC slot's -- the doubleword, unshifted
