@@ -2242,7 +2242,7 @@ module smolrv64_core
       rp_f_q   <= ~reset & lq_f_v & lq_f_rp;
       rp_rob_q <= lq_f_rob;
    end
-   wire rc_tkill = (m_valid & m_done_red & m_trap) | sy_trap | red_trap_q | rp_hold;
+   wire rc_tkill = m_trap_go | sy_trap | red_trap_q | rp_hold;
    wire [IW-1:0]          rc_head;
    wire [IW*ROB_IDXB-1:0] rc_idxv;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc
@@ -2949,9 +2949,9 @@ module smolrv64_core
       // csr_file does not redirect on its xtrap input by itself: every source of one names it
       // in its own redirect (M's csr_red, the SYSQ's sy_red: the decisions red_ord registers), and
       // this is the check that it did.
-      if (((xtrap_v & m_done_red) | sy_xfire) & ~(m_red_fire | sy_red))
+      if ((m_trap_go | sy_xfire) & ~(m_red_fire | sy_red))
          $fatal(1, "smolrv64_core: a trap reached csr_file without a redirect (M %b, SYSQ %b)",
-                xtrap_v & m_done_red, sy_xfire);
+                m_trap_go, sy_xfire);
    end
 
 
@@ -3354,7 +3354,7 @@ module smolrv64_core
 
    // M's only trap is a data fault: a fetch fault and an illegal instruction trap from the SYSQ
    wire        xtrap_v     = m_mem_op & m_lsu_flt;
-   wire        m_done_red;                // M's done with the LSU arm removed; defined with redirect
+   wire        m_trap_go;                 // M takes its trap this cycle; defined with redirect
    wire [3:0]  xtrap_cause = m_lsu_fc;
    wire [63:0] xtrap_tval  = lsu_fault_tval;
 
@@ -3716,10 +3716,10 @@ module smolrv64_core
       // ungated effect applies EARLY (before the op is the ROB head) and then AGAIN on every
       // stalled cycle. That is what put the machine in supervisor mode one instruction ahead
       // of the reference, at the paging transition.
-      // m_done_red, not m_done: a trap request is never a live memory completion (a data
+      // m_trap_go, not m_done: a trap request is never a live memory completion (a data
       // fault reaches here latched), and csr_file's redir_valid is combinational in this
       // input -- with m_done here the LSU's whole done sat inside csr_redir_v -> redirect.
-      .xtrap_v((xtrap_v & m_done_red) | sy_xfire), .xtrap_intr(1'b0),
+      .xtrap_v(m_trap_go | sy_xfire), .xtrap_intr(1'b0),
       .xtrap_cause(sy_xt ? sy_xcause : xtrap_cause),
       .xtrap_epc(sy_xt ? sy_pc : m_pc), .xtrap_tval(sy_xt ? sy_xtval : xtrap_tval),
       // Both counts are the DELAYED copy, summed over the commit ports: minstret is exact because a CSR op completes only
@@ -3734,7 +3734,7 @@ module smolrv64_core
       // and PINCONNECTEMPTY does not, so a deliberate non-connection has to say so instead
       // of being silently omitted (same treatment as the iMMU's t_uncached).
       .dbg_timer(), .dbg_mtvec(), .dbg_mtvec_we(), .dbg_csrop(), .dbg_csrop_v(),
-      // m_done_red here too: a system op is never a memory op, and upd_valid feeds the CSR
+      // not m_done here either: a system op is never a memory op, and upd_valid feeds the CSR
       // unit's redirect and trap-target logic -- with the full m_done, build D of 2026-09-04
       // had 1357 near-critical endpoints starting at m_addr: dTLB compare -> lsu_done ->
       // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
@@ -3885,7 +3885,7 @@ module smolrv64_core
    // which only fills its queue entry and completes on neither. That one goes in its fill cycle,
    // and must: from then on the entry is the queue's (a load lands and leaves, and its slot is
    // allocated again), so M's index into it would name another op's entry.
-   assign m_done = m_done_raw & ~head_block & ~((port_yield | sy_at_head) & ~m_nb) & ~m_flt_pulse;
+   assign m_done = m_done_raw & ~head_block & ~((port_yield | sy_at_head) & ~m_nb & ~xtrap_v) & ~m_flt_pulse;
    assign m_advance = ~m_valid | m_done;
    always @(posedge clk) if (!reset && m_valid && m_nb && m_unit_done_q)
       $fatal(1, "smolrv64_core: M holds a plain load or store after its fill (pc %h): its queue entry is no longer M's", m_pc);
@@ -3945,7 +3945,7 @@ module smolrv64_core
             $fatal(1, "smolrv64_core: the SYSQ's trap at rob %0d disagrees with the shadow (pc %h/%h cause %0d/%0d tval %h/%h)",
                    sy_rob, xtq_pc[rsi(sy_rob)], sy_pc, xtq_cause[rsi(sy_rob)], sy_xcause, xtq_tval[rsi(sy_rob)], sy_xtval);
       end
-      if (xtrap_v & m_done_red) begin
+      if (m_trap_go) begin
          if (xtq_kind[rsi(m_rob_idx)] != SYK_XTRAP)
             $fatal(1, "sysq shadow: M traps rob %0d (pc %h cause %0d) but the entry's kind is %0d",
                    m_rob_idx, m_pc, xtrap_cause, xtq_kind[rsi(m_rob_idx)]);
@@ -3961,23 +3961,15 @@ module smolrv64_core
    wire m_trap = xtrap_v;                 // a system op's trap is the SYSQ's (sy_trap), since C3 step 3
    // the ROB's commit-kill reads M's done without the LSU's live arm: with a trap the fault is
    // latched, so the two are one value; m_done carries the dTLB lookup into retirement
-   always @(posedge clk) if (!reset && m_valid && m_trap && (m_done != m_done_red))
-      $fatal(1, "smolrv64_core: a trapping op's done differs without the LSU's live arm (pc %h)", m_pc);
    wire csr_red = xtrap_v;
-   // THE REDIRECT DOES NOT CARRY THE LSU'S LIVE COMPLETION. A memory op redirects only as a
-   // trap, and a trap is taken from the latched copy (m_unit_done_q); a branch, a system op
-   // and fence.i never go through the LSU. So the redirect's "done" is m_done with the
-   // memory arm of m_unit_ok removed -- logically the same signal on every cycle a redirect
-   // can fire, asserted below, and structurally free of dTLB -> lsu_done -> m_unit_ok, which
-   // was the head of the u_sq/v_reg -> fe/q_dat family (326 endpoints, 26 levels).
-   wire m_unit_ok_nomem = ~m_valid            ? 1'b1
-                        : m_mem_op            ? 1'b0
-                        :                       1'b1;
-   assign m_done_red = (m_unit_ok_nomem | m_unit_done_q) & ~head_block & ~port_yield & ~sy_at_head;
-   // M's ORDERED redirect: CSR write, fence.i, or a trap (csr_red carries xtrap_v). Fires only
-   // at the ROB head (m_done_red gates on ~head_block). Branches left M, so m_redirect is 0 here
-   // now; the branch squash comes from the CTF pipe (cf_red_fire).
-   wire m_red_fire = m_valid & m_done_red & csr_red;
+   // THE REDIRECT DOES NOT CARRY THE LSU'S LIVE COMPLETION, NOR THE LANDING PORT. M's only
+   // redirect is a data fault's trap, taken from the latched fault (xtrap_v: flops) at the ROB
+   // head; a trap writes no register and completes on no port, so a landing load does not hold
+   // it (m_done exempts it from the yield too: the two agree, asserted below). Without either,
+   // the trap's fire is three flops: dTLB -> lsu_done headed the u_sq/v_reg -> fe/q_dat family
+   // (326 endpoints, 26 levels), the landing's yield the u_lsu/fw_n -> u_csr/mcause one.
+   assign m_trap_go = m_valid & xtrap_v & ~head_block;
+   wire m_red_fire = m_trap_go & csr_red;
    wire m_red_ref  = m_valid & m_done     & csr_red;
    // The branch squash: the tracked mispredict has reached the ROB head. The head is unique, so
    // m_red_fire and cf_red_fire are mutually exclusive.
@@ -4040,10 +4032,6 @@ module smolrv64_core
       if (m_red_fire != m_red_ref)
          $fatal(1, "smolrv64_core: M redirect from the non-memory done disagrees with m_done (%b vs %b)",
                 m_red_fire, m_red_ref);
-      if ((xtrap_v & m_done_red) != (xtrap_v & m_done))
-         $fatal(1, "smolrv64_core: trap request from the non-memory done disagrees with m_done");
-      if ((m_is_sys & m_done_red) != (m_is_sys & m_done))
-         $fatal(1, "smolrv64_core: CSR update valid from the non-memory done disagrees with m_done");
    end
 
    // ---- EARLY FRONTEND RESTART -------------------------------------------------------

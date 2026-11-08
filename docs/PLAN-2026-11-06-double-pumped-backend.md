@@ -763,6 +763,13 @@ the tail adder and the write decode). The compare was redundant: the head discar
 the pending restart, the kill marks the rest while it holds, a redirect's cycle enqueues dead, and
 nothing dead outlives the release (asserted at the release for every queued entry). A wrong-path CTI
 now holds a queue slot until the head discards it.
+
+**M'S TRAP DOES NOT WAIT FOR THE LANDING PORT** (m2s: `u_lsu/fw_n -> u_csr/mcause`, `mtval`, `scause`,
+`stval`, ~230 endpoints at -1.2 ns, 9 levels: the forward injection's port yield in M's done, into
+the CSR file's trap write). M's only redirect is a data fault's trap. It writes no register and
+completes on no port (it never commits), so `m_trap_go = m_valid & xtrap_v & ~head_block` is three
+flops, and it feeds the CSR file, the commit kill and the redirect. `m_done` exempts a trapping op
+from the yield to match, and `m_done_red` is gone.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
