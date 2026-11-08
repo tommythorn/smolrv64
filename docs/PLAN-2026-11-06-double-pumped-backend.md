@@ -794,6 +794,9 @@ row, in arrival order. The one-oldest check leaves the pending entries out.
 -0.97 ns, 6 levels: two 64-bit magnitude compares, three carry chains, into `m_q_ready`, the arbiter's
 take and its 512-bit request register's enable). The SRAM is aligned to its size (an elaboration
 check pins it), so the region is the line address's bits above its index.
+
+**THE DECODE QUEUE'S READ POINTER IS REPLICATED** (m2t: `fe/q_rp -> fe/hr`, 201 endpoints at -1.01 ns,
+4 levels: the pointer's net to every bank's LUTRAM read address). `q_rp` has `max_fanout = 16`.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

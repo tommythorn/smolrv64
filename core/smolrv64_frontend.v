@@ -315,7 +315,9 @@ module smolrv64_frontend
    localparam integer QNB = 1 << $clog2(FW);
    localparam integer QLB = $clog2(QNB);
    localparam integer CW  = $clog2(FW + 1);             // a count of 0..FW slots
-   reg  [QAW-1:0] q_rp, q_wp;
+   // q_rp addresses every bank's read ports (2*IW reads of QRW bits): replicated
+   (* max_fanout = 16 *) reg [QAW-1:0] q_rp;
+   reg  [QAW-1:0] q_wp;
    reg  [QAW:0]   q_cnt;
    // room for a full bundle (<=FW) as the clk edge left the queue: a clk2x flop that changes only at
    // clk edges, so the bundle register (clk's) decides a push once for its whole cycle
