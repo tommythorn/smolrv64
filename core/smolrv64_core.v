@@ -4148,8 +4148,9 @@ module smolrv64_core
    // predictor never learns from a path that is later squashed, and a mispredict trains as soon as
    // it is the oldest op not yet done, not at its squash. Retirement is seen through registered copies
    // of the ROB's retire ports (rt_v_q, rt_idx_q), which keeps the retire cone out of this logic. A CTI younger than a
-   // pending restart is on the wrong path and queues nothing (one queued in a redirect's cycle is
-   // born dead); an entry the kill marks dead, or one
+   // pending restart is on the wrong path; it queues like any other (no age compare in front of the
+   // tail's write) and never trains: one queued in a redirect's cycle is born dead, the kill marks
+   // the rest, and nothing dead outlives the release. An entry the kill marks dead, or one
    // past the pending restart, is discarded at the head. A redirect discards every entry that has
    // not retired, except the restart's own CTI at its squash: it is the ROB head, so nothing older
    // is left and it is architecturally done. One entry trains per cycle; a CTI arriving at a full
@@ -4160,7 +4161,7 @@ module smolrv64_core
    reg  [RKB-1:0] rk [0:NL-1];                  // each enqueuing lane's rank among this cycle's: the older ones
    integer tqi, tqj;
    always @* for (tqi = 0; tqi < NL; tqi = tqi + 1) begin
-      tr_ok[tqi] = lr_v[tqi] & (lr_br[tqi] | lr_jmp[tqi]) & ~(fr_v & older(fr_seq, lr_seq[tqi]));
+      tr_ok[tqi] = lr_v[tqi] & (lr_br[tqi] | lr_jmp[tqi]);
    end
    always @* for (tqi = 0; tqi < NL; tqi = tqi + 1) begin
       rk[tqi] = {RKB{1'b0}};
@@ -4244,6 +4245,14 @@ module smolrv64_core
          tq_n <= tq_n + tq_wn - {{TQB{1'b0}}, tq_out};
       end
    end
+   // the release ends the kill: every queued CTI younger than the branch is marked by then (or now);
+   // a retired one (tq_rt, or tq_rm: retired a cycle ago) is behind the head, not younger
+   always @(posedge clk) if (!reset && fr_rel)
+      for (tk = 0; tk < TQN; tk = tk + 1)
+         if ((((tk[TQB-1:0] - tq_h) & (TQN - 1)) < tq_n) && !tq_dk[tk] && !dead(tq_rob[tk]) && !tq_rt[tk] && !tq_rm[tk]
+             && rob_older(fr_rob, tq_rob[tk]))
+            $fatal(1, "smolrv64_core: the release leaves training entry %0d (rob %0d) younger than its branch %0d unmarked",
+                   tk, tq_rob[tk], fr_rob);
    wire [3:0]   tq_dn = ones_nl(tr_ok & ~tq_w);
    wire [RKB:0] tr_drop = tq_dn[RKB:0];
    assign res_v     = tq_out & ~tq_dead;

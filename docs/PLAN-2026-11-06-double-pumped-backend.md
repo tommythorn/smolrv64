@@ -756,6 +756,13 @@ pass through `lb_drain`'s SYSQ term.
 -0.99 ns, 1 level: the reset term in every payload field's enable). va, size, the translation bits
 and the fault cause are read only under v and av, so their writes (the address, the walker's
 answer) sit in a block of their own, enabled by their write alone.
+
+**THE TRAINING QUEUE TAKES A WRONG-PATH CTI AND DISCARDS IT** (m2s: `lr_seq -> tq_rob`, 109 endpoints at
+-1.13 ns, 9 levels: the seqno compare against the pending restart in front of the enqueue's ranks,
+the tail adder and the write decode). The compare was redundant: the head discards an entry past
+the pending restart, the kill marks the rest while it holds, a redirect's cycle enqueues dead, and
+nothing dead outlives the release (asserted at the release for every queued entry). A wrong-path CTI
+now holds a queue slot until the head discards it.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
