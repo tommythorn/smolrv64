@@ -398,6 +398,13 @@ one clk cycle, where its own abort wins -- so the clk2x side drops a start not y
 discards the result of the divide the divider is running, and a new start waits until it is idle.
 Its busy toward the core is a waiting start or a divide still wanted.
 
+**m2c's build (968f669b): -1.976 ns, 66,760 failing endpoints, TNS halved.** The schedulers' own
+loops led the core (`u_iq -> u_iq` 4.1 K, `-> plmem` 3.2 K): the pick's result cleared the issued
+entry's valid, and the lowest free entry, chosen from the valids, named every entry's writes. THE
+ISSUED ENTRY CLEARS A CYCLE LATER (`iss_last` masks it from the pick meanwhile) and THE FREE SLOT
+IS RESERVED A CYCLE AHEAD (`fs_v`, `fs_ix`: only a dispatch allocates, so a slot free now stays free
+unless dispatched into now), so the pick and the dispatch both read flops.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

@@ -41,12 +41,6 @@ module smolrv64_iq
     // "oldest" is a pointer compare and not an age comparison. This is the whole reason no
     // scheduler needs age: the one ordering constraint that survives belongs to one class.
     parameter INORDER = 0,
-    // 1: d_ready is a REGISTER -- "at least two entries were free last cycle", which
-    // guarantees one free now (a cycle admits one dispatch, and the held entry only ever
-    // moves). The live |freem sat at the root of the frontend's dispatch decision: a_ent
-    // -> held -> freem -> d_ready -> iq_ready -> d_take -> rename -> u_pend, 16 levels.
-    // The price is the last entry: the scheduler refuses dispatch at NENT-1 occupied.
-    parameter REGRDY = 0,
     // 1: the pick takes the oldest live entry when it is ready (see the header)
     parameter OLDEST = 0)
    (input  wire                  clk,
@@ -122,29 +116,37 @@ module smolrv64_iq
    end
 
    // ---- slot allocation ----
-   // Out of order: lowest free index. In order: a circular tail, so entry order IS program
-   // order and the head is the oldest by construction.
+   // Out of order: THE SLOT IS RESERVED A CYCLE AHEAD (fs_v, fs_ix): the lowest entry free this
+   // cycle and not dispatched into now. Only a dispatch allocates and nothing makes a free entry
+   // busy but it (an entry is held only after it issued), so the reserved one is free when it is
+   // used; d_ready and the slot every write names are flops. In order: a circular tail, so entry
+   // order IS program order and the head is the oldest by construction.
    wire [NENT-1:0] held  = hold_v ? ({{(NENT-1){1'b0}}, 1'b1} << hold_ent) : {NENT{1'b0}};
    wire [NENT-1:0] freem = ~v & ~held;
    reg  [IDXB-1:0] qhead, qtail;
    initial begin qhead = {IDXB{1'b0}}; qtail = {IDXB{1'b0}}; end
 
-   reg [IDXB-1:0] lowfree;
+   reg             fs_v = 1'b0;
+   reg  [IDXB-1:0] fs_ix = {IDXB{1'b0}};
+   wire            do_disp;
+   wire [NENT-1:0] freem_n = freem & ~(do_disp ? ({{(NENT-1){1'b0}}, 1'b1} << fs_ix) : {NENT{1'b0}});
+   reg  [IDXB-1:0] lowfree;
    always @* begin
       lowfree = {IDXB{1'b0}};
-      for (k = NENT-1; k >= 0; k = k - 1) if (freem[k]) lowfree = k[IDXB-1:0];
+      for (k = NENT-1; k >= 0; k = k - 1) if (freem_n[k]) lowfree = k[IDXB-1:0];
    end
-   wire [IDXB-1:0] fsel    = (INORDER != 0) ? qtail : lowfree;
+   always @(posedge clk) begin
+      fs_v  <= ~reset & (|freem_n);
+      fs_ix <= lowfree;
+   end
+   wire [IDXB-1:0] fsel    = (INORDER != 0) ? qtail : fs_ix;
    reg [IDXB:0] nfree;
    always @* begin
       nfree = {(IDXB+1){1'b0}};
       for (k = 0; k < NENT; k = k + 1) nfree = nfree + {{IDXB{1'b0}}, freem[k]};
    end
    assign free_n = nfree;
-   reg d_ready_q;  initial d_ready_q = 1'b0;
-   always @(posedge clk) d_ready_q <= ~reset & (nfree >= 2);
-   assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail])
-                           : (REGRDY != 0) ? d_ready_q : |freem;
+   assign          d_ready = (INORDER != 0) ? (~v[qtail] & ~held[qtail]) : fs_v;
 
    // ---- wakeup: NSRC * NWB comparators per entry. Linear in N. ----
    function automatic hit;
@@ -163,6 +165,10 @@ module smolrv64_iq
    // beside the writeback compares, and the column is cleared then. The pick's index never reaches
    // e_r or dep: a landing's wake -> ready -> pick -> the column -> e_r was one cycle's chain.
    reg              sq_v;
+   // THE ISSUED ENTRY CLEARS A CYCLE LATER (iss_last, a register): the pick reads flops only, and its
+   // own result reaches no entry's valid in its cycle. Issued, it is no candidate the next cycle,
+   // when its valid clears; it is not free until then.
+   reg  [NENT-1:0]  iss_last = {NENT{1'b0}};
    reg  [NENT-1:0]  sq_oh;
    reg  [IDXB-1:0]  sq_ix;
    initial begin sq_v = 1'b0;  sq_oh = {NENT{1'b0}};  sq_ix = {IDXB{1'b0}}; end
@@ -194,7 +200,7 @@ module smolrv64_iq
          // qualifies only the RESULT below: the pick is a function of readiness alone, and
          // the late signal is one AND on the issue valid instead of NENT ANDs feeding a tree.
          // hx_busy and ag_only are flops, and e_hx, e_ag, e_r and v are.
-         assign rdy[g] = v[g] & ~(e_hx[g] & hx_busy) & ~(ag_only & ~e_ag[g]) & (&e_r[g])
+         assign rdy[g] = v[g] & ~iss_last[g] & ~(e_hx[g] & hx_busy) & ~(ag_only & ~e_ag[g]) & (&e_r[g])
                        & ((INORDER == 0) | (g[IDXB-1:0] == qhead));
       end
    endgenerate
@@ -269,7 +275,7 @@ module smolrv64_iq
    // Neither gated on the flush: a dispatch or an issue in the flush cycle is wrong-path and
    // the flush arm, ordered last below, clears it. Gating them put M's completion (which a
    // landing load decides) in front of every entry write (gate V3, 2026-09-05).
-   wire do_disp = d_valid & d_ready;
+   assign do_disp = d_valid & d_ready;
    wire kd_new  = kdead(kd_v, kh, kb, d_rob);              // the kill takes the op dispatched now
    wire do_iss  = iss_v & iss_take;
 
@@ -314,7 +320,7 @@ module smolrv64_iq
       if (reset) begin
          v <= {NENT{1'b0}};
          qhead <= {IDXB{1'b0}}; qtail <= {IDXB{1'b0}};
-         sq_v <= 1'b0;
+         sq_v <= 1'b0;  iss_last <= {NENT{1'b0}};
       end else begin
          sq_v  <= self_v & ~flush;
          sq_oh <= isel_oh;  sq_ix <= isel;
@@ -327,10 +333,9 @@ module smolrv64_iq
             for (q = 0; q < NSRC; q = q + 1)
                if (hit(e_ps[k][q*PBITS +: PBITS]) || swk_q[k*NSRC+q])
                   e_r[k][q] <= 1'b1;
-         if (do_iss) begin
-            v[isel] <= 1'b0;
-            if (INORDER != 0) qhead <= (qhead == (NENT-1)) ? {IDXB{1'b0}} : qhead + 1'b1;
-         end
+         iss_last <= do_iss ? isel_oh : {NENT{1'b0}};
+         for (k = 0; k < NENT; k = k + 1) if (iss_last[k]) v[k] <= 1'b0;
+         if (do_iss & (INORDER != 0)) qhead <= (qhead == (NENT-1)) ? {IDXB{1'b0}} : qhead + 1'b1;
          if (do_disp) begin
             od[fsel] <= v;
             for (k = 0; k < NENT; k = k + 1) od[k][fsel] <= 1'b0;
@@ -378,8 +383,8 @@ module smolrv64_iq
    always @(posedge clk) if (!reset && (OLDEST != 0) && ((o_cnt > 1) || ((o_cnt == 0) && (|v))))
       $fatal(1, "smolrv64_iq: the order names %0d oldest entries among live %b", o_cnt, v);
    always @(posedge clk) if (!reset) begin
-      if ((REGRDY != 0) & (INORDER == 0) & d_ready_q & ~|freem)
-         $fatal(1, "smolrv64_iq: the registered ready promised a free entry and there is none");
+      if ((INORDER == 0) & fs_v & ~freem[fs_ix])
+         $fatal(1, "smolrv64_iq: the reserved slot %0d is not free", fs_ix);
       if (d_valid & ~d_ready & ~flush)
          $fatal(1, "smolrv64_iq: dispatch into a full scheduler");
       if (kd_v & (INORDER != 0))
