@@ -584,6 +584,11 @@ machine never writes in the cycle its base is loaded (`pa_new`), so the register
 base's (asserted). A state-machine store (device, NC, straddling, CBO) costs a cycle. And the
 lane's R entry (`r_ent`, now the payload LUTRAMs' read address: `-> ln[].pl`, one level) is
 replicated.
+
+**A RELEASE CLEARS THE WEAK-BRANCH BITS A CYCLE LATE** (m2k: `u_rob/kh -> wk_e`, 220 endpoints, 11
+levels: the ROB's per-entry kill vector into the walk hold's bit per entry). The vector and the
+release are registered and the clear comes first in the block, so an entry dispatched again
+meanwhile keeps its bit; the walk hold lingers a cycle.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

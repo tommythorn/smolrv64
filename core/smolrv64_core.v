@@ -4263,14 +4263,20 @@ module smolrv64_core
    endfunction
    // the weak conditionals in flight, a bit per ROB entry: set as one dispatches, cleared as it
    // resolves, by the redirect, and at a release for the dead (which never resolve)
+   // ...the release's clear a cycle late, from registers (the ROB's per-entry kill vector is a
+   // compare per entry): first in the block, so an entry dispatched again meanwhile keeps its bit
    reg  [ROB_DEPTH-1:0] wk_e;   initial wk_e = {ROB_DEPTH{1'b0}};
+   reg  [ROB_DEPTH-1:0] wk_kd_q;
+   reg                  wk_rel_q = 1'b0;
    integer wdk;
    always @(posedge clk) begin
+      wk_rel_q <= ~reset & fr_rel;
+      wk_kd_q  <= rob_kd;
+      if (wk_rel_q) for (wdk = 0; wdk < ROB_DEPTH; wdk = wdk + 1) if (wk_kd_q[wdk]) wk_e[wdk] <= 1'b0;
       for (wdk = 0; wdk < IW; wdk = wdk + 1)
          if (s_takev[wdk] & s_is_branch[wdk] & weak_cond(s_pdet[wdk])) wk_e[rsi(s_rob[wdk])] <= 1'b1;
       for (wdk = 0; wdk < NL; wdk = wdk + 1)
          if (lr_v[wdk] & lr_br[wdk] & weak_cond(lr_pdet[wdk])) wk_e[rsl(lr_rob[wdk], wdk)] <= 1'b0;
-      if (fr_rel) for (wdk = 0; wdk < ROB_DEPTH; wdk = wdk + 1) if (rob_kd[wdk]) wk_e[wdk] <= 1'b0;
       if (reset | redirect) wk_e <= {ROB_DEPTH{1'b0}};
       if (!reset && !redirect)
          for (wdk = 0; wdk < NL; wdk = wdk + 1)
