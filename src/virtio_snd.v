@@ -266,9 +266,9 @@ module virtio_snd #(
    function [15:0] get16(input [63:0] d, input [2:0] off);
       get16 = d[{off, 3'd0} +: 16];
    endfunction
-   function [31:0] rq32(input integer o);
-      rq32 = {rq[o+3], rq[o+2], rq[o+1], rq[o]};
-   endfunction
+   // the request's words: code, then stream / start_id, count, size (a wire per read: rule F4)
+   wire [31:0] rq_w0 = {rq[3], rq[2], rq[1], rq[0]},     rq_w1 = {rq[7], rq[6], rq[5], rq[4]};
+   wire [31:0] rq_w2 = {rq[11], rq[10], rq[9], rq[8]},   rq_w3 = {rq[15], rq[14], rq[13], rq[12]};
    task pick(input which);
       begin
          eq       <= which;
@@ -291,18 +291,18 @@ module virtio_snd #(
 
    // the response, formed at the first writable byte from the request (controlq) or fixed (txq)
    reg  [31:0] rsp_code;  reg rsp_info;
-   wire [31:0] rq_code = rq32(0);
+   wire [31:0] rq_code = rq_w0;
    wire [7:0]  sp_ch = rq[20], sp_fmt = rq[21], sp_rate = rq[22];
    always @* begin
       rsp_info = 1'b0;
       case (rq_code)
-         R_PCM_INFO:       begin rsp_code = (rq32(4) == 32'd0 && rq32(8) >= 32'd1 && rq32(12) >= 32'd32) ? S_OK : S_BAD_MSG;
+         R_PCM_INFO:       begin rsp_code = (rq_w1 == 32'd0 && rq_w2 >= 32'd1 && rq_w3 >= 32'd32) ? S_OK : S_BAD_MSG;
                                  rsp_info = rsp_code == S_OK; end
-         R_PCM_SET_PARAMS: rsp_code = (rq32(4) == 32'd0 && (sp_ch == 8'd1 || sp_ch == 8'd2)
+         R_PCM_SET_PARAMS: rsp_code = (rq_w1 == 32'd0 && (sp_ch == 8'd1 || sp_ch == 8'd2)
                                        && (sp_fmt == FMT_U8 || sp_fmt == FMT_S16)
                                        && (sp_rate == RATE_11025 || sp_rate == RATE_22050 || sp_rate == RATE_44100)) ? S_OK : S_NOT_SUPP;
          R_PCM_PREPARE, R_PCM_RELEASE, R_PCM_START, R_PCM_STOP:
-                           rsp_code = rq32(4) == 32'd0 ? S_OK : S_BAD_MSG;
+                           rsp_code = rq_w1 == 32'd0 ? S_OK : S_BAD_MSG;
          default:          rsp_code = S_NOT_SUPP;      // JACK_*, CHMAP_INFO: there are none
       endcase
    end

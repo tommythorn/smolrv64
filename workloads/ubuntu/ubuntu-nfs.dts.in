@@ -172,7 +172,7 @@
 			dma-coherent;
 			status = "okay";
 		};
-	};
+@SOUND@	};
 
 	memory@80000000 {
 		device_type = "memory";

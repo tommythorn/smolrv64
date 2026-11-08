@@ -77,3 +77,21 @@ has at least 160 pixels of horizontal blanking, enough for a two-packet island.
    samples, the ACR and the InfoFrames.
 4. The shell: page `0x1000_7000`, a PLIC source, the frames into `hdmi_tx`; the HDMI DTS node.
 5. Board: `aplay` of each of the twelve configurations on the HDMI board's monitor.
+
+## 5. Progress
+
+- Step 1 (082fc973): virtio_mmio holds four queues as arrays; virtio_input and the Linux bench's
+  block device use the buses.
+- Step 2 (0574f56c): virtio_snd; tb_virtio_snd drives the twelve configurations frame-exact, the
+  control requests, STOP's wait and RELEASE's return. The bench plays a frame every 256 cycles: at 16
+  it starved between its 23-frame buffers (the device then plays silence, as it should).
+- Steps 3 and 4: hdmi_symbols (the pure-RTL symbol generator hdmi_tx now instantiates) places
+  everything from the line's own edges, not a mode's numbers: the islands 4 pixels after HSYNC's
+  leading edge (its active level learned from the level it holds during video), only while the last
+  line had 100 pixels from that edge to video; the video preamble from the stream seen 12 pixels
+  ahead. CTS is measured over every 49th frame's arrival. tb_hdmi_audio decodes the symbols with an
+  independent sink model (192 islands in 12 frames of a small negative-sync mode, every audio frame
+  in order with parity and block flags, ACR, both InfoFrames once a frame). The shell: page 0x07,
+  PLIC source 13 (rv_soc_top's virtio_snd_irq), a keyboard+sound AXI arbiter (ID bit 2) into the
+  VGA arbiter's second port, aud_valid/aud_frame out to the HDMI board's hdmi_tx; the HDMI board's
+  DTB lists the device (tools/check-dts-timebase.py's @SOUND@).

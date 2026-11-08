@@ -79,6 +79,8 @@ module rk_xcku5p(
       .vid_hs           (vga_hs),
       .vid_vs           (vga_vs),
       .vid_rgb          (vid_rgb),
+      .aud_valid        (),                 // no audio output on this board: the frames go nowhere
+      .aud_frame        (),
       .hid_rxd          (hid_rxd),
       .c0_ddr4_act_n    (c0_ddr4_act_n),
       .c0_ddr4_adr      (c0_ddr4_adr),

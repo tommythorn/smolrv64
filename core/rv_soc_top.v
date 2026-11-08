@@ -114,6 +114,7 @@ module rv_soc_top #(
    output wire             dma_sn_ack,
    input  wire             dma_sn_rel,       // a pulse: a flushed line's DMA write is in the controller
    input  wire             virtio_kbd_irq,   // PLIC source 4 (virtio_mmio@10004000, as in simmerv)
+   input  wire             virtio_snd_irq,   // PLIC source 13 (virtio_mmio@10007000, the sound device)
    output wire [17:0]      irq_dbg,         // interrupt-path debug for the wrapper ILA (probe_clk)
    // Cache data-array integrity (meaningful only in a -DCACHE_PARITY build; tied to 0
    // otherwise). cache_par_err is the ILA_PARITY TRIGGER: it pulses in the cycle a cache
@@ -306,7 +307,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wfsm & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({51'd0, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({50'd0, virtio_snd_irq, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.

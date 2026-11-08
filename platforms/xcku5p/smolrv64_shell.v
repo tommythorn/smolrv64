@@ -94,6 +94,10 @@ module smolrv64_shell #(
     output wire        vid_hs,
     output wire        vid_vs,
     output wire [15:0] vid_rgb,
+    // Audio (virtio_snd): 44.1 kHz stereo frames, {right, left} 16-bit signed, one a tick of its
+    // playback clock, in ui_clk (silence when nothing plays; a board without an output leaves them)
+    output wire        aud_valid,
+    output wire [31:0] aud_frame,
 
     // USB keyboards and mice through a Raspberry Pi Pico (tools/hid-bridge): its UART TX,
     // virtio_input's HID line.
@@ -326,6 +330,8 @@ module smolrv64_shell #(
    wire        vga_sel        = ui_mmio_address[19:12] == 8'h05;
    wire        kbd_sel        = ui_mmio_address[19:12] == 8'h04;
    wire        keys_sel       = ui_mmio_address[19:12] == 8'h06;
+   wire        snd_sel        = ui_mmio_address[19:12] == 8'h07;
+   wire [31:0] snd_mmio_rdata;
    wire [31:0] kbd_mmio_rdata;
    wire [31:0] vga_mmio_rdata;
    wire [31:0] sd_cd_gpio_readdata = {31'd0, sd_cd_sync};
@@ -566,6 +572,81 @@ module smolrv64_shell #(
    wire        kbd_axi_rlast;
    wire        kbd_axi_rvalid;
    wire        kbd_axi_rready;
+   // the sound device's DMA port, and the keyboard's and its merged (ks_arbiter_inst)
+   wire [ 2:0] snd_axi_awid;
+   wire [31:0] snd_axi_awaddr;
+   wire [ 7:0] snd_axi_awlen;
+   wire [ 2:0] snd_axi_awsize;
+   wire [ 1:0] snd_axi_awburst;
+   wire        snd_axi_awlock;
+   wire [ 3:0] snd_axi_awcache;
+   wire [ 2:0] snd_axi_awprot;
+   wire [ 3:0] snd_axi_awqos;
+   wire        snd_axi_awvalid;
+   wire        snd_axi_awready;
+   wire [63:0] snd_axi_wdata;
+   wire [ 7:0] snd_axi_wstrb;
+   wire        snd_axi_wlast;
+   wire        snd_axi_wvalid;
+   wire        snd_axi_wready;
+   wire [ 2:0] snd_axi_bid;
+   wire [ 1:0] snd_axi_bresp;
+   wire        snd_axi_bvalid;
+   wire        snd_axi_bready;
+   wire [ 2:0] snd_axi_arid;
+   wire [31:0] snd_axi_araddr;
+   wire [ 7:0] snd_axi_arlen;
+   wire [ 2:0] snd_axi_arsize;
+   wire [ 1:0] snd_axi_arburst;
+   wire        snd_axi_arlock;
+   wire [ 3:0] snd_axi_arcache;
+   wire [ 2:0] snd_axi_arprot;
+   wire [ 3:0] snd_axi_arqos;
+   wire        snd_axi_arvalid;
+   wire        snd_axi_arready;
+   wire [ 2:0] snd_axi_rid;
+   wire [63:0] snd_axi_rdata;
+   wire [ 1:0] snd_axi_rresp;
+   wire        snd_axi_rlast;
+   wire        snd_axi_rvalid;
+   wire        snd_axi_rready;
+   wire [ 2:0] ks_axi_awid;
+   wire [31:0] ks_axi_awaddr;
+   wire [ 7:0] ks_axi_awlen;
+   wire [ 2:0] ks_axi_awsize;
+   wire [ 1:0] ks_axi_awburst;
+   wire        ks_axi_awlock;
+   wire [ 3:0] ks_axi_awcache;
+   wire [ 2:0] ks_axi_awprot;
+   wire [ 3:0] ks_axi_awqos;
+   wire        ks_axi_awvalid;
+   wire        ks_axi_awready;
+   wire [63:0] ks_axi_wdata;
+   wire [ 7:0] ks_axi_wstrb;
+   wire        ks_axi_wlast;
+   wire        ks_axi_wvalid;
+   wire        ks_axi_wready;
+   wire [ 2:0] ks_axi_bid;
+   wire [ 1:0] ks_axi_bresp;
+   wire        ks_axi_bvalid;
+   wire        ks_axi_bready;
+   wire [ 2:0] ks_axi_arid;
+   wire [31:0] ks_axi_araddr;
+   wire [ 7:0] ks_axi_arlen;
+   wire [ 2:0] ks_axi_arsize;
+   wire [ 1:0] ks_axi_arburst;
+   wire        ks_axi_arlock;
+   wire [ 3:0] ks_axi_arcache;
+   wire [ 2:0] ks_axi_arprot;
+   wire [ 3:0] ks_axi_arqos;
+   wire        ks_axi_arvalid;
+   wire        ks_axi_arready;
+   wire [ 2:0] ks_axi_rid;
+   wire [63:0] ks_axi_rdata;
+   wire [ 1:0] ks_axi_rresp;
+   wire        ks_axi_rlast;
+   wire        ks_axi_rvalid;
+   wire        ks_axi_rready;
 
    wire [ 2:0] periph_axi_awid;
    wire [31:0] periph_axi_awaddr;
@@ -645,8 +726,8 @@ module smolrv64_shell #(
    reg         mmio_read_d1 = 0;
    reg         mmio_read_d2 = 0;
    reg  [31:0] mmio_readdata_q = 32'd0;
-   reg  [ 6:0] rd_sel_q = 7'd0;   reg rd_dbg_q = 1'b0;
-   reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_keys_q;
+   reg  [ 7:0] rd_sel_q = 8'd0;   reg rd_dbg_q = 1'b0;
+   reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_keys_q, rd_snd_q;
 
    // 0x10006000, the board's keys: [3:0] key[3:0] held now, [11:8] pressed since the CPU's
    // reset (a write of 1 clears). Each key is synchronized and debounced: a level counts once it
@@ -695,14 +776,14 @@ module smolrv64_shell #(
          // to mmio_readdata_q was the design's worst path at 333 MHz (-0.097 ns, from
          // virtio_net's queue_sel) once the keyboard and video pages joined it.
          if (ui_mmio_read) begin
-            rd_sel_q <= {keys_sel, kbd_sel, vga_sel, virtio_net_sel, virtio_blk_sel,
+            rd_sel_q <= {snd_sel, keys_sel, kbd_sel, vga_sel, virtio_net_sel, virtio_blk_sel,
                          sd_cd_gpio_sel, spi_speed_sel};
             rd_dbg_q <= ui_mmio_address[11:8] == 4'hf;
             rd_spi_q <= {16'd0, spi_fast_half};       rd_cd_q    <= sd_cd_gpio_readdata;
             rd_blk_q <= virtio_blk_readdata;          rd_blkdb_q <= virtio_blk_debug_word;
             rd_net_q <= virtio_net_readdata;          rd_netdb_q <= virtio_net_debug_word;
             rd_vga_q <= vga_mmio_rdata;               rd_kbd_q   <= kbd_mmio_rdata;
-            rd_keys_q  <= keys_readdata;
+            rd_keys_q  <= keys_readdata;           rd_snd_q   <= snd_mmio_rdata;
          end
          if (mmio_read_d1)
             mmio_readdata_q <= ({32{rd_sel_q[0]}} & rd_spi_q)
@@ -711,7 +792,8 @@ module smolrv64_shell #(
                              | ({32{rd_sel_q[3]}} & (rd_dbg_q ? rd_netdb_q : rd_net_q))
                              | ({32{rd_sel_q[4]}} & rd_vga_q)
                              | ({32{rd_sel_q[5]}} & rd_kbd_q)
-                             | ({32{rd_sel_q[6]}} & rd_keys_q);
+                             | ({32{rd_sel_q[6]}} & rd_keys_q)
+                             | ({32{rd_sel_q[7]}} & rd_snd_q);
       end
    end
 
@@ -1381,6 +1463,131 @@ module smolrv64_shell #(
       .m_axi_rid(kbd_axi_rid), .m_axi_rdata(kbd_axi_rdata), .m_axi_rresp(kbd_axi_rresp),
       .m_axi_rlast(kbd_axi_rlast), .m_axi_rvalid(kbd_axi_rvalid), .m_axi_rready(kbd_axi_rready));
 
+   // The sound device (virtio_snd, page 0x07, PLIC source 13): its frames leave as aud_*.
+   wire        snd_irq;
+   virtio_snd snd_inst (
+      .clock(ui_clk), .reset(ui_cpu_reset),
+      .address(ui_mmio_address[11:0]), .read(ui_mmio_read && snd_sel), .read_data(snd_mmio_rdata),
+      .write(ui_mmio_write && snd_sel), .write_data(ui_mmio_writedata), .byteenable(ui_mmio_byteenable),
+      .irq(snd_irq), .frame_valid(aud_valid), .frame(aud_frame),
+      .m_axi_awid(snd_axi_awid), .m_axi_awaddr(snd_axi_awaddr), .m_axi_awlen(snd_axi_awlen), .m_axi_awsize(snd_axi_awsize), .m_axi_awburst(snd_axi_awburst), .m_axi_awlock(snd_axi_awlock), .m_axi_awcache(snd_axi_awcache), .m_axi_awprot(snd_axi_awprot), .m_axi_awqos(snd_axi_awqos), .m_axi_awvalid(snd_axi_awvalid), .m_axi_awready(snd_axi_awready), .m_axi_wdata(snd_axi_wdata), .m_axi_wstrb(snd_axi_wstrb), .m_axi_wlast(snd_axi_wlast), .m_axi_wvalid(snd_axi_wvalid), .m_axi_wready(snd_axi_wready), .m_axi_bid(snd_axi_bid), .m_axi_bresp(snd_axi_bresp), .m_axi_bvalid(snd_axi_bvalid), .m_axi_bready(snd_axi_bready), .m_axi_arid(snd_axi_arid), .m_axi_araddr(snd_axi_araddr), .m_axi_arlen(snd_axi_arlen), .m_axi_arsize(snd_axi_arsize), .m_axi_arburst(snd_axi_arburst), .m_axi_arlock(snd_axi_arlock), .m_axi_arcache(snd_axi_arcache), .m_axi_arprot(snd_axi_arprot), .m_axi_arqos(snd_axi_arqos), .m_axi_arvalid(snd_axi_arvalid), .m_axi_arready(snd_axi_arready), .m_axi_rid(snd_axi_rid), .m_axi_rdata(snd_axi_rdata), .m_axi_rresp(snd_axi_rresp), .m_axi_rlast(snd_axi_rlast), .m_axi_rvalid(snd_axi_rvalid), .m_axi_rready(snd_axi_rready));
+   // the keyboard (s0) and the sound device (s1) share the VGA arbiter's second port; ID bit 2 names
+   // which (the other arbiters stamp bits 0 and 1)
+   axi_two_master_arbiter #(.STAMP(2)) ks_arbiter_inst(
+      .clock           (ui_clk),
+      .reset           (ui_cpu_reset),
+      .s0_axi_awid      (kbd_axi_awid),
+      .s0_axi_awaddr    (kbd_axi_awaddr),
+      .s0_axi_awlen     (kbd_axi_awlen),
+      .s0_axi_awsize    (kbd_axi_awsize),
+      .s0_axi_awburst   (kbd_axi_awburst),
+      .s0_axi_awlock    (kbd_axi_awlock),
+      .s0_axi_awcache   (kbd_axi_awcache),
+      .s0_axi_awprot    (kbd_axi_awprot),
+      .s0_axi_awqos     (kbd_axi_awqos),
+      .s0_axi_awvalid   (kbd_axi_awvalid),
+      .s0_axi_awready   (kbd_axi_awready),
+      .s0_axi_wdata     (kbd_axi_wdata),
+      .s0_axi_wstrb     (kbd_axi_wstrb),
+      .s0_axi_wlast     (kbd_axi_wlast),
+      .s0_axi_wvalid    (kbd_axi_wvalid),
+      .s0_axi_wready    (kbd_axi_wready),
+      .s0_axi_bid       (kbd_axi_bid),
+      .s0_axi_bresp     (kbd_axi_bresp),
+      .s0_axi_bvalid    (kbd_axi_bvalid),
+      .s0_axi_bready    (kbd_axi_bready),
+      .s0_axi_arid      (kbd_axi_arid),
+      .s0_axi_araddr    (kbd_axi_araddr),
+      .s0_axi_arlen     (kbd_axi_arlen),
+      .s0_axi_arsize    (kbd_axi_arsize),
+      .s0_axi_arburst   (kbd_axi_arburst),
+      .s0_axi_arlock    (kbd_axi_arlock),
+      .s0_axi_arcache   (kbd_axi_arcache),
+      .s0_axi_arprot    (kbd_axi_arprot),
+      .s0_axi_arqos     (kbd_axi_arqos),
+      .s0_axi_arvalid   (kbd_axi_arvalid),
+      .s0_axi_arready   (kbd_axi_arready),
+      .s0_axi_rid       (kbd_axi_rid),
+      .s0_axi_rdata     (kbd_axi_rdata),
+      .s0_axi_rresp     (kbd_axi_rresp),
+      .s0_axi_rlast     (kbd_axi_rlast),
+      .s0_axi_rvalid    (kbd_axi_rvalid),
+      .s0_axi_rready    (kbd_axi_rready),
+      .s1_axi_awid      (snd_axi_awid),
+      .s1_axi_awaddr    (snd_axi_awaddr),
+      .s1_axi_awlen     (snd_axi_awlen),
+      .s1_axi_awsize    (snd_axi_awsize),
+      .s1_axi_awburst   (snd_axi_awburst),
+      .s1_axi_awlock    (snd_axi_awlock),
+      .s1_axi_awcache   (snd_axi_awcache),
+      .s1_axi_awprot    (snd_axi_awprot),
+      .s1_axi_awqos     (snd_axi_awqos),
+      .s1_axi_awvalid   (snd_axi_awvalid),
+      .s1_axi_awready   (snd_axi_awready),
+      .s1_axi_wdata     (snd_axi_wdata),
+      .s1_axi_wstrb     (snd_axi_wstrb),
+      .s1_axi_wlast     (snd_axi_wlast),
+      .s1_axi_wvalid    (snd_axi_wvalid),
+      .s1_axi_wready    (snd_axi_wready),
+      .s1_axi_bid       (snd_axi_bid),
+      .s1_axi_bresp     (snd_axi_bresp),
+      .s1_axi_bvalid    (snd_axi_bvalid),
+      .s1_axi_bready    (snd_axi_bready),
+      .s1_axi_arid      (snd_axi_arid),
+      .s1_axi_araddr    (snd_axi_araddr),
+      .s1_axi_arlen     (snd_axi_arlen),
+      .s1_axi_arsize    (snd_axi_arsize),
+      .s1_axi_arburst   (snd_axi_arburst),
+      .s1_axi_arlock    (snd_axi_arlock),
+      .s1_axi_arcache   (snd_axi_arcache),
+      .s1_axi_arprot    (snd_axi_arprot),
+      .s1_axi_arqos     (snd_axi_arqos),
+      .s1_axi_arvalid   (snd_axi_arvalid),
+      .s1_axi_arready   (snd_axi_arready),
+      .s1_axi_rid       (snd_axi_rid),
+      .s1_axi_rdata     (snd_axi_rdata),
+      .s1_axi_rresp     (snd_axi_rresp),
+      .s1_axi_rlast     (snd_axi_rlast),
+      .s1_axi_rvalid    (snd_axi_rvalid),
+      .s1_axi_rready    (snd_axi_rready),
+      .m_axi_awid       (ks_axi_awid),
+      .m_axi_awaddr     (ks_axi_awaddr),
+      .m_axi_awlen      (ks_axi_awlen),
+      .m_axi_awsize     (ks_axi_awsize),
+      .m_axi_awburst    (ks_axi_awburst),
+      .m_axi_awlock     (ks_axi_awlock),
+      .m_axi_awcache    (ks_axi_awcache),
+      .m_axi_awprot     (ks_axi_awprot),
+      .m_axi_awqos      (ks_axi_awqos),
+      .m_axi_awvalid    (ks_axi_awvalid),
+      .m_axi_awready    (ks_axi_awready),
+      .m_axi_wdata      (ks_axi_wdata),
+      .m_axi_wstrb      (ks_axi_wstrb),
+      .m_axi_wlast      (ks_axi_wlast),
+      .m_axi_wvalid     (ks_axi_wvalid),
+      .m_axi_wready     (ks_axi_wready),
+      .m_axi_bid        (ks_axi_bid),
+      .m_axi_bresp      (ks_axi_bresp),
+      .m_axi_bvalid     (ks_axi_bvalid),
+      .m_axi_bready     (ks_axi_bready),
+      .m_axi_arid       (ks_axi_arid),
+      .m_axi_araddr     (ks_axi_araddr),
+      .m_axi_arlen      (ks_axi_arlen),
+      .m_axi_arsize     (ks_axi_arsize),
+      .m_axi_arburst    (ks_axi_arburst),
+      .m_axi_arlock     (ks_axi_arlock),
+      .m_axi_arcache    (ks_axi_arcache),
+      .m_axi_arprot     (ks_axi_arprot),
+      .m_axi_arqos      (ks_axi_arqos),
+      .m_axi_arvalid    (ks_axi_arvalid),
+      .m_axi_arready    (ks_axi_arready),
+      .m_axi_rid        (ks_axi_rid),
+      .m_axi_rdata      (ks_axi_rdata),
+      .m_axi_rresp      (ks_axi_rresp),
+      .m_axi_rlast      (ks_axi_rlast),
+      .m_axi_rvalid     (ks_axi_rvalid),
+      .m_axi_rready     (ks_axi_rready));
+
    // The DMA masters' arbiters, a balanced tree into ddr4_mem's AXI port:
    //    device_arbiter_inst  virtio-net (s0) + virtio-blk (s1)      stamps ID bit 0
    //    periph_arbiter_inst  VGA scanout (s0) + virtio keyboard (s1)  stamps ID bit 0
@@ -1549,43 +1756,43 @@ module smolrv64_shell #(
       .s0_axi_rvalid   (vga_axi_rvalid),
       .s0_axi_rready   (vga_axi_rready),
 
-      .s1_axi_awid     (kbd_axi_awid),
-      .s1_axi_awaddr   (kbd_axi_awaddr),
-      .s1_axi_awlen    (kbd_axi_awlen),
-      .s1_axi_awsize   (kbd_axi_awsize),
-      .s1_axi_awburst  (kbd_axi_awburst),
-      .s1_axi_awlock   (kbd_axi_awlock),
-      .s1_axi_awcache  (kbd_axi_awcache),
-      .s1_axi_awprot   (kbd_axi_awprot),
-      .s1_axi_awqos    (kbd_axi_awqos),
-      .s1_axi_awvalid  (kbd_axi_awvalid),
-      .s1_axi_awready  (kbd_axi_awready),
-      .s1_axi_wdata    (kbd_axi_wdata),
-      .s1_axi_wstrb    (kbd_axi_wstrb),
-      .s1_axi_wlast    (kbd_axi_wlast),
-      .s1_axi_wvalid   (kbd_axi_wvalid),
-      .s1_axi_wready   (kbd_axi_wready),
-      .s1_axi_bid      (kbd_axi_bid),
-      .s1_axi_bresp    (kbd_axi_bresp),
-      .s1_axi_bvalid   (kbd_axi_bvalid),
-      .s1_axi_bready   (kbd_axi_bready),
-      .s1_axi_arid     (kbd_axi_arid),
-      .s1_axi_araddr   (kbd_axi_araddr),
-      .s1_axi_arlen    (kbd_axi_arlen),
-      .s1_axi_arsize   (kbd_axi_arsize),
-      .s1_axi_arburst  (kbd_axi_arburst),
-      .s1_axi_arlock   (kbd_axi_arlock),
-      .s1_axi_arcache  (kbd_axi_arcache),
-      .s1_axi_arprot   (kbd_axi_arprot),
-      .s1_axi_arqos    (kbd_axi_arqos),
-      .s1_axi_arvalid  (kbd_axi_arvalid),
-      .s1_axi_arready  (kbd_axi_arready),
-      .s1_axi_rid      (kbd_axi_rid),
-      .s1_axi_rdata    (kbd_axi_rdata),
-      .s1_axi_rresp    (kbd_axi_rresp),
-      .s1_axi_rlast    (kbd_axi_rlast),
-      .s1_axi_rvalid   (kbd_axi_rvalid),
-      .s1_axi_rready   (kbd_axi_rready),
+      .s1_axi_awid     (ks_axi_awid),
+      .s1_axi_awaddr   (ks_axi_awaddr),
+      .s1_axi_awlen    (ks_axi_awlen),
+      .s1_axi_awsize   (ks_axi_awsize),
+      .s1_axi_awburst  (ks_axi_awburst),
+      .s1_axi_awlock   (ks_axi_awlock),
+      .s1_axi_awcache  (ks_axi_awcache),
+      .s1_axi_awprot   (ks_axi_awprot),
+      .s1_axi_awqos    (ks_axi_awqos),
+      .s1_axi_awvalid  (ks_axi_awvalid),
+      .s1_axi_awready  (ks_axi_awready),
+      .s1_axi_wdata    (ks_axi_wdata),
+      .s1_axi_wstrb    (ks_axi_wstrb),
+      .s1_axi_wlast    (ks_axi_wlast),
+      .s1_axi_wvalid   (ks_axi_wvalid),
+      .s1_axi_wready   (ks_axi_wready),
+      .s1_axi_bid      (ks_axi_bid),
+      .s1_axi_bresp    (ks_axi_bresp),
+      .s1_axi_bvalid   (ks_axi_bvalid),
+      .s1_axi_bready   (ks_axi_bready),
+      .s1_axi_arid     (ks_axi_arid),
+      .s1_axi_araddr   (ks_axi_araddr),
+      .s1_axi_arlen    (ks_axi_arlen),
+      .s1_axi_arsize   (ks_axi_arsize),
+      .s1_axi_arburst  (ks_axi_arburst),
+      .s1_axi_arlock   (ks_axi_arlock),
+      .s1_axi_arcache  (ks_axi_arcache),
+      .s1_axi_arprot   (ks_axi_arprot),
+      .s1_axi_arqos    (ks_axi_arqos),
+      .s1_axi_arvalid  (ks_axi_arvalid),
+      .s1_axi_arready  (ks_axi_arready),
+      .s1_axi_rid      (ks_axi_rid),
+      .s1_axi_rdata    (ks_axi_rdata),
+      .s1_axi_rresp    (ks_axi_rresp),
+      .s1_axi_rlast    (ks_axi_rlast),
+      .s1_axi_rvalid   (ks_axi_rvalid),
+      .s1_axi_rready   (ks_axi_rready),
 
       .m_axi_awid     (periph_axi_awid),
       .m_axi_awaddr   (periph_axi_awaddr),
@@ -1802,6 +2009,8 @@ module smolrv64_shell #(
    (* async_reg = "true" *) reg p_kbd_irq_meta = 1'b0, p_kbd_irq = 1'b0;    // the keyboard: src 4
    always @(posedge probe_clk) p_kbd_irq_meta <= kbd_irq;
    always @(posedge probe_clk) p_kbd_irq <= p_kbd_irq_meta;
+   (* async_reg = "true" *) reg p_snd_irq_meta = 1'b0, p_snd_irq = 1'b0;    // the sound device: src 13
+   always @(posedge probe_clk) begin p_snd_irq_meta <= snd_irq;  p_snd_irq <= p_snd_irq_meta; end
    always @(posedge probe_clk) begin
       p_virtio_irq_meta     <= virtio_blk_irq;  p_virtio_irq     <= p_virtio_irq_meta;
       p_virtio_net_irq_meta <= virtio_net_irq;  p_virtio_net_irq <= p_virtio_net_irq_meta;
@@ -1840,7 +2049,7 @@ module smolrv64_shell #(
       .virtio_addr(p_virtio_addr), .virtio_read(p_virtio_read), .virtio_write(p_virtio_write),
       .virtio_wdata(p_virtio_wdata), .virtio_be(p_virtio_be),
       .virtio_rdata(core_mmio_readdata_q), .virtio_rvalid(core_mmio_readdatavalid_q),
-      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(p_kbd_irq), .dma_wr(p_dma_wr),
+      .virtio_irq(p_virtio_irq), .virtio_net_irq(p_virtio_net_irq), .virtio_kbd_irq(p_kbd_irq), .virtio_snd_irq(p_snd_irq), .dma_wr(p_dma_wr),
       .dma_sn_valid(sn_p_valid), .dma_sn_line(sn_p_line), .dma_sn_keep(sn_p_keep), .dma_sn_ack(sn_p_ack), .dma_sn_rel(sn_p_rel),
       .core_dbg(probe_core_dbg));
 

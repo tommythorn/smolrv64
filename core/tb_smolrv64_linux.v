@@ -127,7 +127,7 @@ module tb;
       .uart_tx_valid(uart_tx_v), .uart_tx_data(uart_tx_d), .uart_tx_ready(uart_tx_rdy),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write),
       .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0), .dma_wr(tb_dma_wr), .irq_dbg(),
+      .virtio_rdata(virtio_rd_q), .virtio_rvalid(virtio_rvalid), .virtio_irq(virtio_irq | dma_irq), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0), .virtio_snd_irq(1'b0), .dma_wr(tb_dma_wr), .irq_dbg(),
       .dma_sn_valid(sn_p_valid), .dma_sn_line(sn_p_line), .dma_sn_keep(sn_p_keep), .dma_sn_ack(sn_p_ack), .dma_sn_rel(sn_p_rel));
    initial if (dut.core.IW != IW) $fatal(1, "tb: the bench is built for IW=%0d, the core has %0d", IW, dut.core.IW);
 

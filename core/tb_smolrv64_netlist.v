@@ -25,7 +25,7 @@ module tb;
       .uart_tx_valid(uart_tx_valid), .uart_tx_data(uart_tx_data), .uart_tx_ready(1'b1),
       .fbdiag_reset_req(fbdiag_reset_req),
       .virtio_addr(virtio_addr), .virtio_read(virtio_read), .virtio_write(virtio_write), .virtio_wdata(virtio_wdata), .virtio_be(virtio_be),
-      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0),
+      .virtio_rdata(32'd0), .virtio_rvalid(1'b0), .virtio_irq(1'b0), .virtio_net_irq(1'b0), .virtio_kbd_irq(1'b0), .virtio_snd_irq(1'b0),
       .dma_wr(1'b0), .dma_sn_valid(1'b0), .dma_sn_line(26'd0), .dma_sn_keep(1'b0), .dma_sn_ack(), .dma_sn_rel(1'b0),
       .irq_dbg(irq_dbg), .cache_par_err(cache_par_err), .cache_par_dbg(cache_par_dbg));
    // DDR answers zeros, one transaction at a time: a read's four beats, or a write's done

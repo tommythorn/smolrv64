@@ -1,8 +1,9 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// hdmi_tx -- vga_scanout's pixel stream onto four TMDS pairs, DVI-style: video while de, the
-// control symbols (hs, vs on blue) otherwise. HDMI sinks take DVI; there are no data islands.
+// hdmi_tx -- vga_scanout's pixel stream and virtio_snd's audio onto four TMDS pairs, in HDMI mode:
+// the symbols (video, control, data islands carrying the audio and the InfoFrames) are
+// hdmi_symbols', the serializers here.
 //
 // The serializers are component-mode OSERDESE3, 8:1: on HDMI-XCKU5P the pairs share bank 65 with
 // the DDR4 PHY, which owns every BITSLICE_CONTROL and RIU in their bytes, so a native-mode
@@ -23,6 +24,9 @@ module hdmi_tx (
     input  wire        hs,
     input  wire        vs,
     input  wire [15:0] rgb,          // RGB565
+    input  wire        aud_clk,      // 44.1 kHz stereo frames, {right, left} 16-bit (virtio_snd)
+    input  wire        aud_valid,
+    input  wire [31:0] aud_frame,
     output wire [2:0]  tmds_p,       // [2] red, [1] green, [0] blue
     output wire [2:0]  tmds_n,
     output wire        tmds_clk_p,
@@ -49,9 +53,10 @@ module hdmi_tx (
 
     // ---- TMDS symbols, in the pixel clock ----
     wire [9:0] s_r, s_g, s_b;
-    hdmi_tmds_encoder enc_r (.clk(pix_clk), .vd({rgb[15:11], rgb[15:13]}), .cd(2'b00),  .vde(de), .tmds(s_r));
-    hdmi_tmds_encoder enc_g (.clk(pix_clk), .vd({rgb[10: 5], rgb[10: 9]}), .cd(2'b00),  .vde(de), .tmds(s_g));
-    hdmi_tmds_encoder enc_b (.clk(pix_clk), .vd({rgb[ 4: 0], rgb[ 4: 2]}), .cd({vs, hs}), .vde(de), .tmds(s_b));
+    hdmi_symbols syms (
+        .pix_clk(pix_clk), .rst(prst), .de(de), .hs(hs), .vs(vs), .rgb(rgb),
+        .aud_clk(aud_clk), .aud_valid(aud_valid), .aud_frame(aud_frame),
+        .s_r(s_r), .s_g(s_g), .s_b(s_b));
 
     // the clock lane: 5 bits high, 5 low a pixel
     wire [7:0] d_ck, d_r, d_g, d_b;
@@ -80,43 +85,6 @@ module hdmi_rst_bridge (input wire clk, input wire ok, output wire rst);
     always @(posedge clk or negedge ok)
         if (!ok) sr <= 4'hF; else sr <= {sr[2:0], 1'b0};
     assign rst = sr[3];
-endmodule
-
-// The DVI 1.0 TMDS encoder: 8 bits to 10, transition-minimized and DC-balanced, or one of the
-// four control symbols while vde is low.
-module hdmi_tmds_encoder (
-    input  wire       clk,
-    input  wire [7:0] vd,     // video data
-    input  wire [1:0] cd,     // control data, sent while vde = 0
-    input  wire       vde,
-    output reg  [9:0] tmds = 10'd0
-);
-    wire [3:0] n1 = vd[0] + vd[1] + vd[2] + vd[3] + vd[4] + vd[5] + vd[6] + vd[7];
-    wire       xnr = (n1 > 4'd4) || (n1 == 4'd4 && vd[0] == 1'b0);
-    // each bit the one below XOR the data, XNOR'd when xnr; bit 8 says which
-    function [8:0] trans(input [7:0] v, input x);
-        integer k;
-        begin
-            trans[0] = v[0];
-            for (k = 1; k < 8; k = k + 1) trans[k] = trans[k-1] ^ v[k] ^ x;
-            trans[8] = ~x;
-        end
-    endfunction
-    wire [8:0] q_m = trans(vd, xnr);
-
-    reg  [3:0] acc = 4'd0;                // the running disparity
-    wire [3:0] bal = q_m[0] + q_m[1] + q_m[2] + q_m[3] + q_m[4] + q_m[5] + q_m[6] + q_m[7] - 4'd4;
-    wire       same = bal[3] == acc[3];
-    wire       inv  = (bal == 4'd0 || acc == 4'd0) ? ~q_m[8] : same;
-    wire [3:0] inc  = bal - ({q_m[8] ^ ~same} & ~(bal == 4'd0 || acc == 4'd0));
-    wire [3:0] acc_n = inv ? acc - inc : acc + inc;
-    wire [9:0] data = {inv, q_m[8], q_m[7:0] ^ {8{inv}}};
-    wire [9:0] code = cd[1] ? (cd[0] ? 10'b1010101011 : 10'b0101010100)
-                            : (cd[0] ? 10'b0010101011 : 10'b1101010100);
-    always @(posedge clk) begin
-        tmds <= vde ? data : code;
-        acc  <= vde ? acc_n : 4'd0;
-    end
 endmodule
 
 // 4 lanes x 10-bit words @ pclk -> 4 lanes x 8-bit words @ wclk (wclk = 5/4 pclk,

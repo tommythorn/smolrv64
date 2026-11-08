@@ -55,6 +55,8 @@ module hdmi_xcku5p(
    wire [ 7:0] gmii_rxd, gmii_txd;
    wire        vid_clk, vid_locked, vid_de, vid_hs, vid_vs;
    wire [15:0] vid_rgb;
+   wire        aud_valid;                 // virtio_snd's 44.1 kHz frames, in ui_clk
+   wire [31:0] aud_frame;
    wire [ 3:0] shell_led;
 
    assign led     = {4'd0, shell_led};
@@ -92,6 +94,8 @@ module hdmi_xcku5p(
       .vid_hs           (vid_hs),
       .vid_vs           (vid_vs),
       .vid_rgb          (vid_rgb),
+      .aud_valid        (aud_valid),
+      .aud_frame        (aud_frame),
       .hid_rxd          (1'b1),       // idle: the HID line is not wired yet
       .c0_ddr4_act_n    (c0_ddr4_act_n),
       .c0_ddr4_adr      (c0_ddr4_adr),
@@ -127,5 +131,6 @@ module hdmi_xcku5p(
 
    hdmi_tx hdmi (
       .pix_clk(vid_clk), .pix_locked(vid_locked), .de(vid_de), .hs(vid_hs), .vs(vid_vs), .rgb(vid_rgb),
+      .aud_clk(ui_clk), .aud_valid(aud_valid), .aud_frame(aud_frame),
       .tmds_p(tmds_p), .tmds_n(tmds_n), .tmds_clk_p(tmds_clk_p), .tmds_clk_n(tmds_clk_n));
 endmodule
