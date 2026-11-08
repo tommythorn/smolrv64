@@ -34,6 +34,7 @@ module tb;
 
    // ---- load queue ports ----
    reg              lq_a_v=0, lq_a_sent=0, lq_x_take=0, lq_l_v=0;
+   reg              pf = 0;  integer pf_op = 0;   // a load M presented last cycle fills now
    reg [NW-1:0]     lq_d_alloc=0, lq_d_rank=0;
    reg [NW*ROBB-1:0] lq_d_rob=0;  reg [NW*PBITS-1:0] lq_d_prd=0;
    reg [NW*(IDXB+1)-1:0] lq_d_sqtag=0;
@@ -221,6 +222,7 @@ module tb;
          // addresses arrive in program order here, so no load ever reads before an older store's address
          if (|sq_viol) fail("an ordering violation", 0);
          act = rnd(0) % 8;
+         if (pf) act = 99;   // M's second cycle for the load it presented: the fill, no other address
          lq_d_alloc = 0; lq_a_v = 0; lq_a_sent = 0; lq_x_take = 0; lq_l_v = 0;
          sq_d_alloc = 0; sq_a_v = 0; sq_c_take = 0; sq_k_take = 0; flush = 0;
          if (verbose && n_cyc >= vfrom && n_cyc < vto)
@@ -264,22 +266,29 @@ module tb;
                     sq_a_unc = unc[op];
                     st[op] = 1; p_addr = p_addr + 1;
                  end else begin
-                    lq_b_idx = qix[op]; #1;
-                    // the store queue's older-store answer must agree with the model
-                    if (lq_b_ok && (ld_older !== older_live(op)))
-                       fail(ld_older ? "ld_older says an older store is live; the model has none"
-                                     : "ld_older says none; the model has an older live store", op);
-                    lq_a_v = 1; lq_a_idx = qix[op]; lq_a_pa = addr[op]; lq_a_size = sz[op];
+                    // M presents the load's address this cycle and fills its entry the next (its
+                    // two-cycle translate pass): the store queue takes the row in the first
+                    lq_a_idx = qix[op]; lq_a_pa = addr[op]; lq_a_size = sz[op];
                     lq_a_signed = sgn[op]; lq_a_unc = unc[op]; lq_a_fp = 0;
-                    // the early start, whatever older stores are live: one that overlaps it cancels
-                    // the start a cycle later (checked at the top of the next cycle)
-                    if (lq_b_ok && (rnd(0) % 4) != 0) begin
-                       lq_a_sent = 1; st[op] = 2; n_early = n_early + 1; live_ld_inflight = live_ld_inflight + 1;
-                       pend_op = op;  pend_cx = older_ovl(op);
-                    end else st[op] = 1;
+                    pf = 1;  pf_op = op;
                     p_addr = p_addr + 1;
                  end
               end
+           end
+           99: begin // ---- the load's fill, M's second cycle ----
+              op = pf_op;  pf = 0;
+              lq_b_idx = qix[op]; #1;
+              // the store queue's older-store answer must agree with the model
+              if (lq_b_ok && (ld_older !== older_live(op)))
+                 fail(ld_older ? "ld_older says an older store is live; the model has none"
+                               : "ld_older says none; the model has an older live store", op);
+              lq_a_v = 1;
+              // the early start, whatever older stores are live: one that overlaps it cancels
+              // the start a cycle later (checked at the top of the next cycle)
+              if (lq_b_ok && (rnd(0) % 4) != 0) begin
+                 lq_a_sent = 1; st[op] = 2; n_early = n_early + 1; live_ld_inflight = live_ld_inflight + 1;
+                 pend_op = op;  pend_cx = older_ovl(op);
+              end else st[op] = 1;
            end
            4: begin // ---- take the candidate: the property under test ----
               if (lq_x_v) begin

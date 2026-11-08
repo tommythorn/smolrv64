@@ -146,8 +146,10 @@ module tb;
          if (dv) begin step; step; end
       end
    endtask
+   // a load's address fills in the second cycle M presents it (M's two-cycle translate pass): the
+   // store queue takes the load's row against the stores in the first
    task load_addr(input [IDXB-1:0] ix, input [PAW-1:0] a, input [1:0] sz);
-      begin lq_a_v=1; lq_a_idx=ix; lq_a_pa=a; lq_a_size=sz; step; lq_a_v=0; #1; end
+      begin lq_a_idx=ix; lq_a_pa=a; lq_a_size=sz; step; lq_a_v=1; step; lq_a_v=0; #1; end
    endtask
    // take: the LSU takes the candidate when it is offered (the pick is a cycle ahead: a release
    // offers it the cycle after)
@@ -250,7 +252,8 @@ module tb;
       store_addr(S0, 56'h2000, 2, 1'b1, 64'h55);
       chk("5 head ready", sq_kc_v, 1'b1);
       rob_release; repeat (2) if (!sq_c_v) step;   // the hand-off is offered a cycle after it is ready
-      sq_c_take=1; lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step; sq_c_take=0; lq_a_v=0; #1;
+      lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step;   // M presents the load's address (its first cycle)...
+      sq_c_take=1; lq_a_v=1; step; sq_c_take=0; lq_a_v=0; #1;
       chk("5 the committed store no longer blocks the load", lq_x_v, 1'b1);
       chk("5 no older store", ld_older, 1'b0);
       take; land(L0);
@@ -326,7 +329,8 @@ module tb;
       // is never a candidate
       disp_load(9'd43, 4'd3, L0);
       lq_b_idx=L0; #1; chk("8 b_ok: M's load is live and unfilled", lq_b_ok, 1'b1);
-      lq_a_v=1; lq_a_sent=1; lq_a_idx=L0; lq_a_pa=56'h8000; lq_a_size=2; step; lq_a_v=0; lq_a_sent=0; #1;
+      lq_a_idx=L0; lq_a_pa=56'h8000; lq_a_size=2; step;   // M's first cycle
+      lq_a_v=1; lq_a_sent=1; step; lq_a_v=0; lq_a_sent=0; #1;
       chk("8 early-started entry is not offered", !lq_x_v && lq_occ==1, 1'b1);
       land(L0); chk("8 and lands", lq_occ==0, 1'b1);
       lq_d_alloc=1; repeat (NENT) step; lq_d_alloc=0; #1;
@@ -397,7 +401,8 @@ module tb;
       // them all back on the candidate, so a field added to the port without its entry
       // fails here rather than on the board.
       disp_load(9'd46, 4'd13, L0);
-      lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h00_ABCD_EF01_2348; lq_a_size=2'd1; lq_a_signed=1; lq_a_fp=1; lq_a_unc=1;
+      lq_a_idx=L0; lq_a_pa=56'h00_ABCD_EF01_2348; lq_a_size=2'd1; lq_a_signed=1; lq_a_fp=1; lq_a_unc=1; step;   // M's first cycle
+      lq_a_v=1;
       step; lq_a_v=0; #1;
       step; chk("10 pa round-trips",     lq_x_v && lq_x_pa==56'h00_ABCD_EF01_2348, 1'b1);
       chk("10 size round-trips",   lq_x_size==2'd1, 1'b1);

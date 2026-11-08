@@ -695,6 +695,17 @@ out, not depth: the DDR IP's calDone across the memory controller (1.8 K), core_
 PRF write addresses and valids (1.2 K), the phase flag into the I$ memory, redirect_q and fr_hd_q, the
 scheduler's free-slot valid, the arbiter's address into the line memory. The shell takes calibration's
 done into a register of its own (cal_q, replicated; static once set); the rest replicate harder.
+
+**m2p's build (e2977334): -1.719 ns (the draw's), 37.7 K failing endpoints, TNS -15.8 K** (m2o 45.3 K,
+-20.4 K): the middle shrinks for the first time (32.5 K between 0 and -0.75 ns, from 37 K). Lockstep:
+e95b83f5 retires 184.0 M; every commit through it is lockstep-clean.
+
+**THE SQ TAKES A LOAD'S ROW A CYCLE AHEAD** (m2p: `m_addr -> u_sq/cov`, 336 endpoints, 5-6 levels: the
+filling load's address against every store's, into the coverage and overlap matrices). A load fills
+in the second cycle of M's translate pass at the first cycle's address, and no store's address
+arrives in that first cycle (M holds the load), so the row computed then is the fill's (asserted:
+the inputs unchanged, no store arrival). The directed and random benches present a load's address a
+cycle before its fill, as M does.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

@@ -532,6 +532,18 @@ module smolrv64_sq
                       ? ovl_ab(l_fill_off, l_fill_size, a_va[11:0], a_size)
                       : (av[fk] & ovl_ab(l_fill_off, l_fill_size, va[fk][11:0], sz[fk]));
    end
+   // THE ROW IS TAKEN A CYCLE AHEAD: a load fills in the second cycle of M's translate pass at the
+   // address of the first, and no store's address arrives in that first cycle (M holds the load), so
+   // the row against the stores then is the row at the fill (asserted) -- the compares stay out of the
+   // matrix's write
+   reg  [NENT-1:0] fill_row_q, fill_cov_q;
+   reg  [VAW-12:0] fv_q;  reg [11:0] fo_q;  reg [1:0] fs_q;  reg av_q1;
+   always @(posedge clk) begin
+      fill_row_q <= fill_row;  fill_cov_q <= fill_cov;
+      fv_q <= l_fill_vpn;  fo_q <= l_fill_off;  fs_q <= l_fill_size;  av_q1 <= a_v;
+      if (!reset && l_fill && (av_q1 || (fv_q != l_fill_vpn) || (fo_q != l_fill_off) || (fs_q != l_fill_size)))
+         $fatal(1, "smolrv64_sq: a load fills at an address or against stores other than the cycle before's");
+   end
    // the stores' address-valid bits as they will stand next cycle (a store only gains one)
    wire [NENT-1:0] av_next = av | (a_v ? ({{(NENT-1){1'b0}}, 1'b1} << a_idx) : {NENT{1'b0}});
 
@@ -575,7 +587,7 @@ module smolrv64_sq
          reg blk_q;  initial blk_q = 1'b0;
          always @(posedge clk)
             blk_q <= (l_fill & (l_fill_ix == gl[LQIB-1:0]))
-                   ? (|(oldm & (fill_row | (~av_next & {NENT{l_wt[gl]}}))))
+                   ? (|(oldm & (fill_row_q | (~av_next & {NENT{l_wt[gl]}}))))
                    : ((l_av[gl] & (|(oldm & (conf[gl] | (~av & {NENT{l_wt[gl]}}))))) | arr_ov);
          assign l_block_q[gl] = blk_q;
          // FORWARDABLE: exactly one older live store overlaps the load, it holds all the load's bytes
@@ -710,7 +722,7 @@ module smolrv64_sq
          // it wins the one cell both updates can touch -- and it must, because the column
          // update above would compare that cell against va[a_idx], which is not written
          // until this same edge. The a_v arm (in fill_row) forwards the arriving address.
-         if (l_fill) begin conf[l_fill_ix] <= fill_row;  cov[l_fill_ix] <= fill_cov; end
+         if (l_fill) begin conf[l_fill_ix] <= fill_row_q;  cov[l_fill_ix] <= fill_cov_q; end
          // commit the first uncommitted entry (the ROB released it)
          if (k_take) begin
             cmt[kc] <= 1'b1;
