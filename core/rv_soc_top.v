@@ -282,6 +282,12 @@ module rv_soc_top #(
             | ((a & ~64'hff) == HPM_BASE) | (((a & ~64'h7fff) == VIRTIO_BASE) && (a[14:13] != 2'b00));
    endfunction
    wire is_dev_w   = dev_w(dmem_wabase);
+   // ...as a register, for the D$'s store take: the LSU's state machine never writes in the cycle
+   // its base is loaded (smolrv64_lsu pa_new), so the decode of the base a cycle ago is the base's
+   reg  is_dev_w_q = 1'b0;
+   always @(posedge clk2x) is_dev_w_q <= is_dev_w;
+   always @(posedge clk2x) if (!x2_reset & dmem_wfsm & (is_dev_w_q != is_dev_w))
+      $fatal(1, "rv_soc_top: the state machine writes in the cycle its base %h changed", dmem_wabase);
    wire is_clint_w = (dw_ab & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dw_ab & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dw_ab & ~64'h3ff_ffff) == PLIC_BASE;
@@ -794,9 +800,9 @@ module rv_soc_top #(
       .rd_pre_a(dc_rd_pre_a), .rd_pre_b(dc_rd_pre_b), .rd_src_b(dmem_src_b),
       // ~dc_wr_cpl: a CBO or uncached write holds its request through the cycle its completion
       // is registered, and the D$ is idle again in that cycle -- without this it is taken twice.
-      .wr_req(dmem_wen & ~dc_wr_cpl & ~(dmem_wfsm & is_dev_w)), .wr_pa(dmem_waddr),
+      .wr_req(dmem_wen & ~dc_wr_cpl & ~(dmem_wfsm & is_dev_w_q)), .wr_pa(dmem_waddr),
       .wr_data(dmem_wdata), .wr_mask(dmem_wmask), .wr_nc(dmem_wuncached),
-      .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
+      .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w_q), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_room(dc_wr_room), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl),
       .ox_req(ox_req), .ox_pa(ox_pa), .ox_keep(ox_keep), .ox_ack(ox_ack), .ox_dty(dc_ic_dty), .ox_rel(dma_sn_rel),
       .inv_req(dc_inv_req), .inv_busy(dc_inv_busy),

@@ -576,6 +576,14 @@ E2 next cycle) and the landing buffer's next count. Every system op fires in its
 the head at the earliest (an instret read in its third). A multiply in E1 counts busy even if it
 is about to be killed, so the register may fire a cycle late, never early: both are asserted
 (it fires only where the live condition holds, and lags it by at most a cycle).
+
+**THE D$'s STORE TAKE READS A REGISTERED DEVICE DECODE** (m2k: `u_lsu/pa_q -> u_dcache/sf_pa`,
+`-> sf_wd`, 451 endpoints, 8-9 levels: the SoC's device decode of the state machine's write base in
+front of the store port's take). The SoC registers the decode (`is_dev_w_q`); the LSU's state
+machine never writes in the cycle its base is loaded (`pa_new`), so the registered decode is the
+base's (asserted). A state-machine store (device, NC, straddling, CBO) costs a cycle. And the
+lane's R entry (`r_ent`, now the payload LUTRAMs' read address: `-> ln[].pl`, one level) is
+replicated.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

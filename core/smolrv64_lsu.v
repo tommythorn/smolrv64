@@ -567,7 +567,12 @@ module smolrv64_lsu
                       :                 mem_rdata_eff;
 
    // ------------------------------------------------------------ write port
-   wire st_go = (st == S_ST) || (st == S_ST2), amo_go = (st == S_AWR);
+   // A STORE'S FIRST WRITE WAITS OUT THE CYCLE ITS BASE (pa_q) IS LOADED (pa_new): the SoC decodes
+   // devices from pa_q as a register (rv_soc_top is_dev_w_q), so the decode stays out of the D$'s
+   // store take
+   reg  pa_new;
+   initial pa_new = 1'b0;
+   wire st_go = ((st == S_ST) & ~pa_new) || (st == S_ST2), amo_go = (st == S_AWR);
    wire st2_go = (st == S_ST2);
    // nb_q, NOT nb: the queue pops at the handoff, so the port's size names the NEXT entry
    // while this store is presented (the first version wrote an `sd` with a one-byte mask).
@@ -644,7 +649,7 @@ module smolrv64_lsu
    // S_IDLE, where sel_pt is src_pt; in S_IDLE sel_pt is pt_start, this cycle's NEW start, and
    // a start inside st_fin puts the load queue's candidate pick (which reads the ROB head) in
    // front of M's completion, and so of every scheduler's hold (done -> m_done -> m_advance).
-   wire st_fin   = (run_cbo | nc_q) ? mem_wready : mem_q ? mem_wroom : mem_waccept;
+   wire st_fin   = ~(pa_new & (st == S_ST)) & ((run_cbo | nc_q) ? mem_wready : mem_q ? mem_wroom : mem_waccept);
    // BACK-TO-BACK STORES WITHOUT THE TRIP THROUGH S_IDLE. A store to memory is taken in the
    // cycle it is presented with mem_wroom set, and in that cycle the next queued store, if any,
    // is loaded straight into S_ST: one store a cycle. mem_wroom is a register of the D$'s (its
@@ -947,10 +952,11 @@ module smolrv64_lsu
    // ------------------------------------------------------------------- FSM
    always @(posedge clk) begin
       if (reset) begin
-         st <= S_IDLE; mem_ren <= 1'b0; rsv_v <= 1'b0; mem_runcached <= 1'b0;
+         st <= S_IDLE; mem_ren <= 1'b0; rsv_v <= 1'b0; mem_runcached <= 1'b0; pa_new <= 1'b0;
          cos_pa <= {PAW{1'b0}}; cos_kind <= 2'd0; cos_data <= 64'd0; cos_size <= 4'hF;
       end else begin
          mem_ren <= 1'b0;                                  // one-cycle request pulse
+         pa_new  <= 1'b0;
          case (st)
            S_IDLE:
              if (start_ok) begin
@@ -983,7 +989,7 @@ module smolrv64_lsu
                 if (pt_start) st_data_q <= pt_data;
                 if (pt_start ? pt_store : req_store) begin
                    pa_q <= xl_can ? (eff_pa & PA_DWM) : eff_pa;
-                   st   <= S_ST;
+                   st   <= S_ST;  pa_new <= 1'b1;
                 end else if (eff_amo) begin
                    // An atomic reads, modifies and writes the CONTAINING 8-BYTE WORD:
                    // a_wdata/a_wmask are built relative to that word (a_half = addr[2]
@@ -1023,7 +1029,7 @@ module smolrv64_lsu
                         xword_q <= xword; nb_q <= nb; boff_q <= xl_can ? boff : 3'd0;
                         pa2_q <= (pt_pa & PA_DWM) + PA_DW;
                         pa_q  <= xl_can ? (pt_pa & PA_DWM) : pt_pa;
-                        st_data_q <= pt_data;
+                        st_data_q <= pt_data;  pa_new <= 1'b1;
                      end else st <= (xword_q ? S_ST2 : S_IDLE);
                   end
            S_ST2: if (st_fin) st <= S_IDLE;
