@@ -292,15 +292,32 @@ module smolrv64_lq
    localparam integer ROWS = NENT / NB;
    reg  [BL-1:0]   bp;
    initial bp = {BL{1'b0}};
-   reg  [BRB-1:0]  bfr [0:NB-1];        // bank b's lowest free row
+   // EACH BANK'S FREE ROW IS RESERVED A CYCLE AHEAD (bfr, bhas, bfc: registers), as a scheduler's
+   // slot is: the lowest row free now other than the one this cycle allocates in the bank, and the
+   // count with it (the dispatch credit's, so the credit never promises a row the reservation lacks).
+   // A row freed now is free from the next cycle's reservation on.
+   reg  [BRB-1:0]  bfr [0:NB-1];        // bank b's reserved free row
    reg  [NB-1:0]   bhas;                // ...it has one
    reg  [BRB:0]    bfc [0:NB-1];        // ...its free entries
+   reg  [BRB-1:0]  bfr_n [0:NB-1];
+   reg  [NB-1:0]   bhas_n;
+   reg  [BRB:0]    bfc_n [0:NB-1];
+   reg  [NB-1:0]   b_w;                 // bank b takes a load this cycle (below)
    integer         fb, fr;
    always @* for (fb = 0; fb < NB; fb = fb + 1) begin
-      bfr[fb] = {BRB{1'b0}};  bhas[fb] = 1'b0;  bfc[fb] = {(BRB+1){1'b0}};
+      bfr_n[fb] = {BRB{1'b0}};  bhas_n[fb] = 1'b0;  bfc_n[fb] = {(BRB+1){1'b0}};
       for (fr = ROWS - 1; fr >= 0; fr = fr - 1)
-         if (~v[fr*NB + fb]) begin bfr[fb] = fr[BRB-1:0];  bhas[fb] = 1'b1;  bfc[fb] = bfc[fb] + 1'b1; end
+         if (~v[fr*NB + fb] & ~(b_w[fb] & (bfr[fb] == fr[BRB-1:0]))) begin
+            bfr_n[fb] = fr[BRB-1:0];  bhas_n[fb] = 1'b1;  bfc_n[fb] = bfc_n[fb] + 1'b1;
+         end
    end
+   initial bhas = {NB{1'b0}};
+   always @(posedge clk) for (fb = 0; fb < NB; fb = fb + 1) begin
+      bfr[fb] <= bfr_n[fb];  bhas[fb] <= ~reset & bhas_n[fb];  bfc[fb] <= reset ? {(BRB+1){1'b0}} : bfc_n[fb];
+   end
+   always @(posedge clk) if (!reset) for (fb = 0; fb < NB; fb = fb + 1)
+      if (b_w[fb] & (~bhas[fb] | v[{bfr[fb], fb[BL-1:0]}]))
+         $fatal(1, "smolrv64_lq: bank %0d allocates its reserved row %0d, which is not free (has %b)", fb, bfr[fb], bhas[fb]);
    reg  [BL-1:0]   rbk [0:NB-1];        // the banks with room, from bp on: the r-th one a rank-r load takes
    reg  [BL:0]     nbk;                 // ...how many
    reg  [BL-1:0]   wbk [0:NW-1];        // writer j's bank...
@@ -335,7 +352,7 @@ module smolrv64_lq
    // THE ROW'S FIELDS, A BANK AT A TIME: its loads take distinct banks (wbk), so a bank's writer is
    // muxed once (one-hot, AND-OR) and each of its entries only enabled -- not a writers' priority mux
    // in front of every entry.
-   reg  [NB-1:0]      b_w;                 // bank b takes a load this cycle...
+   // (b_w, bank b takes a load this cycle, is declared with the reservation above)
    reg  [NW-1:0]      b_oh [0:NB-1];       // ...writer j's
    reg                b_wt [0:NB-1];  reg b_rdv [0:NB-1];
    reg [ROBB-1:0]     b_rob [0:NB-1];  reg [PBITS-1:0] b_prd [0:NB-1];  reg [5:0] b_rdn [0:NB-1];

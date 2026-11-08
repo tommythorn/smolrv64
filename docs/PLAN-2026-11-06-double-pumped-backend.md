@@ -679,6 +679,13 @@ endpoints, 12 levels: the request's VA compared with the walk's, `req_match`, in
 first-level TLB write). A second-level hit is the page's translation for the walk's own VA, its
 context unchanged (`ctx_poison`), so it is installed whatever the request is now; `req_match`
 still decides whether the hit answers the request.
+
+**THE LQ RESERVES EACH BANK'S FREE ROW A CYCLE AHEAD** (m2n: `u_lq/v -> u_lq/om`, `-> u_spl_ld` write
+address, 6-8 levels: each bank's priority scan of the valid bits, the banks' ranking and the writers'
+entries in one cycle). `bfr`/`bhas`/`bfc` are registers: the lowest row free now other than the one
+this cycle allocates in the bank, and the count with it, so the dispatch credit (which reads the
+count) never promises a row the reservation lacks; a row freed now is counted from the next cycle.
+The count is the old one less the previous cycle's frees, so the credit stays conservative.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
