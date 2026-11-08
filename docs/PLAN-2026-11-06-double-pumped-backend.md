@@ -533,6 +533,12 @@ read mux into lane A's write register). The read is registered (`csr_rdq`) and a
 its second cycle at the head, before its own write; an instret read in its third, minstret
 having caught up in the second. The cosim's captures take the same register.
 
+
+**m2j's build (60eb3235): -1.613 ns, 49.2 K failing endpoints** (m2i -1.841, 49.0 K; TNS -28.0 K vs
+-29.0 K). Fan-out families in it: the flush's flops (`red_m_q -> ln[].hx_val`, `-> u_mul` DSP
+enables, 1-2 levels, -1.6) and the scheduler's free slot onto the payload LUTRAMs' write address
+(`fs_ix -> plmem`, 0 levels, -1.33). The flush's flops (red_m_q, red_s_q, fr_v, fr_hd_q) and fs_ix
+are replicated (max_fanout).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

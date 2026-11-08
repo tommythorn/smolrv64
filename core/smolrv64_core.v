@@ -3815,7 +3815,7 @@ module smolrv64_core
    // and the effects that must be head-gated (upd_valid, xtrap_v) are csr_file INPUTS -- so
    // gating them through csr_red would close a combinational loop. Every term here is either
    // registered or decoded from m_insn.
-   reg  fr_v;   initial fr_v = 1'b0;
+   (* max_fanout = 32 *) reg fr_v;   initial fr_v = 1'b0;   // ...in the flush (cf_red_fire): replicated
    reg  fr_set_q;   initial fr_set_q = 1'b0;   // the resolve, registered: the walk's start
    reg  fr_br, fr_jalr;      // the tracked restart's kind, for the redirect counters
    reg [SEQW-1:0]     fr_seq;   // seqno of the oldest pending restart; younger restarts are ignored
@@ -3943,7 +3943,7 @@ module smolrv64_core
    // redirect, and a redirect's cone reaches every flush arm. Asserted equal to the live compare.
    wire                fr_v_n   = ~(reset | redirect) & ~fr_rel & (fr_v | fr_set);
    wire [ROB_IDXB-1:0] fr_rob_n = (~(reset | redirect) & ~fr_rel & fr_set) ? cf_rob : fr_rob;
-   reg                 fr_hd_q;
+   (* max_fanout = 32 *) reg fr_hd_q;   // ...in the flush (cf_red_fire): replicated
    initial fr_hd_q = 1'b0;
    always @(posedge clk) fr_hd_q <= fr_v_n & (fr_rob_n == rob_head_n_idx);
    always @(posedge clk) if (!reset && (fr_hd_q != (fr_v && rob_head_idx == fr_rob)))
@@ -3978,7 +3978,11 @@ module smolrv64_core
    // the irrevocable point, a register that has not passed it. The frontend's pulse, delayed with
    // the flush, wins over a younger restart or resteer in its cycle; one in the cycle between only
    // redirects the frontend first. (The mispredict's squash, cf_red_fire, is from flops already.)
-   reg  red_m_q = 1'b0, red_s_q = 1'b0, red_trap_q = 1'b0, red_fin_q = 1'b0;
+   // red_m_q and red_s_q are the flush (redirect): every pipeline register's enable or reset, so
+   // replicated
+   (* max_fanout = 32 *) reg red_m_q = 1'b0;
+   (* max_fanout = 32 *) reg red_s_q = 1'b0;
+   reg  red_trap_q = 1'b0, red_fin_q = 1'b0;
    always @(posedge clk) begin
       red_m_q    <= ~reset & m_red_fire;
       red_s_q    <= ~reset & sy_red;
