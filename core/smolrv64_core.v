@@ -4787,6 +4787,8 @@ module smolrv64_core
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
+   reg [1:0]  e_prv_q;
+   always @(posedge clk) e_prv_q <= u_csr.priv;
    always @(posedge clk) begin
       e_v <= {IW{1'b0}};
       if (!reset) begin
@@ -4803,7 +4805,9 @@ module smolrv64_core
             e_mdata[0] <= 64'd0; e_msz[0] <= 4'hF;
          end else if (|retire) begin
             e_trap <= 1'b0;  e_cause <= 64'd0;  e_tval <= 64'd0;
-            e_prv <= u_csr.priv;
+            // an ordered redirect's op commits the cycle after its CSR update (red_fin_q): its
+            // privilege is the one it executed in, a cycle before
+            e_prv <= red_fin_q ? e_prv_q : u_csr.priv;
          end
          // Destination class and memory effect come from the COMMITTING entry: captured when
          // it completed, replayed when it commits.
