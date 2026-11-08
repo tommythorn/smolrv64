@@ -703,8 +703,11 @@ module smolrv64_core
    // Its ROB slot completes at its commit (sq_k_take), and the store queue writes memory after.
    wire m_st_nb   = m_is_store & ~m_is_amo & ~m_is_cbo;
    wire m_dead    = dead(m_rob_idx);             // the kill: M's op is younger than a mispredict
-   wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v & ~m_dead;
-   wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v & ~m_dead;
+   // M FILLS WHATEVER THE KILL SAYS NOW: an op killed in an earlier cycle has left M already, and the
+   // queues apply this cycle's kill to their own entries after every other arm, the fill included
+   // (asserted below) -- so the kill's compare stays out of the queues' field writes
+   wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v;
+   wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v;
    // (an access in M in the cycle an ordered redirect flushes, red_ord, is younger than the system op
    // that changed the regime a cycle before, and the flush takes its fill)
    always @(posedge clk) if (!reset && (m_sq_fill | m_lq_fill) && (m_bare != m_bare_c) && !red_ord)
@@ -2140,6 +2143,9 @@ module smolrv64_core
       .f_new(lq_f_new), .f_v(lq_f_v), .f_idx(lq_f_idx), .f_rp(lq_f_rp), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .ar(la_v), .pk_v(lq_pk_v), .pk_idx(lq_pk_idx), .pk_seq(lq_pk_seq), .rob_head(rob_head_idx), .flush(redirect),
       .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(lq_kmask));
+   // (m_sq_fill/m_lq_fill: a dead op's fill meets its queue's own kill)
+   always @(posedge clk) if (!reset && m_dead && ((m_sq_fill && !sq_kmask[m_sq_tag]) || (m_lq_fill && !lq_kmask[m_lq_idx])))
+      $fatal(1, "smolrv64_core: M fills a dead op's entry that its queue's kill does not name (rob %0d)", m_rob_idx);
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
    // A translated load's access starts in the M pass that fills its entry, presented to the D$ in

@@ -706,6 +706,14 @@ in the second cycle of M's translate pass at the first cycle's address, and no s
 arrives in that first cycle (M holds the load), so the row computed then is the fill's (asserted:
 the inputs unchanged, no store arrival). The directed and random benches present a load's address a
 cycle before its fill, as M does.
+
+**m2q (e95b83f5): -1.669 ns, 39.0 K, TNS -18.1 K; m2r (7a01e51b): -1.606 ns, 38.3 K, TNS -15.7 K**, the tail
+past -1 ns at 1.4 K. Lockstep: 7a01e51b retires 184.0 M.
+
+**M FILLS WHATEVER THE KILL SAYS NOW** (m2r: `m_rob_idx -> u_sq/va`, `-> u_sq/fc`, 241 endpoints: the
+kill's compare on M's op in front of every queue field the fill writes). An op killed in an earlier
+cycle has left M already; the queues apply this cycle's kill to their own entries after every other
+arm, the fill included (asserted: a dead op's fill meets its queue's kill).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
