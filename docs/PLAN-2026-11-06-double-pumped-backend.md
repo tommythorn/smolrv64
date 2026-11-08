@@ -719,6 +719,12 @@ arm, the fill included (asserted: a dead op's fill meets its queue's kill).
 `-> m_unit_res_q`, 9 levels: the two picks' sequence compare in front of M's take). Taking the older
 of the two is a preference -- either fill is correct, the queues order themselves -- so it is the
 previous cycle's compare.
+
+**m2s's build (19ccf540): -1.493 ns, 36.8 K failing endpoints, TNS -13.6 K** -- the best on all three; the
+tail past -1 ns is 965 endpoints (m2g: 12.1 K). Lockstep: 19ccf540 retires 183.3 M; every commit on the
+branch is lockstep-clean. Its leaders are spread: the frontend's fetch FSM into the ring, the MMU's
+own walker, the lanes' E1 ALU (`ln[].rs1`, `ln[].pl -> u_x/u_alu`, 7-15 levels), M's trap behind the
+landing port's yield, the training queue's enqueue, the ROB walk into rename.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
