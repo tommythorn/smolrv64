@@ -373,6 +373,15 @@ after, before a new occupant's dispatch can change them -- so none is held. A mu
 int-to-FP op's busies decoded R's and E1's instruction words in front of the pick: they are bits
 predecoded at dispatch into the tag array (`psmem`) and carried in flops.
 
+**The ordered redirects are registered.** M's trap and the SYSQ's redirect were decided through
+the CSR file's next state (mcause, the trap target, the write decode) and were the flush itself, in
+front of every flush arm (the ROB's irrevocable pointer, the FPU, the divider: m2b's
+`lb_n -> u_fpu`, `sy_addr -> u_csr`, 18 levels). The decision is registered and the flush, the
+frontend's pulse and the redirecting op's commit (h_fin) are the next cycle's. Nothing younger
+commits or drains in between (in-order commit; the irrevocable point is a register that has not
+passed the op; a trap's commit is killed in both cycles), and the frontend's pulse, delayed with
+the flush, wins over a younger restart or resteer in its cycle.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

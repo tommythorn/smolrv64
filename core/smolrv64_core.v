@@ -2216,7 +2216,7 @@ module smolrv64_core
       rp_f_q   <= ~reset & lq_f_v & lq_f_rp;
       rp_rob_q <= lq_f_rob;
    end
-   wire rc_tkill = (m_valid & m_done_red & m_trap) | sy_trap | rp_hold;
+   wire rc_tkill = (m_valid & m_done_red & m_trap) | sy_trap | red_trap_q | rp_hold;
    wire [IW-1:0]          rc_head;
    wire [IW*ROB_IDXB-1:0] rc_idxv;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc
@@ -2236,7 +2236,7 @@ module smolrv64_core
       .d_noret({{(IW-1){1'b0}}, d_is_irqop}),          // the interrupt pseudo-op goes alone
       .d_ready(rob_readyv), .d_idx(rob_d_idxv),
       .w_v(rob_wv), .w_ix(rob_wix),
-      .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
+      .h_fin(cf_red_fire | red_fin_q),   // the head completes and flushes (a trap never commits)
       .c_kill(rc_kill), .c_hold(rp_new_q), .c_valid(rc_v), .c_head(rc_head), .c_idx(rc_idxv), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd), .c_pold(rc_pold), .c_noret(rc_noret),
       .flush(redirect), .empty(rob_empty), .occ_n(rob_occ), .head_idx(rob_head_idx), .head_n_idx(rob_head_n_idx),
       .irr_idx(rob_irr_idx), .irr_v(rob_irr_v), .rp_v(rp_f_q), .rp_ix(rp_rob_q), .rp_all(rp_new_q),
@@ -2886,8 +2886,9 @@ module smolrv64_core
                                          $fatal(1, "smolrv64_core: a fence reached M (pc %h)", m_pc);
       if (sy_red & (m_red_fire | cf_red_fire)) $fatal(1, "smolrv64_core: the SYSQ redirects together with M or the CTF pipe");
       // csr_file does not redirect on its xtrap input by itself: every source of one names it
-      // in its own redirect (M's csr_red, the SYSQ's sy_red), and this is the check that it did.
-      if (((xtrap_v & m_done_red) | sy_xfire) & ~redirect)
+      // in its own redirect (M's csr_red, the SYSQ's sy_red: the decisions red_ord registers), and
+      // this is the check that it did.
+      if (((xtrap_v & m_done_red) | sy_xfire) & ~(m_red_fire | sy_red))
          $fatal(1, "smolrv64_core: a trap reached csr_file without a redirect (M %b, SYSQ %b)",
                 xtrap_v & m_done_red, sy_xfire);
    end
@@ -3936,7 +3937,25 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: the kill left an uncommitted store");
 `endif
    end
-   assign redirect = m_red_fire | sy_red | cf_red_fire;
+   // THE ORDERED REDIRECTS ARE REGISTERED (the 2x clock): M's (a trap at the ROB head) and the SYSQ's
+   // are decided at their fire through the CSR file's next state, a cycle's cone of its own; the
+   // flush, the frontend's pulse and the redirecting op's own commit (h_fin) are the next cycle's,
+   // from flops (red_ord). Nothing younger commits or drains in between: commit is in order and the
+   // op commits only then (a trap never: red_trap_q kills its commit), and a store is taken only at
+   // the irrevocable point, a register that has not passed it. The frontend's pulse, delayed with
+   // the flush, wins over a younger restart or resteer in its cycle; one in the cycle between only
+   // redirects the frontend first. (The mispredict's squash, cf_red_fire, is from flops already.)
+   reg  red_m_q = 1'b0, red_s_q = 1'b0, red_trap_q = 1'b0, red_fin_q = 1'b0;
+   always @(posedge clk) begin
+      red_m_q    <= ~reset & m_red_fire;
+      red_s_q    <= ~reset & sy_red;
+      red_trap_q <= ~reset & ((m_red_fire & m_trap) | sy_trap);
+      red_fin_q  <= ~reset & ((m_red_fire & ~m_trap) | (sy_done & sy_red));
+   end
+   wire red_ord = red_m_q | red_s_q;
+   assign redirect = red_ord | cf_red_fire;
+   always @(posedge clk) if (!reset && red_ord && cf_red_fire)
+      $fatal(1, "smolrv64_core: an ordered redirect and a mispredict's squash in one cycle (the head is one op)");
    always @(posedge clk) if (!reset) begin
       if (m_red_fire != m_red_ref)
          $fatal(1, "smolrv64_core: M redirect from the non-memory done disagrees with m_done (%b vs %b)",
@@ -4030,9 +4049,9 @@ module smolrv64_core
    // branch that already early-restarted (which the parallel branch pipe now makes possible),
    // and clears fr_v below. A branch's own squash (cf_red_fire) does NOT re-flush: its fr_set
    // already did. Exactly one frontend flush per event.
-   assign fe_red_pulse = m_red_fire | sy_red | fr_set | dec_red;
-   assign fe_red_tgt   = (m_red_fire | sy_red) ? redirect_target : fr_set ? cf_target     : dec_red_tgt;
-   assign fe_red_seq   = (m_red_fire | sy_red) ? redirect_seq    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
+   assign fe_red_pulse = red_ord | fr_set | dec_red;
+   assign fe_red_tgt   = red_ord ? redirect_target_q : fr_set ? cf_target     : dec_red_tgt;
+   assign fe_red_seq   = red_ord ? redirect_seq_q    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
    assign redirect_target  = (sy_fire & sy_rp) ? sy_pc                      // a replay: the load again
                            : (sy_fire & sy_fi) ? (sy_pc + PC4)             // fence.i: refetch after it
                            : (csr_red | sy_red) ? csr_redir_tgt
@@ -5123,7 +5142,7 @@ module smolrv64_core
    wire [RASB-1:0] cf_rsp  = cf_pdet[PD_RSP +: RASB]
                            + rsp_step({cf_is_jump & cf_link_rd, cf_is_jalr & cf_link_rs & ~cf_link_rd});
    wire [RASB-1:0] dec_rsp = dr_pdet[PD_RSP +: RASB] + rsp_step({dr_ccls[1], 1'b0});
-   wire [RASB-1:0] fe_red_rsp = (m_red_fire | sy_red) ? rsp_r : fr_set ? cf_rsp : dec_rsp;
+   wire [RASB-1:0] fe_red_rsp = red_ord ? rsp_r : fr_set ? cf_rsp : dec_rsp;
    always @(posedge clk) fe_red_rsp_q <= fe_red_rsp;
    // ---- the history every frontend redirect restores (smolrv64_predictor rb_ghr) ------------------
    // The redirecting instruction's snapshot, stepped by its own address when it was taken
@@ -5137,7 +5156,7 @@ module smolrv64_core
    wire [PCW-1:0] dr_last = dr_pc + (dr_rvc ? {PCW{1'b0}} : PC2);
    wire [GHL-1:0] fr_ghr  = cf_tk ? phist_step(cf_ghr, cf_last) : cf_ghr;
    wire [GHL-1:0] dec_ghr = phist_step(dr_pdet[PD_GHR +: GHL], dr_last);
-   wire [GHL-1:0] fe_red_ghr = (m_red_fire | sy_red) ? {GHL{1'b0}} : fr_set ? fr_ghr : dec_ghr;
+   wire [GHL-1:0] fe_red_ghr = red_ord ? {GHL{1'b0}} : fr_set ? fr_ghr : dec_ghr;
    always @(posedge clk) fe_red_ghr_q <= fe_red_ghr;
    always @(posedge clk) if (!reset) begin
       // a group dispatches whole and holds at most one divide

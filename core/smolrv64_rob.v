@@ -219,6 +219,15 @@ module smolrv64_rob
       wq_v  <= (reset | flush) ? {NW{1'b0}} : w_v;
       wq_ix <= w_ix;
    end
+   function automatic wq_hits;         // ...or its registered completion, a cycle on (an ordered redirect's)
+      input [IDXB-1:0] ix;
+      integer q;
+      begin
+         wq_hits = 1'b0;
+         for (q = 0; q < NW; q = q + 1)
+            if (wq_v[q] && (wq_ix[q*IDXB +: IDXB] == ix)) wq_hits = 1'b1;
+      end
+   endfunction
    wire head_done = v[hsx] & ((done[hsx] & ~c_hold) | h_fin);
    wire [RB-1:0] irow = irr[SB-1:CB];
    assign irr_idx = tag_of(irow, ifc, irr[CB-1:0]);
@@ -463,7 +472,7 @@ module smolrv64_rob
    always @(posedge clk) if (!reset) begin
       if ((|d_valid) & ~ready)
          $fatal(1, "smolrv64_rob: dispatch into a full ROB (head=%0d tail=%0d)", head, tail);
-      if (h_fin & ~w_hits(head_idx))
+      if (h_fin & ~w_hits(head_idx) & ~wq_hits(head_idx))
          $fatal(1, "smolrv64_rob: h_fin without a completion of the head (entry %0d)", head_idx);
       for (ri = 0; ri < NW; ri = ri + 1) if (w_v[ri]) begin
          if (~v[six(w_ix[ri*IDXB +: IDXB])])
