@@ -659,10 +659,11 @@ module rv_soc_top #(
    // config spaces build their data from the address; virtio's 32-bit registers are read whole).
    wire [63:0]  raw_rdata  = (vio_rack_f | dev_rv_f) ? dev_rd_f : dc_rd_data;
    // THE READ DOOR. The LSU presents a read for one cycle (dmem_ren) and may present the next one
-   // the cycle after, so the reads the cache has not yet accepted wait here, oldest first: up to
-   // two, the one presented while the LSU saw the door clear and the one behind it. The LSU starts
-   // a read only while none waits (dmem_rbusy, this register). A waiting read is presented from
-   // its own copy of the address, tag and NC bit, never from the LSU's port, which has moved on.
+   // the cycle after, so its reads wait here, oldest first: up to two, the one presented while the
+   // LSU saw the door clear and the one behind it. EVERY cache read waits a cycle: the cache is
+   // asked from the copy alone, so the device decode of the LSU's live address stays out of the
+   // cache's issue and its arrays' address (it takes a lookup every other cycle anyway). The LSU
+   // starts a read only while none waits (dmem_rbusy, this register).
    // A device read never asks the cache, so it never waits here (a want set on it would stand
    // until the next cache read cleared it and stop every load).
    reg  [1:0]      rq_n;                       // reads waiting for the accept
@@ -672,13 +673,13 @@ module rv_soc_top #(
    initial rq_n = 2'd0;
    wire            l_cr      = dmem_ren & ~f_is_dev_r;     // the LSU presents a cache read now
    wire            rq_hv     = (rq_n != 2'd0);
-   wire            c_rd_req  = rq_hv | l_cr;
-   wire [63:0]     c_rd_addr = rq_hv ? rq_a0 : dmem_raddr;
-   wire [DRTW-1:0] c_rd_tag  = rq_hv ? rq_t0 : lsu_tag_req;
-   wire            c_rd_unc  = rq_hv ? rq_u0 : dmem_runcached;
+   wire            c_rd_req  = rq_hv;
+   wire [63:0]     c_rd_addr = rq_a0;
+   wire [DRTW-1:0] c_rd_tag  = rq_t0;
+   wire            c_rd_unc  = rq_u0;
    wire            lsu_rd_ack;                       // this cycle's accept belonged to the LSU
    wire            rq_pop    = rq_hv & lsu_rd_ack;
-   wire            rq_push   = l_cr & (rq_hv | ~lsu_rd_ack);   // the live read waits unless it was taken
+   wire            rq_push   = l_cr;
    wire [1:0]      rq_left   = rq_n - {1'b0, rq_pop};
    always @(posedge clk2x) begin
       if (rq_pop) begin rq_a0 <= rq_a1;  rq_t0 <= rq_t1;  rq_u0 <= rq_u1; end

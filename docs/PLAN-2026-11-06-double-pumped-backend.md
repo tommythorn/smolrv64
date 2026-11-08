@@ -474,6 +474,12 @@ still ready, so the start reads one entry's ready bit and fields at a registered
 taken last cycle is sent, so not ready: back to back, a load starts every other cycle -- the D$'s
 rate now. The directed bench's take waits for the offer, and its release checks step once.
 
+**EVERY CACHE READ WAITS A CYCLE AT THE DOOR** (m2h: `u_lsu/mem_raddr -> u_dcache/arr[].u_a`, 14
+levels, -2.01: the SoC's device decode of the LSU's live read address, three CARRY8 compares, then
+the D$'s issue and its arrays' address). The door's registered copy is the cache's only source:
+the D$ is asked from registers, a cycle later. The LSU already starts a read only while none
+waits, and the D$ takes a lookup every other cycle.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
