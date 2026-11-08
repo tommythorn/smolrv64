@@ -30,12 +30,13 @@ module tb;
    integer errs=0;
 
    wire [NENT*NSRC-1:0] iss_hq, io_iss_hq;   // the registered wake matches (the core's operand select)
+   wire [NSRC-1:0]      iss_hqs, io_iss_hqs;  // ...the picked entry's, live
    smolrv64_iq #(.NENT(NENT),.IDXB(IDXB),.NSRC(NSRC),.ROBB(ROBB),.PBITS(PBITS),.NWB(NWB),
              .FIXEDL(1),.OLDEST(1)) dut
      (.clk(clk),.reset(reset),
       .d_valid(d_valid),.d_ready(d_ready),.d_rob(d_rob),.d_ps(d_ps),.d_r(d_r),
       .d_prd(d_prd),.d_long(1'b0),.d_hx(d_hx),.d_ag(1'b0),.d_ent(d_ent),
-      .wb_v(wb_v),.wb_preg(wb_preg),.iss_hq(iss_hq),
+      .wb_v(wb_v),.wb_preg(wb_preg),.iss_hq(iss_hq),.iss_hqs(iss_hqs),
       .unit_busy(unit_busy),.hx_busy(hx_busy),.ag_only(1'b0),.iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
       .iss_take(iss_take),
       .hold_v(hold_v),.hold_ent(hold_ent),
@@ -54,7 +55,7 @@ module tb;
      (.clk(clk),.reset(reset),
       .d_valid(io_d_valid),.d_ready(io_d_ready),.d_rob(io_rob),.d_ps(io_ps),.d_r(io_r),
       .d_prd({PBITS{1'b0}}),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_ent(io_d_ent),
-      .wb_v(io_wb_v),.wb_preg(io_wb_preg),.iss_hq(io_iss_hq),
+      .wb_v(io_wb_v),.wb_preg(io_wb_preg),.iss_hq(io_iss_hq),.iss_hqs(io_iss_hqs),
       .unit_busy(1'b0),.hx_busy(1'b0),.ag_only(1'b0),.iss_v(io_iss_v),.iss_ent(io_iss_ent),.iss_rob(io_iss_rob),
       .iss_take(io_take),
       .hold_v(io_hold),.hold_ent({IDXB{1'b0}}),

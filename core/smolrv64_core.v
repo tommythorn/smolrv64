@@ -1132,7 +1132,7 @@ module smolrv64_core
       .d_rob(stg_rob_f),
       .d_ps(stg_ps_f),.d_r(stg_r_f | wkq_f),
       .d_prd(stg_prd_f),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_ent(rf_d_ent),
-      .wb_v(wkv_fp),.wb_preg(wkp_fp),.iss_hq(),
+      .wb_v(wkv_fp),.wb_preg(wkp_fp),.iss_hq(),.iss_hqs(),
       .unit_busy(j_v & ~j_adv),.hx_busy(1'b0),.ag_only(1'b0),   // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
      .iss_take(rf_take),
@@ -1499,6 +1499,7 @@ module smolrv64_core
       wire                 ready, iss_v, blk_v;
       wire [IBI-1:0]       d_ent, iss_ent;
       wire [2*NI-1:0]      iss_hq;
+      wire [1:0]           iss_hqs;
       wire [ROB_IDXB-1:0]  iss_rob;
       wire [RN_PBITS-1:0]  blk_pr;
       wire [IBI:0]         occ, free;
@@ -1534,13 +1535,13 @@ module smolrv64_core
          .d_valid(mv),.d_ready(ready),.d_rob(stg_rob),
          .d_ps(stg_ps[2*RN_PBITS-1:0]),.d_r(stg_r),.d_prd(stg_prd),.d_long(stg_late),.d_hx(stg_hx),
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
-         .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),
+         .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),.iss_hqs(iss_hqs),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
          .unit_busy(r_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
          // no entry is held: the payload is read at the pick, and R reads its entry's registered
-         // matches (iss_hq) the cycle after, before a new occupant's dispatch can change them
+         // matches the cycle after, before a new occupant's dispatch can change them
          .hold_v(1'b0),.hold_ent({IBI{1'b0}}),
          .blk_v(blk_v),.blk_pr(blk_pr),.flush(redirect),.kd_v(rob_kd_v),.kh(rob_kh),.kb(rob_kb),.occupancy(occ),.free_n(free));
       // the tags, and whether the op completes later than its issue (lane_late), read at the pick
@@ -1585,7 +1586,12 @@ module smolrv64_core
       // that is its shard's lane's: a lane writes only its own shard, and a stream lands a register
       // in the lane of its shard. So the select is the scheduler's registered match at the op's
       // entry (iss_hq) and the source's shard bits, both flops: no tag compare here.
-      wire       hq1 = iss_hq[2*r_ent], hq2 = iss_hq[2*r_ent + 1];
+      // (the picked entry's, registered with the pick: hq's at r_ent now, without the entry mux)
+      reg  [1:0] r_hq;
+      always @(posedge clk) if (iss_v) r_hq <= iss_hqs;
+      always @(posedge clk) if (!reset & r_v & (r_hq != {iss_hq[2*r_ent + 1], iss_hq[2*r_ent]}))
+         $fatal(1, "core: lane %0d's registered pick matches %b are not its entry's %b", gl, r_hq, {iss_hq[2*r_ent + 1], iss_hq[2*r_ent]});
+      wire       hq1 = r_hq[0], hq2 = r_hq[1];
       wire [1:0] sh1 = r_ps1[RN_IDXB +: 2], sh2 = r_ps2[RN_IDXB +: 2];
       reg [63:0] r_rs1, r_rs2, q1, q2;
       integer f;

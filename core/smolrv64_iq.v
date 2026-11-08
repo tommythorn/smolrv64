@@ -74,6 +74,7 @@ module smolrv64_iq
     output wire [IDXB-1:0]       iss_ent,
     output wire [ROBB-1:0]       iss_rob,
     output wire [NENT*NSRC-1:0]  iss_hq,     // each entry's sources' wake matches, a cycle late (see hq)
+    output wire [NSRC-1:0]       iss_hqs,    // ...the picked entry's, live: hq's at it the next cycle
     input  wire                  iss_take,
 
     // The entry still held downstream. Its slot must not be reallocated: the payload array
@@ -264,6 +265,7 @@ module smolrv64_iq
    initial hq = {(NENT*NSRC){1'b0}};
    always @(posedge clk) hq <= shit;
    assign iss_hq = hq;
+   assign iss_hqs = shit[isel*NSRC +: NSRC];
 
    reg [IDXB:0] occ;
    always @* begin
