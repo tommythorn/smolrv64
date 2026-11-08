@@ -5168,9 +5168,25 @@ module smolrv64_core
    reg [RASB-1:0] rsp_r;
    integer ri;
    initial begin rsp_r = {RASB{1'b0}}; for (ri = 0; ri < ROB_DEPTH; ri = ri + 1) rcls[ri] = 2'b00; end
+   // ...a cycle after dispatch, from registers: the tail-relative decode of four writers over every
+   // entry stays behind a flop. No op commits the cycle after its dispatch (asserted below).
+   reg  [IW-1:0]       rcw_v;
+   reg  [ROB_SIXB-1:0] rcw_ix [0:IW-1];
+   reg  [1:0]          rcw_c  [0:IW-1];
+   initial rcw_v = {IW{1'b0}};
    always @(posedge clk) begin
-      for (rck = 0; rck < IW; rck = rck + 1) if (s_takev[rck]) rcls[rsi(s_rob[rck])] <= s_ccls[rck];
+      for (rck = 0; rck < IW; rck = rck + 1) begin
+         rcw_v[rck]  <= ~reset & s_takev[rck];
+         rcw_ix[rck] <= rsi(s_rob[rck]);
+         rcw_c[rck]  <= s_ccls[rck];
+         if (rcw_v[rck]) rcls[rcw_ix[rck]] <= rcw_c[rck];
+      end
    end
+   integer rcj;
+   always @(posedge clk) if (!reset)
+      for (rck = 0; rck < IW; rck = rck + 1) for (rcj = 0; rcj < IW; rcj = rcj + 1)
+         if (rc_v[rck] & rcw_v[rcj] & (rc_sx[rck] == rcw_ix[rcj]))
+            $fatal(1, "smolrv64_core: commit port %0d reads entry %0d's call/return class the cycle it is written", rck, rc_sx[rck]);
    function [RASB-1:0] rsp_step;    // +1 for a call, -1 for a return
       input [1:0] cls;
       rsp_step = cls[1] ? {{(RASB-1){1'b0}}, 1'b1} : cls[0] ? {RASB{1'b1}} : {RASB{1'b0}};

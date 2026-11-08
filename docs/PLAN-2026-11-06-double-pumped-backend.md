@@ -504,6 +504,10 @@ queues register the pick (`pk_q`) and offer it while that entry's address still 
 compare and the reads take registered indices. Back to back, M takes a waiting address every
 other cycle; an address arriving with none waiting still goes straight in from its lane.
 
+**THE RETIRE-SIDE CALL/RETURN CLASS IS WRITTEN A CYCLE AFTER DISPATCH** (m2h: `u_rob/tail -> rcls`,
+-1.88: four writers' tail-relative decode over every ROB entry's flops). The writes are registered
+and land a cycle later; no op commits the cycle after its dispatch (asserted).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
