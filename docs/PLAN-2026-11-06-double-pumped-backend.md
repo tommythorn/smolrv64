@@ -624,6 +624,15 @@ alignment). As its kill already was: at each tag the next landing can carry (the
 pre-answer tags, the forward ring's next; a forward starting now takes the values it writes),
 registered, the source picking one (asserted equal to the live read). Lockstep: 147ee68a retires
 184.7 M (-0.4%: an access M starts completes a cycle later).
+
+**THE SQ's SNOOP MARKS, THE DATA READ LANDS** (m2l: `lb_n`/`u_rename/newer -> u_sq/rd`, `-> dv`, 15-16
+levels: the writeback bus, compared against every entry's data register, then a ring-oldest pick of
+the one match whose bytes land from the bus). Every match now sets `rd` -- the value is in a
+register file -- and the data read lands it a cycle or two on; no pick stands between the bus and
+`rd`. (Delaying the bus instead was rejected: a register freed and reallocated around a flush
+could match a stale writeback, and delaying the SQ's allocation would hide a just-dispatched store
+from a younger load's alias test.) The directed bench's register-file model now takes the
+writebacks, as the core's does; its data-path checks wait for the read.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

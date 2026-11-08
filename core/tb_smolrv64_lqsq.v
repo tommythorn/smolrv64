@@ -71,6 +71,10 @@ module tb;
    reg [ROBB-1:0]   sq_d_rob=0;  reg [PBITS-1:0] sq_d_dpreg=0;
    reg [IDXB-1:0]   sq_a_idx=0;  reg [PAW-1:0] sq_a_addr=0;  reg [1:0] sq_a_size=2;
    reg [NWB-1:0]    wb_v=0;  reg [NWB*PBITS-1:0] wb_preg=0;  reg [NWB*64-1:0] wb_data=0;
+   // a writeback IS the register file's write: the model takes it, as the core's does
+   integer wbi;
+   always @(posedge clk) for (wbi = 0; wbi < NWB; wbi = wbi + 1)
+      if (wb_v[wbi]) rfv[wb_preg[wbi*PBITS +: PBITS]] <= wb_data[wbi*64 +: 64];
    wire             sq_av_any, lq_av_any;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v;
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
@@ -262,10 +266,12 @@ module tb;
       wb_v=3'b010; wb_preg[1*PBITS +: PBITS]=9'd7; wb_data[1*64 +: 64]=64'hDEAD_BEEF; step;
       // ...and the bus MOVES the very next cycle: the bypass must read the copy, not the bus
       wb_v=0; wb_data[1*64 +: 64]=64'h0BAD_0BAD; #1;
-      chk("7 committable the cycle after the writeback", sq_kc_v, 1'b1);
-      chk("7 data through the landing bypass", sq_c_data==64'hDEAD_BEEF, 1'b1);
-      step; #1;
-      chk("7 data from the entry a cycle later", sq_kc_v && sq_c_data==64'hDEAD_BEEF, 1'b1);
+      // the snoop marks the value in a register file; the data read lands it a cycle or two on
+      chk("7 not committable before the data read", sq_kc_v, 1'b0);
+      repeat (3) if (!sq_kc_v) step;
+      #1;
+      chk("7 committable once the data read lands", sq_kc_v, 1'b1);
+      chk("7 data from the register file, not the moved bus", sq_c_data==64'hDEAD_BEEF, 1'b1);
       chk("7 address", sq_c_addr==56'h2000, 1'b1);
       commit; chk("7 drained", sq_occ==0, 1'b1);
       // in-order commit: allocate two, fill the SECOND first
@@ -281,6 +287,8 @@ module tb;
       wb_v=3'b001; wb_preg[0 +: PBITS]=9'd5; wb_data[0 +: 64]=64'hFEED_FACE; step; wb_v=0; #1;
       chk("7 no commit without an address", sq_kc_v, 1'b0);
       store_addr(S0, 56'h8000, 3, 1'b0, 64'h0);
+      repeat (3) if (!sq_kc_v) step;   // the data read follows the address
+      #1;
       chk("7 early writeback captured", sq_kc_v && sq_c_data==64'hFEED_FACE, 1'b1);
       commit;
       // ...and in the ALLOCATE cycle itself
@@ -288,6 +296,8 @@ module tb;
       wb_v=3'b100; wb_preg[2*PBITS +: PBITS]=9'd6; wb_data[2*64 +: 64]=64'hC0FFEE; step;
       sq_d_alloc=0; sq_d_rdy=1; wb_v=0; #1;
       store_addr(S0, 56'h9000, 3, 1'b0, 64'h0);
+      repeat (3) if (!sq_kc_v) step;   // the data read follows the address
+      #1;
       chk("7 same-cycle writeback captured", sq_kc_v && sq_c_data==64'hC0FFEE, 1'b1);
       commit;
       chk("7 full buffer refuses", sq_d_ready, 1'b1);

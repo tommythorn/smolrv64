@@ -290,32 +290,28 @@ module smolrv64_sq
    // youngest, so the landing takes one of them last (al_k), and the dispatch's renamed registers
    // reach no other entry's choice.
    reg  [NENT-1:0]       sn_m;
-   reg  [2:0]            sn_w [0:NENT-1];
    reg  [NW-1:0]         al_m;
-   reg  [2:0]            al_w [0:NW-1];
    reg  [IDXB-1:0]       al_e [0:NW-1];       // writer j's entry: the tail plus its rank
-   reg  [RKB-1:0]        al_k;
    reg  [IDXB:0]         n_alloc;
    integer               sk, sw, aj;
    always @* begin
       for (sk = 0; sk < NENT; sk = sk + 1) begin
-         sn_m[sk] = 1'b0;  sn_w[sk] = 3'd0;
+         sn_m[sk] = 1'b0;
          for (sw = 0; sw < NWB; sw = sw + 1)
             if (v[sk] & ~dv[sk] & (dpr[sk] != {PBITS{1'b0}}) & wb_v[sw] & (wb_preg[sw*PBITS +: PBITS] == dpr[sk])) begin
-               sn_m[sk] = 1'b1;  sn_w[sk] = sw[2:0];
+               sn_m[sk] = 1'b1;
             end
       end
-      n_alloc = {(IDXB+1){1'b0}};  al_k = {RKB{1'b0}};
+      n_alloc = {(IDXB+1){1'b0}};
       for (aj = NW - 1; aj >= 0; aj = aj - 1) begin
          al_e[aj] = tail + {{(IDXB-RKB){1'b0}}, d_rank[aj*RKB +: RKB]};
          n_alloc = n_alloc + {{IDXB{1'b0}}, d_alloc[aj]};
-         al_m[aj] = 1'b0;  al_w[aj] = 3'd0;
+         al_m[aj] = 1'b0;
          for (sw = 0; sw < NWB; sw = sw + 1)
             if (d_alloc[aj] & (d_dpreg[aj*PBITS +: PBITS] != {PBITS{1'b0}}) & wb_v[sw]
                 & (wb_preg[sw*PBITS +: PBITS] == d_dpreg[aj*PBITS +: PBITS])) begin
-               al_m[aj] = 1'b1;  al_w[aj] = sw[2:0];
+               al_m[aj] = 1'b1;
             end
-         if (al_m[aj]) al_k = aj[RKB-1:0];
       end
    end
    wire                  al_any = |al_m;
@@ -369,7 +365,6 @@ module smolrv64_sq
    // else the allocation's
    wire            rd_ln  = rq_v & v[rq_idx];
    wire            sn_any = |sn_m;
-   wire [IDXB-1:0] sn_k   = ring_oldest(sn_m, head);
    // the oldest arrived-and-unfilled entry: the live region runs from the head
    wire [NENT-1:0]   pk_m = v & ~av & ar;
    // M'S PICK IS MADE A CYCLE AHEAD: the oldest entry whose address waits, registered (pk_q), and
@@ -779,18 +774,14 @@ module smolrv64_sq
          // in. A landing for an entry a flush or the kill ends goes to a slot nothing reads: the
          // slot is allocated again no sooner than the cycle it lands, and its new entry's bytes
          // land later still.
-         ln_v   <= rd_ln | sn_any | al_any;
-         ln_idx <= rd_ln ? rq_idx : sn_any ? sn_k : al_e[al_k];
-         ln_w   <= rd_ln ? NWB[2:0] : sn_any ? sn_w[sn_k] : al_w[al_k];
+         // EVERY ENTRY THE SNOOP MATCHES HAS ITS VALUE IN A REGISTER FILE NOW (rd): the read port
+         // lands its bytes. No pick among the matches stands between the writeback bus and rd.
+         ln_v   <= rd_ln;
+         ln_idx <= rq_idx;
+         ln_w   <= NWB[2:0];
          for (k = 0; k < NENT; k = k + 1)
-            if (sn_m[k]) begin
-               if (~rd_ln & (sn_k == k[IDXB-1:0])) dv[k] <= 1'b1;
-               else                                 rd[k] <= 1'b1;
-            end
-         for (aw = 0; aw < NW; aw = aw + 1) if (al_m[aw]) begin
-            if (~rd_ln & ~sn_any & (al_k == aw[RKB-1:0])) dv[al_e[aw]] <= 1'b1;
-            else                                          rd[al_e[aw]] <= 1'b1;
-         end
+            if (sn_m[k]) rd[k] <= 1'b1;
+         for (aw = 0; aw < NW; aw = aw + 1) if (al_m[aw]) rd[al_e[aw]] <= 1'b1;
       end
       wb_q <= {r_data, wb_data};
       // THE KILL, after every other arm (the snoop above included). A flush in its cycle (a trap
@@ -818,11 +809,9 @@ module smolrv64_sq
    integer    lno;
    initial begin ln_n = 0; ln_out = 0; end
    always @(posedge clk) if (!reset) begin
-      if (rd_ln | sn_any | al_any) ln_n = ln_n + 1;
-      for (lno = 0; lno < NENT; lno = lno + 1)
-         if (sn_m[lno] & (rd_ln | (sn_k != lno[IDXB-1:0]))) ln_out = ln_out + 1;
-      for (lno = 0; lno < NW; lno = lno + 1)
-         if (al_m[lno] & (rd_ln | sn_any | (al_k != lno[RKB-1:0]))) ln_out = ln_out + 1;
+      if (rd_ln) ln_n = ln_n + 1;
+      for (lno = 0; lno < NENT; lno = lno + 1) if (sn_m[lno]) ln_out = ln_out + 1;
+      for (lno = 0; lno < NW; lno = lno + 1)   if (al_m[lno]) ln_out = ln_out + 1;
    end
 `endif
 
