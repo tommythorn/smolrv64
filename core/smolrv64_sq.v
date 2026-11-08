@@ -703,6 +703,20 @@ module smolrv64_sq
    endgenerate
    assign ld_older = |oldv;
 
+   // THE ADDRESS'S PAYLOAD: read only under v and av, so neither reset nor the flush touches it (a
+   // reset term in every field's enable is a net to each of them)
+   always @(posedge clk) begin
+      if (a_v) begin
+         addr_lv[a_idx] <= 1'b0;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  bare[a_idx] <= a_bare;
+         unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
+         mem[a_idx]  <= a_mem;  dw[a_idx] <= ({1'b0, a_va[2:0]} + (4'd1 << a_size)) <= 4'd8;
+      end
+      // the walker's answer: the PA and NC bit, or the fault the store traps with at the head
+      if (w_v) begin
+         addr_lv[w_idx] <= 1'b1;  unc[w_idx] <= w_unc;  flt[w_idx] <= w_flt;  fc[w_idx] <= w_fc;  mem[w_idx] <= w_mem;
+         tv[w_idx]   <= 1'b1;
+      end
+   end
    always @(posedge clk) begin
       if (reset) begin
          v <= {NENT{1'b0}}; av <= {NENT{1'b0}}; dv <= {NENT{1'b0}}; cmt <= {NENT{1'b0}};
@@ -753,23 +767,14 @@ module smolrv64_sq
             cnt   <= (kcc - headc) - {{IDXB{1'b0}}, c_done};
          end
 
-         // address only. The data comes from the snoop or the data read.
-         if (a_v) begin
-            addr_lv[a_idx] <= 1'b0;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;  bare[a_idx] <= a_bare;
-            unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
-            mem[a_idx]  <= a_mem;  dw[a_idx] <= ({1'b0, a_va[2:0]} + (4'd1 << a_size)) <= 4'd8;
-         end
+         // address only (its payload is in the block below). The data comes from the snoop or the data read.
+         if (a_v) av[a_idx] <= 1'b1;
          // the data read: the pick is a register, the value is in the cycle it is read (dv) and
          // lands from wb_q the cycle after (the landing, below)
          if (rq_v & v[rq_idx]) dv[rq_idx] <= 1'b1;
          rq_v <= rp_v;  rq_idx <= rp_idx;  rq_preg <= dpr[rp_idx];
          if (rp_v) rd[rp_idx] <= 1'b0;
          if (flush) rq_v <= 1'b0;                      // flush last (rule I11)
-         // the walker's answer: the PA and NC bit, or the fault the store traps with at the head
-         if (w_v) begin
-            addr_lv[w_idx] <= 1'b1;  unc[w_idx] <= w_unc;  flt[w_idx] <= w_flt;  fc[w_idx] <= w_fc;  mem[w_idx] <= w_mem;
-            tv[w_idx]   <= 1'b1;
-         end
 
          // SNOOP THE WRITEBACK PORTS, ARMED FROM ALLOCATE.
          //

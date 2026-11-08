@@ -751,6 +751,11 @@ into the wake tag, the schedulers' compares and `e_r`). `sy_slot_q` registers sy
 writes or completes on lane A's port. The tag, data and ROB-index muxes select the SYSQ's on it,
 and the fire gates only the enables. The streams' straight-through landings (by0/by2) no longer
 pass through `lb_drain`'s SYSQ term.
+
+**THE STORE QUEUE'S ADDRESS PAYLOAD HAS NO RESET** (m2s: `core_reset -> u_sq/fc`, 127 endpoints at
+-0.99 ns, 1 level: the reset term in every payload field's enable). va, size, the translation bits
+and the fault cause are read only under v and av, so their writes (the address, the walker's
+answer) sit in a block of their own, enabled by their write alone.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
