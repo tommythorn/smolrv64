@@ -702,7 +702,9 @@ module smolrv64_core
    wire m_dead    = dead(m_rob_idx);             // the kill: M's op is younger than a mispredict
    wire m_sq_fill = m_valid & m_st_nb & lsu_xo_v & ~m_dead;
    wire m_lq_fill = m_valid & m_ld_nb & lsu_xo_v & ~m_dead;
-   always @(posedge clk) if (!reset && (m_sq_fill | m_lq_fill) && (m_bare != m_bare_c))
+   // (an access in M in the cycle an ordered redirect flushes, red_ord, is younger than the system op
+   // that changed the regime a cycle before, and the flush takes its fill)
+   always @(posedge clk) if (!reset && (m_sq_fill | m_lq_fill) && (m_bare != m_bare_c) && !red_ord)
       $fatal(1, "smolrv64_core: an access fills a queue in M the cycle the translation regime changes (bare %b -> %b)",
              m_bare, m_bare_c);
    wire rob_w_valid = (m_valid & m_done & ~m_ld_nb & ~m_st_nb) | ld_land;
