@@ -280,6 +280,7 @@ module rv_dcache #(
    wire [1:0]       sq_h1   = sq_hp + 2'd1;       // entry 1's slot
    wire             st_done;
    wire [1:0]       hp_n    = st_done ? sq_h1 : sq_hp;   // the head after this cycle
+   wire [63:0]      st_wd_n = (sq_take & (sq_pt == hp_n)) ? wr_data : sf_wd[hp_n];   // ...its data
    always @(posedge clk) if (!reset && (sc != 2'd0) && ((st_wd != sf_wd[sq_hp]) || (st_wm != sf_wm[sq_hp])))
       $fatal(1, "rv_dcache: the head's registered data %h/%h is not slot %0d's %h/%h", st_wd, st_wm, sq_hp, sf_wd[sq_hp], sf_wm[sq_hp]);
    // the head's data and mask (only the head resolves): registers, as every array's write data and
@@ -305,7 +306,7 @@ module rv_dcache #(
    reg              rl_v;   reg [WYB-1:0] rl_way;  reg [WBB-1:0] rl_wb;
 
    // ---------------------------------------------------------------- the fill (declared here: the lookup yields to it)
-   reg            fb_v;  reg [WYB-1:0] fb_way;  reg [5:0] fb_set;  reg [1:0] fb_beat;  reg [127:0] fb_data;
+   reg            fb_v;  reg [WYB-1:0] fb_way;  reg [5:0] fb_set;  reg [1:0] fb_beat;
    reg            fb_last;  reg [MB-1:0] fb_m;
    reg            fl_p;                                                            // ...a cycle before it installs
    reg            fl_v;  reg [MB-1:0] fl_m;                                       // the line installing
@@ -320,6 +321,7 @@ module rv_dcache #(
    // lookup's -- taken a cycle ahead: as the beat is, and from SB1
    (* max_fanout = 8 *)  reg [WAYS-1:0] fb_aw;
    (* max_fanout = 16 *) reg [8:0]      wa_e, wa_o;
+   (* max_fanout = 16 *) reg [63:0]     wd_e, wd_o;    // ...and its data: the beat's chunks, else the head's
 
    // ---------------------------------------------------------------- the NC slot: one access at a time
    localparam [SW-1:0] NMS = NMSHR;              // the first write-back slot
@@ -521,13 +523,13 @@ module rv_dcache #(
    // MSHR match (the line already being filled) and the ways MSHRs reserve in the set; a free MSHR
    // and a dirty one as they stand (only C2 allocates, and none frees while C1 or C2 is full)
    reg  [NMSHR-1:0] c1_mshv;  reg ms_dirty;  reg [WAYS-1:0] rsv;
-   reg  [MB-1:0]    c1_mhk, ms_free;  reg ms_free_v;
+   reg  [MB-1:0]    c1_mhk, c1_free;  reg c1_free_v;
    always @* begin
-      c1_mshv = 0;  c1_mhk = 0;  ms_free = 0;  ms_free_v = 1'b0;  ms_dirty = 1'b0;  rsv = {WAYS{1'b0}};
+      c1_mshv = 0;  c1_mhk = 0;  c1_free = 0;  c1_free_v = 1'b0;  ms_dirty = 1'b0;  rsv = {WAYS{1'b0}};
       for (i = NMSHR - 1; i >= 0; i = i - 1) begin
          if (ms_v[i] & (ms_pl[i][LB-1:0] == s1_pl[LB-1:0])) begin c1_mshv[i] = 1'b1; c1_mhk = i[MB-1:0]; end
          if (ms_v[i] & ms_sm[i]) rsv[ms_way[i]] = 1'b1;
-         if (~ms_v[i]) begin ms_free = i[MB-1:0]; ms_free_v = 1'b1; end
+         if (~ms_v[i]) begin c1_free = i[MB-1:0]; c1_free_v = 1'b1; end
          if (ms_v[i] & ms_dty[i]) ms_dirty = 1'b1;
       end
    end
@@ -559,6 +561,8 @@ module rv_dcache #(
    reg              c2_live, ln_q, w1_q, ms_hit, wb_hit, age_q, vic_inv, vic_age, vbad_q, fr_q;
    reg  [WAYS-1:0]  hitv, dr_q, vic_oh, vic_v;
    reg  [MB-1:0]    ms_hk;
+   // the free MSHR as C1 saw it (none allocates or frees between C1 and C2: asserted)
+   (* max_fanout = 16 *) reg [MB-1:0] ms_free;  reg ms_free_v;
    wire blk_st = c2_live & ~s1_st & ln_q;
    wire blk_w1 = c2_live & ~s1_st & ~ln_q & w1_q;
    // a store behind the head while the head is parked: it goes back to the queue, untouched
@@ -643,8 +647,6 @@ module rv_dcache #(
    // one address and data bus per array parity (the beat's chunk 2b lands in the arrays of its way's
    // parity, 2b+1 in the others; the store lookup never writes beside a beat)
    wire [8:0]     a_row   = {a_pa[11:6], a_pa[5:3]};
-   wire [63:0]    wd_e    = fb_v ? (fb_way[0] ? fb_data[127:64] : fb_data[63:0]) : st_wd;
-   wire [63:0]    wd_o    = fb_v ? (fb_way[0] ? fb_data[63:0] : fb_data[127:64]) : st_wd;
    genvar ga;
    generate for (ga = 0; ga < WAYS; ga = ga + 1) begin : arr
       wire [2:0] ro_c = ga[2:0] - ro_way[2:0];      // the read-out's chunk in this array
@@ -728,6 +730,8 @@ module rv_dcache #(
       age_q   <= &(ur | c1_hitv);
       ms_hit  <= |c1_mshv;
       ms_hk   <= c1_mhk;
+      ms_free <= c1_free;
+      ms_free_v <= c1_free_v;
       wb_hit  <= c1_wbh;
       vic_oh  <= c1_vic;
       vic_v   <= c1_vicv;
@@ -761,6 +765,8 @@ module rv_dcache #(
    // lookup is empty while a line installs (hold at its last beat) and while the scan runs: one
    // address serves every way.
    wire [5:0] vu_wa = scan_on ? scan : fl_v ? fl_set : s1_set;
+   always @(posedge clk) if (!reset && c2_v && ((ms_free_v != c1_free_v) || (ms_free_v && (ms_free != c1_free))))
+      $fatal(1, "rv_dcache: the free MSHR changed between C1 and C2 (%b %0d -> %b %0d)", ms_free_v, ms_free, c1_free_v, c1_free);
    always @(posedge clk) if (!reset && rp_v && !(wt_v[rp_t] && wt_rdy[rp_t]))
       $fatal(1, "rv_dcache: a replay of waiter %0d, which is not waiting and ready", rp_t);
    always @(posedge clk) if (!reset && (s1_v || c2_v) && (fl_v || scan_on || cl_on))
@@ -828,7 +834,7 @@ module rv_dcache #(
          if (st_done & sf_ox[sq_hp] & ~sf_keep[sq_hp]) begin xb_v <= 1'b1;  xb_pl <= sf_pa[sq_hp][17:6]; end
          else if (ox_rel) xb_v <= 1'b0;
          if (st_done) sq_hp <= sq_h1;
-         st_wd <= (sq_take & (sq_pt == hp_n)) ? wr_data : sf_wd[hp_n];
+         st_wd <= st_wd_n;
          st_wm <= (sq_take & (sq_pt == hp_n)) ? wr_mask : sf_wm[hp_n];
          if (st_go) sf_iss[sq_ps] <= 1'b1;
          if (sq_take) begin                        // a store-port op, else the outside request (a CBO by PA)
@@ -937,8 +943,10 @@ module rv_dcache #(
                         | ({{(WAYS-1){1'b0}}, 1'b1} << arr_of(ms_way[cr_m], {cr_beat, 1'b1}))) : {WAYS{1'b0}};
          wa_e <= cr_f ? {ms_set[cr_m], cr_beat,  ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
          wa_o <= cr_f ? {ms_set[cr_m], cr_beat, ~ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
+         wd_e <= cr_f ? (ms_way[cr_m][0] ? cr_hi : cr_lo) : st_wd_n;
+         wd_o <= cr_f ? (ms_way[cr_m][0] ? cr_lo : cr_hi) : st_wd_n;
          if (cr_f) begin
-            fb_way <= ms_way[cr_m];  fb_set <= ms_set[cr_m];  fb_beat <= cr_beat;  fb_data <= {cr_hi, cr_lo};
+            fb_way <= ms_way[cr_m];  fb_set <= ms_set[cr_m];  fb_beat <= cr_beat;
             ms_bt[cr_m] <= cr_beat + 1'b1;  ms_bl[cr_m] <= 1'b1;
          end
          fl_p <= fb_last;  fl_v <= fl_p;

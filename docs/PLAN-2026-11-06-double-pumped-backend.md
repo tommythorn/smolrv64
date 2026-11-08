@@ -450,6 +450,15 @@ and ready when it issues (asserted), and a stale pick meets the hold. The fill b
 (one-hot) and each array parity's write row (the beat's, else SB1's, which is SB2's a cycle later)
 are registers taken as the beat arrives.
 
+**m2h's build (4ad940a8, the two-cycle main lookup): -2.003 ns, 53.5 K failing endpoints** (the D$'s
+own 6.5 K -> 4.6 K; shell, frontend and SQ-internal +1 K each, the draw's). Its D$ leaders after
+the store lookup's split: `fb_way -> arr[].u_a` (937, one level: the arrays' write data, the beat's
+chunks or the head's, muxed in front of 16 block RAMs a parity) and `ms_v -> ms_pl`, `-> mbd_e/o`
+(543: the free MSHR's priority encoder in front of the allocation's writes). The write data is now
+a register taken a cycle ahead like the write row (the beat's chunks as it arrives, else the head's
+next data), and the free MSHR is C1's, registered: nothing allocates or frees between C1 and C2
+(asserted).
+
 **THE HPM COUNTERS ADD A CYCLE LATE** (m2g: `hpm_ev_q`/`hpm_esel -> mhpmcounter`, 810 endpoints,
 17 levels: the 50-way event select and the 64-bit add in one cycle). Each counter's increment is
 registered (`hpm_iq`) and added the next cycle; the cycle after an mhpmeventN write gives 0, so a
