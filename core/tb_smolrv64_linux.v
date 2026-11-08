@@ -380,6 +380,7 @@ module tb;
    wire  [7:0] v_dev_status;
    wire [31:0] v_q0_num;  wire v_q0_ready;
    wire [63:0] v_q0_desc, v_q0_driver, v_q0_device;
+   wire [127:0] v_qs_num;  wire [3:0] v_qs_ready;  wire [255:0] v_qs_desc, v_qs_driver, v_qs_device;
    virtio_mmio #(.DEVICE_ID(32'd2), .QUEUE_NUM_MAX(32'd64)) u_vmmio
      (.clock(clk), .reset(reset),
       .address(virtio_addr[11:0]), .read(virtio_read && !vio_net), .read_data(virtio_rdata_comb),
@@ -390,11 +391,12 @@ module tb;
       .queue_notify_pulse(v_notify_pulse), .queue_notify_value(v_notify_value),
       .used_buffer_interrupt(v_used_irq), .config_change_interrupt(1'b0),
       .driver_features_0(), .driver_features_1(),
-      .queue_num(), .queue_ready(), .queue_desc(), .queue_driver(), .queue_device(),
-      .queue0_num(v_q0_num), .queue0_ready(v_q0_ready), .queue0_desc(v_q0_desc),
-      .queue0_driver(v_q0_driver), .queue0_device(v_q0_device),
-      .queue1_num(), .queue1_ready(), .queue1_desc(), .queue1_driver(), .queue1_device(),
+      .queues_num(v_qs_num), .queues_ready(v_qs_ready), .queues_desc(v_qs_desc),
+      .queues_driver(v_qs_driver), .queues_device(v_qs_device),
       .device_status(v_dev_status));
+   assign v_q0_num = v_qs_num[31:0];        assign v_q0_ready = v_qs_ready[0];
+   assign v_q0_desc = v_qs_desc[63:0];      assign v_q0_driver = v_qs_driver[63:0];
+   assign v_q0_device = v_qs_device[63:0];
 
    wire [2:0]  ax_awid;   wire [31:0] ax_awaddr; wire [7:0] ax_awlen;  wire [2:0] ax_awsize;
    wire [1:0]  ax_awburst; wire ax_awlock; wire [3:0] ax_awcache; wire [2:0] ax_awprot;

@@ -100,6 +100,7 @@ module virtio_input #(
    reg         used_irq;
    wire [31:0] q0_num, q1_num;  wire q0_ready, q1_ready;
    wire [63:0] q0_desc, q0_driver, q0_device, q1_desc, q1_driver, q1_device;
+   wire [127:0] qs_num;  wire [3:0] qs_ready;  wire [255:0] qs_desc, qs_driver, qs_device;   // the transport's four
    wire [ 7:0] dev_status;
    wire        cfg_write;  wire [7:0] cfg_off;  wire [31:0] cfg_wdata;  wire [3:0] cfg_be;
    wire [31:0] mmio_rdata, cfg_rdata;
@@ -114,12 +115,12 @@ module virtio_input #(
       .irq(irq), .queue_notify_pulse(notify), .queue_notify_value(notify_q),
       .used_buffer_interrupt(used_irq), .config_change_interrupt(1'b0),
       .driver_features_0(), .driver_features_1(),
-      .queue_num(), .queue_ready(), .queue_desc(), .queue_driver(), .queue_device(),
-      .queue0_num(q0_num), .queue0_ready(q0_ready), .queue0_desc(q0_desc),
-      .queue0_driver(q0_driver), .queue0_device(q0_device),
-      .queue1_num(q1_num), .queue1_ready(q1_ready), .queue1_desc(q1_desc),
-      .queue1_driver(q1_driver), .queue1_device(q1_device),
+      .queues_num(qs_num), .queues_ready(qs_ready), .queues_desc(qs_desc),
+      .queues_driver(qs_driver), .queues_device(qs_device),
       .device_status(dev_status));
+   assign {q1_num, q0_num}       = qs_num[63:0];     assign {q1_ready, q0_ready} = qs_ready[1:0];
+   assign {q1_desc, q0_desc}     = qs_desc[127:0];   assign {q1_driver, q0_driver} = qs_driver[127:0];
+   assign {q1_device, q0_device} = qs_device[127:0];
 
    // virtio_input_config: select, subsel, size, 5 reserved, then the union. Written a byte at a
    // time (select, then subsel); read back a byte at a time, right-aligned at the address.

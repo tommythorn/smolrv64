@@ -7,7 +7,8 @@ module virtio_mmio #(
     parameter [31:0] DEVICE_FEATURES_0 = 32'd0,
     parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0003,
     parameter [31:0] QUEUE_NUM_MAX = 32'd8,
-    parameter [31:0] QUEUE_COUNT = 32'd1
+    parameter [31:0] QUEUE_COUNT = 32'd1,
+    parameter integer NQ = 4                    // queues this transport holds (QUEUE_COUNT <= NQ)
 ) (
     input  wire        clock,
     input  wire        reset,
@@ -38,21 +39,12 @@ module virtio_mmio #(
 
     output reg  [31:0] driver_features_0,
     output reg  [31:0] driver_features_1,
-    output wire [31:0] queue_num,
-    output wire        queue_ready,
-    output wire [63:0] queue_desc,
-    output wire [63:0] queue_driver,
-    output wire [63:0] queue_device,
-    output wire [31:0] queue0_num,
-    output wire        queue0_ready,
-    output wire [63:0] queue0_desc,
-    output wire [63:0] queue0_driver,
-    output wire [63:0] queue0_device,
-    output wire [31:0] queue1_num,
-    output wire        queue1_ready,
-    output wire [63:0] queue1_desc,
-    output wire [63:0] queue1_driver,
-    output wire [63:0] queue1_device,
+    // queue q's registers at [q*32 +: 32], [q], [q*64 +: 64]: up to NQ queues (QUEUE_COUNT live)
+    output wire [NQ*32-1:0] queues_num,
+    output wire [NQ-1:0]    queues_ready,
+    output wire [NQ*64-1:0] queues_desc,
+    output wire [NQ*64-1:0] queues_driver,
+    output wire [NQ*64-1:0] queues_device,
     output reg  [ 7:0] device_status
 );
    localparam [31:0] VIRTIO_MAGIC = 32'h7472_6976; /* "virt" little-endian */
@@ -86,16 +78,11 @@ module virtio_mmio #(
    reg [31:0] driver_features_sel;
    reg [31:0] queue_sel;
    reg [1:0]  interrupt_status;
-   reg [31:0] queue0_num_q;
-   reg        queue0_ready_q;
-   reg [63:0] queue0_desc_q;
-   reg [63:0] queue0_driver_q;
-   reg [63:0] queue0_device_q;
-   reg [31:0] queue1_num_q;
-   reg        queue1_ready_q;
-   reg [63:0] queue1_desc_q;
-   reg [63:0] queue1_driver_q;
-   reg [63:0] queue1_device_q;
+   reg [31:0] q_num    [0:NQ-1];
+   reg        q_ready  [0:NQ-1];
+   reg [63:0] q_desc   [0:NQ-1];
+   reg [63:0] q_driver [0:NQ-1];
+   reg [63:0] q_device [0:NQ-1];
 
    wire [11:0] reg_addr = address & 12'hffc;
    // WRITE path pipelined one cycle: the CDC bridge's registered address travels a
@@ -121,35 +108,26 @@ module virtio_mmio #(
    always @(posedge clock)
       if (!reset && write && address[11:8] == 4'h0 && !(&byteenable))
          $fatal(1, "virtio_mmio: %0d-byte-enable write to common register %h", byteenable, address);
-   // Which queue QueueSel names, decoded when it is written: a 32-bit compare of queue_sel sat
-   // at the head of every register read's mux, the board's worst ui_clk path (virtio_net, then
-   // the keyboard, 2026-10-04).
-   reg        queue0_sel_q, queue1_sel_q;
-   wire       queue0_selected = queue0_sel_q;
-   wire       queue1_selected = queue1_sel_q;
-   wire       active_queue_selected = queue0_selected || queue1_selected;
+   generate if (QUEUE_COUNT > NQ) begin: qcount_chk
+      initial $fatal(1, "virtio_mmio: QUEUE_COUNT %0d exceeds the %0d queues this transport holds", QUEUE_COUNT, NQ);
+   end endgenerate
+   // Which queue QueueSel names, decoded when it is written (one-hot; none when out of range): a
+   // 32-bit compare of queue_sel sat at the head of every register read's mux, the board's worst
+   // ui_clk path (virtio_net, then the keyboard, 2026-10-04).
+   reg  [NQ-1:0] qsel;
+   reg  [1:0]    qsel_i;            // ...as an index (valid with |qsel)
+   wire          q_active = |qsel;
+   integer       k;
 
    assign irq = interrupt_status != 2'd0;
-   assign queue0_num = queue0_num_q;
-   assign queue0_ready = queue0_ready_q;
-   assign queue0_desc = queue0_desc_q;
-   assign queue0_driver = queue0_driver_q;
-   assign queue0_device = queue0_device_q;
-   assign queue1_num = queue1_num_q;
-   assign queue1_ready = queue1_ready_q;
-   assign queue1_desc = queue1_desc_q;
-   assign queue1_driver = queue1_driver_q;
-   assign queue1_device = queue1_device_q;
-   assign queue_num = !active_queue_selected ? 32'd0 :
-                      queue1_selected ? queue1_num_q : queue0_num_q;
-   assign queue_ready = active_queue_selected &&
-                        (queue1_selected ? queue1_ready_q : queue0_ready_q);
-   assign queue_desc = !active_queue_selected ? 64'd0 :
-                       queue1_selected ? queue1_desc_q : queue0_desc_q;
-   assign queue_driver = !active_queue_selected ? 64'd0 :
-                         queue1_selected ? queue1_driver_q : queue0_driver_q;
-   assign queue_device = !active_queue_selected ? 64'd0 :
-                         queue1_selected ? queue1_device_q : queue0_device_q;
+   genvar gq;
+   generate for (gq = 0; gq < NQ; gq = gq + 1) begin: qout
+      assign queues_num[gq*32 +: 32]    = q_num[gq];
+      assign queues_ready[gq]           = q_ready[gq];
+      assign queues_desc[gq*64 +: 64]   = q_desc[gq];
+      assign queues_driver[gq*64 +: 64] = q_driver[gq];
+      assign queues_device[gq*64 +: 64] = q_device[gq];
+   end endgenerate
 
    always @* begin
       if (!read) begin
@@ -167,22 +145,35 @@ module virtio_mmio #(
                                              driver_features_sel == 32'd1 ? driver_features_1 : 32'd0;
            REG_DRIVER_FEAT_SEL:  read_data = driver_features_sel;
            REG_QUEUE_SEL:        read_data = queue_sel;
-           REG_QUEUE_NUM_MAX:    read_data = active_queue_selected ? QUEUE_NUM_MAX : 32'd0;
-           REG_QUEUE_NUM:        read_data = queue_num;
-           REG_QUEUE_READY:      read_data = {31'd0, queue_ready};
+           REG_QUEUE_NUM_MAX:    read_data = q_active ? QUEUE_NUM_MAX : 32'd0;
+           REG_QUEUE_NUM:        read_data = q_active ? q_num[qsel_i] : 32'd0;
+           REG_QUEUE_READY:      read_data = {31'd0, q_active && q_ready[qsel_i]};
            REG_INTERRUPT_STATUS: read_data = {30'd0, interrupt_status};
            REG_STATUS:           read_data = {24'd0, device_status};
-           REG_QUEUE_DESC_LOW:   read_data = queue_desc[31:0];
-           REG_QUEUE_DESC_HIGH:  read_data = queue_desc[63:32];
-           REG_QUEUE_AVAIL_LOW:  read_data = queue_driver[31:0];
-           REG_QUEUE_AVAIL_HIGH: read_data = queue_driver[63:32];
-           REG_QUEUE_USED_LOW:   read_data = queue_device[31:0];
-           REG_QUEUE_USED_HIGH:  read_data = queue_device[63:32];
+           REG_QUEUE_DESC_LOW:   read_data = q_active ? q_desc[qsel_i][31:0]    : 32'd0;
+           REG_QUEUE_DESC_HIGH:  read_data = q_active ? q_desc[qsel_i][63:32]   : 32'd0;
+           REG_QUEUE_AVAIL_LOW:  read_data = q_active ? q_driver[qsel_i][31:0]  : 32'd0;
+           REG_QUEUE_AVAIL_HIGH: read_data = q_active ? q_driver[qsel_i][63:32] : 32'd0;
+           REG_QUEUE_USED_LOW:   read_data = q_active ? q_device[qsel_i][31:0]  : 32'd0;
+           REG_QUEUE_USED_HIGH:  read_data = q_active ? q_device[qsel_i][63:32] : 32'd0;
            REG_CONFIG_GEN:       read_data = 32'd0;
            default:              read_data = address[11:8] != 4'h0 ? config_read_data : 32'd0;
          endcase
       end
    end
+
+   // every queue's registers back to their reset values (reset, and a driver writing status 0)
+   task clear_queues;
+      begin
+         queue_sel <= 32'd0;
+         for (k = 0; k < NQ; k = k + 1) begin
+            qsel[k] <= (k == 0) && (QUEUE_COUNT >= 32'd1);
+            q_num[k] <= 32'd0;  q_ready[k] <= 1'b0;
+            q_desc[k] <= 64'd0;  q_driver[k] <= 64'd0;  q_device[k] <= 64'd0;
+         end
+         qsel_i <= 2'd0;
+      end
+   endtask
 
    always @(posedge clock) begin
       if (reset) begin
@@ -190,19 +181,7 @@ module virtio_mmio #(
          driver_features_sel <= 32'd0;
          driver_features_0 <= 32'd0;
          driver_features_1 <= 32'd0;
-         queue_sel <= 32'd0;
-         queue0_sel_q <= QUEUE_COUNT >= 32'd1;
-         queue1_sel_q <= 1'b0;
-         queue0_num_q <= 32'd0;
-         queue0_ready_q <= 1'b0;
-         queue0_desc_q <= 64'd0;
-         queue0_driver_q <= 64'd0;
-         queue0_device_q <= 64'd0;
-         queue1_num_q <= 32'd0;
-         queue1_ready_q <= 1'b0;
-         queue1_desc_q <= 64'd0;
-         queue1_driver_q <= 64'd0;
-         queue1_device_q <= 64'd0;
+         clear_queues;
          device_status <= 8'd0;
          interrupt_status <= 2'd0;
          queue_notify_pulse <= 1'b0;
@@ -225,22 +204,13 @@ module virtio_mmio #(
                     driver_features_1 <= wr_data_q;
               end
               REG_QUEUE_SEL: begin
-                 queue_sel    <= wr_data_q;
-                 queue0_sel_q <= wr_data_q == 32'd0 && QUEUE_COUNT >= 32'd1;
-                 queue1_sel_q <= wr_data_q == 32'd1 && QUEUE_COUNT >= 32'd2;
+                 queue_sel <= wr_data_q;
+                 for (k = 0; k < NQ; k = k + 1)
+                    qsel[k] <= wr_data_q == k && k < QUEUE_COUNT;
+                 qsel_i <= wr_data_q[1:0];
               end
-              REG_QUEUE_NUM: begin
-                 if (queue0_selected)
-                    queue0_num_q <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_num_q <= wr_data_q;
-              end
-              REG_QUEUE_READY: begin
-                 if (queue0_selected)
-                    queue0_ready_q <= wr_data_q[0];
-                 else if (queue1_selected)
-                    queue1_ready_q <= wr_data_q[0];
-              end
+              REG_QUEUE_NUM:        if (q_active) q_num[qsel_i] <= wr_data_q;
+              REG_QUEUE_READY:      if (q_active) q_ready[qsel_i] <= wr_data_q[0];
               REG_QUEUE_NOTIFY: begin
                  queue_notify_pulse <= 1'b1;
                  queue_notify_value <= wr_data_q;
@@ -251,58 +221,16 @@ module virtio_mmio #(
                  if (wr_data_q[7:0] == 8'd0) begin
                     driver_features_0 <= 32'd0;
                     driver_features_1 <= 32'd0;
-                    queue_sel <= 32'd0;
-                    queue0_sel_q <= QUEUE_COUNT >= 32'd1;
-                    queue1_sel_q <= 1'b0;
-                    queue0_num_q <= 32'd0;
-                    queue0_ready_q <= 1'b0;
-                    queue0_desc_q <= 64'd0;
-                    queue0_driver_q <= 64'd0;
-                    queue0_device_q <= 64'd0;
-                    queue1_num_q <= 32'd0;
-                    queue1_ready_q <= 1'b0;
-                    queue1_desc_q <= 64'd0;
-                    queue1_driver_q <= 64'd0;
-                    queue1_device_q <= 64'd0;
+                    clear_queues;
                     interrupt_status <= 2'd0;
                  end
               end
-              REG_QUEUE_DESC_LOW: begin
-                 if (queue0_selected)
-                    queue0_desc_q[31:0] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_desc_q[31:0] <= wr_data_q;
-              end
-              REG_QUEUE_DESC_HIGH: begin
-                 if (queue0_selected)
-                    queue0_desc_q[63:32] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_desc_q[63:32] <= wr_data_q;
-              end
-              REG_QUEUE_AVAIL_LOW: begin
-                 if (queue0_selected)
-                    queue0_driver_q[31:0] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_driver_q[31:0] <= wr_data_q;
-              end
-              REG_QUEUE_AVAIL_HIGH: begin
-                 if (queue0_selected)
-                    queue0_driver_q[63:32] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_driver_q[63:32] <= wr_data_q;
-              end
-              REG_QUEUE_USED_LOW: begin
-                 if (queue0_selected)
-                    queue0_device_q[31:0] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_device_q[31:0] <= wr_data_q;
-              end
-              REG_QUEUE_USED_HIGH: begin
-                 if (queue0_selected)
-                    queue0_device_q[63:32] <= wr_data_q;
-                 else if (queue1_selected)
-                    queue1_device_q[63:32] <= wr_data_q;
-              end
+              REG_QUEUE_DESC_LOW:   if (q_active) q_desc[qsel_i][31:0]    <= wr_data_q;
+              REG_QUEUE_DESC_HIGH:  if (q_active) q_desc[qsel_i][63:32]   <= wr_data_q;
+              REG_QUEUE_AVAIL_LOW:  if (q_active) q_driver[qsel_i][31:0]  <= wr_data_q;
+              REG_QUEUE_AVAIL_HIGH: if (q_active) q_driver[qsel_i][63:32] <= wr_data_q;
+              REG_QUEUE_USED_LOW:   if (q_active) q_device[qsel_i][31:0]  <= wr_data_q;
+              REG_QUEUE_USED_HIGH:  if (q_active) q_device[qsel_i][63:32] <= wr_data_q;
               default: begin
               end
             endcase
