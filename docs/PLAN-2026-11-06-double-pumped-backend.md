@@ -617,6 +617,13 @@ pick waits a cycle.
 `-> mnstatus`, 9-10 levels: the pending interrupts, through the interrupt op's take, in every CSR's
 write enable). The interrupt pseudo-op is neither a CSR op nor an xret (asserted), so the write
 gates take `sysop_exc` alone.
+
+**A FAST LANDING'S FORMAT IS LOOKED UP A CYCLE AHEAD** (m2l: `u_dcache/rd_resp_tag -> wb_ld_q`, 9
+levels: the response's tag reading the per-tag size, offset, sign and FP bits in front of the
+alignment). As its kill already was: at each tag the next landing can carry (the D$'s two
+pre-answer tags, the forward ring's next; a forward starting now takes the values it writes),
+registered, the source picking one (asserted equal to the live read). Lockstep: 147ee68a retires
+184.7 M (-0.4%: an access M starts completes a cycle later).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

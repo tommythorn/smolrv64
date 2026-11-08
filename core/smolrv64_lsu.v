@@ -806,12 +806,27 @@ module smolrv64_lsu
                 r_kill, mem_rvalid_c ? o_kill[mem_rtag_resp] : o_kill[fw_tag0], r_tag, mem_rvalid_c ? "cache" : "forward");
    end
    assign pt_fast_done  = ld_fast_ret & ~r_kill;   // a squashed load's data is dropped
-   wire [2:0]  r_boff = mem_rvalid_c ? o_boff[mem_rtag_resp] : o_boff[fw_tag0];
+   // THE LANDING'S FORMAT, LOOKED UP A CYCLE AHEAD like its kill: {fp, signed, size, offset} at each
+   // tag the next landing can carry -- a forward starting now takes the values it writes -- and the
+   // response's source picks one, so the per-tag read stays out of the alignment
+   reg  [8:0] fm_a_q, fm_b_q, fm_f_q;
+   always @(posedge clk) begin
+      fm_a_q <= {o_fp[mem_pre_a], o_sgn[mem_pre_a], o_nb[mem_pre_a], o_boff[mem_pre_a]};
+      fm_b_q <= {o_fp[mem_pre_b], o_sgn[mem_pre_b], o_nb[mem_pre_b], o_boff[mem_pre_b]};
+      fm_f_q <= fw_nx_new ? {eff_fp, eff_signed, nb, boff - fw_sbo}
+              : {o_fp[fw_tag0_n], o_sgn[fw_tag0_n], o_nb[fw_tag0_n], o_boff[fw_tag0_n]};
+   end
+   wire [8:0]  r_fmt  = mem_rvalid_c ? (mem_src_b ? fm_b_q : fm_a_q) : fm_f_q;
+   wire [8:0]  r_fmtl = mem_rvalid_c ? {o_fp[mem_rtag_resp], o_sgn[mem_rtag_resp], o_nb[mem_rtag_resp], o_boff[mem_rtag_resp]}
+                                     : {o_fp[fw_tag0], o_sgn[fw_tag0], o_nb[fw_tag0], o_boff[fw_tag0]};
+   always @(posedge clk) if (!reset && ld_fast_ret && !r_kill && (r_fmt != r_fmtl))
+      $fatal(1, "smolrv64_lsu: the landing's format %h, looked up a cycle ahead, is not its tag's %h (%s)", r_fmt, r_fmtl, mem_rvalid_c ? "cache" : "forward");
+   wire [2:0]  r_boff = r_fmt[2:0];
    wire [5:0]  f_sh  = {r_boff, 3'b000};
    wire [63:0] f_eff = r_data >> f_sh;
-   wire [3:0]  f_nb  = mem_rvalid_c ? o_nb[mem_rtag_resp]  : o_nb[fw_tag0];
-   wire        f_sgn = mem_rvalid_c ? o_sgn[mem_rtag_resp] : o_sgn[fw_tag0];
-   wire        f_fp  = mem_rvalid_c ? o_fp[mem_rtag_resp]  : o_fp[fw_tag0];
+   wire [3:0]  f_nb  = r_fmt[6:3];
+   wire        f_sgn = r_fmt[7];
+   wire        f_fp  = r_fmt[8];
    wire [63:0] ld_fast_val =
         (f_nb == 4'd1) ? (f_sgn ? {{56{f_eff[7]}},  f_eff[7:0]}  : {56'd0, f_eff[7:0]})
       : (f_nb == 4'd2) ? (f_sgn ? {{48{f_eff[15]}}, f_eff[15:0]} : {48'd0, f_eff[15:0]})
