@@ -178,8 +178,11 @@ module mmu
 
    // -------------------- walk FSM --------------------
    // L2LK (L2N > 0 only): the second level's lookup, between a first-level miss and the walk.
-   localparam IDLE=2'd0, REQ=2'd1, RCV=2'd2, L2LK=2'd3;
-   reg [1:0]  st;
+   // L2H: the second level's hit, registered in L2LK, answers and refills the first level a cycle
+   // later -- the block RAM's word and its tag compare in one cycle, the fill in the next.
+   localparam IDLE=3'd0, REQ=3'd1, RCV=3'd2, L2LK=3'd3, L2H=3'd4;
+   reg [2:0]  st;
+   reg        l2h_q;                            // L2LK's hit, for L2H
    reg [1:0]  lvl;
    reg [43:0] walk_ppn;       // current table PPN
    reg [63:0] va_q;
@@ -324,7 +327,7 @@ module mmu
    // refills the first level: the page's translation for the walk's own VA (va_q, its context
    // unchanged), whatever the request is now -- the live request compare (req_match) answers the
    // request in L2LK, and stays off the first level's write
-   wire          l2_fill = (st == L2LK) & ~ctx_poison & l2_hit;
+   wire          l2_fill = (st == L2H) & ~ctx_poison & ~scan & l2h_q;
    // the first level's entry: the walk's leaf, or the second level's on its hit
    wire             f1      = fill | l2_fill;
    wire [43:0]      f1_ppn  = l2_fill ? l2_ppn  : ptw_rdata[53:10];
@@ -378,7 +381,7 @@ module mmu
       always @(posedge clk) if (st == IDLE) l2q_ok <= ~scan;
       reg [L2I-1:0] l2q_ix;   // the word's index, for the check below only
       always @(posedge clk) if (st == IDLE) l2q_ix <= req_vaddr[12+:L2I];
-      always @(posedge clk) if (!reset && st == L2LK && l2q_ix != va_q[12+:L2I])
+      always @(posedge clk) if (!reset && (st == L2LK || st == L2H) && l2q_ix != va_q[12+:L2I])
          $fatal(1, "[mmu] the second level's word is entry %0h, not the walk's %0h", l2q_ix, va_q[12+:L2I]);
       wire [GB:0]  q_g    = l2q[L2W-1 -: GB+1];
       wire [L2T-1:0] q_tag = l2q[O_TAG +: L2T];
@@ -426,7 +429,9 @@ module mmu
            // refills the first level (l2_fill, above); a miss walks
            L2LK: if (L2N == 0) $fatal(1, "[mmu] a second-level lookup with no second level");
                  else if (!req_match) st<=IDLE;
-                 else if (l2_hit) begin
+                 else begin l2h_q <= l2_hit;  st <= L2H; end
+           L2H:  if (!req_match) st<=IDLE;
+                 else if (l2h_q) begin
                     w_paddr <= l2_pa[AW-1:0];
                     w_lvl   <= l2_lvl;
                     w_nc    <= l2_nc;
@@ -462,7 +467,7 @@ module mmu
                  walk_ppn<=ptw_rdata[53:10]; lvl<=lvl-1'b1; st<=REQ;           // descend
               end
            end
-           // st is 2 bits; without an arm the walker parks in an unknown state forever and every
+           // st is 3 bits; without an arm the walker parks in an unknown state forever and every
            // translation stalls behind it -- a silent whole-core wedge.
            default: if (^st !== 1'bx) $fatal(1, "[mmu] ILLEGAL FSM STATE st=%0d", st);
          endcase
