@@ -708,10 +708,13 @@ module csr_file
    wire        sysop_exc  = upd_valid & exc_active;
    wire        trap_is_intr = irq_take | (xtrap_v & xtrap_intr);
    wire        trap_v     = sysop_exc | irq_take | xtrap_v;
-   // A CSR WRITE YIELDS ONLY TO ITS OWN OP'S TRAP (op_trap): an injected trap (xtrap_v, M's fault or
-   // the SYSQ's dispatch trap) never meets a system op's update (asserted), so it stays out of every
-   // CSR a trap does not write.
-   wire        op_trap    = sysop_exc | irq_take;
+   // A CSR WRITE YIELDS ONLY TO ITS OWN OP'S EXCEPTION (op_trap): an injected trap (xtrap_v, M's
+   // fault or the SYSQ's dispatch trap) never meets a system op's update (asserted), and the
+   // interrupt pseudo-op is neither a CSR op nor an xret -- so neither the injection nor the pending
+   // interrupts reach a CSR a trap does not write.
+   wire        op_trap    = sysop_exc;
+   always @(posedge clk) if (!reset && upd_valid && is_irqop && (upd_is_csr || is_mret || is_sret))
+      $fatal(1, "csr_file: the interrupt pseudo-op decodes as a CSR op or an xret (pc %h)", upd_pc);
    always @(posedge clk) if (!reset && upd_valid && xtrap_v)
       $fatal(1, "csr_file: a system op's update and an injected trap at once (pc %h)", upd_pc);
    wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, (irq_take ? irq_cause : xtrap_cause)})

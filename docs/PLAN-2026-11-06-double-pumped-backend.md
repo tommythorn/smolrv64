@@ -612,6 +612,11 @@ cycle without a request between them, the latched completion withdrawing it). A 
 of the oldest faulting entry and its PC read into the queue-fault record). `fi` is registered and
 reported while that entry still faults; the core takes a report only at the ROB head, so a stale
 pick waits a cycle.
+
+**A CSR WRITE YIELDS ONLY TO ITS OWN OP'S EXCEPTION** (m2l: `u_csr/mip -> mie`, `-> scounteren`,
+`-> mnstatus`, 9-10 levels: the pending interrupts, through the interrupt op's take, in every CSR's
+write enable). The interrupt pseudo-op is neither a CSR op nor an xret (asserted), so the write
+gates take `sysop_exc` alone.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
