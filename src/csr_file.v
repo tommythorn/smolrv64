@@ -583,6 +583,10 @@ module csr_file
    endfunction
    wire [63:0] fl_rmw = rmw({59'd0, fcsr[4:0]}), rm_rmw = rmw({61'd0, fcsr[7:5]}), fc_rmw = rmw({56'd0, fcsr});
    wire [63:0] sp_rmw = rmw(satp);
+   // ...and the VA-packed ones, unpacked (a named wire: VA_PACK40 selects its argument's bits, and
+   // Vivado refuses a select on a function call)
+   wire [63:0] mtvec_rmw = rmw(`VA_UNPACK40(mtvec)), mepc_rmw = rmw(`VA_UNPACK40(mepc)), mtval_rmw = rmw(`VA_UNPACK40(mtval));
+   wire [63:0] stvec_rmw = rmw(`VA_UNPACK40(stvec)), sepc_rmw = rmw(`VA_UNPACK40(sepc)), stval_rmw = rmw(`VA_UNPACK40(stval));
    reg [63:0] newv;
    always @* begin
       case (upd_func[1:0])
@@ -939,10 +943,10 @@ module csr_file
             case (upd_addr)
               MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (rmw(mstatus) & MSTATUS_WMASK);
               SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (rmw(mstatus) & SSTATUS_WMASK);
-              MTVEC:      mtvec   <= `VA_PACK40(rmw(`VA_UNPACK40(mtvec)));
-              MEPC:       mepc    <= `VA_PACK40(rmw(`VA_UNPACK40(mepc)));
+              MTVEC:      mtvec   <= `VA_PACK40(mtvec_rmw);
+              MEPC:       mepc    <= `VA_PACK40(mepc_rmw);
               MCAUSE:     mcause  <= rmw(mcause);
-              MTVAL:      mtval   <= `VA_PACK40(rmw(`VA_UNPACK40(mtval)));
+              MTVAL:      mtval   <= `VA_PACK40(mtval_rmw);
               MSCRATCH:   begin
                  mscratch<= rmw(mscratch);
 `ifdef SCDBG
@@ -965,10 +969,10 @@ module csr_file
               MIDELEG:    mideleg <= rmw(mideleg);
               MCOUNTEREN: mcounteren <= rmw(mcounteren);
               SCOUNTEREN: scounteren <= rmw(scounteren);
-              STVEC:      stvec   <= `VA_PACK40(rmw(`VA_UNPACK40(stvec)));
-              SEPC:       sepc    <= `VA_PACK40(rmw(`VA_UNPACK40(sepc)));
+              STVEC:      stvec   <= `VA_PACK40(stvec_rmw);
+              SEPC:       sepc    <= `VA_PACK40(sepc_rmw);
               SCAUSE:     scause  <= rmw(scause);
-              STVAL:      stval   <= `VA_PACK40(rmw(`VA_UNPACK40(stval)));
+              STVAL:      stval   <= `VA_PACK40(stval_rmw);
               SSCRATCH:   sscratch<= rmw(sscratch);
               // satp.ASID is 10-bit WARL (matches SmolRV64 TLB_ASID_BITS=10 + simmerv):
               // zero the unimplemented high ASID bits [59:54] so a read-back matches the
