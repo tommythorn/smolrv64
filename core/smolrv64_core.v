@@ -2001,6 +2001,7 @@ module smolrv64_core
    // or-load pick) and the walker's 2048-entry TLB read are a cycle apart, so the choice never
    // reaches the TLB's read address in the cycle it is made.
    reg                 wk_lk, wk_lk_st;
+   reg                 wk_a_q = 1'b0;          // an answer lands (below)
    reg [38:0]          wk_lk_va;
    reg [LQ_IB-1:0]     wk_lk_li;               // the load the walker holds (the oldest untranslated one may change)
    initial begin wk_lk = 1'b0; wk_lk_st = 1'b0; end
@@ -2014,13 +2015,29 @@ module smolrv64_core
       // the payload follows the choice while the walker is free; only the lock bit sees the flush
       // (rule I11: the redirect gates no enable)
       if (~wk_lk) begin wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va;  wk_lk_li <= lq_k_idx; end
-      if (~wk_lk & (sq_k_v | lq_k_v) & ~wk_new_dead) wk_lk <= 1'b1;   // never a dead entry
+      if (~wk_lk & ~wk_a_q & (sq_k_v | lq_k_v) & ~wk_new_dead) wk_lk <= 1'b1;   // never a dead entry, nor
+                                                                     // while an answer lands (its entry still untranslated)
       if (lsu_wk_done)                wk_lk <= 1'b0;
       if (wk_lk & wk_cur_dead)        wk_lk <= 1'b0;   // its entry dies
       if (reset | redirect)           wk_lk <= 1'b0;
       if (!reset && !redirect && wk_lk && !wk_cur_dead && wk_lk_st && ~sq_k_v)
          $fatal(1, "smolrv64_core: the walker's store is no longer the untranslated one");
    end
+   // THE ANSWER LANDS A CYCLE LATER, FROM REGISTERS (wk_a_*): the walker's TLB lookup and its verdict
+   // stay out of the queues' fields. The entry is still the queue's untranslated one then (a store's
+   // is the first uncommitted, which cannot commit untranslated; a load's is named by wk_a_li), the
+   // lock takes no new request while it lands, and an entry the kill names by then drops it.
+   reg                 wk_a_st, wk_a_unc, wk_a_mem, wk_a_flt;
+   reg [LQ_IB-1:0]     wk_a_li;
+   reg [PABITS-1:0]    wk_a_pa;
+   reg [3:0]           wk_a_fc;
+   always @(posedge clk) begin
+      wk_a_q  <= ~reset & ~redirect & lsu_wk_done & ~wk_cur_dead;
+      wk_a_st <= wk_st;  wk_a_li <= wk_lk_li;
+      wk_a_pa <= lsu_wk_pa;  wk_a_unc <= lsu_wk_unc;  wk_a_mem <= lsu_wk_mem;  wk_a_flt <= lsu_wk_flt;  wk_a_fc <= lsu_wk_fc;
+   end
+   wire                wk_a_dead = wk_a_st ? sq_kmask[sq_k_idx] : lq_kmask[wk_a_li];
+   wire                wk_a_v    = wk_a_q & ~wk_a_dead;
 
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(PABITS), .PBITS(RN_PBITS),
              .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW), .NW(IW)) u_sq
@@ -2048,8 +2065,8 @@ module smolrv64_core
       .l_vpn(lq_e_vpn), .l_fill_vpn({m_bare, m_addr[38:12]}), .a_bare(m_bare), .l_fwd(sq_l_fwd),
       .f_go(lq_x_take & lq_x_fwd), .f_lix(lq_x_idx), .f_data(sq_f_data), .f_sbo(sq_f_sbo),
       .k_v(sq_k_v), .k_idx(sq_k_idx), .k_va(sq_k_va),
-      .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
-      .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
+      .w_v(wk_a_v & wk_a_st), .w_idx(sq_k_idx), .w_pa(wk_a_pa), .w_unc(wk_a_unc), .w_mem(wk_a_mem),
+      .w_flt(wk_a_flt), .w_fc(wk_a_fc),
       .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
       .occupancy(sq_occ), .flush(redirect), .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(sq_kmask));
 
@@ -2159,8 +2176,8 @@ module smolrv64_core
       .l_pre_a(dmem_pre_a), .l_pre_b(dmem_pre_b), .l_src_b(dmem_src_b), .l_fw(lsu_fw_any), .l_fwn(lsu_fw_lt_n),
       .l_prd(lq_l_prd), .l_rd(lq_l_rd), .l_rd_v(lq_l_rd_v), .l_rob(lq_l_rob), .l_pa(lq_l_pa),
       .k_v(lq_k_v), .k_idx(lq_k_idx), .k_va(lq_k_va),
-      .w_v(lsu_wk_done & ~wk_st), .w_idx(wk_lk_li), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
-      .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
+      .w_v(wk_a_v & ~wk_a_st), .w_idx(wk_a_li), .w_pa(wk_a_pa), .w_unc(wk_a_unc), .w_mem(wk_a_mem),
+      .w_flt(wk_a_flt), .w_fc(wk_a_fc),
       .f_new(lq_f_new), .f_v(lq_f_v), .f_idx(lq_f_idx), .f_rp(lq_f_rp), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .ar(la_v), .pk_v(lq_pk_v), .pk_idx(lq_pk_idx), .pk_seq(lq_pk_seq), .rob_head(rob_head_idx), .flush(redirect),
       .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(lq_kmask));

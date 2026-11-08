@@ -880,6 +880,13 @@ before it can fire) and CSR state that only a system op or a trap changes, so `e
 take them a cycle ahead (asserted equal to the live decision at the fire). Every enable, the
 redirect and its target read them. An interrupt's delegation stays `irq_to_s_q`, and an injected
 trap's `x_to_s` comes from its own cause.
+
+**THE WALKER'S ANSWER TO THE QUEUES LANDS A CYCLE LATER** (m2w: `u_lsu/pm_q -> u_sq/fc`, `u_lq/fc`,
+`u_lq/u_pa`, ~240 endpoints at -1.02 ns, 9-10 levels: the queue walk's TLB read, compare and verdict
+into the queues' translation fields). `wk_a_*` registers the answer and its payload, and the queue
+takes it a cycle later. Its entry is still the queue's untranslated one then: a store's is the first
+uncommitted, which cannot commit untranslated, and a load's is named by `wk_a_li`. The lock takes no
+new request while an answer lands, and an entry the kill names by then drops it.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
