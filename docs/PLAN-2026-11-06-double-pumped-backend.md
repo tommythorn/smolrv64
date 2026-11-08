@@ -554,6 +554,15 @@ its completion). `cn_n` counts them as they are taken and leave (asserted equal 
 **AN AMO COMPUTES ITS WRITE A CYCLE AFTER ITS READ** (m2j: `u_lsu/rfast_q -> u_lsu/amo_wd_q`, 11
 levels, -1.63: the SoC's held-data select in front of the AMO's adder). S_ARD registers the word
 as read (`amo_mem_q`); a new state S_ACP computes the write value from it; S_AWR writes.
+
+**M'S TRANSLATE-ONLY PASS TAKES TWO CYCLES** (m2j: `m_addr -> u_sq/fc`, `-> m_addr` CE, 10-11
+levels: the dTLB's LUTRAM read and tag compare in front of the queues' fill fields, the fast
+load's start and M's completion). A plain load or store spends two cycles in M: the first reads
+and compares the dTLB through its side lookup (`s_*`, which walks nothing), registered; the
+second fills the queue entry, starts the fast load and completes M from that register (`xp`).
+Between the two the dTLB can only gain an entry or replace one: a stale hit is still the page's
+translation, a stale miss hands the entry over untranslated as any miss does. M's own FSM ops
+(AMO, LR/SC, CBO) keep the walking lookup.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

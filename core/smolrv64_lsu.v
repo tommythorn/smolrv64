@@ -340,6 +340,13 @@ module smolrv64_lsu
    // 2026-09-03 build after the translate-only cut still had 1632 near-critical endpoints
    // starting at u_lq/sqt_reg, all through pt_start -> xl_f -> fault -> lsu_done -> m_done.
    wire        xl_x     = req_valid & req_xlate;
+   // THE TRANSLATE-ONLY PASS TAKES TWO CYCLES: the first reads and compares the dTLB (s_*, a
+   // register at its end), the second hands the entry its result and starts M's load from that
+   // register (xp: the second). M's op is held through both: it completes in the second.
+   reg         xp;
+   initial xp = 1'b0;
+   always @(posedge clk) xp <= ~reset & xl_x & ~xp;
+   wire        xl_x2    = xl_x & xp;
    wire        xl_f     = xl_want & ~req_xlate;
 
    // The request the FSM actually sees. In S_IDLE the selector is pt_start (src_pt still
@@ -417,6 +424,13 @@ module smolrv64_lsu
       .t_lvl(), .t_uncached(t_uncached), .t_ok(), .t_fault_raw(),
       .s_vaddr(req_vaddr), .s_access(mm_st ? 2'd2 : 2'd1),
       .s_ok(s_ok), .s_flt(s_flt), .s_cause(s_cause), .s_paddr(s_paddr), .s_nc(s_nc), .s_dram(s_dram));
+   // the translate-only lookup as the pass's first cycle left it (see xp)
+   reg            s_ok_q, s_flt_q, s_nc_q, s_dram_q;
+   reg  [3:0]     s_cause_q;
+   reg  [PAW-1:0] s_paddr_q;
+   always @(posedge clk) begin
+      s_ok_q <= s_ok;  s_flt_q <= s_flt;  s_nc_q <= s_nc;  s_dram_q <= s_dram;  s_cause_q <= s_cause;  s_paddr_q <= s_paddr;
+   end
    assign wk_done = wk_v & wk_own & t_ready;
    assign wk_pa   = t_paddr;
    assign wk_unc  = t_uncached;
@@ -446,18 +460,18 @@ module smolrv64_lsu
    assign fault       = req_valid & (mis_flt | xl_flt);
    assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(t_cause) : t_cause;
    assign fault_tval  = req_vaddr;
-   assign xo_flt      = xl_x & (xpage | s_flt);
-   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause) : s_cause;
+   assign xo_flt      = xl_x2 & (xpage | s_flt_q);
+   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause_q) : s_cause_q;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
    wire xl_ok_f  = xl_fp & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
-   wire xo_ok    = xl_x & s_ok & ~xpage;
+   wire xo_ok    = xl_x2 & s_ok_q & ~xpage;
    // ...or hands its VA over untranslated (the TLB does not hold it, or its perms failed, which
    // only a fresh walk may turn into a fault) and does not wait for the walk, or hands over its
    // address-only fault. M lets go every way: the pass always completes, and the TLB is in the
    // PA and `tv` the entry gets, never in M's done.
-   wire xo_any   = xl_x;
+   wire xo_any   = xl_x2;
    // NO disambiguation here any more. smolrv64_lq owns the ordering test, against a REGISTERED
    // address, so it is off the translate path entirely -- that is the whole reason the queue
    // exists (see its header).
@@ -470,22 +484,22 @@ module smolrv64_lsu
    // cycle, so it cancels the start a cycle later instead (f_cancel). Anything not started goes
    // the queue's way, and smolrv64_lq is told which happened through xo_early.
    wire xw_m  = (({1'b0, req_vaddr[2:0]} + req_nb) > 4'd8);   // M's load straddles a doubleword
-   wire f_go  = xo_ok & req_early & s_dram & ~s_nc & ~xw_m & f_ok & ~o_v[req_tag];
+   wire f_go  = xo_ok & req_early & s_dram_q & ~s_nc_q & ~xw_m & f_ok & ~o_v[req_tag];
    wire start_ok = pt_start | xl_ok_f;
    assign xo_v     = xo_any;
    assign xo_tv    = xo_ok;
    assign xo_early = f_go;
    assign f_v      = f_go;
-   assign f_pa     = s_paddr & PA_DWM;
-   assign xo_pa  = s_paddr;
-   assign xo_unc = s_nc;
+   assign f_pa     = s_paddr_q & PA_DWM;
+   assign xo_pa  = s_paddr_q;
+   assign xo_unc = s_nc_q;
    // THE TRANSLATE'S OWN REGION, NEVER eff_pa's. eff_pa is the PORT's address whenever the port
    // starts or chains an access in the same cycle a translate completes (pt_start | take_next),
    // and that is exactly when a load's fill would have taken the PORT's DRAM classification:
    // a device load recorded as idempotent, issued off the wrong path past smolrv64_lq's head gate,
    // reading a read-to-clear register on the way (2026-09-17: the board's dead NIC under NFS
    // root; the cosim never took a PLIC interrupt until the SMOLRV64_IRQ_STIM storm caught it).
-   wire t_mem = (s_paddr >= LSU_DRAM_BASE) | (s_paddr[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]);
+   wire t_mem = (s_paddr_q >= LSU_DRAM_BASE) | (s_paddr_q[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]);
    assign xo_mem = t_mem;
 
    // ------------------------------------------------------- AMO RMW datapath
@@ -841,7 +855,7 @@ module smolrv64_lsu
          $display("[lsu t=%0t START pa=%h fast=%b tag=%0d pt=%b st=%b nb=%0d boff=%0d unc=%b xword=%b fsm=%0d o_v=%b port_free=%b]",
                   $time, eff_pa, ld_fast_ok, ld_tag, pt_start, pt_start & pt_store, nb, boff, eff_unc, xword, st, o_v, port_free);
       if (f_go && (f_pa[PAW-1:6] == dbg_line[PAW-1:6]))
-         $display("[lsu t=%0t MSTART pa=%h tag=%0d o_v=%b]", $time, s_paddr, req_tag, o_v);
+         $display("[lsu t=%0t MSTART pa=%h tag=%0d o_v=%b]", $time, s_paddr_q, req_tag, o_v);
       if (|f_cancel) $display("[lsu t=%0t CANCEL %b]", $time, f_cancel);
       if (mem_rvalid_c)
          $display("[lsu t=%0t FASTRESP tag=%0d o_v=%b kill=%b data=%h fmt=%h nb=%0d boff=%0d]", $time, mem_rtag_resp, o_v[mem_rtag_resp], o_kill[mem_rtag_resp], mem_rdata_c, ld_fast_val, f_nb, o_boff[mem_rtag_resp]);
@@ -1055,8 +1069,8 @@ module smolrv64_lsu
       if (ld_fast_ok & ~xl_can)
          $fatal(1, "smolrv64_lsu: a fast load starts unaligned (pa=%h)", eff_pa);
       // M's start is DRAM by its dTLB entry; the PA it presents says the same (rule D12)
-      if (f_go & ~(s_paddr >= LSU_DRAM_BASE))
-         $fatal(1, "smolrv64_lsu: M's load starts at pa=%h, below DRAM", s_paddr);
+      if (f_go & ~(s_paddr_q >= LSU_DRAM_BASE))
+         $fatal(1, "smolrv64_lsu: M's load starts at pa=%h, below DRAM", s_paddr_q);
    end
 
    // ---- INTEGRITY LOG (rv_errlog) ---------------------------------------------------
