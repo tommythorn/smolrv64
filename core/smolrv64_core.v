@@ -2881,7 +2881,7 @@ module smolrv64_core
       // (a queue entry's trap is a load's or store's: younger work may be in flight, and dies)
       // (a CSR op does not drain: younger work may be in flight; M yields to it, see m_done)
       if (sy_fire & ~sy_qf & ~sy_is_csr & m_valid) $fatal(1, "smolrv64_core: a system op fires with M busy (pc %h): the drain is broken", sy_pc);
-      if (sy_fire & ~sy_qf & ~sy_is_csr & (fpu_busy | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
+      if (sy_fire & ~sy_qf & ~sy_is_csr & (fpu_busy | (|fq_v) | f_valid | icr_v)) $fatal(1, "smolrv64_core: a system op fires with FP work in flight -- frm/fflags may change under it");
       if (rn_valid & d_csr_op & csr_infl) $fatal(1, "smolrv64_core: a second CSR op dispatched with one in flight");
       if (m_valid & m_is_sys)            $fatal(1, "smolrv64_core: a system op reached M (pc %h)", m_pc);
       if (m_valid & (m_insn[6:2] == 5'b00011) & (m_insn[14:13] == 2'b00))
@@ -2914,17 +2914,19 @@ module smolrv64_core
    // allocated. 21 bits inside the wrapper's 24: with results returning out of issue order
    // (fpnew's op groups have different latencies), a result must say where it goes rather
    // than be matched against "the one in flight".
-   // PIPE_REGS 5 (fp_unit's default is 4): fpnew's own datapath was a 25-level, -0.51 ns
-   // family at IW=3. One more cycle of FP latency; the integer side does not pay.
-   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(10), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
-     (.clk(clk), .reset(reset),
+   // THE FPU RUNS ON clk_fe (smolrv64_x2fpu: an op a clk cycle, results registered across), with
+   // PIPE_REGS 5 (fp_unit's default is 4): fpnew's own datapath was a 25-level, -0.51 ns family at
+   // IW=3 at 6 ns, and at 3 ns its stages do not close (its registers reset asynchronously, so
+   // synthesis does not retime them).
+   smolrv64_x2fpu #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(5), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
+     (.clk2x(clk), .clk(clk_fe), .reset(reset), .h2(h2),
       .iss_valid(fp_start), .iss_ready(fp_iss_ready),
       .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
       .iss_int_fmt(ff_int),
       .iss_rnd(ff_rnd == 3'b111 ? csr_frm : ff_rnd),      // dynamic rm -> fcsr.frm
       .iss_operands({ffo2, ffo1, ffo0}),
       .iss_tag({ff_dst32, f_rd_v, f_rd, f_rob, f_prd}),
-      .res_valid(fp_res_valid), .res_ready(1'b1), .res_data(fp_res_data),
+      .res_valid(fp_res_valid), .res_data(fp_res_data),
       // FLUSH ON REDIRECT. With results landing asynchronously by tag, an op still in
       // fpnew's pipeline when a squash happens would write back after rename had rolled
       // its physreg away -- the zombie writeback, caught by smolrv64_pending as "writeback to

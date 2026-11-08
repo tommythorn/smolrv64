@@ -382,6 +382,16 @@ commits or drains in between (in-order commit; the irrevocable point is a regist
 passed the op; a trap's commit is killed in both cycles), and the frontend's pulse, delayed with
 the flush, wins over a younger restart or resteer in its cycle.
 
+**THE FPU RUNS ON clk** (`smolrv64_x2fpu`), as section 3b's principle says it may: one unit, which
+the 2x clock buys nothing. With ten pipeline registers fpnew still had 20-level stages at 3 ns (its
+registers reset asynchronously, so synthesis cannot retime them: m2b's `u_fpu -> u_fpu`, 4.7 K
+endpoints); on clk with five it closed main's 6 ns, and it takes an op a clk cycle, as at 166.67 MHz.
+The crossing: the core writes an op into a clk2x buffer (`ib`, its ready a flop), which moves at a
+clk edge into the register the FPU reads (`ob`, changing only at clk edges and holding until the FPU
+takes it there); the result -- and `res_fp`/`res_int`, which are its valid by destination kind -- is
+registered in the first half and is the core's for one clk2x cycle; the flush goes through
+`smolrv64_x2f2s`, and until the FPU has seen it every result is of a killed op and is dropped.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

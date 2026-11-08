@@ -68,4 +68,92 @@ module smolrv64_x2f2s #(parameter integer W = 1)
    assign busy = v | pv | svr;
 endmodule
 
+// THE FPU ON clk, BEHIND A CROSSING (fp_unit's own interface on the clk2x side). fpnew's stages close
+// clk's period with five pipeline registers (main's), and the 2x clock buys a single unit nothing:
+// it takes an op a clk cycle, as at 166.67 MHz. The ISSUE: the core writes an op into ib (its ready
+// is ib's emptiness, a flop); at a clk edge ib moves into ob, which the FPU reads (it changes only at
+// clk edges) and which holds until the FPU takes it there (its ready read in the second half alone:
+// x2_ccap). The RESULT, one clk cycle long, is registered in the first half and is the core's for one
+// clk2x cycle. A FLUSH reaches the FPU through smolrv64_x2f2s; until it has, every result is of an op
+// the flush killed (the core flushes them all: they are younger than its redirect) and is dropped,
+// as are ib and ob.
+module smolrv64_x2fpu #(parameter integer TAGW = 24, parameter integer RDV_BIT = TAGW - 2,
+                        parameter integer FSHARD_BIT = 0, parameter integer NFLIGHT = 4, parameter integer PIPE_REGS = 5)
+  (input  wire             clk2x,
+   input  wire             clk,          // the FPU's
+   input  wire             reset,        // clk2x's
+   input  wire             h2,
+   input  wire             iss_valid,
+   output wire             iss_ready,
+   input  wire [3:0]       iss_op,
+   input  wire             iss_op_mod,
+   input  wire [2:0]       iss_src_fmt,
+   input  wire [2:0]       iss_dst_fmt,
+   input  wire [1:0]       iss_int_fmt,
+   input  wire [2:0]       iss_rnd,
+   input  wire [191:0]     iss_operands,
+   input  wire [TAGW-1:0]  iss_tag,
+   output wire             res_valid,
+   output wire [63:0]      res_data,
+   output wire [4:0]       res_fflags,
+   output wire [TAGW-1:0]  res_tag,
+   output wire             res_fp,
+   output wire             res_int,
+   input  wire             flush,
+   output wire             busy,         // ib or ob holds an op (what the FPU holds, the core counts)
+   output reg              err,
+   output reg  [15:0]      dbg);
+   localparam integer PW = 4 + 1 + 3 + 3 + 2 + 3 + 192 + TAGW;
+   wire [PW-1:0] iss_p = {iss_op, iss_op_mod, iss_src_fmt, iss_dst_fmt, iss_int_fmt, iss_rnd, iss_operands, iss_tag};
+   reg           ib_v = 1'b0;
+   reg  [PW-1:0] ib;
+   (* x2_cedge = "yes", x2_ccap = "yes" *) reg ob_v = 1'b0;
+   (* x2_cedge = "yes" *) reg [PW-1:0] ob;
+   wire          s_ready;                       // the FPU's (clk's)
+   wire          fl_s, fl_busy;
+   smolrv64_x2f2s #(.W(1)) u_xfl (.clk2x(clk2x), .reset(reset), .h2(h2), .v(flush), .d(1'b0),
+                                  .sv(fl_s), .sd(), .busy(fl_busy));
+   reg           fl_seen = 1'b0;                // a flush since the last clk edge
+   wire          fl_now  = fl_seen | flush;
+   wire          ob_take = ob_v & s_ready;      // the FPU takes ob at this clk edge (h2's)
+   wire          ib_mv   = ib_v & (~ob_v | ob_take);
+   assign iss_ready = ~ib_v;
+   always @(posedge clk2x) begin
+      fl_seen <= ~reset & ~h2 & fl_now;
+      if (reset | flush)                        ib_v <= 1'b0;
+      else if (iss_valid & ~ib_v)               ib_v <= 1'b1;
+      else if (h2 & ib_mv)                      ib_v <= 1'b0;
+      if (iss_valid & ~ib_v) ib <= iss_p;
+      if (h2) begin
+         ob_v <= ~reset & ~fl_now & (ib_mv | (ob_v & ~ob_take));
+         if (ib_mv) ob <= ib;
+      end
+   end
+   reg rst_s = 1'b1;
+   always @(posedge clk) rst_s <= reset;
+   wire [3:0] o_op; wire o_mod; wire [2:0] o_sf, o_df; wire [1:0] o_if; wire [2:0] o_rnd; wire [191:0] o_ops; wire [TAGW-1:0] o_tag;
+   assign {o_op, o_mod, o_sf, o_df, o_if, o_rnd, o_ops, o_tag} = ob;
+   wire s_rv, s_fp, s_int, s_busy, s_err;  wire [63:0] s_data;  wire [4:0] s_ff;  wire [TAGW-1:0] s_tag;  wire [15:0] s_dbg;
+   fp_unit #(.TAGW(TAGW), .NFLIGHT(NFLIGHT), .PIPE_REGS(PIPE_REGS), .RDV_BIT(RDV_BIT), .FSHARD_BIT(FSHARD_BIT)) u_fpu
+     (.clk(clk), .reset(rst_s),
+      .iss_valid(ob_v), .iss_ready(s_ready), .iss_op(o_op), .iss_op_mod(o_mod), .iss_src_fmt(o_sf), .iss_dst_fmt(o_df),
+      .iss_int_fmt(o_if), .iss_rnd(o_rnd), .iss_operands(o_ops), .iss_tag(o_tag),
+      .res_valid(s_rv), .res_ready(1'b1), .res_data(s_data), .res_fflags(s_ff), .res_tag(s_tag), .res_fp(s_fp), .res_int(s_int),
+      .flush(fl_s), .busy(s_busy), .err(s_err), .dbg(s_dbg));
+   // the result, taken once (the first half), unless a flush is on its way to the FPU or in it
+   reg            rv = 1'b0, rfp = 1'b0, rint = 1'b0;
+   reg [63:0]     rdata;  reg [4:0] rff;  reg [TAGW-1:0] rtag;
+   always @(posedge clk2x) begin
+      // res_fp and res_int are the result's valid by its destination kind (fp_unit's): taken as rv is
+      rv   <= ~reset & ~h2 & s_rv & ~fl_busy;
+      rfp  <= ~reset & ~h2 & s_fp & ~fl_busy;
+      rint <= ~reset & ~h2 & s_int & ~fl_busy;
+      rdata <= s_data;  rff <= s_ff;  rtag <= s_tag;
+      err <= ~reset & s_err;  dbg <= s_dbg;
+   end
+   assign res_valid = rv;  assign res_data = rdata;  assign res_fflags = rff;  assign res_tag = rtag;
+   assign res_fp = rfp;  assign res_int = rint;
+   assign busy = ib_v | ob_v;
+endmodule
+
 `default_nettype wire
