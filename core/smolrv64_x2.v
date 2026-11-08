@@ -207,7 +207,8 @@ module smolrv64_x2div
             ps_v <= 1'b0;
             if (dst | (run & ~got)) disc <= 1'b1;
          end
-         if (start & ~abort) begin ps_v <= 1'b1;  ps_a <= rs1;  ps_b <= rs2;  ps_f3 <= f3;  ps_w <= is_w; end
+         if (start & ~abort) ps_v <= 1'b1;
+         if (start) begin ps_a <= rs1;  ps_b <= rs2;  ps_f3 <= f3;  ps_w <= is_w; end   // ps_v says whether they count
       end
       dres <= d_res;
    end

@@ -822,7 +822,8 @@ endpoints at -1.29 ns, 8 levels: the L2's `&u_q_wmask` in its ready, into the ar
 **THE DIVIDER'S OPERANDS LOAD WITHOUT THE ABORT** (m2u: `u_rob/kh -> u_div/da`, `db`, 128 endpoints
 at -1.33 ns, 9 levels: the kill's position compare on the divide in their enables). The hand-over
 loads them whatever the abort says: the start (`dst`) keeps `~abort`, and the abort arm drops the
-waiting start.
+waiting start. The parked start's operands (`ps_*`) likewise load on any start, and `ps_v` alone
+waits on the abort (m2v: `u_rob/kh -> u_div/ps_a`, `ps_b`, 105 endpoints).
 
 **THE CSR FILE'S DECISION IS OUT OF THE COMMIT KILL** (m2u: `sy_addr -> u_rob/v`, `u_rename/rnewer`,
 `cp[].rmap`, `u_rob/head`, about 290 endpoints at -1.27 ns, 12 levels: the CSR decode's trap decision
