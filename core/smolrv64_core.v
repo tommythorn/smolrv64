@@ -2413,12 +2413,16 @@ module smolrv64_core
      (.clk(clk), .reset(reset), .wv(la_wv), .wa(la_wa), .wd(a_wd), .ra(lq_pk_idx), .rd(la_rd));
    smolrv64_mwram #(.W(64), .DEPTH(SQ_N), .NW(NL), .NR(1), .AB(SQ_IB)) u_sa
      (.clk(clk), .reset(reset), .wv(sa_wv), .wa(sa_wa), .wd(a_wd), .ra(sq_pk_idx), .rd(sa_rd));
-   // M FILLS IN THE ORDER ADDRESSES ARRIVE, oldest first among those waiting: a load or store whose
-   // address is ready is not held up by an older one whose address is not. An address already
-   // waiting (la_v / sa_v, held for M) goes first; with none waiting, the lowest lane delivering
-   // one goes straight into M from its adder, a cycle sooner (the arrival registers still record
-   // it, for when M is busy or another lane delivers in the same cycle).
-   wire              u_ld  = lq_pk_v & (~sq_pk_v | older(lq_pk_seq, sq_pk_seq));
+   // M FILLS IN THE ORDER ADDRESSES ARRIVE, the older first between the two queues' picks: a load
+   // or store whose address is ready is not held up by an older one whose address is not. An address
+   // already waiting (la_v / sa_v, held for M) goes first; with none waiting, the lowest lane
+   // delivering one goes straight into M from its adder, a cycle sooner (the arrival registers still
+   // record it, for when M is busy or another lane delivers in the same cycle). Which of the two picks
+   // is older is a preference, not a rule -- either fill is correct, the queues order themselves --
+   // so it is the previous cycle's compare, a register: the sequence compare stays out of M's take.
+   reg               u_ld_pref = 1'b0;
+   always @(posedge clk) u_ld_pref <= older(lq_pk_seq, sq_pk_seq);
+   wire              u_ld  = lq_pk_v & (~sq_pk_v | u_ld_pref);
    wire              r_win = lq_pk_v | sq_pk_v;
    reg               by_any, by_stq;
    reg  [LQ_IB-1:0]  by_li;

@@ -714,6 +714,11 @@ past -1 ns at 1.4 K. Lockstep: 7a01e51b retires 184.0 M.
 kill's compare on M's op in front of every queue field the fill writes). An op killed in an earlier
 cycle has left M already; the queues apply this cycle's kill to their own entries after every other
 arm, the fill included (asserted: a dead op's fill meets its queue's kill).
+
+**M's PREFERENCE BETWEEN THE QUEUES' PICKS IS A REGISTER** (m2r: `u_sq/v -> m_addr`, `-> m_st_data`,
+`-> m_unit_res_q`, 9 levels: the two picks' sequence compare in front of M's take). Taking the older
+of the two is a preference -- either fill is correct, the queues order themselves -- so it is the
+previous cycle's compare.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
