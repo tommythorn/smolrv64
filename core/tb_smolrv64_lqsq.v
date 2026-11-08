@@ -405,13 +405,15 @@ module tb;
       lsu_drain;
       chk("11 drained after the flush", sq_occ==0 && lq_occ==0, 1'b1);
 
-      // ---- 12. released and drained in the SAME cycle: the release costs no cycle ----
+      // ---- 12. released, then drained the cycle after: the release is a register ----
       disp_store(9'd7, 4'd1, S0);
       store_addr(S0, 56'hD000, 2, 1'b1, 64'hDD);
       chk("12 releasable, not draining", sq_kc_v && !sq_c_v, 1'b1);
       sq_k_take=1; #1;
-      chk("12 drains in the release cycle", sq_c_v && sq_c_data==64'hDD, 1'b1);
-      sq_c_take=1; step; sq_k_take=0; sq_c_take=0; #1;
+      chk("12 not draining in the release cycle", sq_c_v, 1'b0);
+      step; sq_k_take=0; #1;
+      chk("12 drains the cycle after the release", sq_c_v && sq_c_data==64'hDD && !sq_kc_v, 1'b1);
+      lsu_drain;
       chk("12 gone, nothing left to release", sq_occ==0 && !sq_c_v && !sq_kc_v, 1'b1);
 
       // ---- 13. av_any, the CBO's wait: "an older store HAS AN ADDRESS", never the occupancy.

@@ -404,15 +404,13 @@ module smolrv64_sq
    // c_v says the next entry to hand off is READY (address and data present). Committing in program order
    // is the core's job: it takes the entry only when c_rob is the ROB head, so a store
    // reaches memory exactly where the cosim's retire stream expects it.
-   // Only a committed store drains -- including one committed THIS cycle at the head, so the
-   // release costs no cycle on a store the LSU is waiting for (stbench FWD: 12.75 -> 11.75
-   // cycles per store-load pair without it). k_take is a compare of registered values in
-   // smolrv64_core, the same shape as the old head-index compare this replaced.
+   // Only a committed store drains, from the cycle after its commit (cmt, a register): the
+   // commit's compare against the ROB's irrevocable pointer stays out of the LSU's start.
    // ONE STORE BETWEEN HANDOFF AND MEMORY: the next is handed off when none is outstanding or the
    // outstanding one is done this cycle (c_done), whichever path it took -- the store register
    // chains one a cycle as before, and a store behind one the LSU's state machine writes waits for
    // its last write, so stores reach memory in program order and stay ordered against loads.
-   assign c_v    = v[ho] & av[ho] & dv[ho] & (cmt[ho] | (k_take & (kcc == hoc)))
+   assign c_v    = v[ho] & av[ho] & dv[ho] & cmt[ho]
                  & ((ho_n == {(IDXB+1){1'b0}}) | c_done);
    assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc] & tv[kc] & ~flt[kc];
    assign kc_rob = rob[kc];

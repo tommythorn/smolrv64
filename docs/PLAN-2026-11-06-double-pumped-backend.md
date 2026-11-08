@@ -464,6 +464,12 @@ next data), and the free MSHR is C1's, registered: nothing allocates or frees be
 registered (`hpm_iq`) and added the next cycle; the cycle after an mhpmeventN write gives 0, so a
 new event never counts its predecessor's last cycle.
 
+**THE LSU'S PORT, FROM ITS QUEUES** (m2h traces: `u_sq/rob -> ... -> u_lsu/o_boff`, 19 levels, -2.05;
+`u_lq/v -> ... -> u_lsu/o_nb`, 14 levels, -2.07). Both queues pick and the LSU starts in one cycle.
+The SQ's half: a store drains from the cycle after its commit (`cmt`, a register), not in the
+commit's own cycle -- the commit is a compare against the ROB's irrevocable pointer, and it led
+the 19 levels. A store the LSU waits for costs a cycle.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
