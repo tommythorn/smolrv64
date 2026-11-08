@@ -2245,7 +2245,13 @@ module smolrv64_core
       rp_f_q   <= ~reset & lq_f_v & lq_f_rp;
       rp_rob_q <= lq_f_rob;
    end
-   wire rc_tkill = m_trap_go | sy_trap | red_trap_q | rp_hold;
+   // The SYSQ's own trap kills from flops only: a queue fault or a replay (sy_xt, sy_rp) names an
+   // entry that may be done, but a CSR or system op is completed by its fire alone (sy_done), so in
+   // its fire cycle the head is not done and nothing commits (asserted) -- csr_file's decision stays
+   // out of the commit; the cycle after, red_trap_q holds it.
+   wire rc_tkill = m_trap_go | (sy_fire & (sy_xt | sy_rp)) | red_trap_q | rp_hold;
+   always @(posedge clk) if (!reset && sy_fire && !sy_xt && !sy_rp && (|rc_v))
+      $fatal(1, "smolrv64_core: a commit in a system op's fire cycle (rob %0d, commits %b)", sy_rob, rc_v);
    wire [IW-1:0]          rc_head;
    wire [IW*ROB_IDXB-1:0] rc_idxv;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc

@@ -823,6 +823,13 @@ endpoints at -1.29 ns, 8 levels: the L2's `&u_q_wmask` in its ready, into the ar
 at -1.33 ns, 9 levels: the kill's position compare on the divide in their enables). The hand-over
 loads them whatever the abort says: the start (`dst`) keeps `~abort`, and the abort arm drops the
 waiting start.
+
+**THE CSR FILE'S DECISION IS OUT OF THE COMMIT KILL** (m2u: `sy_addr -> u_rob/v`, `u_rename/rnewer`,
+`cp[].rmap`, `u_rob/head`, about 290 endpoints at -1.27 ns, 12 levels: the CSR decode's trap decision
+through `sy_trap` into `rc_tkill`, the commit ports, the ROB's valid bits and rename's retire maps).
+A CSR or system op is completed by its fire alone (`sy_done`), so in its fire cycle the head is not
+done and nothing commits (asserted). The kill keeps only the SYSQ's flops for an entry that may be
+done (a queue fault `sy_xt`, a replay `sy_rp`), and `red_trap_q` holds the cycle after.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
