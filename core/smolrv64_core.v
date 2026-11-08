@@ -3810,7 +3810,14 @@ module smolrv64_core
          m_unit_flt_q  <= lsu_fault;
          m_unit_fc_q   <= lsu_fault_cause;
       end
-   wire m_done_raw = m_unit_ok | m_unit_done_q;
+   // M TAKES ONLY ONE LIVE MEMORY COMPLETION: a plain load's or store's, its translate pass (a
+   // register's, lsu_xo_v). A state-machine op (AMO, LR/SC, CBO) completes from the latch a cycle
+   // after the LSU's done, its request already withdrawn -- the walking lookup and the state
+   // machine stay out of M's advance, as a fault's pulse already did.
+   wire m_live_ok  = ~m_valid ? 1'b1 : m_mem_op ? (m_nb & lsu_xo_v) : 1'b1;
+   always @(posedge clk) if (!reset && m_valid && m_nb && (lsu_done != lsu_xo_v))
+      $fatal(1, "smolrv64_core: a plain load or store's done %b is not its translate pass's %b (pc %h)", lsu_done, lsu_xo_v, m_pc);
+   wire m_done_raw = m_live_ok | m_unit_done_q;
    // EVERY TRAP CONSUMER TAKES THE LATCHED VIEW, AND ONLY THE LATCHED VIEW. A data-side fault
    // is decided by the dTLB compare in the cycle the LSU reports it; taking the trap in that
    // same cycle put m_addr -> TLB -> lsu_fault -> xtrap_v -> redirect -> the fetch adder ->
@@ -4310,7 +4317,9 @@ module smolrv64_core
    // the 3 load-shard LUTRAM copies instead of all 9, and the ALU result never leaves
    // int-exec.  Sourced directly, not from the m_wb_val mux -- routing every result through
    // one bus and then to every array is exactly what sharding by writer exists to avoid.
-   assign wb_ld = lsu_rd_val;              // a landing load's or M's AMO's (the SYSQ's goes to lane A)
+   // a landing load's, or M's AMO's from the latch (M writes an access it started a cycle after the
+   // LSU's done); the SYSQ's goes to lane A
+   assign wb_ld = (m_wb & m_unit_done_q) ? m_unit_res_q : lsu_rd_val;
    // the FE stream: the F stage's landing, else the MD stage's divide
    assign wb_fe = fp_wb         ? fp_wval
                 :                 md_res_q;       // a divide's result
@@ -4327,7 +4336,7 @@ module smolrv64_core
    // The trap qualifier likewise takes the latched fault. m_wb_ref below is the old
    // expression, kept only for the assertion that the two never differ.
    wire m_unit_ok_wb = ~m_valid            ? 1'b1
-                     : m_mem_op            ? lsu_done_acc
+                     : m_mem_op            ? 1'b0          // an access M started writes from the latch
                      :                       1'b1;
    wire m_done_wb = (m_unit_ok_wb | m_unit_done_q) & ~head_block & ~port_yield & ~sy_at_head;
    wire m_trap_wb = m_mem_op & m_lsu_flt;

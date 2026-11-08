@@ -589,6 +589,13 @@ replicated.
 levels: the ROB's per-entry kill vector into the walk hold's bit per entry). The vector and the
 release are registered and the clear comes first in the block, so an entry dispatched again
 meanwhile keeps its bit; the walk hold lingers a cycle.
+
+**M TAKES ONE LIVE MEMORY COMPLETION** (m2k: `wk_lk_va -> m_addr`, `-> m_st_data`, `-> m_pc`, 12
+levels: the walker's VA through the dTLB's walking lookup and the LSU's done into M's advance and
+its next op's load). Only a plain load's or store's completion is live -- its translate pass, a
+register's (asserted equal to the LSU's done whenever M holds one). An access M starts (AMO, LR/SC,
+CBO) completes from the latch a cycle after the LSU's done, its request already withdrawn, and
+writes its register from the latched value, as a fault's pulse already worked.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
