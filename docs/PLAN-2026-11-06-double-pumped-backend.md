@@ -673,6 +673,12 @@ levels, the fire entering at the first LUT). `csr_illegal` was `upd_valid & ...`
 the as-if-fired redirect and the write gates were all built from it. `csr_ill_f` is the illegal
 access as if the op fires; every as-if-fired term and every write gate takes it (or `exc_active`,
 now as-if-fired too), so upd_valid is the last AND.
+
+**THE SECOND LEVEL'S REFILL IGNORES THE LIVE REQUEST** (m2n: `wk_lk_va -> u_lsu/u_mmu/tlb_perm`, 216
+endpoints, 12 levels: the request's VA compared with the walk's, `req_match`, in front of every
+first-level TLB write). A second-level hit is the page's translation for the walk's own VA, its
+context unchanged (`ctx_poison`), so it is installed whatever the request is now; `req_match`
+still decides whether the hit answers the request.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

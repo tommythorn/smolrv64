@@ -321,7 +321,10 @@ module mmu
    wire [7:0]    l2_perm;
    wire          l2_nc, l2_n;
    wire [55:0]   l2_pa   = leaf_pa(l2_ppn, l2_lvl, va_q, l2_n);
-   wire          l2_fill = (st == L2LK) & req_match & l2_hit;   // refills the first level
+   // refills the first level: the page's translation for the walk's own VA (va_q, its context
+   // unchanged), whatever the request is now -- the live request compare (req_match) answers the
+   // request in L2LK, and stays off the first level's write
+   wire          l2_fill = (st == L2LK) & ~ctx_poison & l2_hit;
    // the first level's entry: the walk's leaf, or the second level's on its hit
    wire             f1      = fill | l2_fill;
    wire [43:0]      f1_ppn  = l2_fill ? l2_ppn  : ptw_rdata[53:10];
