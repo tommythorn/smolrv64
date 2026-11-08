@@ -372,8 +372,14 @@ module smolrv64_sq
    wire [IDXB-1:0] sn_k   = ring_oldest(sn_m, head);
    // the oldest arrived-and-unfilled entry: the live region runs from the head
    wire [NENT-1:0]   pk_m = v & ~av & ar;
-   assign pk_v      = |pk_m;
-   assign pk_idx    = ring_oldest(pk_m, head);
+   // M'S PICK IS MADE A CYCLE AHEAD: the oldest entry whose address waits, registered (pk_q), and
+   // offered while that entry's address still waits -- the age pick stays out of M's take. One
+   // taken last cycle waits no longer: back to back, M takes a waiting address every other cycle.
+   reg  [IDXB-1:0] pk_q;
+   initial pk_q = {IDXB{1'b0}};
+   always @(posedge clk) pk_q <= ring_oldest(pk_m, head);
+   assign pk_v      = pk_m[pk_q];
+   assign pk_idx    = pk_q;
 
    assign occupancy = cnt;
    // THE WALKER AND THE TRAP READ THE FIRST UNCOMMITTED ENTRY. Stores commit in order, so an

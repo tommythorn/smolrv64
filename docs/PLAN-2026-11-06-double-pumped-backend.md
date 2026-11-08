@@ -498,6 +498,12 @@ landing buffer's AGU-only gate, the select tree -- on the payload LUTRAM's addre
 the registered entry (`r_ent`); it feeds only E1's register. The entry frees a cycle after its
 pick and dispatch writes a slot reserved a cycle ahead, so it is not rewritten before R (asserted).
 
+**M'S PICK IS MADE A CYCLE AHEAD** (m2h: `u_lq/v -> m_addr`, 15 levels, -2.04: each queue's age
+pick of a waiting address, the two picks' sequence compare, the address read, into M). Both
+queues register the pick (`pk_q`) and offer it while that entry's address still waits; the
+compare and the reads take registered indices. Back to back, M takes a waiting address every
+other cycle; an address arriving with none waiting still goes straight in from its lane.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

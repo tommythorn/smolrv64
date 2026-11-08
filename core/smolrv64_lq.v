@@ -376,8 +376,14 @@ module smolrv64_lq
    endgenerate
    assign uf_any    = |(v & ~av);
    wire [NENT-1:0] pk_m = v & ~av & ar;
-   assign pk_v      = |pk_m;
-   assign pk_idx    = oldest(pk_m, om);
+   // M'S PICK IS MADE A CYCLE AHEAD: the oldest entry whose address waits, registered (pk_q), and
+   // offered while that entry's address still waits -- the age pick stays out of M's take. One
+   // taken last cycle waits no longer: back to back, M takes a waiting address every other cycle.
+   reg  [IDXB-1:0] pk_q;
+   initial pk_q = {IDXB{1'b0}};
+   always @(posedge clk) pk_q <= oldest(pk_m, om);
+   assign pk_v      = pk_m[pk_q];
+   assign pk_idx    = pk_q;
    assign pk_seq    = sqn[pk_idx];
 
    // THE ACCESS CANDIDATE is the oldest entry that may go to memory now: filled and translated,
