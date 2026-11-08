@@ -3616,8 +3616,12 @@ module smolrv64_core
    // Two stages: the first has no reset or initial value, so synthesis retiming may pull it back
    // into the attribution cone (the top-down events read M's done, the redirect and the door).
    reg [43:0] hpm_ev_p, hpm_ev_q;
-   wire [2:0] hpm_disp_q = tdr_rst ? 3'd0 : tdr_nd;   // instructions dispatched the cycle before (DPATCH)
-   wire [4:0] hpm_tdk_q  = tdr_rst ? 5'd0 : tdr_k;    // ...and its top-down cause (the TDK_* events)
+   // instructions dispatched two cycles before (DPATCH) and their top-down cause (the TDK_* events):
+   // registers, as the counters' increments read them (the 2x clock: the classifier and a 64-bit add
+   // were one cycle's cone)
+   reg  [2:0] hpm_disp_q = 3'd0;
+   reg  [4:0] hpm_tdk_q  = 5'd0;
+   always @(posedge clk) begin hpm_disp_q <= tdr_rst ? 3'd0 : tdr_nd;  hpm_tdk_q <= tdr_rst ? 5'd0 : tdr_k; end
    reg [5:0]  hpm_lqocc_q, hpm_sqocc_q;   // queue occupancies, per cycle (MEM_LQOCC / MEM_SQOCC)
    reg [5:0]  hpm_ldinfl_q;               // fast-path loads in flight, per cycle (MEM_LDINFL)
    reg [5:0]  hpm_ret_q;

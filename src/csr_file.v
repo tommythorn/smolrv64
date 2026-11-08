@@ -831,6 +831,9 @@ module csr_file
    end endgenerate
    // A wrap with OF clear sets OF and LCOFIP; an mhpmeventN write that cycle wins.
    wire hpm_lcof = |(hpm_wrap & ~hpm_wev & ~hpm_of);
+   // ...pending a cycle on, from a register (a counter's carry into mip was one cycle's cone)
+   reg  hpm_lcof_q = 1'b0;
+   always @(posedge clk) hpm_lcof_q <= ~reset & hpm_lcof;
 
    // THE PRIVILEGE'S ONE UPDATE: a trap's target, an xret's previous mode, M at reset. With satp's
    // MODE as the write below leaves it, it says whether fetch translates next cycle, so the front
@@ -988,7 +991,7 @@ module csr_file
                mhpmcounter[i] <= hpm_nxt[i];
          end
          // After the mip CSR write above: an overflow in the cycle software clears LCOFIP stays.
-         if (hpm_lcof) mip[LCOFIP_B] <= 1'b1;
+         if (hpm_lcof_q) mip[LCOFIP_B] <= 1'b1;
       end
    end
 endmodule
