@@ -569,6 +569,20 @@ module csr_file
    // set/clear on aliased bits must operate on the software-writable bit
    // only, so the RMW base for MIP/SIP is the RAW register; reads keep the OR.
    wire [63:0] rmw_base = (upd_addr == MIP || upd_addr == SIP) ? mip : rdata;
+   // EACH WRITE SETS OR CLEARS ITS OWN REGISTER (rmw on the CSR's stored value, or its unpacked view):
+   // the same value as through the read mux -- each write mask lies inside the bits where the read
+   // view is the stored value, and MIP/SIP's base is the raw register as above -- without the
+   // read mux in front of every CSR's write. newv stays for the tracers.
+   function [63:0] rmw(input [63:0] old);
+      case (upd_func[1:0])
+        2'b01:   rmw = upd_src;
+        2'b10:   rmw = old | upd_src;
+        2'b11:   rmw = old & ~upd_src;
+        default: rmw = old;
+      endcase
+   endfunction
+   wire [63:0] fl_rmw = rmw({59'd0, fcsr[4:0]}), rm_rmw = rmw({61'd0, fcsr[7:5]}), fc_rmw = rmw({56'd0, fcsr});
+   wire [63:0] sp_rmw = rmw(satp);
    reg [63:0] newv;
    always @* begin
       case (upd_func[1:0])
@@ -818,7 +832,9 @@ module csr_file
       cw_mcycle   <= ~reset & upd_valid & upd_is_csr & csr_writes & ~op_trap & (upd_addr == MCYCLE);
       cw_minstret <= ~reset & upd_valid & upd_is_csr & csr_writes & ~op_trap & (upd_addr == MINSTRET);
       cw_hpm      <= reset ? {HPMN{1'b0}} : hpm_wct;
-      cw_d        <= newv;
+      // ...the counter's or event's own value set or cleared (what the CSR now holds)
+      cw_d        <= rmw((upd_addr == MCYCLE) ? mcycle : (upd_addr == MINSTRET) ? minstret
+                         : is_ev ? mhpmevent[hpm_rix] : mhpmcounter[hpm_rix]);
    end
    // The select is decoded a cycle after mhpmeventN is written, from the registered write data
    // (cw_d, what the CSR now holds) by ONE decoder: the CSR's write data (the read mux and the
@@ -866,7 +882,7 @@ module csr_file
                      : (upd_valid & ~upd_is_csr & is_mret) ? mstatus[12:11]
                      : (upd_valid & ~upd_is_csr & is_sret) ? {1'b0, mstatus[SPP_B]} : priv;
    wire [3:0] satp_mode_d = reset ? 4'd0
-                          : (~op_trap & upd_valid & upd_is_csr & (upd_addr == SATP)) ? newv[63:60] : satp[63:60];
+                          : (~op_trap & upd_valid & upd_is_csr & (upd_addr == SATP)) ? sp_rmw[63:60] : satp[63:60];
    assign o_ifx_d = (priv_d != M) & (satp_mode_d == 4'd8);
    always @(posedge clk) priv <= priv_d;
    reg [3:0] satp_mode_q;
@@ -904,14 +920,14 @@ module csr_file
       if (!reset && upd_valid && !op_trap) begin
          if (upd_is_csr) begin
             case (upd_addr)
-              MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
-              SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (newv & SSTATUS_WMASK);
-              MTVEC:      mtvec   <= `VA_PACK40(newv);
-              MEPC:       mepc    <= `VA_PACK40(newv);
-              MCAUSE:     mcause  <= newv;
-              MTVAL:      mtval   <= `VA_PACK40(newv);
+              MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (rmw(mstatus) & MSTATUS_WMASK);
+              SSTATUS:    mstatus <= (mstatus & ~SSTATUS_WMASK) | (rmw(mstatus) & SSTATUS_WMASK);
+              MTVEC:      mtvec   <= `VA_PACK40(rmw(`VA_UNPACK40(mtvec)));
+              MEPC:       mepc    <= `VA_PACK40(rmw(`VA_UNPACK40(mepc)));
+              MCAUSE:     mcause  <= rmw(mcause);
+              MTVAL:      mtval   <= `VA_PACK40(rmw(`VA_UNPACK40(mtval)));
               MSCRATCH:   begin
-                 mscratch<= newv;
+                 mscratch<= rmw(mscratch);
 `ifdef SCDBG
                  // corruption hunt: mscratch should be written ONCE at OpenSBI init and
                  // then only by the trap-entry/exit csrrw swap pairs. Log every write
@@ -924,26 +940,26 @@ module csr_file
                  end
 `endif
               end
-              MIE:        mie     <= newv;
-              MIP:        mip     <= newv & ~HW_RO_MASK;  // MEIP/MTIP/MSIP read-only (device-owned)
-              SIE:        mie     <= (mie & ~S_INT_MASK) | (newv & S_INT_MASK);
-              SIP:        mip     <= (mip & ~S_INT_MASK) | (newv & S_INT_MASK);
-              MEDELEG:    medeleg <= newv;
-              MIDELEG:    mideleg <= newv;
-              MCOUNTEREN: mcounteren <= newv;
-              SCOUNTEREN: scounteren <= newv;
-              STVEC:      stvec   <= `VA_PACK40(newv);
-              SEPC:       sepc    <= `VA_PACK40(newv);
-              SCAUSE:     scause  <= newv;
-              STVAL:      stval   <= `VA_PACK40(newv);
-              SSCRATCH:   sscratch<= newv;
+              MIE:        mie     <= rmw(mie);
+              MIP:        mip     <= rmw(mip) & ~HW_RO_MASK;  // MEIP/MTIP/MSIP read-only (device-owned)
+              SIE:        mie     <= (mie & ~S_INT_MASK) | (rmw(mie) & S_INT_MASK);
+              SIP:        mip     <= (mip & ~S_INT_MASK) | (rmw(mip) & S_INT_MASK);
+              MEDELEG:    medeleg <= rmw(medeleg);
+              MIDELEG:    mideleg <= rmw(mideleg);
+              MCOUNTEREN: mcounteren <= rmw(mcounteren);
+              SCOUNTEREN: scounteren <= rmw(scounteren);
+              STVEC:      stvec   <= `VA_PACK40(rmw(`VA_UNPACK40(stvec)));
+              SEPC:       sepc    <= `VA_PACK40(rmw(`VA_UNPACK40(sepc)));
+              SCAUSE:     scause  <= rmw(scause);
+              STVAL:      stval   <= `VA_PACK40(rmw(`VA_UNPACK40(stval)));
+              SSCRATCH:   sscratch<= rmw(sscratch);
               // satp.ASID is 10-bit WARL (matches SmolRV64 TLB_ASID_BITS=10 + simmerv):
               // zero the unimplemented high ASID bits [59:54] so a read-back matches the
               // reference (Linux probes ASID width by writing all-ones and reading back).
-              SATP:       satp    <= newv & ~64'h0FC0_0000_0000_0000;
-              MNSTATUS:   mnstatus<= newv;
+              SATP:       satp    <= sp_rmw & ~64'h0FC0_0000_0000_0000;
+              MNSTATUS:   mnstatus<= rmw(mnstatus);
               STIMECMP:   begin
-                 stimecmp<= newv;       // Sstc (stored verbatim, like simmerv)
+                 stimecmp<= rmw(stimecmp);       // Sstc (stored verbatim, like simmerv)
 `ifdef SCDBG
                  // storm autopsy: every stimecmp arm, with the deadline's relation to now.
                  // "the kernel stopped re-arming" vs "the DUT lost the write" discriminator.
@@ -951,12 +967,12 @@ module csr_file
                           (newv > mtime) ? "future" : "PAST");
 `endif
               end
-              MENVCFG:    menvcfg <= newv;
-              SENVCFG:    senvcfg <= newv & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
-              MSTATEEN0:  mstateen0 <= newv & 64'hC000_0000_0000_0000;   // SE0|ENVCFG only
-              FFLAGS:     fcsr[4:0] <= newv[4:0];
-              FRM:        fcsr[7:5] <= newv[2:0];
-              FCSR:       fcsr      <= newv[7:0];
+              MENVCFG:    menvcfg <= rmw(menvcfg);
+              SENVCFG:    senvcfg <= rmw(senvcfg) & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
+              MSTATEEN0:  mstateen0 <= rmw(mstateen0) & 64'hC000_0000_0000_0000;   // SE0|ENVCFG only
+              FFLAGS:     fcsr[4:0] <= fl_rmw[4:0];
+              FRM:        fcsr[7:5] <= rm_rmw[2:0];
+              FCSR:       fcsr      <= fc_rmw[7:0];
               default:    ;
             endcase
          end else if (is_mret) begin
@@ -1003,10 +1019,10 @@ module csr_file
          for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
       end else begin
          if (upd_valid && upd_is_csr && !op_trap && !csr_illegal && upd_addr==MCOUNTINHIBIT)
-            mcountinhibit <= newv & HPM_INHIBIT_MASK;
+            mcountinhibit <= rmw(mcountinhibit) & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (hpm_wev[i])
-               mhpmevent[i] <= newv;
+               mhpmevent[i] <= rmw(mhpmevent[i]);
             else if (hpm_wrap[i])
                mhpmevent[i][OF_B] <= 1'b1;
             if (cw_hpm[i])

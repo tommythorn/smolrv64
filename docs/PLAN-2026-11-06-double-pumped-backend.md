@@ -519,6 +519,13 @@ register now reads `sf_wd` at SB1's slot (asserted equal to the head's data when
 through the read-only-CSR illegal check, the op's own trap and the ROB's commit kill). The SYSQ
 takes `sy_src_nz` with `sy_src`; csr_file reads it as `upd_src_nz` (asserted equal to the value's).
 
+**EACH CSR WRITE SETS OR CLEARS ITS OWN REGISTER** (m2i: `sy_addr -> u_csr/mhpmevent`, 7-10 levels:
+the CSR read mux, indexed by the op's address, in front of every CSR's write data). A write is
+`rmw` of the CSR's own stored value (or its unpacked view); every write mask lies inside the bits
+where the read view is the stored value, and MIP/SIP's base was already the raw register, so the
+values are the same. The counters' and events' load value (`cw_d`) sets or clears its own counter
+or event.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
