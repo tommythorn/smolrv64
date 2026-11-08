@@ -410,6 +410,12 @@ the F port's and the MD stage's results write, wake, snoop and push a cycle afte
 integer one completes on its lane's port, straight through or at the drain; the FE gate is LBN-7,
 its push being a cycle behind the gate's decision.
 
+**m2d's build (93103479): -1.918 ns, 70,153 failing endpoints; the FPU's families are gone.** The D$
+leads (17.3 K of its own), 10 K of it the install (`fl_m -> way[].ta/tb`, 3 levels): the installing
+MSHR's set, way, tag and merge-dirty bit muxed by `fl_m` into every way's tag and state writes. They
+are registers now, taken from the MSHR as its last beat lands (stable from the first beat: a store
+to the line waits for the install), the way one-hot, replicated.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

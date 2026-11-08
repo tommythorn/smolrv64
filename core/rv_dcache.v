@@ -301,6 +301,12 @@ module rv_dcache #(
    reg            fb_v;  reg [WYB-1:0] fb_way;  reg [5:0] fb_set;  reg [1:0] fb_beat;  reg [127:0] fb_data;
    reg            fb_last;  reg [MB-1:0] fb_m;
    reg            fl_v;  reg [MB-1:0] fl_m;                                       // the line installing
+   // ...and what it writes, taken from its MSHR as the last beat lands (stable from the first beat:
+   // a store to the line waits for the install then): every way's state and tag write reads flops
+   (* max_fanout = 16 *) reg [5:0] fl_set;
+   (* max_fanout = 16 *) reg [WAYS-1:0] fl_woh;
+   (* max_fanout = 16 *) reg fl_dty;
+   (* max_fanout = 16 *) reg [PTB-1:0] fl_tag;
    wire [WYB-1:0] fa0 = arr_of(fb_way, {fb_beat, 1'b0});                          // the beat's two arrays
    wire [WYB-1:0] fa1 = arr_of(fb_way, {fb_beat, 1'b1});
 
@@ -668,7 +674,7 @@ module rv_dcache #(
    // while a line installs, the store lookup waits out an install, and the store lookup and the main
    // lookup never both write a way's dirty bit (only the queue's head writes, through one of them):
    // so no two writers meet at one way's field.
-   wire [MB-1:0]  im      = fl_m;                       // the MSHR installing
+   wire [MB-1:0]  im      = fl_m;                       // the MSHR installing (fl_* its fields)
    // the clean walk goes by SET: the set's ways are read at once, the lowest dirty one is written back
    // (with the lookup empty, no install, the read-out and a write-back entry free), and the walk moves
    // on when the set is clean -- 64 steps and one per dirty line
@@ -677,16 +683,16 @@ module rv_dcache #(
    wire [WYB-1:0]  cl_k   = onehot_ix(cl_oh);
    wire            cl_ro  = cl_on & (|cl_dv) & ~s1_v & ~fl_v & ~ro_on & ~rl_v & wb_free_v;
    wire            cl_adv = cl_on & ~(|cl_dv) & ~s1_v;
-   assign t_wa = ms_set[im];
-   assign t_wd = ms_pl[im][6 +: PTB];
+   assign t_wa = fl_set;
+   assign t_wd = fl_tag;
    // The valid and used arrays' writers besides the scan and an install are the lookup's, and the
    // lookup is empty while a line installs (hold at its last beat) and while the scan runs: one
    // address serves every way.
-   wire [5:0] vu_wa = scan_on ? scan : fl_v ? ms_set[im] : s1_set;
+   wire [5:0] vu_wa = scan_on ? scan : fl_v ? fl_set : s1_set;
    always @(posedge clk) if (!reset && s1_v && (fl_v || scan_on))
       $fatal(1, "rv_dcache: the lookup holds a request while a line installs or the scan runs");
    generate for (gw = 0; gw < WAYS; gw = gw + 1) begin : wst
-      wire inst_w = fl_v & (ms_way[im] == gw[WYB-1:0]);
+      wire inst_w = fl_v & fl_woh[gw];
       wire fp_w   = fp_wr & bhitv[gw];
       wire hit_w  = hitv[gw];
       assign t_we[gw] = inst_w;
@@ -697,8 +703,8 @@ module rv_dcache #(
       // dirty: an install (if a store merged), a store's write and the store lookup's set it; a clean
       // of a copy, the clean walk's read-out and the scan clear it
       assign d_we[gw] = scan_on | inst_w | fp_w | (m_clean & cp_dty & hit_w) | (cl_ro & cl_oh[gw]);
-      assign d_wa[gw*6 +: 6] = scan_on ? scan : inst_w ? ms_set[im] : fp_w ? sb_set : cl_ro ? cl_r : s1_set;
-      assign d_wd[gw] = ~scan_on & (inst_w ? ms_dty[im] : fp_w);
+      assign d_wa[gw*6 +: 6] = scan_on ? scan : inst_w ? fl_set : fp_w ? sb_set : cl_ro ? cl_r : s1_set;
+      assign d_wd[gw] = ~scan_on & (inst_w ? fl_dty : fp_w);
       // used: an install and a hit set it; a hit that would leave the set's bits all set, and an
       // allocation that found no unused way, clear the others
       assign u_we[gw] = scan_on | inst_w | (ans & hit_w) | age_hit | (m_alloc & vic_age);
@@ -855,6 +861,7 @@ module rv_dcache #(
             ms_bt[cr_m] <= cr_beat + 1'b1;  ms_bl[cr_m] <= 1'b1;
          end
          fl_v <= fb_last;  fl_m <= fb_m;
+         fl_set <= fb_set;  fl_woh <= {{(WAYS-1){1'b0}}, 1'b1} << fb_way;  fl_tag <= ms_pl[fb_m][6 +: PTB];  fl_dty <= ms_dty[fb_m];
          if (fl_v) ms_v[fl_m] <= 1'b0;
          // the reset scan: a set a cycle, every way's state cleared
          if (scan_on) begin
