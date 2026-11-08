@@ -563,6 +563,19 @@ second fills the queue entry, starts the fast load and completes M from that reg
 Between the two the dTLB can only gain an entry or replace one: a stale hit is still the page's
 translation, a stale miss hands the entry over untranslated as any miss does. M's own FSM ops
 (AMO, LR/SC, CBO) keep the walking lookup.
+
+**m2k's build (ea34957f): -1.516 ns, 42.5 K failing endpoints, TNS -20.6 K** (m2j -1.613, 49.2 K,
+-28.0 K). Lockstep: 459ee964's two-cycle translate costs nothing measurable (186.5 M vs 186.2 M):
+loads and stores already go every other cycle at the queues' picks and the D$.
+
+**THE SYSTEM OP'S FIRE IS A REGISTER** (m2k: `sy_at_head -> u_csr/mhpmevent`, `-> scause`, `-> mepc`
+..., 900 endpoints, 7-10 levels, and `-> redirect_target_q`, 13-18: the fire -- lane A's slot, the
+landing buffer -- as upd_valid into every CSR's enable, the trap and the commit kill). `sy_fire_q`
+is taken a cycle ahead from the head flag's next state, the head-cycle flags, lane 0's E1 (its
+E2 next cycle) and the landing buffer's next count. Every system op fires in its second cycle at
+the head at the earliest (an instret read in its third). A multiply in E1 counts busy even if it
+is about to be killed, so the register may fire a cycle late, never early: both are asserted
+(it fires only where the live condition holds, and lags it by at most a cycle).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

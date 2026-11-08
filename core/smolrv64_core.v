@@ -2843,7 +2843,21 @@ module smolrv64_core
    // write not yet made -- an instret read in its third, minstret having caught up in the second
    reg  sy_head_q2;
    initial sy_head_q2 = 1'b0;
-   wire sy_fire    = sy_at_head & sy_lane_ok & (sy_instret ? sy_head_q2 : sy_is_csr ? sy_head_q : 1'b1);   // its result takes lane A's slot
+   // THE FIRE IS A REGISTER (sy_fire_q), taken a cycle ahead beside the landing buffers: a system op
+   // fires in its second cycle at the head at the earliest (an instret read in its third), lane
+   // A's slot free. Its cone -- every CSR's enable, the trap and the commit kill -- starts at a flop.
+   (* max_fanout = 32 *) reg sy_fire_q;
+   initial sy_fire_q = 1'b0;
+   wire sy_fire    = sy_fire_q;   // its result takes lane A's slot
+   wire sy_fire_live = sy_at_head & sy_lane_ok & (sy_instret ? sy_head_q2 : sy_head_q);
+   always @(posedge clk) if (!reset && sy_fire && !sy_fire_live)
+      $fatal(1, "smolrv64_core: the SYSQ fires where it may not (head %b lane %b q %b q2 %b instret %b)", sy_at_head, sy_lane_ok, sy_head_q, sy_head_q2, sy_instret);
+   // ...and waits at most a cycle past the live condition (a multiply killed in E1 counted busy)
+   reg  [1:0] sy_lag;
+   always @(posedge clk) begin
+      sy_lag <= (reset | ~sy_fire_live | sy_fire) ? 2'd0 : (sy_lag == 2'd3) ? sy_lag : sy_lag + 2'd1;
+      if (!reset && (sy_lag == 2'd2)) $fatal(1, "smolrv64_core: the SYSQ's registered fire lags its condition");
+   end
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
    // otherwise), so a trap from dispatch is its own redirect here, as M's data fault is.
@@ -4428,6 +4442,13 @@ module smolrv64_core
    wire [NL-1:0] en2 = p2 & ~by2;
    // the occupancy after this cycle, and whether the FE stream may push next cycle (lb_fe_room)
    wire [LBB:0]  lb_n_n [0:NL-1];
+   // the SYSQ's fire, a cycle ahead (see sy_fire_q): at the head next cycle and past its first
+   // (second) cycle there, and lane A's slot free next cycle -- E1's op not reaching E2 to write, no
+   // multiply in E1 (one about to be killed counts: the fire waits a cycle), the landing buffer empty
+   always @(posedge clk)
+      sy_fire_q <= ~reset & ~redirect & sy_v_n & (sy_rob_n == rob_head_n_idx)
+                 & (sy_instret ? (sy_head_q & sy_at_head & ~sy_fire) : (sy_at_head & ~sy_fire))
+                 & ~(l_v[0] & ~l_late[0]) & ~l_m1[0] & (lb_n_n[0] == {(LBB+1){1'b0}});
    genvar gln;
    generate for (gln = 0; gln < NL; gln = gln + 1) begin: g_ln
       assign lb_n_n[gln] = lb_n[gln] + {{LBB{1'b0}}, en0[gln]} + {{LBB{1'b0}}, en2[gln]}
