@@ -2838,7 +2838,12 @@ module smolrv64_core
    always @(posedge clk) if (!reset && (sy_at_head != (sy_v && sy_rob == rob_head_idx)))
       $fatal(1, "smolrv64_core: the SYSQ's head flag %b disagrees with sy_v=%b sy_rob=%0d head=%0d", sy_at_head, sy_v, sy_rob, rob_head_idx);
    reg  sy_instret;                     // a CSR op on instret/minstret, decoded as it enters
-   wire sy_fire    = sy_at_head & sy_lane_ok & (~sy_instret | sy_head_q);   // its result takes lane A's slot
+   // A CSR OP'S RESULT IS ITS CSR AS READ A CYCLE EARLIER (csr_rdq, a register: the read mux stays
+   // out of lane A's write register), so it fires in its second cycle at the head, the op's own
+   // write not yet made -- an instret read in its third, minstret having caught up in the second
+   reg  sy_head_q2;
+   initial sy_head_q2 = 1'b0;
+   wire sy_fire    = sy_at_head & sy_lane_ok & (sy_instret ? sy_head_q2 : sy_is_csr ? sy_head_q : 1'b1);   // its result takes lane A's slot
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
    // otherwise), so a trap from dispatch is its own redirect here, as M's data fault is.
@@ -2859,6 +2864,7 @@ module smolrv64_core
    wire sy_wr      = sy_fire & sy_rd_v & ~sy_xt;
    always @(posedge clk) begin
       sy_head_q <= ~reset & sy_at_head & ~sy_fire;
+      sy_head_q2 <= ~reset & sy_head_q & sy_at_head & ~sy_fire;
       if (sy_fire) sy_v <= 1'b0;
       if (dead(sy_rob)) sy_v <= 1'b0;                   // the kill, before the load arms: a new op wins
       if (sy_ld) begin
@@ -3303,6 +3309,8 @@ module smolrv64_core
    // ---- CSR file ----
    wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100);
    wire [63:0] csr_rdata;
+   reg  [63:0] csr_rdq;                  // ...as read a cycle earlier: a CSR op's result (sy_fire)
+   always @(posedge clk) csr_rdq <= csr_rdata;
    wire [PCW-1:0] csr_redir_tgt;
    wire        csr_redir_v, csr_redir_trap, csr_illegal;
    wire        csr_irq_v;
@@ -4434,7 +4442,7 @@ module smolrv64_core
            (.clk(clk), .wclk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
             .wd({wb_fe_q, wb_ld_q}), .rp(hh), .ro(1'b0), .rd(lb_hd));
          assign lp[glp] = lb_any[glp] ? {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]}
-                        :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
+                        :               {sy_wr, sy_done, sy_prd, csr_rdq, sy_rob};
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate
@@ -4561,11 +4569,10 @@ module smolrv64_core
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          cs_val[rsi(m_rob_idx)]   <= m_wb_val;
       end
-      // A CSR READ'S VALUE IS THE ONE AT ITS WRITE, not at the unit-ok pulse: the op
-      // completes in its second cycle at head (m_head_q) and reads csr_rdata live then, so
-      // `time`/`cycle` are one tick past the pulse's value. Ordered after the arm above so
-      // it wins. (Found by the 300 M cosim: rdtime retired as t, computed with t+1.)
-      if (sy_wr) cs_val[rsi(sy_rob)] <= csr_rdata;
+      // A CSR READ'S VALUE IS THE ONE ITS WRITE TAKES (csr_rdq, read the cycle before it fires),
+      // not the unit-ok pulse's: `time`/`cycle` differ by ticks between the two. Ordered after the
+      // arm above so it wins.
+      if (sy_wr) cs_val[rsi(sy_rob)] <= csr_rdq;
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
          // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
@@ -4641,15 +4648,15 @@ module smolrv64_core
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: ch
       wire [ROB_IDXB-1:0] ix = rc_idx[gs];
       wire hit_m   = m_valid & m_unit_ok & ~m_unit_done_q & ~m_ld_nb & (m_rob_idx == ix);
-      // A CSR op completes (and retires, by the ROB's same-cycle bypass) in its SECOND cycle
-      // at head, reading csr_rdata live then -- after hit_m's pulse and before the capture
-      // above lands. `time`/`cycle` differ by a tick between the two: the head takes it live.
+      // A CSR op completes (and retires, by the ROB's same-cycle bypass) as it fires, its value
+      // csr_rdq -- after hit_m's pulse and before the capture above lands. `time`/`cycle` differ
+      // by ticks between the two: the head takes the fire's.
       wire hit_csr = sy_wr & (sy_rob == ix);
       wire hit_ld  = ld_land & (lq_l_rob == ix);
       wire hit_sq  = sq_k_take & (sq_kc_rob == ix);
       wire hit_fp  = fp_land & (ft_rob == ix);
       wire hit_md  = md_wb & (md_rob == ix);
-      assign cs_val_h[gs]   = hit_csr ? csr_rdata     // the CSR read's value at its write
+      assign cs_val_h[gs]   = hit_csr ? csr_rdq       // the CSR read's value, as its write takes it
                             : hit_sq ? 64'd0          // a store writes no register
                             : hit_ld ? lsu_rd_val
                             : cs_hl[gs] ? cs_hl_v[gs]

@@ -526,6 +526,11 @@ where the read view is the stored value, and MIP/SIP's base was already the raw 
 values are the same. The counters' and events' load value (`cw_d`) sets or clears its own counter
 or event.
 
+**A CSR OP'S RESULT IS ITS CSR READ A CYCLE EARLIER** (m2i: `sy_addr -> ln[].qval`, 9-12 levels: the
+read mux into lane A's write register). The read is registered (`csr_rdq`) and a CSR op fires in
+its second cycle at the head, before its own write; an instret read in its third, minstret
+having caught up in the second. The cosim's captures take the same register.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
