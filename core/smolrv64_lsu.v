@@ -271,6 +271,7 @@ module smolrv64_lsu
    wire [5:0]  sh_dn  = {boff_q, 3'b000};
    wire [5:0]  sh_up  = 6'd0 - {boff_q, 3'b000};     // == 64 - 8*boff (mod 64)
    reg [63:0]  amo_old_q;                  // AMO's rd value, captured at the RMW read
+   reg [63:0]  amo_wd_q;                   // ...and the value it writes, computed there too
    reg         nc_q;                       // Svpbmt: this access is NC/IO
    reg         mem_q;                      // this access is to memory (DRAM or the local SRAM): the D$'s
    initial begin st = S_IDLE; end
@@ -595,7 +596,7 @@ module smolrv64_lsu
    // Store data is placed at its byte offset inside the aligned word; the straddling
    // remainder starts at byte 0 of the next word.
    assign mem_wdata     = sp_on  ? sp_wd
-                        : amo_go ? a_wdata
+                        : amo_go ? amo_wd_q
                         : st2_go ? (eff_st_data >> sh_up)
                                  : (eff_st_data << sh_dn);
    assign mem_wmask     = sp_on  ? sp_wm
@@ -1009,6 +1010,7 @@ module smolrv64_lsu
            S_ST2: if (st_fin) st <= S_IDLE;
            S_ARD: if (slow_rv) begin
                      amo_old_q <= a_rdval;
+                     amo_wd_q  <= a_wdata;   // the write's data a register: the AMO's ALU stays out of the D$'s store port
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end
                      if (is_sc) rsv_v <= 1'b0;
                      st <= a_dowr ? S_AWR : S_IDLE;
