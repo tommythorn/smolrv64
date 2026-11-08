@@ -196,7 +196,9 @@ module smolrv64_x2div
          if (got) begin run <= 1'b0;  disc <= 1'b0; end
          if (take) run <= 1'b1;
          if (h2) dst <= ps_v & ~dst & ~d_busy & ~run & ~abort;
-         if (h2 & ps_v & ~dst & ~d_busy & ~run & ~abort) begin
+         // the operands go over whatever the abort says (dst does not start them under one, and the
+         // abort arm below drops the wait): the kill's compare stays out of their enables
+         if (h2 & ps_v & ~dst & ~d_busy & ~run) begin
             da <= ps_a;  db <= ps_b;  df3 <= ps_f3;  dw <= ps_w;  ps_v <= 1'b0;
          end
          // an abort drops the waiting start and discards what the divider holds or is taking now;

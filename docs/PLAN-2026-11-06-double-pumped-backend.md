@@ -818,6 +818,11 @@ later. The directed bench holds its kill for two cycles, as the ROB's does.
 endpoints at -1.29 ns, 8 levels: the L2's `&u_q_wmask` in its ready, into the arbiter's take of the
 512-bit request). The arbiter registers `mq_full = &g_wmask` with the mask, and the L2 takes it as
 `u_q_full` (asserted equal to its mask's AND). The L2 bench drives it from its own mask.
+
+**THE DIVIDER'S OPERANDS LOAD WITHOUT THE ABORT** (m2u: `u_rob/kh -> u_div/da`, `db`, 128 endpoints
+at -1.33 ns, 9 levels: the kill's position compare on the divide in their enables). The hand-over
+loads them whatever the abort says: the start (`dst`) keeps `~abort`, and the abort arm drops the
+waiting start.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
