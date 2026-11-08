@@ -851,6 +851,10 @@ module smolrv64_shell #(
    /* The legacy mmc-spi controller (sd_spi_oc_tiny + sd_gpio CS) is gone; the
     * SD card is now driven in SPI mode by sd_spi_host inside virtio_blk_backend. */
 
+   // virtio_blk's transport registers, per queue (virtio_mmio's buses: queue q at [q*32 +: 32], [q*64 +: 64])
+   wire [127:0] virtio_blk_qs_num;  wire [3:0] virtio_blk_qs_ready;  wire [255:0] virtio_blk_qs_desc, virtio_blk_qs_driver, virtio_blk_qs_device;
+   assign virtio_blk_queue0_num = virtio_blk_qs_num[0 +: 32];  assign virtio_blk_queue0_ready = virtio_blk_qs_ready[0];
+   assign virtio_blk_queue0_desc = virtio_blk_qs_desc[0 +: 64];  assign virtio_blk_queue0_driver = virtio_blk_qs_driver[0 +: 64];  assign virtio_blk_queue0_device = virtio_blk_qs_device[0 +: 64];
    virtio_mmio #(
       .DEVICE_ID(32'd2), /* virtio-blk, native-SD backend below. */
       .QUEUE_NUM_MAX(32'd64)   /* a request is 3 descriptors: 21 in flight */
@@ -876,21 +880,11 @@ module smolrv64_shell #(
       .config_change_interrupt (1'b0),
       .driver_features_0       (),
       .driver_features_1       (),
-      .queue_num               (),
-      .queue_ready             (),
-      .queue_desc              (),
-      .queue_driver            (),
-      .queue_device            (),
-      .queue0_num              (virtio_blk_queue0_num),
-      .queue0_ready            (virtio_blk_queue0_ready),
-      .queue0_desc             (virtio_blk_queue0_desc),
-      .queue0_driver           (virtio_blk_queue0_driver),
-      .queue0_device           (virtio_blk_queue0_device),
-      .queue1_num              (),
-      .queue1_ready            (),
-      .queue1_desc             (),
-      .queue1_driver           (),
-      .queue1_device           (),
+      .queues_num              (virtio_blk_qs_num),
+      .queues_ready            (virtio_blk_qs_ready),
+      .queues_desc             (virtio_blk_qs_desc),
+      .queues_driver           (virtio_blk_qs_driver),
+      .queues_device           (virtio_blk_qs_device),
       .device_status           (virtio_blk_device_status)
    );
 
@@ -1004,6 +998,12 @@ module smolrv64_shell #(
    wire [63:0] net_cfg = {16'd0, net_mac[7:0], net_mac[15:8], net_mac[23:16], net_mac[31:24],
                           net_mac[39:32], net_mac[47:40]} >> {ui_mmio_address[2:0], 3'b000};
 `ifndef NO_VIRTIO_NET
+   // virtio_net's transport registers, per queue (virtio_mmio's buses: queue q at [q*32 +: 32], [q*64 +: 64])
+   wire [127:0] virtio_net_qs_num;  wire [3:0] virtio_net_qs_ready;  wire [255:0] virtio_net_qs_desc, virtio_net_qs_driver, virtio_net_qs_device;
+   assign virtio_net_queue0_num = virtio_net_qs_num[0 +: 32];  assign virtio_net_queue0_ready = virtio_net_qs_ready[0];
+   assign virtio_net_queue0_desc = virtio_net_qs_desc[0 +: 64];  assign virtio_net_queue0_driver = virtio_net_qs_driver[0 +: 64];  assign virtio_net_queue0_device = virtio_net_qs_device[0 +: 64];
+   assign virtio_net_queue1_num = virtio_net_qs_num[32 +: 32];  assign virtio_net_queue1_ready = virtio_net_qs_ready[1];
+   assign virtio_net_queue1_desc = virtio_net_qs_desc[64 +: 64];  assign virtio_net_queue1_driver = virtio_net_qs_driver[64 +: 64];  assign virtio_net_queue1_device = virtio_net_qs_device[64 +: 64];
    virtio_mmio #(
       .DEVICE_ID(32'd1), /* Network device with a minimal TX-drop backend. */
       .DEVICE_FEATURES_0(32'h0000_0020), /* VIRTIO_NET_F_MAC */
@@ -1030,21 +1030,11 @@ module smolrv64_shell #(
       .config_change_interrupt (1'b0),
       .driver_features_0       (),
       .driver_features_1       (),
-      .queue_num               (),
-      .queue_ready             (),
-      .queue_desc              (),
-      .queue_driver            (),
-      .queue_device            (),
-      .queue0_num              (virtio_net_queue0_num),
-      .queue0_ready            (virtio_net_queue0_ready),
-      .queue0_desc             (virtio_net_queue0_desc),
-      .queue0_driver           (virtio_net_queue0_driver),
-      .queue0_device           (virtio_net_queue0_device),
-      .queue1_num              (virtio_net_queue1_num),
-      .queue1_ready            (virtio_net_queue1_ready),
-      .queue1_desc             (virtio_net_queue1_desc),
-      .queue1_driver           (virtio_net_queue1_driver),
-      .queue1_device           (virtio_net_queue1_device),
+      .queues_num              (virtio_net_qs_num),
+      .queues_ready            (virtio_net_qs_ready),
+      .queues_desc             (virtio_net_qs_desc),
+      .queues_driver           (virtio_net_qs_driver),
+      .queues_device           (virtio_net_qs_device),
       .device_status           (virtio_net_device_status)
    );
 
