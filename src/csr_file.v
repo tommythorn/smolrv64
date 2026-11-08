@@ -489,12 +489,16 @@ module csr_file
    wire [63:0] eff_mip   = (menvcfg[63] & ~SSTC_HIDDEN) ? {base_mip[63:6], stip_sstc, base_mip[4:0]} : base_mip;
 
    // ---- Zihpm read decode: mhpmevent3.. / mhpmcounter3.. / hpmcounter3.. (0xC03 shadow) ----
-   wire        is_ev = (raddr >= MHPMEVENT3)   && (raddr <= MHPMEVENT3   + 12'd28);
-   wire        is_mc = (raddr >= MHPMCOUNTER3) && (raddr <= MHPMCOUNTER3 + 12'd28);
-   wire        is_hc = (raddr >= HPMCOUNTER3)  && (raddr <= HPMCOUNTER3  + 12'd28);
-   wire [11:0] hpm_ri12 = is_ev ? (raddr - MHPMEVENT3)
-                        : is_mc ? (raddr - MHPMCOUNTER3) : (raddr - HPMCOUNTER3);
-   wire [4:0]  hpm_ri   = hpm_ri12[4:0];   // 0..28; the 12-bit difference is sliced, not truncated
+   // each range is N = 3..31 at its base's offset N (the bases are 32-aligned): the block is
+   // raddr[11:5], the index raddr[4:0] - 3 for all three
+   wire        hpm_lo = raddr[4:0] >= 5'd3;
+   wire        is_ev = (raddr[11:5] == MHPMEVENT3[11:5])   & hpm_lo;
+   wire        is_mc = (raddr[11:5] == MHPMCOUNTER3[11:5]) & hpm_lo;
+   wire        is_hc = (raddr[11:5] == HPMCOUNTER3[11:5])  & hpm_lo;
+   wire [4:0]  hpm_ri = raddr[4:0] - 5'd3;  // 0..28
+   generate if (MHPMEVENT3[4:0] != 5'd3 || MHPMCOUNTER3[4:0] != 5'd3 || HPMCOUNTER3[4:0] != 5'd3) begin: hpm_base_chk
+      initial $fatal(1, "csr_file: a counter range does not start at offset 3 of a 32-aligned block");
+   end endgenerate
    wire        hpm_sel   = is_ev | is_mc | is_hc;
    wire [3:0]  hpm_rix   = (hpm_ri < HPMN) ? hpm_ri[3:0] : 4'd0;       // clamp to a valid entry
    wire [63:0] hpm_rdata = (hpm_ri >= HPMN) ? 64'd0                    // counters 16..31 hardwired 0

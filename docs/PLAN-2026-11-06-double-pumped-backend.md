@@ -775,6 +775,12 @@ from the yield to match, and `m_done_red` is gone.
 endpoints at -1.11 ns, 4 levels: a net across the die into the 64-input reduce and the record's
 enables). `err_q` takes the bits as they arrive, `any_q`/`low_q` the reduce and the priority encode,
 and the record stamps `cyc - 2`.
+
+**THE COUNTER CSRS DECODE FROM THEIR BLOCK AND OFFSET** (m2s: `sy_addr -> csr_rdq`, 40 endpoints at
+-1.15 ns, 6-8 levels: three 12-bit range compares and three 12-bit subtractions selected into the
+counter index, in front of the 16:1 counter mux and the read case). The three ranges are each
+N = 3..31 at offset N of a 32-aligned block, so the block is `raddr[11:5]` and the index is
+`raddr[4:0] - 3` for all three (an elaboration check pins the bases).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
