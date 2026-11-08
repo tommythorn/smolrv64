@@ -5193,7 +5193,16 @@ module smolrv64_core
       cr_ld[crk] = ~cbo_any & ld_ok[crk];
       cr_st[crk] = ~cbo_any & st_ok[crk];
    end
-   wire cr_cbo = ~lq_uf_any & ~sq_uf_any & (ir_ld == 4'd0) & (ir_st == 4'd0) & (p_nld == 4'd0) & (p_nst == 4'd0);
+   // ...from flops: the queues' unfilled entries a cycle ago, and the IR's and P's loads and stores a
+   // cycle ago (the entries allocated since), never more permissive than the live form (asserted)
+   reg  cbo_uf_q = 1'b1, cbo_p_q = 1'b1;
+   always @(posedge clk) begin
+      cbo_uf_q <= reset | lq_uf_any | sq_uf_any;
+      cbo_p_q  <= reset | (p_nld != 4'd0) | (p_nst != 4'd0) | (ir_ld != 4'd0) | (ir_st != 4'd0);
+   end
+   wire cr_cbo = ~cbo_uf_q & ~cbo_p_q & (ir_ld == 4'd0) & (ir_st == 4'd0) & (p_nld == 4'd0) & (p_nst == 4'd0);
+   always @(posedge clk) if (!reset && cr_cbo && (lq_uf_any || sq_uf_any))
+      $fatal(1, "smolrv64_core: the registered CBO credit allows a CBO with an unfilled queue entry (lq %b sq %b)", lq_uf_any, sq_uf_any);
    // a ROB row for the group (every bit), within the rows the ROB fills: the rows in flight a cycle
    // ago and P's now (a group is a row)
    reg  [IW-1:0] cr_rob;

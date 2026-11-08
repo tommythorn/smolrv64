@@ -858,6 +858,12 @@ slot moves to T+3 (stage `mb` between `m1` and `m2`), and the scheduler also hol
 is in E1 (`rm_q`, R's multiply a cycle later), so a lane takes a multiply every three cycles. The
 system op's free-slot check reads `mb` as "a multiply a cycle from its slot". Spec 7.x and its
 latency table updated.
+
+**THE CBO CREDIT IS FROM FLOPS** (m2v: `u_sq/v -> fe/q_rp`, 196 endpoints at -1.17 ns, 9-10 levels:
+the queues' live `uf_any` into `cr_cbo`, the frontend's take and the decode queue's pop). The credit
+reads the queues' unfilled flags a cycle ago and the IR's and P's loads and stores a cycle ago (the
+entries allocated since), beside the live IR and P counts. It is never more permissive than the live
+form (asserted every cycle).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
