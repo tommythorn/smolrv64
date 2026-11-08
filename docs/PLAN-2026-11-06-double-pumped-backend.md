@@ -836,6 +836,11 @@ ln[].stg_pl`, 100 endpoints at -1.25 ns, 3 levels: the take's net into the enabl
 ~250-bit payloads). The payload (ROB index, sources, destination, `stg_pl`) loads whenever the stage
 holds nothing next cycle (`~stg_v | mv`), whether the slot is taken or not, and `stg_v` says whether
 it is an op. Asserted: dispatch never loads a stage that holds an op.
+
+**THE LOCAL SRAM'S LINE PASSES ONE MORE REGISTER** (m2u: `lmem -> u_ic_mem/line`, `u_dcache/wd_e`, 130
+endpoints at -1.05 ns, 2-4 levels: the 64 block RAMs' output mux after their output register, into
+the caches' fill). `l_q3` takes the line past the mux and the beats leave from it, a cycle later
+(boot-time traffic only).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

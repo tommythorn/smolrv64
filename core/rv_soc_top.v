@@ -1128,10 +1128,11 @@ module rv_soc_top #(
 `endif
    wire [LAW-1:0] l_line = m_q_addr - LLBASE;    // local line index
    reg            l_busy, l_rd, l_wd;           // taken; a read's beats / a write's done owed
-   reg            l_ld, l_ld2;                   // the line is read out of lmem / into l_q2 this cycle
+   reg            l_ld, l_ld2, l_ld3;            // the line is read out of lmem / into l_q2 / into l_q3 this cycle
    reg  [MIDW-1:0] l_id;
    reg  [1:0]     l_beat;
-   reg  [511:0]   l_q, l_q2;                     // the line, and the block RAM's output register
+   reg  [511:0]   l_q, l_q2, l_q3;               // the line, the block RAM's output register, and the line past
+                                                 // the 64 RAMs' output mux (the beats leave from flops)
    wire           l_take   = m_q_valid & m_is_local & ~l_busy;
    wire           l2_r_valid, l2_r_last, l2_w_valid;
    wire [MIDW-1:0] l2_r_id, l2_w_id;  wire [1:0] l2_r_beat;  wire [127:0] l2_r_data;
@@ -1150,13 +1151,13 @@ module rv_soc_top #(
          else        l_q <= lmem[l_line[LLW-1:0]];
          l_id <= m_q_id;
       end
-      l_q2 <= l_q;
-      if (reset) begin l_busy <= 1'b0; l_rd <= 1'b0; l_wd <= 1'b0; l_ld <= 1'b0; l_ld2 <= 1'b0; end
+      l_q2 <= l_q;  l_q3 <= l_q2;
+      if (reset) begin l_busy <= 1'b0; l_rd <= 1'b0; l_wd <= 1'b0; l_ld <= 1'b0; l_ld2 <= 1'b0; l_ld3 <= 1'b0; end
       else begin
          l_ld <= l_take & ~m_q_we;
-         l_ld2 <= l_ld;
+         l_ld2 <= l_ld;  l_ld3 <= l_ld2;
          if (l_take) begin l_busy <= 1'b1; l_beat <= 2'd0; l_wd <= m_q_we; end
-         if (l_ld2) l_rd <= 1'b1;
+         if (l_ld3) l_rd <= 1'b1;
          if (l_r_go) begin
             l_beat <= l_beat + 2'd1;
             if (l_beat == 2'd3) begin l_rd <= 1'b0; l_busy <= 1'b0; end
@@ -1187,7 +1188,7 @@ module rv_soc_top #(
    assign m_r_id    = l2_r_valid ? l2_r_id   : l_id;
    assign m_r_beat  = l2_r_valid ? l2_r_beat : l_beat;
    assign m_r_last  = l2_r_valid ? l2_r_last : (l_beat == 2'd3);
-   assign m_r_data  = l2_r_valid ? l2_r_data : l_q2[l_beat*128 +: 128];
+   assign m_r_data  = l2_r_valid ? l2_r_data : l_q3[l_beat*128 +: 128];
    assign m_w_valid = l2_w_valid | l_w_go;
    assign m_w_id    = l2_w_valid ? l2_w_id : l_id;
 
