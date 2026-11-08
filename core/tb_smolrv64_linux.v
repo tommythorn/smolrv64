@@ -717,19 +717,21 @@ module tb;
          if (f < lq_bmin) lq_bmin = f;
       end
    end
-   reg  [31:0]      lq_bmin_q = 0;
-   always @(posedge ui_clk) lq_bmin_q <= lq_bmin;
+   // ...two cycles ago: the queue's credit is its reservation's count, a register a cycle behind the
+   // valid bits (smolrv64_lq bfc), read by the core a cycle later
+   reg  [31:0]      lq_bmin_q = 0, lq_bmin_q2 = 0;
+   always @(posedge ui_clk) begin lq_bmin_q <= lq_bmin;  lq_bmin_q2 <= lq_bmin_q; end
    always @(posedge ui_clk) if (!reset && meas) begin
       n_lqocc <= n_lqocc + 64'(lq_cnt);
       if (dut.core.st_lq) begin
          if (dut.core.cbo_any)     lq_cbo  <= lq_cbo + 1;
          else if (lq_cnt == LQS_N) lq_full <= lq_full + 1;
          else                      lq_two  <= lq_two + 1;
-         // the credit is a cycle old: four groups take one entry a bank at most from the banks it
-         // read (that cycle's IR and P groups, P's now, the take) -- four free in every bank
-         // leaves room
-         if (!dut.core.cbo_any && (lq_bmin_q >= 4))
-            $fatal(1, "tb: the load queue refuses a credit with four free entries in every bank a cycle ago (%0d live, IR loads %0d, P loads %0d)", lq_cnt, dut.core.ir_ld, dut.core.p_nld);
+         // the credit is two cycles behind the valid bits: five groups take one entry a bank at
+         // most from the banks it read (those cycles' IR and P groups, P's now, the take) -- five
+         // free in every bank leaves room
+         if (!dut.core.cbo_any && (lq_bmin_q2 >= 5))
+            $fatal(1, "tb: the load queue refuses a credit with five free entries in every bank two cycles ago (%0d live, IR loads %0d, P loads %0d)", lq_cnt, dut.core.ir_ld, dut.core.p_nld);
          lq_noa  <= lq_noa  + 64'($countones(lq_v & ~lq_av));
          lq_wait <= lq_wait + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m));
          lq_blk  <= lq_blk  + 64'($countones(lq_v & lq_av & ~lq_sent & ~lq_lnd_m & dut.core.u_lq.e_block));

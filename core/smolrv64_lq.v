@@ -313,7 +313,7 @@ module smolrv64_lq
    end
    initial bhas = {NB{1'b0}};
    always @(posedge clk) for (fb = 0; fb < NB; fb = fb + 1) begin
-      bfr[fb] <= bfr_n[fb];  bhas[fb] <= ~reset & bhas_n[fb];  bfc[fb] <= reset ? {(BRB+1){1'b0}} : bfc_n[fb];
+      bfr[fb] <= bfr_n[fb];  bhas[fb] <= bhas_n[fb];  bfc[fb] <= bfc_n[fb];   // (in reset: every entry free)
    end
    always @(posedge clk) if (!reset) for (fb = 0; fb < NB; fb = fb + 1)
       if (b_w[fb] & (~bhas[fb] | v[{bfr[fb], fb[BL-1:0]}]))

@@ -685,7 +685,9 @@ address, 6-8 levels: each bank's priority scan of the valid bits, the banks' ran
 entries in one cycle). `bfr`/`bhas`/`bfc` are registers: the lowest row free now other than the one
 this cycle allocates in the bank, and the count with it, so the dispatch credit (which reads the
 count) never promises a row the reservation lacks; a row freed now is counted from the next cycle.
-The count is the old one less the previous cycle's frees, so the credit stays conservative.
+The count is the old one less the previous cycle's frees, so the credit stays conservative. (The
+1c003570 lockstep stopped on the bench's liveness check, which assumed the credit a cycle behind
+the valid bits; it is two now, and out of reset the count was zero for a cycle: both fixed.)
 
 **m2o's build (30483569): -1.543 ns, 45.3 K, TNS -20.4 K.** The tail past -1 ns is 2.6 K (m2n 5.3 K) while
 the middle grows: 37 K endpoints between 0 and -0.75 ns. 9.4 K of those have 0-2 logic levels -- fan-
