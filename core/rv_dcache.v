@@ -278,8 +278,14 @@ module rv_dcache #(
    reg              ox_slow;                      // ...and its first look did not finish it
    reg              xb_v;  reg [11:0] xb_pl;      // the line an outside flush blocks (its low bits), until ox_rel
    wire [1:0]       sq_h1   = sq_hp + 2'd1;       // entry 1's slot
-   wire [63:0]      st_wd   = sf_wd[sq_hp];      // the head's: only the head resolves
-   wire [7:0]       st_wm   = sf_wm[sq_hp];
+   wire             st_done;
+   wire [1:0]       hp_n    = st_done ? sq_h1 : sq_hp;   // the head after this cycle
+   always @(posedge clk) if (!reset && (sc != 2'd0) && ((st_wd != sf_wd[sq_hp]) || (st_wm != sf_wm[sq_hp])))
+      $fatal(1, "rv_dcache: the head's registered data %h/%h is not slot %0d's %h/%h", st_wd, st_wm, sq_hp, sf_wd[sq_hp], sf_wm[sq_hp]);
+   // the head's data and mask (only the head resolves): registers, as every array's write data and
+   // the merge read them -- the slot the head names next, as it stands after this cycle's write
+   (* max_fanout = 16 *) reg [63:0] st_wd;
+   (* max_fanout = 16 *) reg [7:0]  st_wm;
    wire             st_cbo  = sf_cbo[sq_hp], st_zero = sf_zero[sq_hp], st_keep = sf_keep[sq_hp];
    // which lookup the head's and the next entry's op go to: a plain store not yet missed is the
    // store lookup's
@@ -580,7 +586,7 @@ module rv_dcache #(
    wire fin_now   = s1_st & (m_alloc | (m_clean & ~cp_dty) | (m_drop & k_fl & ~drop_wb) | m_cdone);
    wire fin_wb    = cw_ok & wb_cpl[cw_e[WBB-1:0]];
    wire fin_nc    = cw_valid & (cw_slot == NCS) & nc_v & nc_we & nc_sent;
-   wire st_done   = fin_now | fin_wb | fin_nc | fp_wr | fp_mg;
+   assign st_done = fin_now | fin_wb | fin_nc | fp_wr | fp_mg;
    wire nc_done   = fin_nc | (nc_rdy & ~ans);                         // the NC slot frees
    wire [1:0] sq_pt = sq_hp + sc;                                     // the tail's slot
    // counted once per request, never per replay: an access is a load or store taken, a miss a line
@@ -754,6 +760,8 @@ module rv_dcache #(
          if (st_done & sf_ox[sq_hp] & ~sf_keep[sq_hp]) begin xb_v <= 1'b1;  xb_pl <= sf_pa[sq_hp][17:6]; end
          else if (ox_rel) xb_v <= 1'b0;
          if (st_done) sq_hp <= sq_h1;
+         st_wd <= (sq_take & (sq_pt == hp_n)) ? wr_data : sf_wd[hp_n];
+         st_wm <= (sq_take & (sq_pt == hp_n)) ? wr_mask : sf_wm[hp_n];
          if (st_go) sf_iss[sq_ps] <= 1'b1;
          if (sq_take) begin                        // a store-port op, else the outside request (a CBO by PA)
             sf_iss[sq_pt] <= 1'b0;  sf_mn[sq_pt] <= 1'b0;  sf_pa[sq_pt] <= wr_take ? wr_pa : ox_pa;
