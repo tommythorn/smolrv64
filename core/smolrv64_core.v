@@ -1754,6 +1754,9 @@ module smolrv64_core
       wire dp = lb_free[gl] & (lb_any[gl] | p1[gl]);   // the port takes the buffer's head or the SYSQ
       wire d  = dp & dwr;              // ...writing a register
       wire dc = dp & dcm;              // ...completing its op
+      // the port's selects: dp, with the SYSQ's free slot for its fire (lb_free: E2 and the
+      // multiply neither write nor complete then)
+      wire ds = lb_free[gl] & (lb_any[gl] | ((gl == 0) & sy_slot_q));
       wire bs = by0[gl] | by2[gl];     // a stream's landing straight through (its own port's wake and completion)
       // ---- the write register: one write slot a cycle, taken by the landing slot, the ALU op at
       // issue or the multiply in its reserved slot. The wake, the pending clear and the store
@@ -1766,9 +1769,9 @@ module smolrv64_core
       // constant LANE, so every wake compare, pending clear and snoop of it sees three constants.
       localparam [2:0] SHK = gl;
       wire                 we = (v2 & q2_rd_v & ~late2) | m_wr | d;
-      wire [RN_PBITS-1:0]  wa_src = d ? dprd : m2 ? mprd2 : q2_prd;
+      wire [RN_PBITS-1:0]  wa_src = ds ? dprd : m2 ? mprd2 : q2_prd;
       wire [RN_PBITS-1:0]  wa = {SHK, wa_src[RN_IDXB-1:0]};
-      wire [63:0]          wb = d ? ddat : m2 ? mres : result;
+      wire [63:0]          wb = ds ? ddat : m2 ? mres : result;
       wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld_q : wa_fe_q) : wa_src;
       // the write register's enable and address reach every bank of the shard's copies (the PRF's
       // write is a cycle later, from here): replicated
@@ -1809,7 +1812,7 @@ module smolrv64_core
       end
       assign rob_wv[NL + 5 + gl] = ct_v & ~redirect & ~dead(ct_rob);
       assign rob_wix[(NL + 5 + gl)*ROB_IDXB +: ROB_IDXB] = ct_rob;
-      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : by0[gl] ? ldw_rob_q : by2[gl] ? few_rob_q : rob2;  // dp: registers and the SYSQ's fire
+      wire [ROB_IDXB-1:0] wix = by0[gl] ? ldw_rob_q : by2[gl] ? few_rob_q : ds ? drob : m2 ? mrob2 : rob2;  // ds: registers and the SYSQ's fire
       assign l_wix[gl] = {wix[ROB_IDXB-1:ROB_CB], COL};
       always @(posedge clk) if (!reset && l_wv[gl] && wix[ROB_CB-1:0] != COL)
          $fatal(1, "smolrv64_core: lane %0d completes ROB entry %0d, outside its column", gl, wix);
@@ -2860,6 +2863,11 @@ module smolrv64_core
    (* max_fanout = 32 *) reg sy_fire_q;
    initial sy_fire_q = 1'b0;
    wire sy_fire    = sy_fire_q;   // its result takes lane A's slot
+   // lane A's slot is free for the SYSQ this cycle (sy_fire_q's lane terms, registered beside it):
+   // nothing else writes or completes on lane A's port, so the port's tag, data and ROB index select
+   // the SYSQ's on this flop and its fire gates only the enables
+   (* max_fanout = 32 *) reg sy_slot_q;
+   initial sy_slot_q = 1'b0;
    wire sy_fire_live = sy_at_head & sy_lane_ok & (sy_instret ? sy_head_q2 : sy_head_q);
    always @(posedge clk) if (!reset && sy_fire && !sy_fire_live)
       $fatal(1, "smolrv64_core: the SYSQ fires where it may not (head %b lane %b q %b q2 %b instret %b)", sy_at_head, sy_lane_ok, sy_head_q, sy_head_q2, sy_instret);
@@ -4470,8 +4478,8 @@ module smolrv64_core
    // A stream's goes straight through when the lane is free, nothing waits and lane A is not held
    // for a system op at the ROB head (the SYSQ's fire is not in the streams' wake); else it waits.
    wire [NL-1:0] rsv = {{(NL-1){1'b0}}, sy_at_head};
-   wire [NL-1:0] by0 = lb_drain & ~lb_any & ~rsv & pl;
-   wire [NL-1:0] by2 = lb_drain & ~lb_any & ~rsv & ~pl & p2;
+   wire [NL-1:0] by0 = lb_free & ~lb_any & ~rsv & pl;           // lb_drain's, without the SYSQ's term
+   wire [NL-1:0] by2 = lb_free & ~lb_any & ~rsv & ~pl & p2;
    wire [NL-1:0] en0 = p0 & ~by0;
    wire [NL-1:0] en2 = p2 & ~by2;
    // the occupancy after this cycle, and whether the FE stream may push next cycle (lb_fe_room)
@@ -4479,10 +4487,14 @@ module smolrv64_core
    // the SYSQ's fire, a cycle ahead (see sy_fire_q): at the head next cycle and past its first
    // (second) cycle there, and lane A's slot free next cycle -- E1's op not reaching E2 to write, no
    // multiply in E1 (one about to be killed counts: the fire waits a cycle), the landing buffer empty
-   always @(posedge clk)
+   wire sy_slot_n = ~(l_v[0] & ~l_late[0]) & ~l_m1[0] & (lb_n_n[0] == {(LBB+1){1'b0}});
+   always @(posedge clk) begin
+      sy_slot_q <= ~reset & ~redirect & sy_slot_n;
       sy_fire_q <= ~reset & ~redirect & sy_v_n & (sy_rob_n == rob_head_n_idx)
-                 & (sy_instret ? (sy_head_q & sy_at_head & ~sy_fire) : (sy_at_head & ~sy_fire))
-                 & ~(l_v[0] & ~l_late[0]) & ~l_m1[0] & (lb_n_n[0] == {(LBB+1){1'b0}});
+                 & (sy_instret ? (sy_head_q & sy_at_head & ~sy_fire) : (sy_at_head & ~sy_fire)) & sy_slot_n;
+   end
+   always @(posedge clk) if (!reset & sy_slot_q & (lb_any[0] | ~lb_free[0]))
+      $fatal(1, "smolrv64_core: lane A's slot is free for the SYSQ with its buffer %b or its port %b taken", lb_any[0], ~lb_free[0]);
    genvar gln;
    generate for (gln = 0; gln < NL; gln = gln + 1) begin: g_ln
       assign lb_n_n[gln] = lb_n[gln] + {{LBB{1'b0}}, en0[gln]} + {{LBB{1'b0}}, en2[gln]}

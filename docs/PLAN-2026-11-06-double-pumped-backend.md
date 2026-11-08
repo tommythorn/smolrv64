@@ -743,6 +743,14 @@ request's VA in both).
 per-register write decode of `newer`, `smap`, `dirty`). The ROB names a walked row's entries a cycle
 after reading it; `wl_done` waits for the ports to empty, so the release still follows the last
 undo. A flush or release clears the ports, as it stops the walk.
+
+**LANE A'S PORT SELECTS THE SYSTEM OP ON A FREE-SLOT FLAG, NOT ON ITS FIRE** (m2s: `sy_fire_q ->
+ln[].u_iq/e_r`, 54 endpoints at -1.36 ns, 8-10 levels: the fire through the landing slot's select
+into the wake tag, the schedulers' compares and `e_r`). `sy_slot_q` registers sy_fire_q's lane terms
+(E1 not reaching E2 to write, no multiply in E1, the buffer empty), so in its cycle nothing else
+writes or completes on lane A's port. The tag, data and ROB-index muxes select the SYSQ's on it,
+and the fire gates only the enables. The streams' straight-through landings (by0/by2) no longer
+pass through `lb_drain`'s SYSQ term.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
