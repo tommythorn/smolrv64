@@ -816,10 +816,16 @@ module csr_file
          if (reset) hpm_esel[hi] <= HSEL_NONE;
          else if (hpm_wev_q[hi]) hpm_esel[hi] <= hpm_sel_w;
    end
+   // EACH COUNTER ADDS THE INCREMENT ITS SELECT GAVE A CYCLE EARLIER (hpm_iq): the select's mux
+   // and the 64-bit add are a cycle each. The cycle after an mhpmeventN write (the select still
+   // the old event's) gives 0, so a new event never counts its predecessor's.
+   reg  [5:0] hpm_iq [0:HPMN-1];
+   always @(posedge clk)
+      for (hi = 0; hi < HPMN; hi = hi + 1) hpm_iq[hi] <= (reset | hpm_wev_q[hi]) ? 6'd0 : hpm_val(hpm_esel[hi]);
    genvar g;
    generate for (g = 0; g < HPMN; g = g + 1) begin : g_hpm
       localparam [11:0] EVA = MHPMEVENT3 + g, CTA = MHPMCOUNTER3 + g;
-      wire [64:0] sum = {1'b0, mhpmcounter[g]} + {59'd0, hpm_val(hpm_esel[g])};
+      wire [64:0] sum = {1'b0, mhpmcounter[g]} + {59'd0, hpm_iq[g]};
       wire        inh = (priv == M) ? mhpmevent[g][MINH_B]
                       : (priv == S) ? mhpmevent[g][SINH_B] : mhpmevent[g][UINH_B];
       assign hpm_wev[g]  = hpm_csr_we & (upd_addr == EVA);
@@ -969,8 +975,8 @@ module csr_file
          mcycle   <= cw_mcycle   ? cw_d : mcycle   + (mcountinhibit[0] ? 64'd0 : 64'd1);
          minstret <= cw_minstret ? cw_d : minstret + (mcountinhibit[2] ? 64'd0 : {58'd0, retire_cnt});
       end
-      // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds its
-      // mhpmeventN-selected event's count this cycle while it runs (hpm_run: mcountinhibit[N]
+      // Zihpm counters (off the trap/csr chain, like Zicntr). Each mhpmcounterN adds what its
+      // mhpmeventN-selected event counted a cycle earlier while it runs (hpm_run: mcountinhibit[N]
       // and the event's *INH bit for the current privilege); an M-mode write loads the value a
       // cycle late (cw_hpm). A wrap sets OF (Sscofpmf). mhpmeventN + mcountinhibit
       // are plain WARL; an unimplemented event code contributes 0 (the counter holds).

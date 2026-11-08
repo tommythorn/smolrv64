@@ -450,6 +450,11 @@ and ready when it issues (asserted), and a stale pick meets the hold. The fill b
 (one-hot) and each array parity's write row (the beat's, else SB1's, which is SB2's a cycle later)
 are registers taken as the beat arrives.
 
+**THE HPM COUNTERS ADD A CYCLE LATE** (m2g: `hpm_ev_q`/`hpm_esel -> mhpmcounter`, 810 endpoints,
+17 levels: the 50-way event select and the 64-bit add in one cycle). Each counter's increment is
+registered (`hpm_iq`) and added the next cycle; the cycle after an mhpmeventN write gives 0, so a
+new event never counts its predecessor's last cycle.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
