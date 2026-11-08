@@ -1754,8 +1754,10 @@ module smolrv64_core
       wire [RN_PBITS-1:0]  wa = {SHK, wa_src[RN_IDXB-1:0]};
       wire [63:0]          wb = d ? ddat : m2 ? mres : result;
       wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld_q : wa_fe) : wa_src;
-      reg                  qv;
-      reg  [RN_PBITS-1:0]  qprd;
+      // the write register's enable and address reach every bank of the shard's copies (the PRF's
+      // write is a cycle later, from here): replicated
+      (* max_fanout = 24 *) reg qv;
+      (* max_fanout = 24 *) reg [RN_PBITS-1:0] qprd;
       reg  [63:0]          qval;
       initial begin qv = 1'b0; qprd = {SHK, {RN_IDXB{1'b0}}}; qval = 64'd0; end
       always @(posedge clk) begin
@@ -4302,7 +4304,7 @@ module smolrv64_core
    // and an integer one's on its lane's port, straight through (by0) or at the drain. A redirect in
    // the landing's cycle drops it (the landing is younger, the wrong path).
    reg                 ld_any_q = 1'b0, ld_wb_q = 1'b0;
-   reg  [RN_PBITS-1:0] wa_ld_q;
+   (* max_fanout = 24 *) reg [RN_PBITS-1:0] wa_ld_q;   // every SH_FL bank's write address
    reg  [63:0]         wb_ld_q;
    reg  [ROB_IDXB-1:0] ldw_rob_q;
    always @(posedge clk) begin
