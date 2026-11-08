@@ -110,13 +110,14 @@ module smolrv64_rob
     // ---- the walk: from the tail back to a mispredicted branch, a row a cycle ----
     // k_v names the branch (a later k_v names an older one: the walk goes on to it). Each cycle
     // the walk names the dead entries of one row that write a register, position p on [p], with
-    // their rd, prd and displaced mapping, for smolrv64_rename to undo. wl_done: the walk has
-    // reached its branch (until the flush).
+    // their rd, prd and displaced mapping, for smolrv64_rename to undo; the ports are registered,
+    // a cycle behind the row's read. wl_done: the walk has reached its branch and its ports are
+    // empty (until the flush).
     input  wire                   k_v,
     input  wire [IDXB-1:0]        k_idx,
-    output wire [IW-1:0]          wl_v,
-    output wire [IW*6-1:0]        wl_rd,
-    output wire [IW*PBITS-1:0]    wl_prd, wl_pold,
+    output reg  [IW-1:0]          wl_v,
+    output reg  [IW*6-1:0]        wl_rd,
+    output reg  [IW*PBITS-1:0]    wl_prd, wl_pold,
     output wire                   wl_done,
     // THE KILL: every entry younger than the branch, one bit per storage index, from flops, for
     // every structure that holds an op to look its own up in (kd_v & kd[its storage index]). Valid
@@ -289,7 +290,8 @@ module smolrv64_rob
    wire [RB-1:0]  kn_row = k_idx[IDXB-1:CB+1];
    wire [CB-1:0]  kn_fc  = fc[kn_row];
    initial begin wl_run = 1'b0; wl_end = 1'b0; wl_row = 0; wl_fc = 0; wl_lim = 0; k_row = 0; k_p = 0; k_wc = 0; end
-   assign wl_done = wl_end & ~wl_run & ~k_v;      // not in a cycle that names a new, older branch
+   // not in a cycle that names a new, older branch, nor while the ports still name a row
+   assign wl_done = wl_end & ~wl_run & ~k_v & ~(|wl_v);
    localparam [CB:0] NCOL_S = NCOL;
    always @(posedge clk) begin
       if (reset | flush | rel) begin
@@ -354,6 +356,14 @@ module smolrv64_rob
    // and never in a flush cycle: a mispredicted branch COMMITS and redirects in the same cycle,
    // and the entry behind it is the wrong path.
    wire [EW-1:0] he [0:IW-1], we [0:IW-1];      // column k's entry in the head's row, the walk's row
+   wire [IW-1:0]         wn_v;                  // the walk's row as read, for the registered ports
+   wire [IW*6-1:0]       wn_rd;
+   wire [IW*PBITS-1:0]   wn_prd, wn_pold;
+   initial begin wl_v = 0; wl_rd = 0; wl_prd = 0; wl_pold = 0; end
+   always @(posedge clk) begin
+      wl_v <= (reset | flush | rel) ? {IW{1'b0}} : wn_v;
+      wl_rd <= wn_rd;  wl_prd <= wn_prd;  wl_pold <= wn_pold;
+   end
    wire [CB-1:0] wfc = wl_fc;
    always @(posedge clk) if (!reset && wl_run && wl_fc != fc[wl_row])
       $fatal(1, "smolrv64_rob: the walk's row %0d starts at column %0d, its register says %0d", wl_row, fc[wl_row], wl_fc);
@@ -369,11 +379,11 @@ module smolrv64_rob
       // the walk's position p
       wire [CB-1:0]   wc = col_of(wfc, P);
       wire [EW-1:0]   w  = we[wc];
-      assign wl_v[gk] = wl_run & v[{wl_row, wc}] & ({1'b0, P} < wl_lim) & ((wl_row != k_row) | (P > k_p))
+      assign wn_v[gk] = wl_run & v[{wl_row, wc}] & ({1'b0, P} < wl_lim) & ((wl_row != k_row) | (P > k_p))
                       & (w[PBITS-1:0] != {PBITS{1'b0}});
-      assign wl_prd[gk*PBITS +: PBITS]  = w[PBITS-1:0];
-      assign wl_rd[gk*6 +: 6]           = w[PBITS +: 6];
-      assign wl_pold[gk*PBITS +: PBITS] = w[EW-1 -: PBITS];
+      assign wn_prd[gk*PBITS +: PBITS]  = w[PBITS-1:0];
+      assign wn_rd[gk*6 +: 6]           = w[PBITS +: 6];
+      assign wn_pold[gk*PBITS +: PBITS] = w[EW-1 -: PBITS];
       // the head row's position p
       wire [CB-1:0]   hc = col_of(hfc, P);
       wire [EW-1:0]   e  = he[hc];

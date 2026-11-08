@@ -737,6 +737,12 @@ at -1.35 ns, 10 levels: the second level's block-RAM word, its tag compare, the 
 first level's permission write). L2LK registers the hit; L2H answers and refills the first level from
 it. The block-RAM word is loaded only in IDLE, so it holds through both states (asserted against the
 request's VA in both).
+
+**THE WALK'S PORTS ARE REGISTERED** (m2s: `u_rob/wl_row -> u_rename/newer`, 64 endpoints at -1.42 ns,
+10 levels: the walk row's LUTRAM read, its validity against the branch's position, and rename's
+per-register write decode of `newer`, `smap`, `dirty`). The ROB names a walked row's entries a cycle
+after reading it; `wl_done` waits for the ports to empty, so the release still follows the last
+undo. A flush or release clears the ports, as it stops the walk.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
