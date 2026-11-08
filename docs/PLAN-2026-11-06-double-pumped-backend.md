@@ -539,6 +539,13 @@ having caught up in the second. The cosim's captures take the same register.
 enables, 1-2 levels, -1.6) and the scheduler's free slot onto the payload LUTRAMs' write address
 (`fs_ix -> plmem`, 0 levels, -1.33). The flush's flops (red_m_q, red_s_q, fr_v, fr_hd_q) and fs_ix
 are replicated (max_fanout).
+
+**THE SYSTEM OP'S REDIRECT IS csr_file's AS IF IT FIRES** (m2j: `lb_n -> u_rob/v`, `-> u_rename/rnewer`,
+`-> redirect_target_q`, 15-18 levels: the fire -- lane A's slot, the landing buffer -- ran into the
+file's trap and redirect decode as upd_valid, then on into the ROB's commit kill). The file drives
+redir_valid, redir_is_trap and the target from the op's registered fields alone (asserted equal to
+the gated terms when it fires); the core ANDs its fire last, with upd_valid's own qualifiers (not a
+dispatch trap, a fence or a replay: a fence.i's immediate decodes as ecall).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

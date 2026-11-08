@@ -747,7 +747,7 @@ module csr_file
    wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv_ms & SSTATUS_WMASK);
    wire [1:0]  newfs_m = newms_m[14:13];   // mstatus.FS, sliced rather than shift-truncated
    wire [1:0]  newfs_s = newms_s[14:13];
-   wire        do_fschg = upd_valid & upd_is_csr & ~csr_illegal &
+   wire        do_fschg_f = upd_is_csr & ~csr_illegal &
                           ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
                           | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
 
@@ -760,7 +760,7 @@ module csr_file
    // cosim divergence vs simmerv, which applies the write in order). Same fall-through cost as FS.
    localparam [63:0] MSTATUS_DXMASK = 64'h0000_0000_000E_1800;   // MXR|SUM|MPRV | MPP
    // newms_m/newms_s are declared with the FS check above -- one definition, two users.
-   wire        do_dxchg = upd_valid & upd_is_csr & ~csr_illegal &
+   wire        do_dxchg_f = upd_is_csr & ~csr_illegal &
                           ( ((upd_addr==MSTATUS) & (((newms_m ^ mstatus) & MSTATUS_DXMASK) != 64'd0))
                           | ((upd_addr==SSTATUS) & (((newms_s ^ mstatus) & MSTATUS_DXMASK) != 64'd0)) );
 
@@ -771,20 +771,32 @@ module csr_file
    // frontend that has already fetched past the csrw (easy at a ~3-cycle window supply)
    // would otherwise execute those stale bare-fetched bytes instead of faulting. Same
    // fall-through recipe as FS/MPRV; satp writes are context-switch-rare.
-   wire        do_satp  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
-                        & (upd_addr == SATP);
+   wire        do_satp_f  = upd_is_csr & ~csr_illegal & csr_writes
+                          & (upd_addr == SATP);
    // A CSR op does not drain: younger work runs while it waits for the head. A write that changes
    // what younger ops already used refetches them too: the rounding mode (frm, fcsr) an FP op read
    // at execute, and the enables (menvcfg, senvcfg, mstateen0) decode judged a CBO by and the
    // translation honours (PBMTE). Rare writes, at the cost of FS's refetch.
-   wire        do_ctxw  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
+   wire        do_ctxw_f  = upd_is_csr & ~csr_illegal & csr_writes
                         & ((upd_addr == FRM) | (upd_addr == FCSR) | (upd_addr == MENVCFG)
                          | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0));
 
-   // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
-   // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw;
-   assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
+   wire        do_fschg = upd_valid & do_fschg_f;
+   wire        do_dxchg = upd_valid & do_dxchg_f;
+   wire        do_satp  = upd_valid & do_satp_f;
+   wire        do_ctxw  = upd_valid & do_ctxw_f;
+   // THE ACTIVE SYSTEM OP'S REDIRECT, AS IF IT FIRES (_f: without upd_valid). The caller gates both
+   // outputs and the target with its own fire, last (smolrv64_core sy_red/sy_trap), so the fire's
+   // cone (lane A's slot, the landing buffer) stays out of this file's decode. Asserted equal to the
+   // gated terms whenever the op fires. External injections (xtrap_v) redirect via the target alone.
+   wire        irq_take_f = is_irqop & irq_v;
+   wire        do_xret_f  = (is_mret | is_sret) & ~exc_active;
+   wire        do_fall_f  = (is_sfence & ~exc_active) | do_fschg_f | do_dxchg_f | do_satp_f | do_ctxw_f;
+   assign redir_valid   = exc_active | irq_take_f | do_xret_f | do_fall_f;
+   assign redir_is_trap = exc_active | irq_take_f;     // op's own exception OR delivered interrupt
+   always @(posedge clk) if (!reset && upd_valid && ((redir_valid != (sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw))
+                                                   || (redir_is_trap != (sysop_exc | irq_take))))
+      $fatal(1, "csr_file: the as-if-fired redirect %b/%b is not the fired op's", redir_valid, redir_is_trap);
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
    // xret so backend_top's csr_redir_tgt is the trap vector. Vectored mode (tvec[0]) sends an
@@ -798,17 +810,22 @@ module csr_file
    wire [39:0] x_tgt     = x_to_s ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
    always @(posedge clk) if (!reset && xtrap_v && (x_tgt != trap_tgt))
       $fatal(1, "csr_file: the injected trap's target %h is not the trap's %h", x_tgt, trap_tgt);
+   // the op's own trap's target as if it fires: an interrupt's (vectored) or its exception's
+   wire        trap_to_s_f  = irq_take_f ? irq_to_s : (priv != M) & medeleg[exc_cause[5:0]];
+   wire [39:0] tvec_base_f  = trap_to_s_f ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
+   wire        tvec_vec_f   = irq_take_f & (trap_to_s_f ? stvec[0] : mtvec[0]);
+   wire [39:0] trap_tgt_f   = tvec_vec_f ? (tvec_base_f + {34'd0, irq_cause, 2'b00}) : tvec_base_f;
    always @* begin
       if (xtrap_v)              redir_target = x_tgt;
-      else if (do_mret)         redir_target = mepc;
-      else if (do_sret)         redir_target = sepc;
-      else if (do_sfence)       redir_target = upd_pc + 40'd4;
-      else if (do_fschg)        redir_target = upd_pc + 40'd4;   // CSR op is 4 bytes
-      else if (do_dxchg)        redir_target = upd_pc + 40'd4;   // CSR op is 4 bytes
-      else if (do_satp)         redir_target = upd_pc + 40'd4;   // refetch under the new satp
-      else if (do_ctxw)         redir_target = upd_pc + 40'd4;   // refetch under the new frm/enables
-      else                      redir_target = trap_tgt;
+      else if (is_mret)         redir_target = mepc;
+      else if (is_sret)         redir_target = sepc;
+      else if (do_fall_f)       redir_target = upd_pc + 40'd4;   // sfence, or a CSR write that refetches (4 bytes)
+      else                      redir_target = trap_tgt_f;
+      if (exc_active & ~xtrap_v) redir_target = trap_tgt_f;     // an xret or sfence that traps
    end
+   always @(posedge clk) if (!reset && upd_valid && !xtrap_v && redir_valid && (redir_target != (
+         do_mret ? mepc : do_sret ? sepc : (do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw) ? upd_pc + 40'd4 : trap_tgt)))
+      $fatal(1, "csr_file: the as-if-fired target %h is not the fired op's", redir_target);
 
    localparam MIE_B=3, SIE_B=1, MPIE_B=7, SPIE_B=5, SPP_B=8;  // [12:11]=MPP
 

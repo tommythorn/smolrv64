@@ -2847,8 +2847,11 @@ module smolrv64_core
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
    // otherwise), so a trap from dispatch is its own redirect here, as M's data fault is.
-   wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi | sy_rp);  // trap, xret, illegal CSR, fence.i, a replay: a redirect
-   wire sy_trap    = sy_fire & (csr_redir_trap | sy_xt | sy_rp);  // ...that is an exception or a replay: kill, no result
+   // csr_file's redirect is the op's as if it fires (its own fire's cone stays out of the file's
+   // decode): it counts only for an op csr_file acts on, the same qualifiers as upd_valid
+   wire sy_cs      = ~sy_xt & ~sy_fn & ~sy_rp;
+   wire sy_red     = sy_fire & ((csr_redir_v & sy_cs) | sy_xt | sy_fi | sy_rp);  // trap, xret, illegal CSR, fence.i, a replay: a redirect
+   wire sy_trap    = sy_fire & ((csr_redir_trap & sy_cs) | sy_xt | sy_rp);  // ...that is an exception or a replay: kill, no result
    assign rp_fire  = sy_fire & sy_rp;
 `ifndef SYNTHESIS
    reg [31:0] rp_cnt;  initial rp_cnt = 32'd0;      // replays (MEMDEP counters in the bench's report)
@@ -3702,7 +3705,7 @@ module smolrv64_core
       // unit's redirect and trap-target logic -- with the full m_done, build D of 2026-09-04
       // had 1357 near-critical endpoints starting at m_addr: dTLB compare -> lsu_done ->
       // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
-      .upd_valid(sy_fire & ~sy_xt & ~sy_fn & ~sy_rp), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
+      .upd_valid(sy_fire & sy_cs), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
       .upd_addr(sy_addr),
       .upd_src(sy_src), .upd_src_nz(sy_src_nz),
       .upd_pc(sy_pc));
