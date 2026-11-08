@@ -478,7 +478,9 @@ rate now. The directed bench's take waits for the offer, and its release checks 
 levels, -2.01: the SoC's device decode of the LSU's live read address, three CARRY8 compares, then
 the D$'s issue and its arrays' address). The door's registered copy is the cache's only source:
 the D$ is asked from registers, a cycle later. The LSU already starts a read only while none
-waits, and the D$ takes a lookup every other cycle.
+waits, and the D$ takes a lookup every other cycle. It is the dearest cut so far: the 300 M
+lockstep retires 186.8 M at 4e25f2a4 against 201.0 M at 1d81b2d7 (-7.1%) -- the first to revisit
+once the core closes (the decode alone could be registered with the LSU's read address).
 
 **AN AMO'S WRITE DATA IS A REGISTER** (m2h: `u_lsu/mem_ren -> u_dcache/sf_wd`, 11 levels, -2.03: the
 SoC's held read data into the AMO's add or compare and on into the D$'s store queue). The value
