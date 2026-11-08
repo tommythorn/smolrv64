@@ -1548,7 +1548,7 @@ module smolrv64_core
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
          .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),.iss_hqs(iss_hqs),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
-         .unit_busy(r_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
+         .unit_busy(r_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any_q[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
          // no entry is held: the payload is read at the pick, and R reads its entry's registered
@@ -1560,7 +1560,10 @@ module smolrv64_core
       reg  [LPLW-1:0]       plmem [0:NI-1];
       // written as the stage's op moves into the scheduler (T+1), at the entry it allocates
       always @(posedge clk) if (mv) psmem[d_ent] <= {stg_mul, stg_hx, stg_late, stg_ps};
-      always @(posedge clk) if (mv) plmem[d_ent] <= stg_pl;
+      // written whenever the scheduler reserves a slot (d_ready: fs_v, a replicated flop), the stage's
+      // op or not: the slot is free (asserted in smolrv64_iq), so a write that is no dispatch is to an
+      // entry nothing reads, and dispatch's mv stays out of the payload RAMs' enables
+      always @(posedge clk) if (ready) plmem[d_ent] <= stg_pl;
       wire [3*RN_PBITS+2:0] ps_out = psmem[iss_ent];
       // THE LANE IS FOUR STAGES: the pick, R (the picked op reads its operands), E1 and E2 (it
       // executes: smolrv64_exec PIPE=1). E1 runs the ALU's units and generates an address, starts a
@@ -4475,6 +4478,7 @@ module smolrv64_core
    // the FE stream's (p2); the lane's write and ROB ports are free (nothing executing that completes
    // at issue, no multiply in its reserved slot: registers only); an entry waits
    wire [NL-1:0] p0, pl, p1, p2, lb_free, lb_any;
+   reg  [NL-1:0] lb_any_q = {NL{1'b0}};
    genvar glk;
    generate for (glk = 0; glk < NL; glk = glk + 1) begin: g_lk
       localparam [2:0] K = glk;
@@ -4484,6 +4488,10 @@ module smolrv64_core
       assign p1[glk] = (glk == 0) & sp_f;
       assign lb_free[glk] = ~(l_v2[glk] & ~l_late2[glk]) & ~l_m2[glk];
       assign lb_any[glk] = lb_n[glk] != 0;
+      // ...the same as a flop: lb_n's next value compared before its edge (the scheduler's pick reads it)
+      always @(posedge clk) lb_any_q[glk] <= ~(reset | redirect) & (lb_n_n[glk] != 0);
+      always @(posedge clk) if (!reset && lb_any_q[glk] != lb_any[glk])
+         $fatal(1, "smolrv64_core: lane %0d's registered landing-buffer flag %b is not its count's", glk, lb_any_q[glk]);
    end endgenerate
    assign sy_lane_ok = lb_free[0] & ~lb_any[0];
    // each lane drains, in order, its oldest waiting entry, the SYSQ's, a landing load's, the FE's

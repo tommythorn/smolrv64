@@ -842,6 +842,14 @@ it is an op. Asserted: dispatch never loads a stage that holds an op.
 endpoints at -1.05 ns, 2-4 levels: the 64 block RAMs' output mux after their output register, into
 the caches' fill). `l_q3` takes the line past the mux and the beats leave from it, a cycle later
 (boot-time traffic only).
+
+**THE LANE PAYLOAD RAM IS WRITTEN ON THE RESERVATION; THE AGU-ONLY PICK READS A FLOP** (m2v:
+`ln[].u_iq/fs_v`, `fs_ix -> ln[].plmem`, 320 endpoints at -0.84 ns, 0-1 levels: the dispatch term
+`mv` in the payload RAMs' write enable; `lb_n -> ln[].r_ent`, 59 at -1.13 ns, 7 levels: the landing
+buffer's count compare in front of the scheduler's pick). `plmem` is written whenever the scheduler
+reserves a slot (`ready`, a replicated flop). The slot is free, so a write that is no dispatch lands
+in an entry nothing reads. `ag_only` takes `lb_any_q`, which is `lb_n_n != 0` registered: the same
+value as `lb_n != 0`, a flop earlier (asserted).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
