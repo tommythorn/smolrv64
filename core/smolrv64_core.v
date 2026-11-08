@@ -1519,14 +1519,21 @@ module smolrv64_core
          if (reset) stg_v <= 1'b0;
          else begin
             if (sl_li[gl]) begin
-               stg_v <= 1'b1;  stg_rob <= sl_rob[gl];  stg_ps <= sl_ps[gl];  stg_r <= sl_rdy[gl];
-               stg_prd <= sl_prd[gl];  stg_pl <= sl_pl[gl];
+               stg_v <= 1'b1;  stg_r <= sl_rdy[gl];
             end else if (mv) stg_v <= 1'b0;
             else if (stg_v) stg_r <= stg_r | snp;
             if (dead(stg_rob)) stg_v <= 1'b0;
             if (redirect) stg_v <= 1'b0;   // flush last (rule I11)
          end
       end
+      // THE PAYLOAD LOADS WHENEVER THE STAGE HOLDS NOTHING NEXT CYCLE (free, or its op moving to the
+      // scheduler), the slot's or not: stg_v says whether it is an op. Dispatch's take stays out of the
+      // enables of the stage's few hundred flops.
+      always @(posedge clk) if (~stg_v | mv) begin
+         stg_rob <= sl_rob[gl];  stg_ps <= sl_ps[gl];  stg_prd <= sl_prd[gl];  stg_pl <= sl_pl[gl];
+      end
+      always @(posedge clk) if (!reset && sl_li[gl] && stg_v && !mv)
+         $fatal(1, "smolrv64_core: dispatch loads lane %0d's stage while it holds an op", gl);
       // ---- the scheduler: an index into the lane's payload and tag arrays ----
       reg                  m1;
       reg                  v;               // E1 holds an op (below)

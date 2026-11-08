@@ -830,6 +830,12 @@ through `sy_trap` into `rc_tkill`, the commit ports, the ROB's valid bits and re
 A CSR or system op is completed by its fire alone (`sy_done`), so in its fire cycle the head is not
 done and nothing commits (asserted). The kill keeps only the SYSQ's flops for an entry that may be
 done (a queue fault `sy_xt`, a replay `sy_rp`), and `red_trap_q` holds the cycle after.
+
+**A LANE'S STAGE PAYLOAD LOADS ON A FREE STAGE, NOT ON DISPATCH'S TAKE** (m2u: `fe/d_valid ->
+ln[].stg_pl`, 100 endpoints at -1.25 ns, 3 levels: the take's net into the enables of four lanes'
+~250-bit payloads). The payload (ROB index, sources, destination, `stg_pl`) loads whenever the stage
+holds nothing next cycle (`~stg_v | mv`), whether the slot is taken or not, and `stg_v` says whether
+it is an op. Asserted: dispatch never loads a stage that holds an op.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
