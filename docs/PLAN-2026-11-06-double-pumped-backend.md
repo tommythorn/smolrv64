@@ -493,6 +493,11 @@ below M, else mtvec; asserted equal to the general target), so the decision only
 CSR write yields only to its own op's trap: an injected trap never meets a system op's update
 (asserted), so the CSRs a trap does not write lose it from their enables.
 
+**A LANE'S PAYLOAD IS READ IN R** (m2h: `lb_n -> ln[].r_pl`, 392 endpoints, -1.93: the pick -- the
+landing buffer's AGU-only gate, the select tree -- on the payload LUTRAM's address). R reads it at
+the registered entry (`r_ent`); it feeds only E1's register. The entry frees a cycle after its
+pick and dispatch writes a slot reserved a cycle ahead, so it is not rewritten before R (asserted).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

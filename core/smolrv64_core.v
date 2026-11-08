@@ -1559,7 +1559,6 @@ module smolrv64_core
       reg [ROB_IDXB-1:0]   r_rob;
       reg [RN_PBITS-1:0]   r_ps1, r_ps2;
       reg                  r_late, r_mulb, r_i2f;   // ...a multiply, an int-to-FP op: predecoded at dispatch
-      reg [LPLW-1:0]       r_pl;
       initial begin r_v = 1'b0; r_ent = {IBI{1'b0}}; r_rob = {ROB_IDXB{1'b0}}; r_ps1 = {RN_PBITS{1'b0}}; r_ps2 = {RN_PBITS{1'b0}}; r_late = 1'b0; end
       always @(posedge clk) begin
          if (reset | redirect) r_v <= 1'b0;
@@ -1572,7 +1571,12 @@ module smolrv64_core
             end
          end
       end
-      always @(posedge clk) if (iss_v) r_pl <= plmem[iss_ent];   // the payload, read at the pick
+      // the payload, read in R at the picked entry (r_ent, a register): the pick's index stays off
+      // the payload's address. The entry is not rewritten before R: it frees a cycle after its pick
+      // (iss_last), and dispatch writes a slot reserved a cycle ahead (fs_ix).
+      wire [LPLW-1:0] r_pl = plmem[r_ent];
+      always @(posedge clk) if (!reset & r_v & mv & (d_ent == r_ent))
+         $fatal(1, "core: lane %0d dispatches into entry %0d while R reads its payload", gl, r_ent);
       `LPL_DECL(rr_)
       assign `LPL_REC(rr_) = r_pl;
       wire r_sys = is_sysq(rr_insn, rr_illegal, rr_fault);
