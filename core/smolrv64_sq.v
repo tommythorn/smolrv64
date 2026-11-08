@@ -204,7 +204,8 @@ module smolrv64_sq
     // the kill (smolrv64_rob kd): an uncommitted entry whose store is younger than a mispredicted
     // branch dies. They are the youngest, so the tail steps back past them, as the flush cuts
     // at the first uncommitted entry. kmask names every such slot while the kill holds, live or
-    // not (nothing allocates meanwhile), so an address a dead store delivers late is dropped too.
+    // not (nothing allocates meanwhile), so an address a dead store delivers late is dropped too;
+    // it is a cycle behind the kill's first cycle (registered, below).
     input  wire                  kd_v,
     input  wire [ROBB-1:0]       kh,
     input  wire [ROBB-1:0]       kb,
@@ -247,13 +248,19 @@ module smolrv64_sq
    integer               k, aw;
    // the kill's entries, and how many
 `include "smolrv64_kill.vh"
-   reg  [NENT-1:0]       kmk, kds;
+   // THE MARKS ARE REGISTERED (kds_q): the kill holds for cycles and the entries' ROB tags do not
+   // change meanwhile (nothing allocates), so each entry's position compare is a cycle old and the
+   // queue applies the kill from its second cycle. The live kd_v ends the marks with the kill.
+   reg  [NENT-1:0]       kmk, kds, kds_q;
    reg  [IDXB:0]         k_n;
    integer               kq;
+   initial kds_q = {NENT{1'b0}};
+   always @(posedge clk)
+      for (kq = 0; kq < NENT; kq = kq + 1) kds_q[kq] <= ~cmt[kq] & kdead(kd_v, kh, kb, rob[kq]);
    always @* begin
       k_n = {(IDXB+1){1'b0}};
       for (kq = 0; kq < NENT; kq = kq + 1) begin
-         kds[kq] = ~cmt[kq] & kdead(kd_v, kh, kb, rob[kq]);
+         kds[kq] = kds_q[kq] & kd_v;
          kmk[kq] = kds[kq] & v[kq];
          k_n = k_n + {{IDXB{1'b0}}, kmk[kq]};
       end

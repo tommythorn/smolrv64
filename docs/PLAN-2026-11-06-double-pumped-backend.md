@@ -806,6 +806,13 @@ they leave, and a store allocated later is younger, so `lold[load]` takes one ro
 the fill (`oldm_f`). A store's allocation clears its column, and `oldm = v & lold`. The compare
 form stays as the oracle, asserted equal while the load's address is in. `l_older` (a performance
 event and its own check) is exact from the fill and `l_dist != 0` before it.
+
+**THE STORE QUEUE'S KILL MARKS ARE REGISTERED** (m2t: `u_rob/kh -> u_sq/v`, 42 endpoints at -1.13 ns,
+10 levels: each entry's position compare against the kill, two carry chains, into the clears, the
+data read's cancel and the tail's step back). The kill holds for cycles, and nothing allocates while
+it does, so `kds_q` takes the compares and the live `kd_v` ends them with the kill. The queue applies
+the kill from its second cycle, and the check that a dead op's fill meets the kill looks a cycle
+later. The directed bench holds its kill for two cycles, as the ROB's does.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

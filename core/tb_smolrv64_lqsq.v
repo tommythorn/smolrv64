@@ -387,8 +387,10 @@ module tb;
       disp_store(9'd11, 4'd3, S0); disp_store(9'd12, 4'd4, S1);
       rfv[9'd11] = 64'hAA11; rfv[9'd12] = 64'hBB22;
       sq_a_v=1; sq_a_idx=S1; sq_a_addr=56'hC100; sq_a_size=2; step; sq_a_v=0;       // S1's address; S1 is picked next
+      // the kill holds for cycles, as the ROB's does; the queue's marks are a cycle behind it
+      sq_kd_v=1; sq_kh=0; sq_kb=3;
       sq_a_v=1; sq_a_idx=S0; sq_a_addr=56'hC000; sq_a_size=2; step; sq_a_v=0;       // S0's address; S1 lands, S0 is picked at the next edge
-      sq_kd_v=1; sq_kh=0; sq_kb=3; step; sq_kd_v=0; #1;                              // ...in the cycle S1 (rob 4) dies
+      step; sq_kd_v=0; #1;                                                          // ...in the cycle S1 (rob 4) dies
       step; step;
       chk("14 the older store got its data", sq_kc_v && sq_c_data==64'hAA11, 1'b1);
       chk("14 the younger store died", sq_occ==1, 1'b1);

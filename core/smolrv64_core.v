@@ -2147,7 +2147,10 @@ module smolrv64_core
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .ar(la_v), .pk_v(lq_pk_v), .pk_idx(lq_pk_idx), .pk_seq(lq_pk_seq), .rob_head(rob_head_idx), .flush(redirect),
       .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(lq_kmask));
    // (m_sq_fill/m_lq_fill: a dead op's fill meets its queue's own kill)
-   always @(posedge clk) if (!reset && m_dead && ((m_sq_fill && !sq_kmask[m_sq_tag]) || (m_lq_fill && !lq_kmask[m_lq_idx])))
+   // (the store queue's kill names an entry from the kill's second cycle: checked a cycle later)
+   reg mdf_q = 1'b0;  reg [SQ_IB-1:0] mdf_tag;
+   always @(posedge clk) begin mdf_q <= ~reset & m_dead & m_sq_fill;  mdf_tag <= m_sq_tag; end
+   always @(posedge clk) if (!reset && ((m_dead && m_lq_fill && !lq_kmask[m_lq_idx]) || (mdf_q && rob_kd_v && !sq_kmask[mdf_tag])))
       $fatal(1, "smolrv64_core: M fills a dead op's entry that its queue's kill does not name (rob %0d)", m_rob_idx);
 
    // ------------------------------------------------- COLLAPSING FILL AND ACCESS
