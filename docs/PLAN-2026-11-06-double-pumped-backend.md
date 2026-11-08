@@ -365,6 +365,14 @@ reader takes it a clk cycle after the ack), the fetch hold (`imem_hold`, now a r
 clk edges), and the devices' write port: `dw_*`, the LSU's write as it stood at the clk edge,
 dropped at the edge after its (registered) ack, so a device never sees one write twice.
 
+**m2b's build (b906ad3a): -2.187 ns, 77,174 failing endpoints** (step 1's second pass: -2.530,
+88,564). The lane's R stage held the picked entry against reallocation (`hold_v`), which put R's
+valid in front of the scheduler's slot choice and the payload write (5.4 K endpoints): nothing needs
+the hold now -- the payload is read at the pick and R reads the entry's registered matches the cycle
+after, before a new occupant's dispatch can change them -- so none is held. A multiply's and an
+int-to-FP op's busies decoded R's and E1's instruction words in front of the pick: they are bits
+predecoded at dispatch into the tag array (`psmem`) and carried in flops.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
