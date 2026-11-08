@@ -667,6 +667,12 @@ pends a cycle (`ro_p`, the lookup yielding to it too), so the lookup issued with
 first. A store written at C1's edge to the load's line is queued in C1, so the load waits behind it
 (`sq_ln`): the row-written-as-read check (w1) is unreachable and now an assertion. Lockstep:
 6ea83abc 184.3 M, 30483569 184.1 M.
+
+**THE FIRE STAYS OUT OF csr_file's DECODE** (m2n: `sy_fire_q -> u_csr/stimecmp`, `-> u_rob/v`, 8-10
+levels, the fire entering at the first LUT). `csr_illegal` was `upd_valid & ...`, and the exception,
+the as-if-fired redirect and the write gates were all built from it. `csr_ill_f` is the illegal
+access as if the op fires; every as-if-fired term and every write gate takes it (or `exc_active`,
+now as-if-fired too), so upd_valid is the last AND.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

@@ -662,8 +662,10 @@ module csr_file
    // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
    // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
    wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
-   assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill
-                                     | stateen_ill);
+   // csr_ill_f: the op's access is illegal AS IF IT FIRES -- without upd_valid, so the caller's fire
+   // stays out of the decode behind it (the exception, the redirect, the write gates)
+   wire csr_ill_f   = csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill | stateen_ill;
+   assign csr_illegal = upd_valid & csr_ill_f;
 
    // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
    wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
@@ -692,9 +694,9 @@ module csr_file
                          : 4'd13;                                       // LCOFI(13) last
 
    // exception this op raises (ecall/ebreak/illegal-CSR/illegal-sfence/sret) + cause + delegation
-   wire        exc_active = is_ecall | is_ebreak | csr_illegal | sys_illegal;
+   wire        exc_active = is_ecall | is_ebreak | csr_ill_f | sys_illegal;   // as if it fires
    wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
-   wire [63:0] exc_cause = (csr_illegal | sys_illegal) ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
+   wire [63:0] exc_cause = (csr_ill_f | sys_illegal) ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
 
    // unified trap: a system-op exception OR an external (page-fault / interrupt) injection.
    // sysop_exc is the active system op's OWN exception; trap_v adds external injection. Only
@@ -754,7 +756,7 @@ module csr_file
    wire [63:0] newms_s = (mstatus & ~SSTATUS_WMASK) | (newv_ms & SSTATUS_WMASK);
    wire [1:0]  newfs_m = newms_m[14:13];   // mstatus.FS, sliced rather than shift-truncated
    wire [1:0]  newfs_s = newms_s[14:13];
-   wire        do_fschg_f = upd_is_csr & ~csr_illegal &
+   wire        do_fschg_f = upd_is_csr & ~csr_ill_f &
                           ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
                           | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
 
@@ -767,7 +769,7 @@ module csr_file
    // cosim divergence vs simmerv, which applies the write in order). Same fall-through cost as FS.
    localparam [63:0] MSTATUS_DXMASK = 64'h0000_0000_000E_1800;   // MXR|SUM|MPRV | MPP
    // newms_m/newms_s are declared with the FS check above -- one definition, two users.
-   wire        do_dxchg_f = upd_is_csr & ~csr_illegal &
+   wire        do_dxchg_f = upd_is_csr & ~csr_ill_f &
                           ( ((upd_addr==MSTATUS) & (((newms_m ^ mstatus) & MSTATUS_DXMASK) != 64'd0))
                           | ((upd_addr==SSTATUS) & (((newms_s ^ mstatus) & MSTATUS_DXMASK) != 64'd0)) );
 
@@ -778,13 +780,13 @@ module csr_file
    // frontend that has already fetched past the csrw (easy at a ~3-cycle window supply)
    // would otherwise execute those stale bare-fetched bytes instead of faulting. Same
    // fall-through recipe as FS/MPRV; satp writes are context-switch-rare.
-   wire        do_satp_f  = upd_is_csr & ~csr_illegal & csr_writes
+   wire        do_satp_f  = upd_is_csr & ~csr_ill_f & csr_writes
                           & (upd_addr == SATP);
    // A CSR op does not drain: younger work runs while it waits for the head. A write that changes
    // what younger ops already used refetches them too: the rounding mode (frm, fcsr) an FP op read
    // at execute, and the enables (menvcfg, senvcfg, mstateen0) decode judged a CBO by and the
    // translation honours (PBMTE). Rare writes, at the cost of FS's refetch.
-   wire        do_ctxw_f  = upd_is_csr & ~csr_illegal & csr_writes
+   wire        do_ctxw_f  = upd_is_csr & ~csr_ill_f & csr_writes
                         & ((upd_addr == FRM) | (upd_addr == FCSR) | (upd_addr == MENVCFG)
                          | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0));
 
@@ -840,7 +842,7 @@ module csr_file
    // A counter-CSR write is an op that writes (a csrr of mhpmeventN rewrites nothing, so it
    // cannot swallow that cycle's increment or overflow). A counter runs unless mcountinhibit or
    // its event's *INH bit for the current privilege stops it; it wraps when the add carries out.
-   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~op_trap & ~csr_illegal;
+   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~exc_active;
    wire [HPMN-1:0] hpm_wev, hpm_wct, hpm_run, hpm_wrap;
    wire [63:0]     hpm_nxt [0:HPMN-1];
    // A COUNTER WRITE LOADS A CYCLE LATE. A counter's next value is its adder's sum, and a CSR
@@ -1015,7 +1017,7 @@ module csr_file
       // (fp_dirty_commit) or an FP CSR write (fcsr/fflags/frm, itself commit-serialized).
       // Guarded to FP-enabled (FS != Off).
       if (!reset && (mstatus[14:13] != 2'b00) &&
-          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~op_trap & ~csr_illegal
+          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~exc_active
                               & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
          mstatus[14:13] <= 2'b11;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
@@ -1042,7 +1044,7 @@ module csr_file
          mcountinhibit <= 64'd0;
          for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
       end else begin
-         if (upd_valid && upd_is_csr && !op_trap && !csr_illegal && upd_addr==MCOUNTINHIBIT)
+         if (upd_valid && upd_is_csr && !exc_active && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= rmw(mcountinhibit) & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (hpm_wev[i])
