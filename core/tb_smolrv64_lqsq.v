@@ -159,7 +159,11 @@ module tb;
    // commit = the ROB RELEASES the first unreleased entry (k_take), then the LSU DRAINS the
    // head (c_take): two events since the senior store queue (plan item 3)
    task rob_release; begin sq_k_take=1; step; sq_k_take=0; #1; end endtask
-   task lsu_drain; begin sq_c_take=1; step; sq_c_take=0; #1; end endtask
+   // the LSU takes the hand-off when it is offered (a cycle after the entry is ready)
+   integer dw;
+   task lsu_drain; begin dw = 0; while (!sq_c_v && dw < 2) begin step; dw = dw + 1; end
+                         chk("drain: a hand-off is offered", sq_c_v, 1'b1);
+                         sq_c_take=1; step; sq_c_take=0; #1; end endtask
    task commit;  begin rob_release; lsu_drain; end endtask
    task drain;  begin flush=1; step; flush=0; #1; end endtask
 
@@ -245,7 +249,8 @@ module tb;
       disp_store(9'd7, 4'd14, S0);  disp_load(9'd47, 4'd15, L0);
       store_addr(S0, 56'h2000, 2, 1'b1, 64'h55);
       chk("5 head ready", sq_kc_v, 1'b1);
-      rob_release; sq_c_take=1; lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step; sq_c_take=0; lq_a_v=0; #1;
+      rob_release; repeat (2) if (!sq_c_v) step;   // the hand-off is offered a cycle after it is ready
+      sq_c_take=1; lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h2000; lq_a_size=2; step; sq_c_take=0; lq_a_v=0; #1;
       chk("5 the committed store no longer blocks the load", lq_x_v, 1'b1);
       chk("5 no older store", ld_older, 1'b0);
       take; land(L0);
@@ -408,7 +413,7 @@ module tb;
       store_addr(S0, 56'hC000, 2, 1'b1, 64'hAA); store_addr(S1, 56'hC100, 2, 1'b1, 64'hBB);
       chk("11 nothing drains before a release", sq_c_v, 1'b0);
       chk("11 the first is releasable", sq_kc_v && sq_kc_addr==56'hC000, 1'b1);
-      rob_release;
+      rob_release; step;                            // the hand-off is offered a cycle after it is ready
       chk("11 released head drains, the second is next to release", sq_c_v && sq_c_data==64'hAA && sq_kc_v && sq_kc_addr==56'hC100, 1'b1);
       lsu_drain;                                    // S0 gone; S1 next to release
       chk("11 drained one", sq_occ==1 && !sq_c_v && sq_kc_v, 1'b1);
@@ -428,7 +433,9 @@ module tb;
       sq_k_take=1; #1;
       chk("12 not draining in the release cycle", sq_c_v, 1'b0);
       step; sq_k_take=0; #1;
-      chk("12 drains the cycle after the release", sq_c_v && sq_c_data==64'hDD && !sq_kc_v, 1'b1);
+      chk("12 not offered the cycle after the release", sq_c_v, 1'b0);
+      step;
+      chk("12 offered two cycles after the release", sq_c_v && sq_c_data==64'hDD && !sq_kc_v, 1'b1);
       lsu_drain;
       chk("12 gone, nothing left to release", sq_occ==0 && !sq_c_v && !sq_kc_v, 1'b1);
 

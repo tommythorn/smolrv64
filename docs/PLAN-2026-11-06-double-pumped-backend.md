@@ -648,6 +648,12 @@ fault fields and M's own access's start). Every user is a second cycle at the sa
 translate pass's `xp`, M's own access's `xl_fp`), so both take the cycle before's value; a
 misaligned AMO's fault comes in that second cycle, and the start excludes it there. Lockstep:
 1e7af192 (the fault pick reverted) retires 184.3 M, clean past the 19.5 M failure.
+
+**THE SQ OFFERS ITS HAND-OFF A CYCLE AFTER IT IS READY** (m2m: `u_sq/dv -> u_lsu/o_nb`, `-> o_boff`,
+`-> fd_s`, 13 levels: the hand-off entry's bits, read at the pointer, into the LSU's start). `c_v`
+is a register: an entry ready and not taken stays ready (a committed entry's bits clear only once
+it is freed past its hand-off, and none is outstanding until the next take); asserted against the
+live condition. The directed bench's drain waits for the offer.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

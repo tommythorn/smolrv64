@@ -411,8 +411,15 @@ module smolrv64_sq
    // outstanding one is done this cycle (c_done), whichever path it took -- the store register
    // chains one a cycle as before, and a store behind one the LSU's state machine writes waits for
    // its last write, so stores reach memory in program order and stay ordered against loads.
-   assign c_v    = v[ho] & av[ho] & dv[ho] & cmt[ho]
-                 & ((ho_n == {(IDXB+1){1'b0}}) | c_done);
+   wire   c_v_live = v[ho] & av[ho] & dv[ho] & cmt[ho] & ((ho_n == {(IDXB+1){1'b0}}) | c_done);
+   // ...OFFERED A CYCLE AFTER IT IS READY, from a register: an entry ready and not taken stays ready
+   // (a committed entry's bits clear only when it is freed past its hand-off, and none is outstanding
+   // until the next take), so the queue's bits stay out of the LSU's start
+   reg    c_v_q = 1'b0;
+   always @(posedge clk) c_v_q <= ~reset & c_v_live & ~c_take;
+   assign c_v    = c_v_q;
+   always @(posedge clk) if (!reset && c_v_q && !c_v_live)
+      $fatal(1, "smolrv64_sq: the hand-off offered entry %0d, which is no longer ready", ho);
    assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc] & tv[kc] & ~flt[kc];
    assign kc_rob = rob[kc];
    wire [PAW-1:0] kc_am = addr_m[kc], kc_aw = addr_w[kc];
