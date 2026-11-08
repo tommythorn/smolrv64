@@ -1528,7 +1528,7 @@ module smolrv64_core
       reg                  v;               // E1 holds an op (below)
       reg                  r_v;             // R holds an op (below)
       wire                 r_mul;           // ...a multiply (below)
-      reg [IBI-1:0]        r_ent;
+      (* max_fanout = 16 *) reg [IBI-1:0] r_ent;   // ...the payload LUTRAMs' read address: replicated
       smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
                 .FIXEDL(1),.INORDER(0),.OLDEST(1)) u_iq
         (.clk(clk),.reset(reset),
