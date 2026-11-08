@@ -32,7 +32,7 @@ module tb_vga_scanout;
       .pixclk_rst(pixclk_rst), .pixclk_locked(1'b1),
       .drp_req(drp_req), .drp_we(drp_we), .drp_addr(drp_addr), .drp_di(drp_di),
       .drp_ack(drp_req), .drp_do(16'hBEEF),          // an instant DRP: ack follows req
-      .pix_clk(pix_clk), .pix_rst(1'b0),
+      .pix_clk(pix_clk),
       .vid_de(de), .vid_hs(hs), .vid_vs(vs), .vid_rgb(rgb));
 
    // ---- the framebuffer, as a function: pixel (x, y) ----

@@ -93,4 +93,3 @@ set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/done_s_reg
 set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/late_s_reg[0]/D}]
 set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/en_a_reg[0]/D}]
 set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/locked_s_reg[0]/D}]
-set_false_path -to [get_pins -hier -filter {NAME =~ *vga_pix_rst_s_reg[0]/D}]

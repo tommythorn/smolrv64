@@ -1331,9 +1331,6 @@ module smolrv64_shell #(
       if (!vga_drp_req_s[1]) begin vga_drp_ack <= 1'b0;  vga_drp_started <= 1'b0; end
    end
 
-   (* async_reg = "true" *) reg [1:0] vga_pix_rst_s = 2'b11;
-   always @(posedge vga_pix_clk) vga_pix_rst_s <= {vga_pix_rst_s[0], ~vga_pixclk_locked};
-
    vga_scanout vga_scanout_inst (
       .clk(ui_clk), .reset(ui_cpu_reset),
       .mmio_addr(ui_mmio_address[7:0]), .mmio_write(ui_mmio_write && vga_sel),
@@ -1347,7 +1344,7 @@ module smolrv64_shell #(
       .pixclk_rst(vga_pixclk_rst), .pixclk_locked(vga_pixclk_locked),
       .drp_req(vga_drp_req), .drp_we(vga_drp_we), .drp_addr(vga_drp_addr), .drp_di(vga_drp_di),
       .drp_ack(vga_drp_ack), .drp_do(vga_drp_do_q),
-      .pix_clk(vga_pix_clk), .pix_rst(vga_pix_rst_s[1]),
+      .pix_clk(vga_pix_clk),
       .vid_de(vid_de), .vid_hs(vid_hs), .vid_vs(vid_vs), .vid_rgb(vid_rgb));
    assign vid_clk    = vga_pix_clk;
    assign vid_locked = vga_pixclk_locked;

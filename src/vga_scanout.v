@@ -17,13 +17,20 @@
 // timing registers cross quasi-statically: software changes them only with CTRL.enable clear
 // (XDC: false paths into pix_clk).
 //
+// THE SYNCS ARE FREE-RUNNING. The timing generator's counters, and the syncs and blanking they
+// make, depend on their own state and CTRL.enable alone (a mode change clears it): nothing the
+// memory side does, nor the pixel clock's lock, restarts them. A late line shows the slot's older
+// pixels (counted); a lock loss is counted too (STATUS[15:8]), and the counters ride through it on
+// whatever the clock does.
+//
 // Registers (32-bit, full-word writes only), offsets within the 256-byte page:
 //   0x00 CTRL         [0] enable  [1] HSYNC active-high  [2] VSYNC active-high
 //   0x04 FB_BASE      physical address of pixel (0,0); 64-byte aligned
 //   0x08 STRIDE       bytes per line; a multiple of 64, at most 4096
 //   0x10 H_ACTIVE     0x14 H_SYNC_START  0x18 H_SYNC_END  0x1C H_TOTAL   (pixels)
 //   0x20 V_ACTIVE     0x24 V_SYNC_START  0x28 V_SYNC_END  0x2C V_TOTAL   (lines)
-//   0x30 STATUS (ro)  [0] pixel clock locked  [1] DRP busy  [31:16] lines scanned before fetched whole
+//   0x30 STATUS (ro)  [0] pixel clock locked  [1] DRP busy  [15:8] pixel clock lock losses while
+//                     enabled (wraps)  [31:16] lines scanned before fetched whole
 //   0x40 DRP          write {we[31], addr[22:16], data[15:0]} starts one access of the pixel
 //                     clock's MMCM; read gives {busy[31], last read data[15:0]}
 //   0x44 PIXCLK_CTRL  [0] hold the pixel-clock MMCM in reset
@@ -76,7 +83,6 @@ module vga_scanout (
     input  wire [15:0] drp_do,
 
     input  wire        pix_clk,
-    input  wire        pix_rst,
     output reg         vid_de,
     output reg         vid_hs,
     output reg         vid_vs,
@@ -89,10 +95,16 @@ module vga_scanout (
    reg [11:0] h_active, h_sync_start, h_sync_end, h_total;
    reg [11:0] v_active, v_sync_start, v_sync_end, v_total;
    reg [15:0] late_lines;
+   reg [7:0]  lock_lost;
    reg [15:0] drp_rdata;
 
    (* async_reg = "true" *) reg [1:0] locked_s, ack_s;
-   always @(posedge clk) begin locked_s <= {locked_s[0], pixclk_locked}; ack_s <= {ack_s[0], drp_ack}; end
+   reg locked_q;
+   always @(posedge clk) begin locked_s <= {locked_s[0], pixclk_locked}; ack_s <= {ack_s[0], drp_ack}; locked_q <= locked_s[1]; end
+   // a lock lost while the scan runs (a mode change reprograms the clock with the scan off)
+   always @(posedge clk)
+      if (reset) lock_lost <= 8'd0;
+      else if (en & locked_q & ~locked_s[1]) lock_lost <= lock_lost + 8'd1;
    wire drp_busy = drp_req | ack_s[1];
 
    always @(posedge clk) begin
@@ -150,7 +162,7 @@ module vga_scanout (
          6'h09: mmio_rdata = {20'd0, v_sync_start};
          6'h0a: mmio_rdata = {20'd0, v_sync_end};
          6'h0b: mmio_rdata = {20'd0, v_total};
-         6'h0c: mmio_rdata = {late_lines, 14'd0, drp_busy, locked_s[1]};
+         6'h0c: mmio_rdata = {late_lines, lock_lost, 6'd0, drp_busy, locked_s[1]};
          6'h10: mmio_rdata = {drp_busy, 15'd0, drp_rdata};
          6'h11: mmio_rdata = {31'd0, pixclk_rst};
          default: mmio_rdata = 32'd0;
@@ -185,7 +197,7 @@ module vga_scanout (
    reg [SQB-1:0] seq_p;       // the active line being scanned, in sequence
    reg [SQB-1:0] cmp_p;       // the lines the fetcher has finished
    reg        done_tog, late_tog;
-   always @(posedge pix_clk) begin en_p <= {en_p[0], en & ~pix_rst};  cmp_s <= {cmp_s[1:0], cmp_tog}; end
+   always @(posedge pix_clk) begin en_p <= {en_p[0], en};  cmp_s <= {cmp_s[1:0], cmp_tog}; end
 
    wire        last_h   = h == h_total - 12'd1;
    wire        last_v   = v == v_total - 12'd1;
