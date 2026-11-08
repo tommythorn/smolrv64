@@ -309,7 +309,7 @@ module smolrv64_core
    // so the cycle AFTER dec_red the frontend still holds the stale wrong-path slots. dec_red
    // sets no fr_v freeze (there is no backend flush pending), so without this the wrong path
    // would dispatch in that one-cycle window. dec_red_q holds dispatch for that cycle.
-   reg                      dec_red_q;
+   (* max_fanout = 32 *) reg dec_red_q;   // ...every lane's staging enable: replicated
    initial begin fe_red_q = 1'b0; dec_red_q = 1'b0; end
    always @(posedge clk) begin
       if (reset) fe_red_q <= 1'b0;
@@ -1489,7 +1489,7 @@ module smolrv64_core
    genvar gl;
    generate for (gl = 0; gl < NL; gl = gl + 1) begin: ln
       // ---- the dispatch stage: the slot's op, held until the scheduler takes it ----
-      reg                  stg_v;
+      (* max_fanout = 16 *) reg stg_v;   // ...the payload LUTRAMs' write enable: replicated
       reg [ROB_IDXB-1:0]   stg_rob;
       reg [3*RN_PBITS-1:0] stg_ps;
       reg [1:0]            stg_r;
