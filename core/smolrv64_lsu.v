@@ -218,7 +218,8 @@ module smolrv64_lsu
 
    localparam S_IDLE = 3'd0, S_LD = 3'd1, S_ST = 3'd2,
               S_LD2  = 3'd5, S_ST2 = 3'd6,   // second aligned word
-              S_ARD  = 3'd3, S_AWR = 3'd4;
+              S_ARD  = 3'd3, S_AWR = 3'd4,
+              S_ACP  = 3'd7;   // an AMO's write value, computed from the word S_ARD read
 
    reg [2:0]   st;
    reg [PAW-1:0]  pa_q;                       // translated physical address (WORD-ALIGNED)
@@ -490,7 +491,11 @@ module smolrv64_lsu
    // ------------------------------------------------------- AMO RMW datapath
    wire        a_isw   = (req_size == 2'd2);
    wire        a_half  = req_vaddr[2];
-   wire [31:0] a_old32 = a_half ? mem_rdata[63:32] : mem_rdata[31:0];
+   wire [31:0] a_old32 = a_half ? mem_rdata[63:32] : mem_rdata[31:0];   // the rd value, at the read
+   // the write value is computed a cycle after the read, from the word as read (amo_mem_q): the
+   // port's held data and its select stay out of the AMO's adder and compares
+   reg  [63:0] amo_mem_q;
+   wire [31:0] m_old32 = a_half ? amo_mem_q[63:32] : amo_mem_q[31:0];
    wire [31:0] a_d32   = req_st_data[31:0];
    wire [63:0] a_data  = req_st_data;
 
@@ -504,20 +509,20 @@ module smolrv64_lsu
    always @* begin
       case (req_amo_func)
         5'b00001: a_resv = a_data;                                                     // swap
-        5'b00000: a_resv = a_isw ? {32'b0, a_old32 + a_d32}  : mem_rdata + a_data;      // add
-        5'b00100: a_resv = a_isw ? {32'b0, a_old32 ^ a_d32}  : mem_rdata ^ a_data;      // xor
-        5'b01100: a_resv = a_isw ? {32'b0, a_old32 & a_d32}  : mem_rdata & a_data;      // and
-        5'b01000: a_resv = a_isw ? {32'b0, a_old32 | a_d32}  : mem_rdata | a_data;      // or
-        5'b10000: a_resv = a_isw ? {32'b0, ($signed(a_old32)<$signed(a_d32))?a_old32:a_d32}
-                                 : ($signed(mem_rdata)<$signed(a_data))?mem_rdata:a_data;
-        5'b10100: a_resv = a_isw ? {32'b0, ($signed(a_old32)>$signed(a_d32))?a_old32:a_d32}
-                                 : ($signed(mem_rdata)>$signed(a_data))?mem_rdata:a_data;
-        5'b11000: a_resv = a_isw ? {32'b0, (a_old32<a_d32)?a_old32:a_d32}
-                                 : (mem_rdata<a_data)?mem_rdata:a_data;
-        5'b11100: a_resv = a_isw ? {32'b0, (a_old32>a_d32)?a_old32:a_d32}
-                                 : (mem_rdata>a_data)?mem_rdata:a_data;
+        5'b00000: a_resv = a_isw ? {32'b0, m_old32 + a_d32}  : amo_mem_q + a_data;      // add
+        5'b00100: a_resv = a_isw ? {32'b0, m_old32 ^ a_d32}  : amo_mem_q ^ a_data;      // xor
+        5'b01100: a_resv = a_isw ? {32'b0, m_old32 & a_d32}  : amo_mem_q & a_data;      // and
+        5'b01000: a_resv = a_isw ? {32'b0, m_old32 | a_d32}  : amo_mem_q | a_data;      // or
+        5'b10000: a_resv = a_isw ? {32'b0, ($signed(m_old32)<$signed(a_d32))?m_old32:a_d32}
+                                 : ($signed(amo_mem_q)<$signed(a_data))?amo_mem_q:a_data;
+        5'b10100: a_resv = a_isw ? {32'b0, ($signed(m_old32)>$signed(a_d32))?m_old32:a_d32}
+                                 : ($signed(amo_mem_q)>$signed(a_data))?amo_mem_q:a_data;
+        5'b11000: a_resv = a_isw ? {32'b0, (m_old32<a_d32)?m_old32:a_d32}
+                                 : (amo_mem_q<a_data)?amo_mem_q:a_data;
+        5'b11100: a_resv = a_isw ? {32'b0, (m_old32>a_d32)?m_old32:a_d32}
+                                 : (amo_mem_q>a_data)?amo_mem_q:a_data;
         5'b00011: a_resv = a_data;                                                     // SC stores rs2
-        default:  a_resv = mem_rdata;                                                  // LR: no write
+        default:  a_resv = amo_mem_q;                                                  // LR: no write
       endcase
    end
    wire [63:0] a_oldv  = a_isw ? {{32{a_old32[31]}}, a_old32} : mem_rdata;
@@ -579,7 +584,7 @@ module smolrv64_lsu
          $fatal(1, "smolrv64_lsu: a store handed to the store register while it still holds one (pa %h)", sp_a);
       if (sp_go & ((({1'b0, sp_pa[2:0]} + (4'd1 << sp_size)) > 4'd8) | ~((sp_pa >= LSU_DRAM_BASE) | (sp_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]))))
          $fatal(1, "smolrv64_lsu: the store register takes only a store to memory inside one doubleword (pa %h size %0d)", sp_pa, sp_size);
-      if (sp_v & ((st == S_ARD) | amo_go | (st_go & run_cbo)))
+      if (sp_v & ((st == S_ARD) | (st == S_ACP) | amo_go | (st_go & run_cbo)))
          $fatal(1, "smolrv64_lsu: the store register holds a store under an atomic or a CBO (state %0d)", st);
    end
    assign mem_wen       = st_go | amo_go | sp_on;
@@ -908,7 +913,7 @@ module smolrv64_lsu
    assign pt_ld_kill = ld_inflight & ld_sq;
    assign pt_ack  = pt_start | take_next;
    assign rd_val = pt_fast_done ? ld_fast_val
-                 : (st == S_ARD) ? a_rdval : amo_go ? amo_old_q : ld_val;
+                 : (st == S_ARD) ? a_rdval : (amo_go | (st == S_ACP)) ? amo_old_q : ld_val;
    assign idle   = (st == S_IDLE);
    function automatic [5:0] ones_ld(input [NLD-1:0] v);
       integer i;
@@ -1010,11 +1015,12 @@ module smolrv64_lsu
            S_ST2: if (st_fin) st <= S_IDLE;
            S_ARD: if (slow_rv) begin
                      amo_old_q <= a_rdval;
-                     amo_wd_q  <= a_wdata;   // the write's data a register: the AMO's ALU stays out of the D$'s store port
+                     amo_mem_q <= mem_rdata;
                      if (is_lr) begin rsv_v <= 1'b1; rsv_w <= a_word; end
                      if (is_sc) rsv_v <= 1'b0;
-                     st <= a_dowr ? S_AWR : S_IDLE;
+                     st <= a_dowr ? S_ACP : S_IDLE;
                   end
+           S_ACP: begin amo_wd_q <= a_wdata;  st <= S_AWR; end   // the write's data a register
            S_AWR: if (st_fin) st <= S_IDLE;
            default: st <= S_IDLE;
          endcase
@@ -1043,7 +1049,7 @@ module smolrv64_lsu
       if (e_m_spec)
          $fatal(1, "smolrv64_lsu: an AMO or CBO started off the ROB head: va=%h cbo=%b amo=%b", req_vaddr, req_cbo, req_amo);
       // the port's access is a load or a store: M's fields never decide what it does
-      if (src_pt & ((st == S_ARD) | (st == S_AWR)))
+      if (src_pt & ((st == S_ARD) | (st == S_ACP) | (st == S_AWR)))
          $fatal(1, "smolrv64_lsu: the port's access runs an AMO's read-modify-write");
       // a fast load's word is formatted by its byte offset, so its read is word-aligned
       if (ld_fast_ok & ~xl_can)
