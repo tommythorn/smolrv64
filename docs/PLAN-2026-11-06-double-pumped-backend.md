@@ -443,6 +443,13 @@ saw: SB2 then sends the store back to the queue. The D$ bench counts both new ha
 view changed after SB1, a store's write folded into C1's dirty bits) and demands each occur; with
 either fix removed it loses stores.
 
+**TWO D$ WRITES AND READS TAKEN A CYCLE AHEAD** (m2g: `wt_rdy -> arr[].u_a`, `-> s1_pa`, 655
+endpoints; `fb_way -> arr[].u_a`, 486). The replay pick is registered with its entry's PA and NC
+bit: the lookup never issues two cycles running, so the entry picked a cycle ago is still waiting
+and ready when it issues (asserted), and a stale pick meets the hold. The fill beat's two arrays
+(one-hot) and each array parity's write row (the beat's, else SB1's, which is SB2's a cycle later)
+are registers taken as the beat arrives.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

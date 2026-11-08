@@ -316,8 +316,10 @@ module rv_dcache #(
    (* max_fanout = 16 *) reg [WAYS-1:0] fl_woh;
    (* max_fanout = 16 *) reg fl_dty;
    (* max_fanout = 16 *) reg [PTB-1:0] fl_tag;
-   wire [WYB-1:0] fa0 = arr_of(fb_way, {fb_beat, 1'b0});                          // the beat's two arrays
-   wire [WYB-1:0] fa1 = arr_of(fb_way, {fb_beat, 1'b1});
+   // the beat's two arrays (one-hot) and each array parity's write row -- the beat's, else the store
+   // lookup's -- taken a cycle ahead: as the beat is, and from SB1
+   (* max_fanout = 8 *)  reg [WAYS-1:0] fb_aw;
+   (* max_fanout = 16 *) reg [8:0]      wa_e, wa_o;
 
    // ---------------------------------------------------------------- the NC slot: one access at a time
    localparam [SW-1:0] NMS = NMSHR;              // the first write-back slot
@@ -356,12 +358,24 @@ module rv_dcache #(
       end
       if (ra_hv) ra_t = ra_ht;
    end
+   // The pick is registered, with its entry's fields: the lookup never issues two cycles running
+   // (C1 holds it off), so an entry picked a cycle ago is still waiting and ready, its fields as
+   // they were, whenever it issues (only C2 writes an entry, and never one in the table). A stale
+   // pick -- the entry issued last cycle -- meets the hold.
+   reg              pk_v, pk_m, pk_nc;  reg [TB-1:0] pk_t;  reg [63:0] pk_pa;
+   always @(posedge clk) begin
+      pk_v  <= ~reset & (rm_v | ra_v);
+      pk_m  <= rm_v;
+      pk_t  <= rm_v ? rm_t : ra_t;
+      pk_pa <= wt_pa[rm_v ? rm_t : ra_t];
+      pk_nc <= wt_nc[rm_v ? rm_t : ra_t];
+   end
    // the lookup yields while C1 holds a request, from a line's last beat until it installs (so none
    // is in C1 or C2 as it installs), while the read-out owns the arrays' read ports, while an NC
    // answer waits for the response port, and while the clean walk or the scan runs
    wire           hold   = s1_v | fb_last | fl_p | ro_on | nc_rdy | cl_on | scan_on;
-   wire           rp_v   = (rm_v | ra_v) & ~hold;
-   wire [TB-1:0]  rp_t   = rm_v ? rm_t : ra_t;
+   wire           rp_v   = pk_v & ~hold;
+   wire [TB-1:0]  rp_t   = pk_t;
    // the queue issues its head to the main lookup, or the entry behind it in the cycle the head is
    // decided (C2) -- each only if it is the main lookup's
    wire           s1_hd  = c2_v & (s1_tag == ST) & s1_head;
@@ -375,18 +389,18 @@ module rv_dcache #(
    // M's load counts as presented whenever M holds one (f_hint, a register), so the store's turn and
    // the arrays' address never wait for f_req, the dTLB's late answer (rules I6, I8): a load that
    // does not come costs the store that cycle
-   wire           st_go  = ~(rm_v | ra_v) & ~hold & sdoor & (sq_i0 | sq_i1) & (~(door & (rd_req | f_hint) & ~fp_hold) | st_urgent);
+   wire           st_go  = ~pk_v & ~hold & sdoor & (sq_i0 | sq_i1) & (~(door & (rd_req | f_hint) & ~fp_hold) | st_urgent);
    wire           si     = ~sq_i0;                // the entry issued
    wire [1:0]     sq_ps  = si ? sq_h1 : sq_hp;     // ...its slot
-   wire           new_go = ~(rm_v | ra_v) & ~hold & door & ~fp_hold & ~st_go & rd_req;
+   wire           new_go = ~pk_v & ~hold & door & ~fp_hold & ~st_go & rd_req;
    assign rd_ack = new_go;
    // the fast load is taken when no replay, urgent store, held door or other read is in its way
-   assign f_ok   = ~(rm_v | ra_v) & ~hold & door & ~fp_hold & ~(sdoor & (sq_i0 | sq_i1) & st_urgent) & rd_quiet;
+   assign f_ok   = ~pk_v & ~hold & door & ~fp_hold & ~(sdoor & (sq_i0 | sq_i1) & st_urgent) & rd_quiet;
    wire           a_take = rp_v | st_go | new_go | f_req;
    wire           a_cap  = rp_v | st_go | new_go | f_ok;   // a_take on the state alone: the lookup's fields
    wire [TB-1:0]  a_tag = rp_v ? rp_t        : st_go ? ST    : f_ok ? wi(f_tag) : wi(rd_tag);
-   wire           a_nc  = rp_v ? wt_nc[rp_t] : st_go ? (sf_nc[sq_ps] & ~sf_cbo[sq_ps]) : f_ok ? 1'b0 : rd_nc;
-   wire [63:0]    a_pa  = rp_v ? wt_pa[rp_t] : st_go ? sf_pa[sq_ps] : f_ok ? f_pa : rd_pa;
+   wire           a_nc  = rp_v ? pk_nc       : st_go ? (sf_nc[sq_ps] & ~sf_cbo[sq_ps]) : f_ok ? 1'b0 : rd_nc;
+   wire [63:0]    a_pa  = rp_v ? pk_pa       : st_go ? sf_pa[sq_ps] : f_ok ? f_pa : rd_pa;
    wire [5:0]     n1_set = a_cap ? a_pa[11:6] : s1_pa[11:6];   // the lookup's set after this edge
    // taking a store: a CBO or NC store held for its completion is the one already queued
    reg            sq_cn;                          // a CBO or an NC store is queued
@@ -631,12 +645,10 @@ module rv_dcache #(
    wire [8:0]     a_row   = {a_pa[11:6], a_pa[5:3]};
    wire [63:0]    wd_e    = fb_v ? (fb_way[0] ? fb_data[127:64] : fb_data[63:0]) : st_wd;
    wire [63:0]    wd_o    = fb_v ? (fb_way[0] ? fb_data[63:0] : fb_data[127:64]) : st_wd;
-   wire [8:0]     wa_e    = fb_v ? {fb_set, fb_beat,  fb_way[0]} : {sb_set, sb_c};
-   wire [8:0]     wa_o    = fb_v ? {fb_set, fb_beat, ~fb_way[0]} : {sb_set, sb_c};
    genvar ga;
    generate for (ga = 0; ga < WAYS; ga = ga + 1) begin : arr
       wire [2:0] ro_c = ga[2:0] - ro_way[2:0];      // the read-out's chunk in this array
-      wire fw  = fb_v & ((fa0 == ga[WYB-1:0]) | (fa1 == ga[WYB-1:0]));
+      wire fw  = fb_aw[ga];
       wire sw  = fp_wr & bsel[ga];
       smolrv64_sdpram_be #(.ADDR_WIDTH(9), .NBYTES(8), .LAT(2)) u_a
         (.clock(clk), .rd_addr(ro_on ? {ro_set, ro_c} : a_row), .rd_data(bk_q[ga*64 +: 64]),
@@ -749,6 +761,8 @@ module rv_dcache #(
    // lookup is empty while a line installs (hold at its last beat) and while the scan runs: one
    // address serves every way.
    wire [5:0] vu_wa = scan_on ? scan : fl_v ? fl_set : s1_set;
+   always @(posedge clk) if (!reset && rp_v && !(wt_v[rp_t] && wt_rdy[rp_t]))
+      $fatal(1, "rv_dcache: a replay of waiter %0d, which is not waiting and ready", rp_t);
    always @(posedge clk) if (!reset && (s1_v || c2_v) && (fl_v || scan_on || cl_on))
       $fatal(1, "rv_dcache: the lookup holds a request while a line installs, the scan or the clean walk runs");
    generate for (gw = 0; gw < WAYS; gw = gw + 1) begin : wst
@@ -780,7 +794,7 @@ module rv_dcache #(
          nc_v <= 1'b0;  nc_rdy <= 1'b0;  cl_pend <= 1'b0;  cl_on <= 1'b0;  cl_wait <= 1'b0;
          scan_on <= 1'b1;  scan <= 6'd0;  fl_p <= 1'b0;  fl_v <= 1'b0;  ra_m <= {NW{1'b0}};  w1_v <= 1'b0;
          st_age <= 3'd0;  fp_age <= 3'd0;
-         iq_n <= 0;  iq_rd <= 0;  iq_wr <= 0;  fb_v <= 1'b0;  fb_last <= 1'b0;  ro_on <= 1'b0;  rl0 <= 1'b0;  rl_v <= 1'b0;
+         iq_n <= 0;  iq_rd <= 0;  iq_wr <= 0;  fb_v <= 1'b0;  fb_aw <= {WAYS{1'b0}};  fb_last <= 1'b0;  ro_on <= 1'b0;  rl0 <= 1'b0;  rl_v <= 1'b0;
          for (i = 0; i < NMSHR; i = i + 1) ms_v[i] <= 1'b0;
          for (i = 0; i < NW; i = i + 1)    begin wt_v[i] <= 1'b0; wt_rdy[i] <= 1'b0; end
          for (i = 0; i < NWB; i = i + 1)   wb_v[i] <= 1'b0;
@@ -792,7 +806,7 @@ module rv_dcache #(
          // the head's own replay, the head, or the entry behind a head that resolves now
          if (a_cap) s1_head <= rp_v | ~si | st_done;
          if (rp_v) wt_v[rp_t] <= 1'b0;                  // a replaying waiter leaves the table
-         if (rp_v & ~rm_v) ra_m <= {NW{1'b1}} << (rp_t + 1'b1);   // the entries after it
+         if (rp_v & ~pk_m) ra_m <= {NW{1'b1}} << (rp_t + 1'b1);   // the entries after it
          st_age <= (st_go | ~(sq_i0 | sq_i1)) ? 3'd0 : (st_age == 3'd7) ? st_age : st_age + 3'd1;
          // the store lookup: the head writes or merges, misses to the main lookup, or goes back
          sa_v <= fp_go;  sb_v <= sa_v;  sb_slot <= sa_slot;  sb_pa <= sa_pa;
@@ -919,6 +933,10 @@ module rv_dcache #(
          if (nc_done) begin nc_v <= 1'b0;  nc_rdy <= 1'b0; end
          // a fill beat: write the reserved way's two chunks; the last installs (the state writes above) and releases
          fb_v <= cr_f;  fb_last <= cr_f & cr_last;  fb_m <= cr_m;
+         fb_aw <= cr_f ? (({{(WAYS-1){1'b0}}, 1'b1} << arr_of(ms_way[cr_m], {cr_beat, 1'b0}))
+                        | ({{(WAYS-1){1'b0}}, 1'b1} << arr_of(ms_way[cr_m], {cr_beat, 1'b1}))) : {WAYS{1'b0}};
+         wa_e <= cr_f ? {ms_set[cr_m], cr_beat,  ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
+         wa_o <= cr_f ? {ms_set[cr_m], cr_beat, ~ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
          if (cr_f) begin
             fb_way <= ms_way[cr_m];  fb_set <= ms_set[cr_m];  fb_beat <= cr_beat;  fb_data <= {cr_hi, cr_lo};
             ms_bt[cr_m] <= cr_beat + 1'b1;  ms_bl[cr_m] <= 1'b1;
