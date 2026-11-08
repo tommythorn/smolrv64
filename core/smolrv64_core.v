@@ -551,7 +551,7 @@ module smolrv64_core
      (.clk(clk),
       .we_l(l_qvv), .wa_l(l_qprdv), .wd_l(l_qvalv),
       .we_ld(we_ld_q), .wa_ld(wa_ld_q), .wd_ld(wb_ld_q),
-      .we_fe(we_fe), .wa_fe(wa_fe), .wd_fe(wb_fe),
+      .we_fe(we_fe_q), .wa_fe(wa_fe_q), .wd_fe(wb_fe_q),
       .ra_l(l_psv), .rd_l(l_opv),
       .ra_sq(sq_r_preg), .rd_sq(prf_sq),
       .ra_f({j_ps3, j_ps2, j_ps1}), .rd_f({prf_f3, prf_f2, prf_f1}));
@@ -621,12 +621,14 @@ module smolrv64_core
    // of loads dispatched one a group, so all in column 0, with four FLT results landing behind
    // them) overflowed lane A's, and the landing the wrap overwrote never completed its ROB entry
    // (2026-10-11). The LD stream cannot wait (the D$ delivers), so the FE stream does: an
-   // integer result enters a lane's buffer only while the buffer holds at most LBN-6 entries.
-   // Past the gate only the LD stream's pushes add to it, one a cycle, and the drain starts
+   // integer result enters a lane's buffer only while the buffer holds at most LBN-7 entries (its
+   // push is a cycle later, the stream being registered). Past the gate only the LD stream's pushes
+   // add to it, one a cycle, and the drain starts
    // within four cycles of the first entry: the ops the lane picked before its select was held
    // (ag_only) reach E2 in up to three, and a multiply picked then takes its slot in the fourth.
    // Registered from the next occupancy, so the gate is a flop at its consumers.
-   reg  [NL-1:0]       lb_fe_room;
+   reg  [NL-1:0]       lb_fe_room, lb_fe_room_q;
+   always @(posedge clk) lb_fe_room_q <= lb_fe_room;
    wire [NL-1:0]       lb_fe_room_n;
    initial lb_fe_room = {NL{1'b1}};
    reg  [RN_PBITS-1:0] lb_prd [0:NL*LBN-1];
@@ -644,9 +646,9 @@ module smolrv64_core
    localparam integer ROB_NW = 2*NL + 5;    // ...and each lane's CTI port, a cycle after it executes
    wire [ROB_NW-1:0]          rob_wv;
    wire [ROB_NW*ROB_IDXB-1:0] rob_wix;
-   assign rob_wv[3:0] = {sq_k_take, fp_land & ~(fp_wb & few_int & ~(|by2)), l_wv[0], rob_w_valid & ~ldw_int};
+   assign rob_wv[3:0] = {sq_k_take, fp_land & ~(fp_wb & few_int), l_wv[0], rob_w_valid & ~ldw_int};
    assign rob_wix[4*ROB_IDXB-1:0] = {sq_kc_rob, ft_rob, l_wix[0], rob_w_idx};
-   assign rob_wv[NL + 4 -: 2] = {md_wb & ~(md_wr & few_int & ~(|by2)), cf_red_fire | fr_rel};
+   assign rob_wv[NL + 4 -: 2] = {md_wb & ~(md_wr & few_int), cf_red_fire | fr_rel};
    assign rob_wix[(NL + 5)*ROB_IDXB-1 -: 2*ROB_IDXB] = {md_rob, fr_rob};
    wire [IBF:0]        rf_free;
 `include "smolrv64_credits.vh"
@@ -1009,12 +1011,12 @@ module smolrv64_core
    wire [NL-1:0]             wkv_l;          // the lanes' ports: their write registers' issue-timed writes
    wire [NL*RN_PBITS-1:0]    wkp_l;
    wire [NWB_C-1:0]          wkv  = {wk_fe, wk_ld, wkv_l};
-   wire [NWB_C*RN_PBITS-1:0] wkp  = {wa_fe, wa_ld_q, wkp_l};
+   wire [NWB_C*RN_PBITS-1:0] wkp  = {wa_fe_q, wa_ld_q, wkp_l};
    // The FP pipe's sources are f-registers only (cls_fc: an int->FP op leaves through a lane with
    // its operand's value), and only the LD and FE streams write one (smolrv64_pending asserts no
    // lane does): the FP scheduler, the F FIFO and its head watch those two ports alone.
    wire [1:0]                wkv_fp = {wk_fe, wk_ld};
-   wire [2*RN_PBITS-1:0]     wkp_fp = {wa_fe, wa_ld_q};
+   wire [2*RN_PBITS-1:0]     wkp_fp = {wa_fe_q, wa_ld_q};
    // What can wake an integer consumer: a lane's write, a load bypassed into a lane's slot
    // (by0), an FP-pipe result bypassed into one (by2). The other halves of wk_ld and wk_fe
    // are FP-destination writes, and they carry M's and the FPU's live completion cones (the
@@ -1753,7 +1755,7 @@ module smolrv64_core
       wire [RN_PBITS-1:0]  wa_src = d ? dprd : m2 ? mprd2 : q2_prd;
       wire [RN_PBITS-1:0]  wa = {SHK, wa_src[RN_IDXB-1:0]};
       wire [63:0]          wb = d ? ddat : m2 ? mres : result;
-      wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld_q : wa_fe) : wa_src;
+      wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld_q : wa_fe_q) : wa_src;
       // the write register's enable and address reach every bank of the shard's copies (the PRF's
       // write is a cycle later, from here): replicated
       (* max_fanout = 24 *) reg qv;
@@ -1764,7 +1766,7 @@ module smolrv64_core
          qv <= ~reset & (we | bs);
          if (we | bs) begin
             qprd <= {SHK, q_src[RN_IDXB-1:0]};
-            qval <= bs ? (by0[gl] ? wb_ld_q : wb_fe) : wb;
+            qval <= bs ? (by0[gl] ? wb_ld_q : wb_fe_q) : wb;
          end
       end
       always @(posedge clk) if (!reset & ((we & (wa_src[RN_PBITS-1:RN_IDXB] != SHK)) | (bs & (q_src[RN_PBITS-1:RN_IDXB] != SHK))))
@@ -1774,11 +1776,11 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: lane %0d writes p%h and lands p%h in one cycle", gl, wa_src, q_src);
       // the lane's ROB completion port: its op at issue (a load or store never; a CTI the next
       // cycle, below), its multiply in the reserved slot, its landing at the drain or straight
-      // through (by0: the LD stream's, an integer load's every completion is its lane's) -- in its own ROB
+      // through (by0, by2: the streams' -- an integer result's every completion is its lane's) -- in its own ROB
       // column: every op a lane runs or lands is its slot's (an integer register is renamed in its
       // slot's lane), so the column is a constant and the ROB's other columns never compare this port
       localparam [ROB_CB-1:0] COL = gl;
-      assign l_wv[gl]  = (iss2 & ~cti & ~late2) | m2 | dc | by0[gl];
+      assign l_wv[gl]  = (iss2 & ~cti & ~late2) | m2 | dc | by0[gl] | by2[gl];
       // A CTI COMPLETES A CYCLE AFTER IT EXECUTES, from registers, on a port of its own: its compare
       // and target (two carry chains) decide whether it mispredicted, and then it completes at its
       // squash instead, so in its execute cycle that decision would stand in front of every ROB
@@ -1793,7 +1795,7 @@ module smolrv64_core
       end
       assign rob_wv[NL + 5 + gl] = ct_v & ~redirect & ~dead(ct_rob);
       assign rob_wix[(NL + 5 + gl)*ROB_IDXB +: ROB_IDXB] = ct_rob;
-      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : by0[gl] ? ldw_rob_q : rob2;  // dp: registers and the SYSQ's fire
+      wire [ROB_IDXB-1:0] wix = dp ? drob : m2 ? mrob2 : by0[gl] ? ldw_rob_q : by2[gl] ? few_rob_q : rob2;  // dp: registers and the SYSQ's fire
       assign l_wix[gl] = {wix[ROB_IDXB-1:ROB_CB], COL};
       always @(posedge clk) if (!reset && l_wv[gl] && wix[ROB_CB-1:0] != COL)
          $fatal(1, "smolrv64_core: lane %0d completes ROB entry %0d, outside its column", gl, wix);
@@ -1995,7 +1997,7 @@ module smolrv64_core
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
       .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
-      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld_q, l_wbv}),
+      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe_q, wb_ld_q, l_wbv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
       .kc_v(sq_kc_v), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
@@ -4322,12 +4324,27 @@ module smolrv64_core
    wire [2:0] few_sh = wa_fe[RN_PBITS-1:RN_IDXB];
    assign few_int = fe_any & ~few_sh[2];
    wire we_fe = fe_any & ~few_int;
+   // THE FE STREAM IS REGISTERED, as the LD stream is: what it writes, wakes, snoops and pushes into
+   // a lane is a register a cycle later, dropped by a redirect in its cycle. Its ROB completion: an
+   // FP register's on its own port (the F port's, the MD stage's) at the landing, an integer
+   // register's on its lane's port, straight through (by2) or at the drain.
+   reg                 fe_any_q = 1'b0;
+   (* max_fanout = 24 *) reg [RN_PBITS-1:0] wa_fe_q;   // every SH_FF bank's write address
+   reg  [63:0]         wb_fe_q;
+   reg  [ROB_IDXB-1:0] few_rob_q;
+   always @(posedge clk) begin
+      fe_any_q  <= ~reset & ~redirect & fe_any;
+      wa_fe_q   <= wa_fe;  wb_fe_q <= wb_fe;  few_rob_q <= few_rob;
+   end
+   wire [2:0] few_sh_q  = wa_fe_q[RN_PBITS-1:RN_IDXB];
+   wire       few_int_q = fe_any_q & ~few_sh_q[2];
+   wire       we_fe_q   = fe_any_q & ~few_int_q;
    // Each stream broadcasts on its own port (wake, pending clear, the store queue's snoop) what
    // it writes this cycle: an FP shard's register, or an integer one straight through a lane's
    // write register. A landing that waits in a lane's buffer broadcasts on the lane's port when
    // it drains.
    wire wk_ld = we_ld_q | (|by0);
-   wire wk_fe = we_fe | (|by2);
+   wire wk_fe = we_fe_q | (|by2);
    wire [RN_PBITS-1:0] wa_ld = ld_wb ? lq_l_prd : m_prd;
    wire [ROB_IDXB-1:0] ldw_rob = ld_wb ? lq_l_rob : m_rob_idx;
 
@@ -4363,7 +4380,7 @@ module smolrv64_core
       localparam [2:0] K = glk;
       assign p0[glk] = ldw_int_q & (ldw_sh_q == K);
       assign pl[glk] = pl_v & (ldw_sh_q == K);
-      assign p2[glk] = few_int & (few_sh == K);
+      assign p2[glk] = few_int_q & (few_sh_q == K);
       assign p1[glk] = (glk == 0) & sp_f;
       assign lb_free[glk] = ~(l_v2[glk] & ~l_late2[glk]) & ~l_m2[glk];
       assign lb_any[glk] = lb_n[glk] != 0;
@@ -4384,7 +4401,7 @@ module smolrv64_core
    generate for (gln = 0; gln < NL; gln = gln + 1) begin: g_ln
       assign lb_n_n[gln] = lb_n[gln] + {{LBB{1'b0}}, en0[gln]} + {{LBB{1'b0}}, en2[gln]}
                                      - {{LBB{1'b0}}, lb_drain[gln] & lb_any[gln]};
-      assign lb_fe_room_n[gln] = (lb_n_n[gln] <= LBN - 6);
+      assign lb_fe_room_n[gln] = (lb_n_n[gln] <= LBN - 7);
    end endgenerate
    // the drained entry of each lane, {wr, cmp, prd, dat, rob} (a wire per lane: rule F4)
    wire [2+RN_PBITS+64+ROB_IDXB-1:0] lp [0:NL-1];
@@ -4399,7 +4416,7 @@ module smolrv64_core
          wire [63:0] lb_hd;
          smolrv64_bankq #(.W(64), .DEPTH(LBN), .NW(2), .NR(1), .NB(2)) u_lbd
            (.clk(clk), .wclk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
-            .wd({wb_fe, wb_ld_q}), .rp(hh), .ro(1'b0), .rd(lb_hd));
+            .wd({wb_fe_q, wb_ld_q}), .rp(hh), .ro(1'b0), .rd(lb_hd));
          assign lp[glp] = lb_any[glp] ? {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]}
                         :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
@@ -4416,9 +4433,9 @@ module smolrv64_core
             lb_dk[lbi*LBN + lb_t[lbi]] <= dead(ldw_rob_q);
          end
          if (en2[lbi]) begin
-            lb_prd[lbi*LBN + lb_t2[lbi]] <= wa_fe;
-            lb_rob[lbi*LBN + lb_t2[lbi]] <= few_rob;  lb_fe[lbi*LBN + lb_t2[lbi]] <= 1'b1;
-            lb_dk[lbi*LBN + lb_t2[lbi]] <= dead(few_rob);
+            lb_prd[lbi*LBN + lb_t2[lbi]] <= wa_fe_q;
+            lb_rob[lbi*LBN + lb_t2[lbi]] <= few_rob_q;  lb_fe[lbi*LBN + lb_t2[lbi]] <= 1'b1;
+            lb_dk[lbi*LBN + lb_t2[lbi]] <= dead(few_rob_q);
          end
          lb_t[lbi] <= lb_t[lbi] + {{(LBB-1){1'b0}}, en0[lbi]} + {{(LBB-1){1'b0}}, en2[lbi]};
          if (lb_drain[lbi] & lb_any[lbi]) lb_h[lbi] <= lb_h[lbi] + 1'b1;
@@ -4432,8 +4449,9 @@ module smolrv64_core
          if (lb_n_n[lbi] > LBN)
             $fatal(1, "smolrv64_core: lane %0d's landing buffer overflows", lbi);
          // the FE stream's gate (lb_fe_room) is what keeps the buffer from filling: a push past it
-         // is the overflow a cycle early
-         if (en2[lbi] & ~lb_fe_room[lbi])
+         // is the overflow a cycle early (the stream is registered: its push is gated by the gate
+         // of the cycle before)
+         if (en2[lbi] & ~lb_fe_room_q[lbi])
             $fatal(1, "smolrv64_core: the FE stream pushed into lane %0d's landing buffer at %0d entries", lbi, lb_n[lbi]);
       end
       if (sp_v & ~lb_drain[0])

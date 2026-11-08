@@ -405,6 +405,11 @@ ISSUED ENTRY CLEARS A CYCLE LATER (`iss_last` masks it from the pick meanwhile) 
 IS RESERVED A CYCLE AHEAD (`fs_v`, `fs_ix`: only a dispatch allocates, so a slot free now stays free
 unless dispatched into now), so the pick and the dispatch both read flops.
 
+**THE FE STREAM IS REGISTERED** as the LD stream is (m2c: `icr_room -> u_prf`, `-> u_lbd`, 2.3 K):
+the F port's and the MD stage's results write, wake, snoop and push a cycle after the landing; an
+integer one completes on its lane's port, straight through or at the drain; the FE gate is LBN-7,
+its push being a cycle behind the gate's decision.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
