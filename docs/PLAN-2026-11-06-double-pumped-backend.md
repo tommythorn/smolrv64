@@ -468,7 +468,11 @@ new event never counts its predecessor's last cycle.
 `u_lq/v -> ... -> u_lsu/o_nb`, 14 levels, -2.07). Both queues pick and the LSU starts in one cycle.
 The SQ's half: a store drains from the cycle after its commit (`cmt`, a register), not in the
 commit's own cycle -- the commit is a compare against the ROB's irrevocable pointer, and it led
-the 19 levels. A store the LSU waits for costs a cycle.
+the 19 levels. A store the LSU waits for costs a cycle. The LQ's half: the access candidate is
+picked a cycle ahead (the 32-entry age pick into a register, `xi`) and offered while that entry is
+still ready, so the start reads one entry's ready bit and fields at a registered index. A pick
+taken last cycle is sent, so not ready: back to back, a load starts every other cycle -- the D$'s
+rate now. The directed bench's take waits for the offer, and its release checks step once.
 
 ## 4. Verification, every increment
 

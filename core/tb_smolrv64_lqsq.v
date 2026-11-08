@@ -145,7 +145,12 @@ module tb;
    task load_addr(input [IDXB-1:0] ix, input [PAW-1:0] a, input [1:0] sz);
       begin lq_a_v=1; lq_a_idx=ix; lq_a_pa=a; lq_a_size=sz; step; lq_a_v=0; #1; end
    endtask
-   task take;   begin lq_x_take=1; step; lq_x_take=0; #1; end endtask
+   // take: the LSU takes the candidate when it is offered (the pick is a cycle ahead: a release
+   // offers it the cycle after)
+   integer tw;
+   task take;   begin tw = 0; while (!lq_x_v && tw < 2) begin step; tw = tw + 1; end
+                      chk("take: a candidate is offered", lq_x_v, 1'b1);
+                      lq_x_take=1; step; lq_x_take=0; #1; end endtask
    task land(input [IDXB-1:0] ix); begin lq_l_v=1; lq_l_idx=ix; step; lq_l_v=0; #1; end endtask
    // commit = the ROB RELEASES the first unreleased entry (k_take), then the LSU DRAINS the
    // head (c_take): two events since the senior store queue (plan item 3)
@@ -202,6 +207,7 @@ module tb;
       chk("3 overlap blocks", !lq_x_v && lq_x_block, 1'b1);
       chk("3 the store can commit", sq_kc_v && sq_c_data==64'h22, 1'b1);
       commit;
+      step;                                          // the candidate is picked a cycle ahead
       chk("3 commit releases", lq_x_v, 1'b1);
       chk("3 no older store now", ld_older, 1'b0);
       take; land(L0);
@@ -217,7 +223,7 @@ module tb;
       store_addr(S0, 56'h2004, 2, 1'b1, 64'h0);
       load_addr(L0, 56'h2000, 3);                    // D at 0x2000..0x2007: overlaps 0x2004
       chk("4 8B load straddling the store blocks (row)", !lq_x_v, 1'b1);
-      commit; chk("4 released by commit", lq_x_v, 1'b1); take; land(L0);
+      commit; step; chk("4 released by commit", lq_x_v, 1'b1); take; land(L0);   // (picked a cycle ahead)
       // column order: the store's address arrives after the load's
       disp_store(9'd7, 4'd10, S0);  disp_load(9'd45, 4'd11, L0);
       load_addr(L0, 56'h2004, 2);
@@ -292,7 +298,7 @@ module tb;
       // ---- 8. the load queue's ordering ----
       disp_load(9'd41, 4'd1, L0); disp_load(9'd42, 4'd2, L1);
       load_addr(L1, 56'h6000, 2);                    // the YOUNGER one only
-      chk("8 a ready younger load is not held up by an unfilled older one", lq_x_v && lq_x_pa==56'h6000, 1'b1);
+      step; chk("8 a ready younger load is not held up by an unfilled older one", lq_x_v && lq_x_pa==56'h6000, 1'b1);
       take;
       load_addr(L0, 56'h7000, 2);
       chk("8 the older goes when its address is in", lq_x_v && lq_x_pa==56'h7000, 1'b1);
@@ -332,7 +338,7 @@ module tb;
       commit; commit; commit;
       chk("9 three commits do not release it", !lq_x_v && lq_x_block && ld_older, 1'b1);
       commit;
-      chk("9 the fourth does", lq_x_v && !ld_older, 1'b1);
+      step; chk("9 the fourth does", lq_x_v && !ld_older, 1'b1);
       take; land(L0);
       chk("9 drained", lq_occ==0 && sq_occ==0, 1'b1);
       // ...and with the pointers WRAPPED: two stores committed first, then the queue refilled,
@@ -378,7 +384,7 @@ module tb;
       disp_load(9'd46, 4'd13, L0);
       lq_a_v=1; lq_a_idx=L0; lq_a_pa=56'h00_ABCD_EF01_2348; lq_a_size=2'd1; lq_a_signed=1; lq_a_fp=1; lq_a_unc=1;
       step; lq_a_v=0; #1;
-      chk("10 pa round-trips",     lq_x_v && lq_x_pa==56'h00_ABCD_EF01_2348, 1'b1);
+      step; chk("10 pa round-trips",     lq_x_v && lq_x_pa==56'h00_ABCD_EF01_2348, 1'b1);
       chk("10 size round-trips",   lq_x_size==2'd1, 1'b1);
       chk("10 signed round-trips", lq_x_signed, 1'b1);
       chk("10 fp round-trips",     lq_x_fp, 1'b1);

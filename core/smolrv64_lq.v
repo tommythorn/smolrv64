@@ -451,9 +451,15 @@ module smolrv64_lq
    // and overlaps it flags it for replay. Its forwarding store does not (the store queue sets that
    // overlap aside while the load stands forwarded).
    assign e_acc = v & sent;
-   wire [IDXB-1:0] xi = oldest(rdy_m, om);
+   // THE CANDIDATE IS PICKED A CYCLE AHEAD: the oldest ready entry, registered (xi), offered while
+   // it is still ready -- the age pick stays out of the LSU's start. A pick taken last cycle is
+   // sent now, so not ready: the cycle after a take offers none.
+   wire [IDXB-1:0] xi_n = oldest(rdy_m, om);
+   reg  [IDXB-1:0] xi;
+   initial xi = {IDXB{1'b0}};
+   always @(posedge clk) xi <= xi_n;
    assign x_head  = hd[xi];
-   assign x_v     = |rdy_m;
+   assign x_v     = rdy_m[xi];
    assign x_block = |(cand_m & e_block);   // instrumentation only
    assign x_devwait = |(cand_m & ~e_block & ~mem & ~hd) & ~x_v;   // instrumentation only
    assign x_idx   = xi;
