@@ -2690,8 +2690,9 @@ module smolrv64_core
       dv_a  <= st_q ? mq_a : dg_a;  dv_b <= st_q ? mq_b : dg_b;
       dv_f3 <= st_q ? mq_op[2:0] : dg_op[2:0];  dv_w <= st_q ? mq_op[3] : dg_op[3];
    end
-   divider u_div
-     (.clk(clk), .reset(reset), .start(dv_go), .abort(redirect | md_kill),
+   // THE DIVIDER RUNS ON clk_fe (smolrv64_x2div): its iterations close clk's period, not clk2x's
+   smolrv64_x2div u_div
+     (.clk2x(clk), .clk(clk_fe), .reset(reset), .h2(h2), .start(dv_go), .abort(redirect | md_kill),
       .rs1(dv_a), .rs2(dv_b), .f3(dv_f3), .is_w(dv_w),
       .busy(div_busy), .done(div_done), .result(div_result));
    always @(posedge clk) begin

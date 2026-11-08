@@ -156,4 +156,71 @@ module smolrv64_x2fpu #(parameter integer TAGW = 24, parameter integer RDV_BIT =
    assign busy = ib_v | ob_v;
 endmodule
 
+// THE DIVIDER ON clk, BEHIND A CROSSING (divider's interface on the clk2x side; its iterations close
+// clk's period, as at 166.67 MHz). The clk side is never aborted: an abort and the start after it
+// could reach it in one clk cycle, where its abort wins. Instead the clk2x side drops a start not
+// yet handed over and DISCARDS the result of the divide the divider is running (disc), and a new
+// start waits (ps) until the divider is idle. START: a register that changes only at clk edges
+// (dst, one clk cycle) with its operands. DONE: the divider's result cycle, registered in the first
+// half, is the core's for one clk2x cycle unless discarded. busy: a start waiting, or a divide
+// running that is still wanted -- the core's own rule (no start into a busy unit) holds on that.
+module smolrv64_x2div
+  (input  wire        clk2x,
+   input  wire        clk,
+   input  wire        reset,       // clk2x's
+   input  wire        h2,
+   input  wire        start,
+   input  wire        abort,
+   input  wire [63:0] rs1,
+   input  wire [63:0] rs2,
+   input  wire [2:0]  f3,
+   input  wire        is_w,
+   output wire        busy,
+   output wire        done,
+   output wire [63:0] result);
+   reg         ps_v = 1'b0;                     // a start waiting for the divider
+   reg  [63:0] ps_a, ps_b;  reg [2:0] ps_f3;  reg ps_w;
+   (* x2_cedge = "yes", x2_ccap = "yes" *) reg dst = 1'b0;      // the divider's start, one clk cycle
+   (* x2_cedge = "yes" *) reg [63:0] da, db;  (* x2_cedge = "yes" *) reg [2:0] df3;  (* x2_cedge = "yes" *) reg dw;
+   reg         run = 1'b0, disc = 1'b0;         // the divider holds a divide; its result is not wanted
+   wire        d_busy, d_done;                  // the divider's (clk's)
+   wire [63:0] d_res;
+   reg         dn = 1'b0;  reg [63:0] dres;
+   wire        got  = ~h2 & d_done;             // its result cycle, taken in the first half
+   wire        take = h2 & dst;                 // the divider takes the start at this clk edge
+   always @(posedge clk2x) begin
+      if (reset) begin
+         ps_v <= 1'b0;  dst <= 1'b0;  run <= 1'b0;  disc <= 1'b0;  dn <= 1'b0;
+      end else begin
+         dn <= got & ~disc & ~abort;
+         if (got) begin run <= 1'b0;  disc <= 1'b0; end
+         if (take) run <= 1'b1;
+         if (h2) dst <= ps_v & ~dst & ~d_busy & ~run & ~abort;
+         if (h2 & ps_v & ~dst & ~d_busy & ~run & ~abort) begin
+            da <= ps_a;  db <= ps_b;  df3 <= ps_f3;  dw <= ps_w;  ps_v <= 1'b0;
+         end
+         // an abort drops the waiting start and discards what the divider holds or is taking now;
+         // a start in the abort's own cycle is the killed op's (the divider's own abort won over it)
+         if (abort) begin
+            ps_v <= 1'b0;
+            if (dst | (run & ~got)) disc <= 1'b1;
+         end
+         if (start & ~abort) begin ps_v <= 1'b1;  ps_a <= rs1;  ps_b <= rs2;  ps_f3 <= f3;  ps_w <= is_w; end
+      end
+      dres <= d_res;
+   end
+   always @(posedge clk2x) if (!reset) begin
+      if (start & ps_v & ~abort) $fatal(1, "smolrv64_x2div: a start while one waits");
+      if (got & ~run)            $fatal(1, "smolrv64_x2div: the divider finished with nothing running");
+   end
+   reg rst_s = 1'b1;
+   always @(posedge clk) rst_s <= reset;
+   divider u_div
+     (.clk(clk), .reset(rst_s), .start(dst), .abort(1'b0), .rs1(da), .rs2(db), .f3(df3), .is_w(dw),
+      .busy(d_busy), .done(d_done), .result(d_res));
+   assign busy = ps_v | (run & ~disc) | (dst & ~disc);
+   assign done = dn;
+   assign result = dres;
+endmodule
+
 `default_nettype wire

@@ -392,6 +392,12 @@ takes it there); the result -- and `res_fp`/`res_int`, which are its valid by de
 registered in the first half and is the core's for one clk2x cycle; the flush goes through
 `smolrv64_x2f2s`, and until the FPU has seen it every result is of a killed op and is dropped.
 
+**THE DIVIDER RUNS ON clk** (`smolrv64_x2div`) for the same reason (m2b: `u_div/dvsr -> u_div/rem`,
+11-12 levels). The clk side is never aborted -- an abort and the start after it could reach it in
+one clk cycle, where its own abort wins -- so the clk2x side drops a start not yet handed over and
+discards the result of the divide the divider is running, and a new start waits until it is idle.
+Its busy toward the core is a waiting start or a divide still wanted.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
