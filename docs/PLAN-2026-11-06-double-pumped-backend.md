@@ -797,6 +797,15 @@ check pins it), so the region is the line address's bits above its index.
 
 **THE DECODE QUEUE'S READ POINTER IS REPLICATED** (m2t: `fe/q_rp -> fe/hr`, 201 endpoints at -1.01 ns,
 4 levels: the pointer's net to every bank's LUTRAM read address). `q_rp` has `max_fanout = 16`.
+
+**A LOAD'S OLDER STORES ARE A MATRIX ROW TAKEN AT ITS FILL** (m2t: `u_sq/headc -> u_lq/cnt`, 14 levels:
+the per-load tag subtraction and per-store compare (`oldm`, 16 x 32 live every cycle) into the
+violation, the load queue's free and its popcount; the same compare heads the block, forward and
+unknown-address cones). The stores older than a load when its address arrives stay older until
+they leave, and a store allocated later is younger, so `lold[load]` takes one row of compares at
+the fill (`oldm_f`). A store's allocation clears its column, and `oldm = v & lold`. The compare
+form stays as the oracle, asserted equal while the load's address is in. `l_older` (a performance
+event and its own check) is exact from the fill and `l_dist != 0` before it.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

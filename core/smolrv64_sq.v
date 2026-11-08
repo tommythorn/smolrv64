@@ -549,6 +549,25 @@ module smolrv64_sq
 
    wire [IDXB:0] ld_dist = ld_tag - headc;
    genvar gl, gs;
+   // EACH LOAD'S OLDER STORES ARE A MATRIX ROW (lold), taken when the load's address arrives: the
+   // stores older than it then stay older until they leave (v), and a store allocated later is
+   // younger (its column is cleared as it allocates). So the age is one row of compares at the
+   // fill (oldm_f), not a subtraction and a compare per load per store every cycle; the compare
+   // form stays as the oracle (oldm_ref below, asserted equal while the load's address is in).
+   wire [IDXB:0]   f_dist = l_tag[l_fill_ix*(IDXB+1) +: IDXB+1] - headc;
+   wire [NENT-1:0] oldm_f;
+   generate for (gs = 0; gs < NENT; gs = gs + 1) begin : g_omf
+      wire [IDXB-1:0] sd = gs[IDXB-1:0] - head;
+      assign oldm_f[gs] = v[gs] & ({1'b0, sd} < f_dist);
+   end endgenerate
+   reg  [NENT-1:0] lold [0:LQN-1];
+   integer         lok, low;
+   initial for (lok = 0; lok < LQN; lok = lok + 1) lold[lok] = {NENT{1'b0}};
+   always @(posedge clk) begin
+      for (low = 0; low < ANB; low = low + 1) if (ab_w[low])
+         for (lok = 0; lok < LQN; lok = lok + 1) lold[lok][ab_e[low]] <= 1'b0;
+      if (l_fill) lold[l_fill_ix] <= oldm_f;      // after the clears: a store allocating now is not in v
+   end
 `ifndef SYNTHESIS
    wire [LQN-1:0] dep_rc, dep_ra;  wire [LQN*16-1:0] dep_cy;
    reg  [63:0]    sp_clear, sp_alias, sp_clear_cyc, sp_alias_cyc;
@@ -562,11 +581,15 @@ module smolrv64_sq
    generate
       for (gl = 0; gl < LQN; gl = gl + 1) begin : g_lblk
          wire [IDXB:0]   l_dist = l_tag[gl*(IDXB+1) +: IDXB+1] - headc;
-         wire [NENT-1:0] oldm;
+         wire [NENT-1:0] oldm = v & lold[gl];
+         wire [NENT-1:0] oldm_ref;
          for (gs = 0; gs < NENT; gs = gs + 1) begin : g_om
             wire [IDXB-1:0] sd = gs[IDXB-1:0] - head;      // slot distance from the head
-            assign oldm[gs] = v[gs] & ({1'b0, sd} < l_dist);
+            assign oldm_ref[gs] = v[gs] & ({1'b0, sd} < l_dist);
          end
+         always @(posedge clk) if (!reset && l_av[gl] && oldm != oldm_ref)
+            $fatal(1, "smolrv64_sq: load %0d's older stores %b, by its tag %b", gl, oldm, oldm_ref);
+         wire            fill_me = l_fill & (l_fill_ix == gl[LQIB-1:0]);
          // An older store whose address has not arrived cannot be compared, so it blocks --
          // conservative and correct, and the same rule the compare form used.
          assign l_block[gl] = l_av[gl] & (|(oldm & (conf[gl] | (~av & {NENT{l_wt[gl]}}))));
@@ -586,8 +609,8 @@ module smolrv64_sq
                      & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], a_va[11:0], a_size);
          reg blk_q;  initial blk_q = 1'b0;
          always @(posedge clk)
-            blk_q <= (l_fill & (l_fill_ix == gl[LQIB-1:0]))
-                   ? (|(oldm & (fill_row_q | (~av_next & {NENT{l_wt[gl]}}))))
+            blk_q <= fill_me
+                   ? (|(oldm_f & (fill_row_q | (~av_next & {NENT{l_wt[gl]}}))))
                    : ((l_av[gl] & (|(oldm & (conf[gl] | (~av & {NENT{l_wt[gl]}}))))) | arr_ov);
          assign l_block_q[gl] = blk_q;
          // FORWARDABLE: exactly one older live store overlaps the load, it holds all the load's bytes
@@ -682,7 +705,9 @@ module smolrv64_sq
          // The live port stays as the oracle (smolrv64_core asserts the copy is never the less
          // conservative of the two).
          reg l_older_q;  initial l_older_q = 1'b0;
-         always @(posedge clk) l_older_q <= |oldm;
+         // ...exact from the fill on (the row); before it, any older slot by the tag (never less
+         // conservative: a live older store is one)
+         always @(posedge clk) l_older_q <= fill_me ? (|oldm_f) : l_av[gl] ? (|oldm) : (l_dist != {(IDXB+1){1'b0}});
          assign l_older[gl] = l_older_q;
          // A load can have at most cnt older live stores: a distance beyond the occupancy
          // is a seqno that wrapped, i.e. the defect above in any new clothing.
