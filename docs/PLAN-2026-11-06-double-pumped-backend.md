@@ -871,6 +871,15 @@ dw[ho]`, a 32:1 read, into `sq_go`, the load start's yield and the LSU's start).
 take, which drops the offer, and a committed store is translated, so `c_fast_q` and `c_unc_q` are
 read a cycle ahead beside `c_v_q` and asserted equal to the live read while offered. Every consumer
 is gated by the offer.
+
+**THE SYSTEM OP'S EXCEPTION AND ITS DELEGATION ARE REGISTERED IN THE CSR FILE** (m2w: `sy_fire_q ->
+u_csr/mcause`, `scause`, `mepc`, `sepc`, `mtval`, `mhpmevent`, ~450 endpoints at -1.06 ns, 6-10 levels:
+the fire merged into the op's exception decode and the delegation lookup in front of every trap and
+CSR-write enable). The two decisions read only the op's fields (the SYSQ's flops, loaded a cycle
+before it can fire) and CSR state that only a system op or a trap changes, so `exc_q` and `tos_exc_q`
+take them a cycle ahead (asserted equal to the live decision at the fire). Every enable, the
+redirect and its target read them. An interrupt's delegation stays `irq_to_s_q`, and an injected
+trap's `x_to_s` comes from its own cause.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

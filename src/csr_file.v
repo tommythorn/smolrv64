@@ -709,6 +709,15 @@ module csr_file
    wire        exc_active = is_ecall | is_ebreak | csr_ill_f | sys_illegal;   // as if it fires
    wire [63:0] ecall_cause = (priv==M) ? 64'd11 : (priv==S) ? 64'd9 : 64'd8;
    wire [63:0] exc_cause = (csr_ill_f | sys_illegal) ? 64'd2 : is_ebreak ? 64'd3 : ecall_cause;
+   // ...BOTH REGISTERED A CYCLE AHEAD OF THE FIRE (exc_q, tos_exc_q): they read the op's fields (the
+   // SYSQ's flops, loaded at least a cycle before it fires) and CSR state only a system op or a trap
+   // changes (and none can between the two), so the decode and the delegation lookup stay out of
+   // every enable the fire gates. Asserted equal to the live decision when the op fires.
+   reg         exc_q = 1'b0, tos_exc_q = 1'b0;
+   wire        tos_exc = (priv != M) & medeleg[exc_cause[5:0]];
+   always @(posedge clk) begin exc_q <= exc_active;  tos_exc_q <= tos_exc; end
+   always @(posedge clk) if (!reset && upd_valid && ((exc_q != exc_active) || (exc_active && (tos_exc_q != tos_exc))))
+      $fatal(1, "csr_file: the registered exception %b/%b is not the firing op's %b/%b (pc %h)", exc_q, tos_exc_q, exc_active, tos_exc, upd_pc);
 
    // unified trap: a system-op exception OR an external (page-fault / interrupt) injection.
    // sysop_exc is the active system op's OWN exception; trap_v adds external injection. Only
@@ -719,7 +728,7 @@ module csr_file
    // pseudo-op delivering (irq_take), or an external page-fault injection (xtrap_v).
    // Interrupts now arrive as the irq_take SYSTEM op (mcause MSB, vectored, epc=op PC);
    // xtrap is exception-only (page faults) so xtrap_intr is vestigial (tied 0).
-   wire        sysop_exc  = upd_valid & exc_active;
+   wire        sysop_exc  = upd_valid & exc_q;
    wire        trap_is_intr = irq_take | (xtrap_v & xtrap_intr);
    wire        trap_v     = sysop_exc | irq_take | xtrap_v;
    // A CSR WRITE YIELDS ONLY TO ITS OWN OP'S EXCEPTION (op_trap): an injected trap (xtrap_v, M's
@@ -736,8 +745,9 @@ module csr_file
    wire [39:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;   // irq_take -> upd_pc (interrupted PC)
    wire [63:0] trap_tval  = xtrap_v ? xtrap_tval : (is_ebreak ? `VA_UNPACK40(upd_pc) : 64'd0);
    // delegation: interrupts use the precomputed irq_to_s (mideleg); exceptions use medeleg
-   wire        trap_to_s  = trap_is_intr ? irq_to_s_q
-                          : trap_v & (priv != M) & medeleg[trap_cause[5:0]];
+   // (read only under trap_v) an injected trap's from its own cause, the op's own from the register
+   wire        x_to_s     = (priv != M) & medeleg[xtrap_cause];
+   wire        trap_to_s  = trap_is_intr ? irq_to_s_q : xtrap_v ? x_to_s : tos_exc_q;
    wire        do_mret    = upd_valid & is_mret & ~sysop_exc;
    wire        do_sret    = upd_valid & is_sret & ~sysop_exc;
    // sfence.vma redirects to its fall-through (always a 4-byte insn): this squashes and
@@ -811,10 +821,10 @@ module csr_file
    // cone (lane A's slot, the landing buffer) stays out of this file's decode. Asserted equal to the
    // gated terms whenever the op fires. External injections (xtrap_v) redirect via the target alone.
    wire        irq_take_f = is_irqop & irq_v_q;
-   wire        do_xret_f  = (is_mret | is_sret) & ~exc_active;
-   wire        do_fall_f  = (is_sfence & ~exc_active) | do_fschg_f | do_dxchg_f | do_satp_f | do_ctxw_f;
-   assign redir_valid   = exc_active | irq_take_f | do_xret_f | do_fall_f;
-   assign redir_is_trap = exc_active | irq_take_f;     // op's own exception OR delivered interrupt
+   wire        do_xret_f  = (is_mret | is_sret) & ~exc_q;
+   wire        do_fall_f  = (is_sfence & ~exc_q) | do_fschg_f | do_dxchg_f | do_satp_f | do_ctxw_f;
+   assign redir_valid   = exc_q | irq_take_f | do_xret_f | do_fall_f;
+   assign redir_is_trap = exc_q | irq_take_f;     // op's own exception OR delivered interrupt
    always @(posedge clk) if (!reset && upd_valid && ((redir_valid != (sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw))
                                                    || (redir_is_trap != (sysop_exc | irq_take))))
       $fatal(1, "csr_file: the as-if-fired redirect %b/%b is not the fired op's", redir_valid, redir_is_trap);
@@ -827,12 +837,11 @@ module csr_file
    wire [39:0] trap_tgt  = tvec_vec ? (tvec_base + {32'd0, trap_cause[5:0], 2'b00}) : tvec_base;
    // AN INJECTED TRAP'S TARGET FROM ITS OWN CAUSE, not through trap_v: an exception (never vectored)
    // to stvec when delegated from below M, else mtvec. xtrap_v only selects it.
-   wire        x_to_s    = (priv != M) & medeleg[xtrap_cause];
    wire [39:0] x_tgt     = x_to_s ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
    always @(posedge clk) if (!reset && xtrap_v && (x_tgt != trap_tgt))
       $fatal(1, "csr_file: the injected trap's target %h is not the trap's %h", x_tgt, trap_tgt);
    // the op's own trap's target as if it fires: an interrupt's (vectored) or its exception's
-   wire        trap_to_s_f  = irq_take_f ? irq_to_s_q : (priv != M) & medeleg[exc_cause[5:0]];
+   wire        trap_to_s_f  = irq_take_f ? irq_to_s_q : tos_exc_q;
    wire [39:0] tvec_base_f  = trap_to_s_f ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
    wire        tvec_vec_f   = irq_take_f & (trap_to_s_f ? stvec[0] : mtvec[0]);
    wire [39:0] trap_tgt_f   = tvec_vec_f ? (tvec_base_f + {34'd0, irq_cause_q, 2'b00}) : tvec_base_f;
@@ -842,7 +851,7 @@ module csr_file
       else if (is_sret)         redir_target = sepc;
       else if (do_fall_f)       redir_target = upd_pc + 40'd4;   // sfence, or a CSR write that refetches (4 bytes)
       else                      redir_target = trap_tgt_f;
-      if (exc_active & ~xtrap_v) redir_target = trap_tgt_f;     // an xret or sfence that traps
+      if (exc_q & ~xtrap_v) redir_target = trap_tgt_f;     // an xret or sfence that traps
    end
    always @(posedge clk) if (!reset && upd_valid && !xtrap_v && redir_valid && (redir_target != (
          do_mret ? mepc : do_sret ? sepc : (do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw) ? upd_pc + 40'd4 : trap_tgt)))
@@ -854,7 +863,7 @@ module csr_file
    // A counter-CSR write is an op that writes (a csrr of mhpmeventN rewrites nothing, so it
    // cannot swallow that cycle's increment or overflow). A counter runs unless mcountinhibit or
    // its event's *INH bit for the current privilege stops it; it wraps when the add carries out.
-   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~exc_active;
+   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~exc_q;
    wire [HPMN-1:0] hpm_wev, hpm_wct, hpm_run, hpm_wrap;
    wire [63:0]     hpm_nxt [0:HPMN-1];
    // A COUNTER WRITE LOADS A CYCLE LATE. A counter's next value is its adder's sum, and a CSR
@@ -1029,7 +1038,7 @@ module csr_file
       // (fp_dirty_commit) or an FP CSR write (fcsr/fflags/frm, itself commit-serialized).
       // Guarded to FP-enabled (FS != Off).
       if (!reset && (mstatus[14:13] != 2'b00) &&
-          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~exc_active
+          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~exc_q
                               & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
          mstatus[14:13] <= 2'b11;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
@@ -1056,7 +1065,7 @@ module csr_file
          mcountinhibit <= 64'd0;
          for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
       end else begin
-         if (upd_valid && upd_is_csr && !exc_active && upd_addr==MCOUNTINHIBIT)
+         if (upd_valid && upd_is_csr && !exc_q && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= rmw(mcountinhibit) & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (hpm_wev[i])
