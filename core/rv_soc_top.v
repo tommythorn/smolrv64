@@ -1101,8 +1101,12 @@ module rv_soc_top #(
    // into the DDR4 controller. The caches are PIPT so they fill/write either region transparently.
    // (lmem is $readmemh-loadable.)
    localparam LSIZE = 1<<LRAM_LG2;
-   wire [63:0] m_pa       = {{6{1'b0}}, m_q_addr} << 6;     // physical byte addr of the line
-   wire        m_is_local = (m_pa >= LBASE) && (m_pa < LBASE + LSIZE);
+   // the SRAM is aligned to its size, so the region is the line address's bits above its index: an
+   // equality, not two magnitude compares (carry chains) in front of the arbiter's ready
+   wire        m_is_local = (m_q_addr[LAW-1:LRAM_LG2-6] == LBASE[AW-1:LRAM_LG2]);
+   generate if (LBASE[LRAM_LG2-1:0] != 0) begin: lbase_chk
+      initial $fatal(1, "rv_soc_top: the local SRAM at %h is not aligned to its size 2^%0d", LBASE, LRAM_LG2);
+   end endgenerate
 
    // local SRAM responder (on-chip BRAM). Stored as 512-bit LINES (the port is line-granular)
    // so it infers a clean single-read/single-write BRAM -- a byte array with a 64-byte for-loop

@@ -789,6 +789,11 @@ matrix's enables and rows). The writers, their entries and rows (`v | wahead`) a
 needs its address and the fill comes a cycle after the allocation at the earliest (asserted: a
 pending entry has no address, replay or send). A later allocation's column clear lands after the
 row, in arrival order. The one-oldest check leaves the pending entries out.
+
+**THE LOCAL SRAM'S REGION IS AN EQUALITY** (m2t: `u_arb/mq_addr -> u_arb/mq_wdata`, 369 endpoints at
+-0.97 ns, 6 levels: two 64-bit magnitude compares, three carry chains, into `m_q_ready`, the arbiter's
+take and its 512-bit request register's enable). The SRAM is aligned to its size (an elaboration
+check pins it), so the region is the line address's bits above its index.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
