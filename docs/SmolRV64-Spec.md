@@ -1011,7 +1011,7 @@ runs inside every 240-test and cosim run.
 | unit | latency | outstanding | blocks M? | writes |
 |---|---|---|---|---|
 | each lane's ALU (slot k's ALU ops) | 1 cycle (at issue) | — | no | the lane's shard (k) |
-| each lane's multiplier (`mul3`, slot k's multiplies) | 3 cycles: wake at T+2, written at T+3 | — | no (it reserves its lane's T+2 slot) | the lane's shard |
+| each lane's multiplier (`mul3` PB=2, slot k's multiplies) | 4 cycles: wake at T+3, written at T+4 | — | no (it reserves its lane's T+3 slot) | the lane's shard |
 | branch, `jal`/`jalr` (its slot's lane) | 1 cycle (at issue) | — | no | the lane's shard (the link) |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | lane A's shard, through its landing slot |
 | div (`divider`) | 3 + ceil(q/2) cycles, q the quotient's significant bits (3-35): radix 4, iterations limited to q | 2 (the MD stage and its queue register) | **never enters M** (MD stage, §7.x) | its destination's lane's shard, through the lane's landing buffer |
@@ -1099,17 +1099,18 @@ op, fence or dispatch-time trap (all asserted); it keeps memory ops, AMOs, CBOs 
 
 ### 7.x Multiplies and divides in the lanes (lanes 5.2c, 2026-10-04; divides 5.4f, 2026-10-14)
 
-**A multiply runs in its slot's lane** (`smolrv64_gclass`: class I). `mul3` starts from the
-lane's forwarded operands in the execute cycle T and the lane reserves its slot at T+2 for it:
-the lane's scheduler selects nothing at T+1 (`m*_1` is its `unit_busy`, a register), so nothing
-else executes at T+2. That slot carries the multiply's wake (its consumers execute at T+3 off
-the lane's write register), its ROB completion, its value on the lane's snoop bus (`wb_ie*`,
-the store queue's data), and its result (`mul3`'s stage B, `pre_result`) into the lane's write
-register at the edge, which the PRF writes at T+3. A multiply is never in a scheduler's
-wake-at-select matrix (`e_long`): its dependents wake at its broadcast. The lane takes one
-multiply a cycle into `mul3` (it is fully pipelined), but each multiply takes two of the lane's
-execute slots, its own and the reserved one, so a lane sustains one every two cycles. Invariants:
-nothing executes in a lane's reserved slot, and the multiply is at `mul3`'s stage B in it.
+**A multiply runs in its slot's lane** (`smolrv64_gclass`: class I). `mul3` (PB=2: a register
+inside the 65x65 product, for clk2x) starts from the lane's forwarded operands in the execute cycle
+T and the lane reserves its slot at T+3 for it: the lane's scheduler selects nothing while the
+multiply is in R or E1 (`r_mul`, `rm_q`: its `unit_busy`, registers), so nothing else executes at
+T+3. That slot (`m2`) carries the multiply's wake (its consumers execute at T+4 off the lane's write
+register), its ROB completion, its value on the lane's snoop bus (`wb_ie*`, the store queue's data),
+and its result (`mul3`'s stage B, `pre_result`) into the lane's write register at the edge, which
+the PRF writes at T+4. A multiply is never in a scheduler's wake-at-select matrix (`e_long`): its
+dependents wake at its broadcast. The lane takes one multiply a cycle into `mul3` (it is fully
+pipelined), but each multiply takes three of the lane's selection cycles, so a lane sustains one
+every three cycles. Invariants: nothing executes in a lane's reserved slot, the multiply is at
+`mul3`'s stage B in it, and E1 executes no multiply its scheduler did not hold for.
 
 **A divide** is class M at dispatch (`d_cls_m`) and issues in its slot's lane like a multiply:
 the lane reads both operands in its execute cycle and hands them, with the op's ROB index and
@@ -2748,7 +2749,7 @@ writes", and M writes mul/div results. It becomes wrong only if mul/div get thei
 which would need a fourth shard: one writer per shard is the property the PRF rests on.
 
 **What is genuinely left is div, not mul.** They are different units sharing a name --
-`mul3` is 3 cycles and pipelined, `divider` is 3 to 35 cycles and iterative. Only a long divide
+`mul3` is 3 cycles (4 in the lanes) and pipelined, `divider` is 3 to 35 cycles and iterative. Only a long divide
 occupying the shared stage is a real problem, and the fix follows two precedents already in
 the design: release the stage at start and land the result by tag, as non-blocking loads
 and the FPU both do. No new shard and no new scheduler.
@@ -2855,7 +2856,7 @@ Two things to verify rather than assume when this is built:
   stops, a gap appears -- but that is an argument, and it wants an asserted bound on how
   long a result may be held.
 - **Latency.** Dependents of a mul wake at writeback instead of select, losing the bypass
-  that makes ALU chains free. Bounded (`mul3` is 3 cycles) and `ST_MUL` is 0.901%, but it
+  that makes ALU chains free. Bounded (`mul3` is 4 cycles in the lanes) and `ST_MUL` is 0.901%, but it
   is a real regression on mul-dependent chains and should be measured, not assumed small.
 
 Do it while P0 is rebuilding the memory path anyway, not before and not separately.

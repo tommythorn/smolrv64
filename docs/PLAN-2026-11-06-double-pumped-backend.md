@@ -850,6 +850,14 @@ buffer's count compare in front of the scheduler's pick). `plmem` is written whe
 reserves a slot (`ready`, a replicated flop). The slot is free, so a write that is no dispatch lands
 in an entry nothing reads. `ag_only` takes `lb_any_q`, which is `lb_n_n != 0` registered: the same
 value as `lb_n != 0`, a flop earlier (asserted).
+
+**THE LANES' MULTIPLY TAKES FOUR CYCLES** (m2v: `ln[].u_mul/p20* -> ln[].u_mul/p2`, ~420 endpoints at
+-0.86 ns, 9-10 levels: the 65x65 product's DSP cascade in one cycle). `mul3` gets `PB` (the product's
+register stages), and the lanes use 2: a register inside the product, which the cascade absorbs. The
+slot moves to T+3 (stage `mb` between `m1` and `m2`), and the scheduler also holds while the multiply
+is in E1 (`rm_q`, R's multiply a cycle later), so a lane takes a multiply every three cycles. The
+system op's free-slot check reads `mb` as "a multiply a cycle from its slot". Spec 7.x and its
+latency table updated.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

@@ -1539,6 +1539,7 @@ module smolrv64_core
       reg                  v;               // E1 holds an op (below)
       reg                  r_v;             // R holds an op (below)
       wire                 r_mul;           // ...a multiply (below)
+      reg                  rm_q = 1'b0;     // ...and E1's (below)
       (* max_fanout = 16 *) reg [IBI-1:0] r_ent;   // ...the payload LUTRAMs' read address: replicated
       smolrv64_iq #(.NENT(NI),.IDXB(IBI),.NSRC(2),.ROBB(ROB_IDXB),.PBITS(RN_PBITS),.NWB(NWB_C),
                 .FIXEDL(1),.INORDER(0),.OLDEST(1)) u_iq
@@ -1548,7 +1549,7 @@ module smolrv64_core
          .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
          .wb_v(wkv_i),.wb_preg(wkp),.iss_hq(iss_hq),.iss_hqs(iss_hqs),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
-         .unit_busy(r_mul | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any_q[gl]),
+         .unit_busy(r_mul | rm_q | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any_q[gl]),
          .iss_v(iss_v),.iss_ent(iss_ent),.iss_rob(iss_rob),
          .iss_take(iss_v),
          // no entry is held: the payload is read at the pick, and R reads its entry's registered
@@ -1597,6 +1598,10 @@ module smolrv64_core
       // a multiply in R: its write slot is the one an op picked now would write in (E2), so the pick
       // waits (the scheduler's unit_busy)
       assign r_mul = r_v & r_mulb;
+      // ...and a cycle later, in E1 (the multiply's slot is T+3: nothing selected while it is in E1)
+      always @(posedge clk) rm_q <= ~reset & r_mul;
+      always @(posedge clk) if (!reset & m_go & ~rm_q)
+         $fatal(1, "smolrv64_core: lane %0d executes a multiply its scheduler did not hold for (pc=%h)", gl, q_pc);
       always @(posedge clk) if (!reset & r_v & ((r_mulb != (~r_sys & is_mulop(rr_insn))) | (r_i2f != (~r_sys & is_i2fop(rr_insn)))))
          $fatal(1, "core: lane %0d's predecoded multiply %b / int-to-FP %b is not its instruction's (pc=%h)", gl, r_mulb, r_i2f, rr_pc);
       // ---- R's operands: the PRF, or a lane's write register landing this cycle ----
@@ -1687,26 +1692,29 @@ module smolrv64_core
       wire cti  = iss2 & ~sys2 & (q2_is_branch | q2_is_jump | q2_is_jalr);   // E2's
       wire mis  = cti & red;
       // ---- the multiplier (lanes step 5.2c) ----
-      // mul3 starts from the lane's registered operands in E1 at T, and the lane reserves its write
-      // slot at T+2 for it: the scheduler selects nothing while the multiply is in R (r_mul is its
-      // unit_busy), so no op is in E2 at T+2. That slot carries the multiply's wake, its ROB
-      // completion, and its result into the write register at the edge, which the PRF writes at T+3.
+      // mul3 (PB=2: a register inside the product) starts from the lane's registered operands in E1
+      // at T, and the lane reserves its write slot at T+3 for it: the scheduler selects nothing while
+      // the multiply is in R or E1 (r_mul, rm_q: its unit_busy), so no op is in E2 at T+3. That slot
+      // (m2) carries the multiply's wake, its ROB completion, and its result into the write register
+      // at the edge, which the PRF writes at T+4.
       wire                 m_go = iss & ~sys & is_mulop(q_insn);
-      reg                  m2, mrdv1, mrdv2;
-      reg [ROB_IDXB-1:0]   mrob1, mrob2;
-      reg [RN_PBITS-1:0]   mprd1, mprd2;
+      reg                  mb, m2, mrdv1, mrdvb, mrdv2;
+      reg [ROB_IDXB-1:0]   mrob1, mrobb, mrob2;
+      reg [RN_PBITS-1:0]   mprd1, mprdb, mprd2;
       wire                 mpre;
       wire [63:0]          mres;
-      initial begin m1 = 1'b0; m2 = 1'b0; end
-      mul3 u_mul
+      initial begin m1 = 1'b0; mb = 1'b0; m2 = 1'b0; end
+      mul3 #(.PB(2)) u_mul
         (.clk(clk), .reset(reset), .start(m_go), .abort(redirect),
          .rs1(rs1), .rs2(rs2), .f3(q_insn[14:12]), .is_w(q_insn[6:2] == 5'b01110),
          .busy(), .done(), .result(), .pre_done(mpre), .pre_result(mres));
       always @(posedge clk) begin
          m1 <= ~reset & ~redirect & m_go & ~dead(rob);
-         m2 <= ~reset & ~redirect & m1 & ~dead(mrob1);
+         mb <= ~reset & ~redirect & m1 & ~dead(mrob1);
+         m2 <= ~reset & ~redirect & mb & ~dead(mrobb);
          mrob1 <= rob;    mprd1 <= q_prd;  mrdv1 <= q_rd_v;
-         mrob2 <= mrob1;  mprd2 <= mprd1;  mrdv2 <= mrdv1;
+         mrobb <= mrob1;  mprdb <= mprd1;  mrdvb <= mrdv1;
+         mrob2 <= mrobb;  mprd2 <= mprdb;  mrdv2 <= mrdvb;
       end
       wire m_wr = m2 & mrdv2;
       // ---- a divide: the lane reads its operands and hands them to the one MD stage, which the
@@ -1745,12 +1753,12 @@ module smolrv64_core
       assign hx_val_l[gl] = hx_val;
       always @(posedge clk) if (!reset & hx_go & hx_v & ~f_hx_take[gl])
          $fatal(1, "smolrv64_core: lane %0d hands the F stage an op (rob %0d) while its register holds rob %0d", gl, rob, hx_rob);
-      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (r_v & dead(r_rob)) | (v & dead(rob)) | (v2 & dead(rob2)) | (m1 & dead(mrob1)) | (m2 & dead(mrob2))
+      always @(posedge clk) if (!reset & fr_rel & ((stg_v & dead(stg_rob)) | (r_v & dead(r_rob)) | (v & dead(rob)) | (v2 & dead(rob2)) | (m1 & dead(mrob1)) | (mb & dead(mrobb)) | (m2 & dead(mrob2))
                                                     | (hx_v & dead(hx_rob))))
          $fatal(1, "smolrv64_core: the release finds a dead op in lane %0d", gl);
-      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | r_v | v | v2 | m1 | m2 | hx_v))
+      always @(posedge clk) if (!reset & kchk & (stg_v | (occ != 0) | r_v | v | v2 | m1 | mb | m2 | hx_v))
          $fatal(1, "smolrv64_core: the kill left a live op in lane %0d: stage %b scheduler %0d read %b execute %b%b mul %b%b handoff %b",
-                gl, stg_v, occ, r_v, v, v2, m1, m2, hx_v);
+                gl, stg_v, occ, r_v, v, v2, m1, m2 | mb, hx_v);
       always @(posedge clk) if (!reset) begin
          if (m2 & v2)   $fatal(1, "smolrv64_core: lane %0d has an op in E2 in its multiply's reserved slot", gl);
          if (m2 & ~mpre) $fatal(1, "smolrv64_core: lane %0d's multiply is not at mul3's stage B in its slot", gl);
@@ -1831,7 +1839,7 @@ module smolrv64_core
       end
       assign l_v[gl] = v;          assign l_iss[gl] = iss;      assign l_late[gl] = late;
       assign l_v2[gl] = v2;        assign l_iss2[gl] = iss2;    assign l_late2[gl] = late2;   assign l_rob2[gl] = rob2;
-      assign l_m1[gl] = m1;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
+      assign l_m1[gl] = mb;        assign l_m2[gl] = m2;        assign l_mrob2[gl] = mrob2;
       assign l_mres[gl] = mres;    assign l_rob[gl] = rob;      assign l_ps1[gl] = ps1;
       assign l_ps2[gl] = ps2;      assign l_we[gl] = we;        assign l_wa[gl] = wa;
       assign l_wb[gl] = wb;        assign l_qv[gl] = qv;        assign l_qprd[gl] = qprd;
@@ -4507,7 +4515,7 @@ module smolrv64_core
    wire [LBB:0]  lb_n_n [0:NL-1];
    // the SYSQ's fire, a cycle ahead (see sy_fire_q): at the head next cycle and past its first
    // (second) cycle there, and lane A's slot free next cycle -- E1's op not reaching E2 to write, no
-   // multiply in E1 (one about to be killed counts: the fire waits a cycle), the landing buffer empty
+   // multiply a cycle from its slot (l_m1: mb; one about to be killed counts: the fire waits a cycle), the landing buffer empty
    wire sy_slot_n = ~(l_v[0] & ~l_late[0]) & ~l_m1[0] & (lb_n_n[0] == {(LBB+1){1'b0}});
    always @(posedge clk) begin
       sy_slot_q <= ~reset & ~redirect & sy_slot_n;
