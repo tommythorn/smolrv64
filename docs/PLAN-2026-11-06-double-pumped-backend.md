@@ -434,6 +434,15 @@ the block RAMs' output registers (read latency 2: a load answers a cycle later).
 The clean walk reads the state through the lookup's port, so it starts only with the lookup empty
 and taking nothing.
 
+**THE STORE LOOKUP TAKES TWO CYCLES TOO** (`sb_pa -> way[].da`, `-> arr[].u_a`: its compare drove the
+arrays' byte enables and the dirty bit's write). SB1 reads the valid bits and its tag copy and
+compares (and takes the MSHR filling its line); SB2 resolves from those registers and writes. The
+entry behind the head issues while the head is in either stage, so stores still go one per 6 ns.
+The main lookup's decision in SB1's set (but a load that hits) or an install there changes what SB1
+saw: SB2 then sends the store back to the queue. The D$ bench counts both new hazards (a store's
+view changed after SB1, a store's write folded into C1's dirty bits) and demands each occur; with
+either fix removed it loses stores.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

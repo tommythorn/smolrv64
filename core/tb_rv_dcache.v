@@ -123,7 +123,7 @@ module tb;
    integer    hp [0:7], ho [0:7], hw;           // the last 8 accesses' page and offset: locality
    // coverage: every outcome the cache has occurs
    integer    c_hit, c_drop, c_merge, c_alloc, c_wait, c_sal, c_ro, c_blk, c_def, n_out;
-   integer    c_nc, c_cln, c_cdone, c_zero, c_sq1, c_sqbk, c_age, c_fpw, c_fpg, c_fpm, c_fpwt, c_w1, c_dvic;
+   integer    c_nc, c_cln, c_cdone, c_zero, c_sq1, c_sqbk, c_age, c_fpw, c_fpg, c_fpm, c_fpwt, c_w1, c_dvic, c_sbc, c_dfold;
    reg [1:0]  out_kind [0:NTAG-1];              // 0 a cached load, 1 a walk, 2 NC
    reg [63:0] expv, mask, pa;  integer t, p, off, sz, pick, best, w;
    // acceptance is decided at the edge, by the pre-edge handshake
@@ -206,7 +206,7 @@ module tb;
       fn_due = 0; fn_wait = 0; fn_final = 0; fn_done = 0; fn_t = 0;
       n_ncst = 0; n_cln = 0; n_fl = 0; n_z = 0; n_dma = 0; n_oxf = 0; n_fence = 0; n_walk = 0; n_ncld = 0;
       c_nc = 0; c_cln = 0; c_cdone = 0; c_zero = 0; c_sq1 = 0; c_sqbk = 0; c_age = 0;
-      c_fpw = 0; c_fpg = 0; c_fpm = 0; c_fpwt = 0; c_w1 = 0; c_dvic = 0;
+      c_fpw = 0; c_fpg = 0; c_fpm = 0; c_fpwt = 0; c_w1 = 0; c_dvic = 0; c_sbc = 0; c_dfold = 0;
       cr_valid = 0; cr_last = 0; cr_slot = 0; cr_beat = 0; cr_data = 0; cw_valid = 0; cw_slot = 0;
       n_req = 0; n_resp = 0; n_st = 0; n_remap = 0; n_miss = 0; n_access = 0; errors = 0; n_rd = 0; n_wr = 0;
       for (k = 0; k < 8; k = k + 1) begin hp[k] = 0; ho[k] = 0; end
@@ -252,6 +252,10 @@ module tb;
          c_age = c_age + ((dut.m_alloc & dut.vic_age) | dut.age_hit);
          c_fpw = c_fpw + dut.fp_wr;  c_fpg = c_fpg + dut.fp_mg;  c_fpm = c_fpm + dut.fp_miss;  c_fpwt = c_fpwt + (dut.sb_hd & dut.bhit & dut.sb_wait);
          c_w1 = c_w1 + dut.blk_w1;  c_dvic = c_dvic + (dut.m_alloc & dut.vic_dty);
+         // the two-cycle lookups: the store lookup's SB1 view changed by SB2, and its write folded
+         // into the dirty bits the main lookup's C1 read
+         c_sbc = c_sbc + (dut.sb_hd & dut.sb_chg);
+         c_dfold = c_dfold + (dut.fp_wr & dut.s1_v & (dut.sb_set == dut.s1_set));
          c_icw = c_icw + (dut.m_clean & dut.cp_dty & dut.sf_ox[dut.sq_hp]);   // an I$ clean found the line dirty
          // ---- the load taken at the last edge; a fast one is in its compare now, where it may be cancelled
          if (took) begin out_v[took_tag] = 1'b1; out_t[took_tag] = now; n_req = n_req + 1; end
@@ -446,13 +450,13 @@ module tb;
       if (c_hit == 0 || c_drop == 0 || c_merge == 0 || c_alloc == 0 || c_wait == 0 ||
           c_sal == 0 || c_ro == 0 || c_blk == 0 || c_def == 0 || n_wr == 0 ||
           c_nc == 0 || c_cln == 0 || c_cdone == 0 || c_zero == 0 || n_dma == 0 || n_walk == 0 || n_ncld == 0 || n_ncst == 0 ||
-          c_age == 0 || n_icl == 0 || n_oxf == 0 || c_icw == 0 || c_fpw == 0 || c_fpg == 0 || c_fpm == 0 || c_fpwt == 0 || c_dvic == 0 ||
+          c_age == 0 || n_icl == 0 || n_oxf == 0 || c_icw == 0 || c_fpw == 0 || c_fpg == 0 || c_fpm == 0 || c_fpwt == 0 || c_dvic == 0 || c_sbc == 0 || c_dfold == 0 ||
           n_fast == 0 || n_fcan == 0) begin
          $display("FAIL: an outcome never occurred"); errors = errors + 1;
       end
-      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d hits, %0d drop, %0d merge, %0d alloc (%0d dirty victims), %0d wait (%0d behind the store), %0d defer (%0d a row written as read); store lookup %0d written, %0d merged, %0d missed, %0d waited; main-lookup stores %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps; store queue %0d issued behind the head, %0d sent back; %0d ageings; %0d outside cleans (%0d found dirty), %0d outside flushes; %0d fast loads, %0d cancelled",
+      $display("DCACHE-TB %s seed=%0d %s: %0d loads (%0d walks, %0d NC), %0d stores, %0d NC stores, CBOs %0d clean %0d flush (%0d DMA) %0d zero, %0d cleans; %0d requests: %0d hits, %0d drop, %0d merge, %0d alloc (%0d dirty victims), %0d wait (%0d behind the store), %0d defer (%0d a row written as read); store lookup %0d written, %0d merged, %0d missed, %0d waited, %0d changed after SB1, %0d folded into C1; main-lookup stores %0d allocated; %0d read-outs, %0d reads, %0d writes; %0d remaps; store queue %0d issued behind the head, %0d sent back; %0d ageings; %0d outside cleans (%0d found dirty), %0d outside flushes; %0d fast loads, %0d cancelled",
                errors ? "FAIL" : "PASS", seed, reorder ? "reorder" : "in-order", n_resp, n_walk, n_ncld, n_st, n_ncst, n_cln, n_fl, n_dma, n_z, n_fence, n_access,
-               c_hit, c_drop, c_merge, c_alloc, c_dvic, c_wait, c_blk, c_def, c_w1, c_fpw, c_fpg, c_fpm, c_fpwt, c_sal, c_ro, n_rd, n_wr, n_remap, c_sq1, c_sqbk, c_age, n_icl, c_icw, n_oxf, n_fast, n_fcan);
+               c_hit, c_drop, c_merge, c_alloc, c_dvic, c_wait, c_blk, c_def, c_w1, c_fpw, c_fpg, c_fpm, c_fpwt, c_sbc, c_dfold, c_sal, c_ro, n_rd, n_wr, n_remap, c_sq1, c_sqbk, c_age, n_icl, c_icw, n_oxf, n_fast, n_fcan);
       $finish;
    end
 endmodule
