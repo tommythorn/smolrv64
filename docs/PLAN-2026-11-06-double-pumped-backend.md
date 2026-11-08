@@ -641,6 +641,13 @@ staged op's tags against every entry's for the dependency rows: stg_ps is replic
 hold's weak-branch bits are set a cycle after dispatch from registers too (`fe/d_valid -> wk_e`,
 `redirect_q -> wk_e`, 4 levels over 256 bits): no weak conditional resolves the cycle after it
 dispatches (the resolution's check).
+
+**THE PAGE-CROSSING AND AMO-ALIGNMENT CHECKS ARE REGISTERED** (m2m: `m_addr -> u_sq/fc`, `-> unc`,
+`-> flt`, `-> addr_lv`, 12 levels: the 13-bit add and compare on M's address in front of the fill's
+fault fields and M's own access's start). Every user is a second cycle at the same address (the
+translate pass's `xp`, M's own access's `xl_fp`), so both take the cycle before's value; a
+misaligned AMO's fault comes in that second cycle, and the start excludes it there. Lockstep:
+1e7af192 (the fault pick reverted) retires 184.3 M, clean past the 19.5 M failure.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

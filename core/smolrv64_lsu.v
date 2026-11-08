@@ -467,19 +467,24 @@ module smolrv64_lsu
    // M's own accesses (AMO, LR/SC, CBO) fault here. A translate-only pass never does: what the
    // address alone decides (a page crossing, non-canonical, beyond the top under Bare) rides in
    // its entry like the walker's page fault, and traps from it at the ROB head
-   wire mis_flt = xl_f & (xpage | amo_mis);
+   // ...both as the cycle before left them: every user is a second cycle at the same address (the
+   // translate-only pass's xp, M's own access's xl_fp), so the adder and compares stay out of the
+   // fill's fault fields and the start
+   reg  xpage_q = 1'b0, amo_mis_q = 1'b0;
+   always @(posedge clk) begin xpage_q <= xpage;  amo_mis_q <= amo_mis; end
+   wire mis_flt = xl_fp & (xpage_q | amo_mis_q);
    wire xl_flt  = xl_fp & t_ready_q & t_fault_q;
 
    assign fault       = req_valid & (mis_flt | xl_flt);
    assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(t_cause_q) : t_cause_q;
    assign fault_tval  = req_vaddr;
-   assign xo_flt      = xl_x2 & (xpage | s_flt_q);
-   assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause_q) : s_cause_q;
+   assign xo_flt      = xl_x2 & (xpage_q | s_flt_q);
+   assign xo_fc       = xpage_q ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause_q) : s_cause_q;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
-   wire xl_ok_f  = xl_fp & t_ready_q & ~t_fault_q & ~xpage & ~pt_start & (req_store | port_free);
+   wire xl_ok_f  = xl_fp & t_ready_q & ~t_fault_q & ~xpage_q & ~amo_mis_q & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
-   wire xo_ok    = xl_x2 & s_ok_q & ~xpage;
+   wire xo_ok    = xl_x2 & s_ok_q & ~xpage_q;
    // ...or hands its VA over untranslated (the TLB does not hold it, or its perms failed, which
    // only a fresh walk may turn into a fault) and does not wait for the walk, or hands over its
    // address-only fault. M lets go every way: the pass always completes, and the TLB is in the
