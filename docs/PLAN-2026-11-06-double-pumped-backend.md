@@ -514,6 +514,11 @@ store port's take and the LSU's live store data (`u_lsu/rfast_q -> u_dcache/wd_e
 and the head's completion (`bhitv -> wd_e`). The data SB2 writes is its own slot's, so the
 register now reads `sf_wd` at SB1's slot (asserted equal to the head's data whenever it writes).
 
+**A SYSTEM OP'S SOURCE CARRIES ITS ZERO TEST** (m2i: `sy_src -> u_rob/v`, `-> u_rename/rnewer`,
+`-> u_rob/head`, 16-19 levels: `csr_writes` tested the 64-bit source for zero, and that ran
+through the read-only-CSR illegal check, the op's own trap and the ROB's commit kill). The SYSQ
+takes `sy_src_nz` with `sy_src`; csr_file reads it as `upd_src_nz` (asserted equal to the value's).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

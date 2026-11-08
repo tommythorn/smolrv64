@@ -2767,6 +2767,7 @@ module smolrv64_core
    reg [2:0]          sy_func;
    reg [11:0]         sy_addr;
    reg [63:0]         sy_src;
+   reg                sy_src_nz;   // sy_src != 0, taken with it
    reg [PCW-1:0]      sy_pc;
    reg [SEQW-1:0]     sy_seq;
    reg [31:0]         sy_insn;   // for the cosim's trap record
@@ -2865,6 +2866,7 @@ module smolrv64_core
          sy_is_csr <= ya_is_csr; sy_func <= ya_csr_func; sy_addr <= ya_imm[11:0];
          sy_instret <= ya_is_csr & ((ya_imm[11:0] == 12'hC02) | (ya_imm[11:0] == 12'hB02));
          sy_src <= ya_csr_func[2] ? {59'b0, ya_imm[16:12]} : l_xs1[0];
+         sy_src_nz <= ya_csr_func[2] ? (ya_imm[16:12] != 5'd0) : (l_xs1[0] != 64'd0);
          sy_pc <= ya_pc; sy_seq <= ya_seq; sy_insn <= ya_insn;
          sy_xt <= ya_trap;  sy_rp <= 1'b0;
          sy_fn <= ~ya_trap & (ya_insn[6:2] == 5'b00011);
@@ -2875,7 +2877,7 @@ module smolrv64_core
       end
       if (qf_in) begin
          sy_v <= 1'b1;  sy_rob <= qfr_rob;  sy_prd <= {RN_PBITS{1'b0}};  sy_rd_v <= 1'b0;
-         sy_is_csr <= 1'b0;  sy_func <= 3'd0;  sy_addr <= 12'd0;  sy_src <= 64'd0;  sy_insn <= 32'd0;
+         sy_is_csr <= 1'b0;  sy_func <= 3'd0;  sy_addr <= 12'd0;  sy_src <= 64'd0;  sy_src_nz <= 1'b0;  sy_insn <= 32'd0;
          sy_instret <= 1'b0;
          sy_pc  <= {{(PCW-39){qfr_pc[38]}}, qfr_pc};
          sy_seq <= qfr_seq;
@@ -3694,7 +3696,7 @@ module smolrv64_core
       // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
       .upd_valid(sy_fire & ~sy_xt & ~sy_fn & ~sy_rp), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
       .upd_addr(sy_addr),
-      .upd_src(sy_src),
+      .upd_src(sy_src), .upd_src_nz(sy_src_nz),
       .upd_pc(sy_pc));
 
    // ---- NON-BLOCKING LOADS ------------------------------------------------------------

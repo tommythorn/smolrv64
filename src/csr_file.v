@@ -103,6 +103,7 @@ module csr_file
     input  wire [2:0]  upd_func,     // CSR funct3 (csrrw/s/c + imm forms)
     input  wire [11:0] upd_addr,     // CSR addr (is_csr) OR system-op selector (imm[11:0])
     input  wire [63:0] upd_src,      // rs1 value or zimm
+    input  wire        upd_src_nz,   // ...is not zero (the caller's register, taken with it)
     input  wire [39:0] upd_pc);      // the system op's PC, 40-bit form
 
    localparam [1:0] M=2'd3, S=2'd1, U=2'd0;
@@ -607,7 +608,11 @@ module csr_file
    // illegal CSR access: writing a read-only CSR (addr[11:10]==11 & the op writes),
    // accessing a CSR that needs higher privilege than current (addr[9:8] > priv), or a
    // satp access while priv==S & TVM.
-   wire csr_writes  = upd_is_csr & ((upd_func[1:0]==2'b01) | (upd_src != 64'd0));
+   // a write: csrrw, or a set/clear with a nonzero source -- its zero test the caller's register,
+   // so the 64-bit compare stays out of the illegal check and the op's own trap
+   wire csr_writes  = upd_is_csr & ((upd_func[1:0]==2'b01) | upd_src_nz);
+   always @(posedge clk) if (!reset && upd_valid && (upd_src_nz != (upd_src != 64'd0)))
+      $fatal(1, "csr_file: the source's nonzero flag %b disagrees with its value %h", upd_src_nz, upd_src);
    wire csr_ro      = (upd_addr[11:10]==2'b11) & csr_writes;
    wire csr_nopriv  = upd_is_csr & (priv < upd_addr[9:8]);
    wire satp_tvm    = upd_is_csr & (upd_addr == SATP) & (priv == S) & tvm;
