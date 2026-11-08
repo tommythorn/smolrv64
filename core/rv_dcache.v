@@ -321,7 +321,7 @@ module rv_dcache #(
    // lookup's -- taken a cycle ahead: as the beat is, and from SB1
    (* max_fanout = 8 *)  reg [WAYS-1:0] fb_aw;
    (* max_fanout = 16 *) reg [8:0]      wa_e, wa_o;
-   (* max_fanout = 16 *) reg [63:0]     wd_e, wd_o;    // ...and its data: the beat's chunks, else the head's
+   (* max_fanout = 16 *) reg [63:0]     wd_e, wd_o;    // ...and its data: the beat's chunks, else SB1's store's
 
    // ---------------------------------------------------------------- the NC slot: one access at a time
    localparam [SW-1:0] NMS = NMSHR;              // the first write-back slot
@@ -767,6 +767,8 @@ module rv_dcache #(
    wire [5:0] vu_wa = scan_on ? scan : fl_v ? fl_set : s1_set;
    always @(posedge clk) if (!reset && c2_v && ((ms_free_v != c1_free_v) || (ms_free_v && (ms_free != c1_free))))
       $fatal(1, "rv_dcache: the free MSHR changed between C1 and C2 (%b %0d -> %b %0d)", ms_free_v, ms_free, c1_free_v, c1_free);
+   always @(posedge clk) if (!reset && fp_wr && ((wd_e != st_wd) || (wd_o != st_wd)))
+      $fatal(1, "rv_dcache: the store lookup writes %h/%h, not the head's data %h", wd_e, wd_o, st_wd);
    always @(posedge clk) if (!reset && rp_v && !(wt_v[rp_t] && wt_rdy[rp_t]))
       $fatal(1, "rv_dcache: a replay of waiter %0d, which is not waiting and ready", rp_t);
    always @(posedge clk) if (!reset && (s1_v || c2_v) && (fl_v || scan_on || cl_on))
@@ -943,8 +945,8 @@ module rv_dcache #(
                         | ({{(WAYS-1){1'b0}}, 1'b1} << arr_of(ms_way[cr_m], {cr_beat, 1'b1}))) : {WAYS{1'b0}};
          wa_e <= cr_f ? {ms_set[cr_m], cr_beat,  ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
          wa_o <= cr_f ? {ms_set[cr_m], cr_beat, ~ms_way[cr_m][0]} : {sa_set, sa_pa[5:3]};
-         wd_e <= cr_f ? (ms_way[cr_m][0] ? cr_hi : cr_lo) : st_wd_n;
-         wd_o <= cr_f ? (ms_way[cr_m][0] ? cr_lo : cr_hi) : st_wd_n;
+         wd_e <= cr_f ? (ms_way[cr_m][0] ? cr_hi : cr_lo) : sf_wd[sa_slot];   // SB2 writes only its own slot (the head)
+         wd_o <= cr_f ? (ms_way[cr_m][0] ? cr_lo : cr_hi) : sf_wd[sa_slot];
          if (cr_f) begin
             fb_way <= ms_way[cr_m];  fb_set <= ms_set[cr_m];  fb_beat <= cr_beat;
             ms_bt[cr_m] <= cr_beat + 1'b1;  ms_bl[cr_m] <= 1'b1;

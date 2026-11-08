@@ -508,6 +508,12 @@ other cycle; an address arriving with none waiting still goes straight in from i
 -1.88: four writers' tail-relative decode over every ROB entry's flops). The writes are registered
 and land a cycle later; no op commits the cycle after its dispatch (asserted).
 
+**m2i's build (5366ac84): -1.841 ns, 49.0 K failing endpoints** (m2h -2.003, 53.5 K). Its new D$
+family was the registered write data's own source: the head's next data (`st_wd_n`) carries the
+store port's take and the LSU's live store data (`u_lsu/rfast_q -> u_dcache/wd_e`, 13-15 levels)
+and the head's completion (`bhitv -> wd_e`). The data SB2 writes is its own slot's, so the
+register now reads `sf_wd` at SB1's slot (asserted equal to the head's data whenever it writes).
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
