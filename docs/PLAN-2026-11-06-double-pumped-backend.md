@@ -416,6 +416,24 @@ MSHR's set, way, tag and merge-dirty bit muxed by `fl_m` into every way's tag an
 are registers now, taken from the MSHR as its last beat lands (stable from the first beat: a store
 to the line waits for the install), the way one-hot, replicated.
 
+**THE D$ LOOKUP TAKES TWO CYCLES** (m2g, b27b2fa8: -2.108 ns, 51.3 K endpoints, the D$'s compare
+leading: `s1_pa -> way[].va/da/ua`, `-> rd_data`, `-> arr[].u_a`, `ms_way -> way[].va`). C1 reads
+the set's state and compares (the tags, the MSHRs', the write-back buffer's, the victim); C2 decides
+from those registers and writes. A request issues only while C1 is empty, so C1 and C2 never both
+hold one: one lookup per 6 ns, the rate the 6 ns cache had. The request's fields stand through
+both, so C2 reads the set's tags (the victim's write-back) and the arrays' answer arrives in C2 from
+the block RAMs' output registers (read latency 2: a load answers a cycle later). Between C1 and C2:
+
+- the store lookup may write a dirty bit in C1's set; C2's copy of the dirty bits takes it, and the
+  store lookup waits only for C2 (a load that hits excepted, as before);
+- a write-back or the queue's head may free what C1 saw busy; C2's wait counts C1's freeing;
+- an outside flush may block a line; C2 compares the block itself;
+- a line installs only with C1 and C2 empty: the install comes a cycle after the last beat's write
+  (`fl_p`) and the lookup yields in both.
+
+The clean walk reads the state through the lookup's port, so it starts only with the lookup empty
+and taking nothing.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

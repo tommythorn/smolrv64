@@ -3,7 +3,8 @@
 // over a whole-word write: a store writes its bytes without reading the word first.
 module smolrv64_sdpram_be #(
    parameter ADDR_WIDTH = 9,
-   parameter NBYTES     = 8
+   parameter NBYTES     = 8,
+   parameter LAT        = 1                 // read latency: 2 adds the block RAM's output register
 ) (
    input  wire                    clock,
    input  wire [ADDR_WIDTH-1:0]   rd_addr,
@@ -13,6 +14,7 @@ module smolrv64_sdpram_be #(
    input  wire [8*NBYTES-1:0]     wr_data
 );
    localparam W = 8 * NBYTES;
+   initial if (LAT < 1 || LAT > 2) $fatal(1, "smolrv64_sdpram_be %m: read latency %0d is not 1 or 2", LAT);
    initial if (W > 72) $fatal(1, "smolrv64_sdpram_be %m: %0d bits is wider than one RAMB36 word", W);
 `ifdef SYNTHESIS
    xpm_memory_sdpram #(
@@ -30,7 +32,7 @@ module smolrv64_sdpram_be #(
       .MEMORY_SIZE         ( W * (1 << ADDR_WIDTH) ),
       .MESSAGE_CONTROL     ( 0 ),
       .READ_DATA_WIDTH_B   ( W ),
-      .READ_LATENCY_B      ( 1 ),
+      .READ_LATENCY_B      ( LAT ),
       .READ_RESET_VALUE_B  ( "0" ),
       .RST_MODE_A          ( "SYNC" ),
       .RST_MODE_B          ( "SYNC" ),
@@ -60,11 +62,12 @@ module smolrv64_sdpram_be #(
    );
 `else
    (* ram_style = "block" *) reg [W-1:0] ram [0:(1 << ADDR_WIDTH)-1];
-   reg [W-1:0] rd_q = 0;
+   reg [W-1:0] rd_q = 0, rd_q2 = 0;
    integer i, b;
    initial for (i = 0; i < (1 << ADDR_WIDTH); i = i + 1) ram[i] = 0;
-   assign rd_data = rd_q;
+   assign rd_data = (LAT == 2) ? rd_q2 : rd_q;
    always @(posedge clock) begin
+      rd_q2 <= rd_q;
       // A collision reads X, as the block RAM's does (smolrv64_sdpram explains why the model must
       // not be kinder than the hardware): the write lands, the read of that word does not.
       if ((|wr_be) && (rd_addr == wr_addr)) rd_q <= {W{1'bx}};

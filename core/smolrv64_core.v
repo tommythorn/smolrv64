@@ -129,7 +129,7 @@ module smolrv64_core
     output wire [LQ_IB-1:0]        dmem_ftag,       // ...its tag: the load-queue index
     output wire                    dmem_fhint,      // registered: M holds a plain load (the D$'s priority)
     output wire                    dmem_fcancel,    // the load presented last cycle is void: an older store blocks it
-    input  wire                    dmem_fans,       // registered: this cycle's answer is the load M presented two cycles ago
+    input  wire                    dmem_fans,       // registered: this cycle's answer is the load M presented three cycles ago
     input  wire                    dmem_fok,        // the D$ takes a load presented this cycle (registers only)
     output wire                    dmem_wen,
     output wire                    dmem_wfsm,    // the LSU's state machine writes: the device address is the write's
