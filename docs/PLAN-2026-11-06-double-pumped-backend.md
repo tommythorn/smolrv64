@@ -485,6 +485,14 @@ SoC's held read data into the AMO's add or compare and on into the D$'s store qu
 an AMO writes is computed at its read (S_ARD, where its old value is already taken) and written
 from that register in S_AWR.
 
+**M'S TRAP REACHES ONLY WHAT IT WRITES** (m2h: `u_lsu/fw_n -> redirect_target_q`, 16 levels, -1.94,
+and `-> u_csr/mhpmevent` CE: M's trap decision, which waits on a landing's port yield, ran through
+the CSR file's trap cause, delegation and target adder, and gated every CSR's write enable). An
+injected trap's target is computed from its own cause (an exception to stvec when delegated from
+below M, else mtvec; asserted equal to the general target), so the decision only selects it. A
+CSR write yields only to its own op's trap: an injected trap never meets a system op's update
+(asserted), so the CSRs a trap does not write lose it from their enables.
+
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

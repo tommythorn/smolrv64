@@ -685,6 +685,12 @@ module csr_file
    wire        sysop_exc  = upd_valid & exc_active;
    wire        trap_is_intr = irq_take | (xtrap_v & xtrap_intr);
    wire        trap_v     = sysop_exc | irq_take | xtrap_v;
+   // A CSR WRITE YIELDS ONLY TO ITS OWN OP'S TRAP (op_trap): an injected trap (xtrap_v, M's fault or
+   // the SYSQ's dispatch trap) never meets a system op's update (asserted), so it stays out of every
+   // CSR a trap does not write.
+   wire        op_trap    = sysop_exc | irq_take;
+   always @(posedge clk) if (!reset && upd_valid && xtrap_v)
+      $fatal(1, "csr_file: a system op's update and an injected trap at once (pc %h)", upd_pc);
    wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, (irq_take ? irq_cause : xtrap_cause)})
                           : xtrap_v      ? {60'd0, xtrap_cause} : exc_cause;  // mcause MSB on intr
    wire [39:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;   // irq_take -> upd_pc (interrupted PC)
@@ -767,8 +773,14 @@ module csr_file
    wire [39:0] tvec_base = trap_to_s ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
    wire        tvec_vec  = trap_is_intr & (trap_to_s ? stvec[0] : mtvec[0]);
    wire [39:0] trap_tgt  = tvec_vec ? (tvec_base + {32'd0, trap_cause[5:0], 2'b00}) : tvec_base;
+   // AN INJECTED TRAP'S TARGET FROM ITS OWN CAUSE, not through trap_v: an exception (never vectored)
+   // to stvec when delegated from below M, else mtvec. xtrap_v only selects it.
+   wire        x_to_s    = (priv != M) & medeleg[xtrap_cause];
+   wire [39:0] x_tgt     = x_to_s ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
+   always @(posedge clk) if (!reset && xtrap_v && (x_tgt != trap_tgt))
+      $fatal(1, "csr_file: the injected trap's target %h is not the trap's %h", x_tgt, trap_tgt);
    always @* begin
-      if (xtrap_v)              redir_target = trap_tgt;
+      if (xtrap_v)              redir_target = x_tgt;
       else if (do_mret)         redir_target = mepc;
       else if (do_sret)         redir_target = sepc;
       else if (do_sfence)       redir_target = upd_pc + 40'd4;
@@ -785,7 +797,7 @@ module csr_file
    // A counter-CSR write is an op that writes (a csrr of mhpmeventN rewrites nothing, so it
    // cannot swallow that cycle's increment or overflow). A counter runs unless mcountinhibit or
    // its event's *INH bit for the current privilege stops it; it wraps when the add carries out.
-   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal;
+   wire hpm_csr_we = upd_valid & upd_is_csr & csr_writes & ~op_trap & ~csr_illegal;
    wire [HPMN-1:0] hpm_wev, hpm_wct, hpm_run, hpm_wrap;
    wire [63:0]     hpm_nxt [0:HPMN-1];
    // A COUNTER WRITE LOADS A CYCLE LATE. A counter's next value is its adder's sum, and a CSR
@@ -798,8 +810,8 @@ module csr_file
    reg  [HPMN-1:0] cw_hpm;
    reg  [63:0]     cw_d;
    always @(posedge clk) begin
-      cw_mcycle   <= ~reset & upd_valid & upd_is_csr & csr_writes & ~trap_v & (upd_addr == MCYCLE);
-      cw_minstret <= ~reset & upd_valid & upd_is_csr & csr_writes & ~trap_v & (upd_addr == MINSTRET);
+      cw_mcycle   <= ~reset & upd_valid & upd_is_csr & csr_writes & ~op_trap & (upd_addr == MCYCLE);
+      cw_minstret <= ~reset & upd_valid & upd_is_csr & csr_writes & ~op_trap & (upd_addr == MINSTRET);
       cw_hpm      <= reset ? {HPMN{1'b0}} : hpm_wct;
       cw_d        <= newv;
    end
@@ -849,7 +861,7 @@ module csr_file
                      : (upd_valid & ~upd_is_csr & is_mret) ? mstatus[12:11]
                      : (upd_valid & ~upd_is_csr & is_sret) ? {1'b0, mstatus[SPP_B]} : priv;
    wire [3:0] satp_mode_d = reset ? 4'd0
-                          : (~trap_v & upd_valid & upd_is_csr & (upd_addr == SATP)) ? newv[63:60] : satp[63:60];
+                          : (~op_trap & upd_valid & upd_is_csr & (upd_addr == SATP)) ? newv[63:60] : satp[63:60];
    assign o_ifx_d = (priv_d != M) & (satp_mode_d == 4'd8);
    always @(posedge clk) priv <= priv_d;
    reg [3:0] satp_mode_q;
@@ -883,7 +895,8 @@ module csr_file
             mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
             mstatus[12:11]  <= priv;
          end
-      end else if (upd_valid) begin
+      end
+      if (!reset && upd_valid && !op_trap) begin
          if (upd_is_csr) begin
             case (upd_addr)
               MSTATUS:    mstatus <= (mstatus & ~MSTATUS_WMASK) | (newv & MSTATUS_WMASK);
@@ -957,7 +970,7 @@ module csr_file
       // (fp_dirty_commit) or an FP CSR write (fcsr/fflags/frm, itself commit-serialized).
       // Guarded to FP-enabled (FS != Off).
       if (!reset && (mstatus[14:13] != 2'b00) &&
-          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
+          (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~op_trap & ~csr_illegal
                               & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
          mstatus[14:13] <= 2'b11;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
@@ -984,7 +997,7 @@ module csr_file
          mcountinhibit <= 64'd0;
          for (i=0; i<HPMN; i=i+1) begin mhpmevent[i] <= 64'd0; mhpmcounter[i] <= 64'd0; end
       end else begin
-         if (upd_valid && upd_is_csr && !trap_v && !csr_illegal && upd_addr==MCOUNTINHIBIT)
+         if (upd_valid && upd_is_csr && !op_trap && !csr_illegal && upd_addr==MCOUNTINHIBIT)
             mcountinhibit <= newv & HPM_INHIBIT_MASK;
          for (i=0; i<HPMN; i=i+1) begin
             if (hpm_wev[i])
