@@ -228,6 +228,14 @@ module smolrv64_rob
             if (wq_v[q] && (wq_ix[q*IDXB +: IDXB] == ix)) wq_hits = 1'b1;
       end
    endfunction
+   reg  [DEPTH-1:0]   wq_hit;                  // the entries a registered completion names
+   integer            wqe, wqp;
+   always @* begin
+      wq_hit = {DEPTH{1'b0}};
+      for (wqp = 0; wqp < NW; wqp = wqp + 1)
+         for (wqe = 0; wqe < DEPTH; wqe = wqe + 1)
+            if (wq_v[wqp] && (six(wq_ix[wqp*IDXB +: IDXB]) == wqe[SB-1:0])) wq_hit[wqe] = 1'b1;
+   end
    wire head_done = v[hsx] & ((done[hsx] & ~c_hold) | h_fin);
    wire [RB-1:0] irow = irr[SB-1:CB];
    assign irr_idx = tag_of(irow, ifc, irr[CB-1:0]);
@@ -433,8 +441,9 @@ module smolrv64_rob
          for (ri = 0; ri < IW; ri = ri + 1)
             if (do_alloc[ri]) begin v[{trow, ri[CB-1:0]}] <= 1'b1;  done[{trow, ri[CB-1:0]}] <= 1'b0; end
          if (|do_alloc) begin tail <= tail + ROW1;  fc[trow] <= d_fc; end
-         for (ri = 0; ri < NW; ri = ri + 1)
-            if (wq_v[ri] & v[six(wq_ix[ri*IDXB +: IDXB])]) done[six(wq_ix[ri*IDXB +: IDXB])] <= 1'b1;
+         // (gated per entry, by its own valid: no read of v at a port's index)
+         for (rj = 0; rj < DEPTH; rj = rj + 1)
+            if (v[rj] & wq_hit[rj]) done[rj] <= 1'b1;
          for (ri = 0; ri < IW; ri = ri + 1)
             if (cvv[ri]) v[{hrow, col_of(hfc, ri[CB-1:0])}] <= 1'b0;
          head <= head_n;
