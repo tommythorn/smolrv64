@@ -608,10 +608,11 @@ start for an AMO, LR/SC or CBO). The lookup's answer is registered; `xl_fp` (M h
 cycle before too) makes it M's own, at the same address (asserted: two such accesses always have a
 cycle without a request between them, the latched completion withdrawing it). A cycle each.
 
-**THE LQ's FAULT REPORT IS PICKED A CYCLE AHEAD** (m2l: `u_lq/av -> qfr_pc`, 10 levels: the age pick
-of the oldest faulting entry and its PC read into the queue-fault record). `fi` is registered and
-reported while that entry still faults; the core takes a report only at the ROB head, so a stale
-pick waits a cycle.
+**THE LQ's FAULT REPORT STAYS A LIVE PICK** (m2l: `u_lq/av -> qfr_pc`, 10 levels). Registering the
+age pick (c4c507bf) broke the 0c1bd7c3 lockstep at 19.5 M retires ("a store committed in a
+redirect cycle"): the ROB's replay hold names the oldest flagged load from this report, registered,
+and covers only the one cycle a fresh flag is not yet named (rp_new_q); the queue-fault trap reads
+the same report at the head. Reverted; the family needs the hold and the trap reworked with it.
 
 **A CSR WRITE YIELDS ONLY TO ITS OWN OP'S EXCEPTION** (m2l: `u_csr/mip -> mie`, `-> scounteren`,
 `-> mnstatus`, 9-10 levels: the pending interrupts, through the interrupt op's take, in every CSR's

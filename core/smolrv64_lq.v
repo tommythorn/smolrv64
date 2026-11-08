@@ -425,12 +425,8 @@ module smolrv64_lq
    assign k_v   = |wlk_m;
    assign k_idx = oldest(wlk_m, om);
    assign k_va  = va[k_idx];
-   // ...picked a cycle ahead (fi, a register) and reported while it still faults: the core takes it
-   // only at the ROB head, so a stale pick is no harm -- the next cycle's is the oldest again
-   reg  [IDXB-1:0] fi;
-   initial fi = {IDXB{1'b0}};
-   always @(posedge clk) fi <= oldest(flt_m, om);
-   assign f_v   = flt_m[fi];
+   wire [IDXB-1:0] fi = oldest(flt_m, om);
+   assign f_v   = |flt_m;
    assign f_new = |(viol & v & ~rpl);
    assign f_idx = fi;
    assign f_rp  = rpl[fi];
