@@ -725,6 +725,12 @@ tail past -1 ns is 965 endpoints (m2g: 12.1 K). Lockstep: 19ccf540 retires 183.3
 branch is lockstep-clean. Its leaders are spread: the frontend's fetch FSM into the ring, the MMU's
 own walker, the lanes' E1 ALU (`ln[].rs1`, `ln[].pl -> u_x/u_alu`, 7-15 levels), M's trap behind the
 landing port's yield, the training queue's enqueue, the ROB walk into rename.
+
+**THE INTERRUPT OP DELIVERS WHAT WAS PENDING A CYCLE AGO** (m2s: `u_csr/mie -> u_rob/v`, 12 levels: the
+pending decision -- mie, mip, mstatus, priv -- through the interrupt op's as-if-fired trap into the
+commit kill). irq_v, its cause and its delegation are registered for the op's trap: a system op fires
+in its second head cycle at the earliest, so the last CSR write is a cycle older than the interrupt
+op's fire and the registered decision already holds it.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

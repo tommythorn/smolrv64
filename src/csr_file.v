@@ -606,7 +606,10 @@ module csr_file
    // enabled+pending when it executes (oldest); else it retires as a NOP -- so an
    // older op that disabled the interrupt before this point correctly suppresses it.
    wire is_irqop  = ~upd_is_csr & (upd_addr == OP_IRQ);
-   wire irq_take  = upd_valid & is_irqop & irq_v;
+   // (the interrupt op's registered decision: irq_v_q and the rest, assigned with irq_v below)
+   reg         irq_v_q = 1'b0, irq_to_s_q = 1'b0;
+   reg  [3:0]  irq_cause_q = 4'd0;
+   wire irq_take  = upd_valid & is_irqop & irq_v_q;
    // sfence.vma: SYSTEM funct3==0 with funct7==9 (imm[11:5]==7'h09); flush the TLBs
    wire is_sfence = ~upd_is_csr & (upd_addr[11:5] == 7'h09);
 
@@ -689,6 +692,11 @@ module csr_file
    wire [13:0] pend   = take_m ? pend_m : (take_s ? pend_s : 14'd0);
    wire        irq_to_s = take_s;
    assign      irq_v     = take_m | take_s;
+   // THE INTERRUPT OP DELIVERS WHAT WAS PENDING A CYCLE AGO (irq_*_q): a system op fires in its
+   // second cycle at the head at the earliest, so the last write to mie/mip/mstatus/priv is a cycle
+   // older than the interrupt op's fire and the registered decision already holds it. The pending
+   // decision's cone stays out of the op's trap, its target and the commit kill.
+   always @(posedge clk) begin irq_v_q <= ~reset & irq_v;  irq_to_s_q <= irq_to_s;  irq_cause_q <= irq_cause; end
    assign      irq_cause = pend[11] ? 4'd11 : pend[3] ? 4'd3 : pend[7] ? 4'd7
                          : pend[9]  ? 4'd9  : pend[1] ? 4'd1 : pend[5] ? 4'd5
                          : 4'd13;                                       // LCOFI(13) last
@@ -719,12 +727,12 @@ module csr_file
       $fatal(1, "csr_file: the interrupt pseudo-op decodes as a CSR op or an xret (pc %h)", upd_pc);
    always @(posedge clk) if (!reset && upd_valid && xtrap_v)
       $fatal(1, "csr_file: a system op's update and an injected trap at once (pc %h)", upd_pc);
-   wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, (irq_take ? irq_cause : xtrap_cause)})
+   wire [63:0] trap_cause = trap_is_intr ? ({1'b1, 63'd0} | {60'd0, (irq_take ? irq_cause_q : xtrap_cause)})
                           : xtrap_v      ? {60'd0, xtrap_cause} : exc_cause;  // mcause MSB on intr
    wire [39:0] trap_epc   = xtrap_v ? xtrap_epc : upd_pc;   // irq_take -> upd_pc (interrupted PC)
    wire [63:0] trap_tval  = xtrap_v ? xtrap_tval : (is_ebreak ? `VA_UNPACK40(upd_pc) : 64'd0);
    // delegation: interrupts use the precomputed irq_to_s (mideleg); exceptions use medeleg
-   wire        trap_to_s  = trap_is_intr ? irq_to_s
+   wire        trap_to_s  = trap_is_intr ? irq_to_s_q
                           : trap_v & (priv != M) & medeleg[trap_cause[5:0]];
    wire        do_mret    = upd_valid & is_mret & ~sysop_exc;
    wire        do_sret    = upd_valid & is_sret & ~sysop_exc;
@@ -798,7 +806,7 @@ module csr_file
    // outputs and the target with its own fire, last (smolrv64_core sy_red/sy_trap), so the fire's
    // cone (lane A's slot, the landing buffer) stays out of this file's decode. Asserted equal to the
    // gated terms whenever the op fires. External injections (xtrap_v) redirect via the target alone.
-   wire        irq_take_f = is_irqop & irq_v;
+   wire        irq_take_f = is_irqop & irq_v_q;
    wire        do_xret_f  = (is_mret | is_sret) & ~exc_active;
    wire        do_fall_f  = (is_sfence & ~exc_active) | do_fschg_f | do_dxchg_f | do_satp_f | do_ctxw_f;
    assign redir_valid   = exc_active | irq_take_f | do_xret_f | do_fall_f;
@@ -820,10 +828,10 @@ module csr_file
    always @(posedge clk) if (!reset && xtrap_v && (x_tgt != trap_tgt))
       $fatal(1, "csr_file: the injected trap's target %h is not the trap's %h", x_tgt, trap_tgt);
    // the op's own trap's target as if it fires: an interrupt's (vectored) or its exception's
-   wire        trap_to_s_f  = irq_take_f ? irq_to_s : (priv != M) & medeleg[exc_cause[5:0]];
+   wire        trap_to_s_f  = irq_take_f ? irq_to_s_q : (priv != M) & medeleg[exc_cause[5:0]];
    wire [39:0] tvec_base_f  = trap_to_s_f ? {stvec[39:2], 2'b0} : {mtvec[39:2], 2'b0};
    wire        tvec_vec_f   = irq_take_f & (trap_to_s_f ? stvec[0] : mtvec[0]);
-   wire [39:0] trap_tgt_f   = tvec_vec_f ? (tvec_base_f + {34'd0, irq_cause, 2'b00}) : tvec_base_f;
+   wire [39:0] trap_tgt_f   = tvec_vec_f ? (tvec_base_f + {34'd0, irq_cause_q, 2'b00}) : tvec_base_f;
    always @* begin
       if (xtrap_v)              redir_target = x_tgt;
       else if (is_mret)         redir_target = mepc;
