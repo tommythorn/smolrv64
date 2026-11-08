@@ -20,8 +20,10 @@
 // usefully, into "the memory system's invariants all held, look somewhere else".
 //
 // COST AND TIMING. Every err input is REGISTERED AT ITS SOURCE, so all this adds to an
-// existing path is one more flop load on nets that already drive flops; the OR-reduce and
-// the priority encode in here are flop-to-flop with a full cycle to do it in. That is the
+// existing path is one more flop load on nets that already drive flops. Here they are
+// registered again on arrival (err_q: the sources are all over the die), and the OR-reduce
+// and the priority encode are registered before the record (any_q, low_q), so each has a
+// cycle of its own; the record's stamp takes the two cycles back off. That is the
 // same discipline the cache's address-provenance check already follows, for the same
 // reason: a diagnostic that costs 0.8 ns on a design with 24 ps of margin is not a
 // diagnostic, it is a build failure.
@@ -41,8 +43,10 @@ module rv_errlog #(
    output reg  [CW-1:0]  first_cyc   // and the cycle it fired at
 );
    reg [CW-1:0] cyc;
-   wire         any   = |err;
-   wire         armed = ~(|sticky);          // the first fault has not been recorded yet
+   reg [N-1:0]  err_q;                       // err as it arrives
+   reg          any_q;                       // ...a cycle later: any of it, and its lowest index
+   reg [7:0]    low_q;
+   reg          rec;                         // the first fault has been recorded
 
    // Lowest set index. Simultaneous violations are one event -- sticky keeps all of them,
    // first_idx names the lowest, and the units are assigned to bit ranges (D$ low) so the
@@ -51,17 +55,22 @@ module rv_errlog #(
    reg [7:0] lowest;
    always @* begin
       lowest = 8'hff;
-      for (i = N-1; i >= 0; i = i - 1) if (err[i]) lowest = i[7:0];
+      for (i = N-1; i >= 0; i = i - 1) if (err_q[i]) lowest = i[7:0];
    end
 
-   initial begin cyc = {CW{1'b0}}; sticky = {N{1'b0}}; first_idx = 8'hff; first_cyc = {CW{1'b0}}; end
+   initial begin cyc = {CW{1'b0}}; sticky = {N{1'b0}}; first_idx = 8'hff; first_cyc = {CW{1'b0}};
+                 err_q = {N{1'b0}}; any_q = 1'b0; low_q = 8'hff; rec = 1'b0; end
    always @(posedge clk)
       if (reset) begin
          cyc <= {CW{1'b0}}; sticky <= {N{1'b0}}; first_idx <= 8'hff; first_cyc <= {CW{1'b0}};
+         err_q <= {N{1'b0}}; any_q <= 1'b0; low_q <= 8'hff; rec <= 1'b0;
       end else begin
          cyc    <= cyc + 1'b1;
-         sticky <= sticky | err;
-         if (any & armed) begin first_idx <= lowest; first_cyc <= cyc; end
+         err_q  <= err;
+         any_q  <= |err_q;  low_q <= lowest;
+         sticky <= sticky | err_q;
+         // err rose two edges ago, in the cycle cyc - 2 named
+         if (any_q & ~rec) begin rec <= 1'b1;  first_idx <= low_q;  first_cyc <= cyc - 2'd2; end
       end
 endmodule
 `default_nettype wire

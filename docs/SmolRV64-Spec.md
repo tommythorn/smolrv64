@@ -2246,7 +2246,9 @@ its conditions once (`e_*` wires read by both the `$fatal` and the log, so the m
 detector cannot drift), registers them (`err_q`, one flop per bit: nothing crosses a hierarchy
 boundary combinationally, nothing lands on a lookup path), and `rv_soc_top`'s single
 `rv_errlog` keeps a sticky bit per invariant plus the index and 48-bit cycle stamp of the first
-one to fire. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has none.
+one to fire. The log registers its inputs again on arrival and its reduce before the record, so a
+sticky bit rises two cycles after its source's flop; the stamp names the cycle the source's flop
+rose in. The I$'s parity array stays opt-in (`-DCACHE_PARITY`); the D$ has none.
 
 | bits | unit | source of the numbering |
 |---|---|---|

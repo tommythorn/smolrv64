@@ -770,6 +770,11 @@ the CSR file's trap write). M's only redirect is a data fault's trap. It writes 
 completes on no port (it never commits), so `m_trap_go = m_valid & xtrap_v & ~head_block` is three
 flops, and it feeds the CSR file, the commit kill and the redirect. `m_done` exempts a trapping op
 from the yield to match, and `m_done_red` is gone.
+
+**THE INTEGRITY LOG REGISTERS ITS INPUTS ON ARRIVAL** (m2s: `fe/fe_err_q -> u_errlog/first_cyc`, 48
+endpoints at -1.11 ns, 4 levels: a net across the die into the 64-input reduce and the record's
+enables). `err_q` takes the bits as they arrive, `any_q`/`low_q` the reduce and the priority encode,
+and the record stamps `cyc - 2`.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
