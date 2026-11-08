@@ -596,6 +596,17 @@ its next op's load). Only a plain load's or store's completion is live -- its tr
 register's (asserted equal to the LSU's done whenever M holds one). An access M starts (AMO, LR/SC,
 CBO) completes from the latch a cycle after the LSU's done, its request already withdrawn, and
 writes its register from the latched value, as a fault's pulse already worked.
+
+**m2l's build (459ee964): -1.672 ns, 42.2 K failing endpoints, TNS -19.1 K** (m2k -1.516, 42.5 K,
+-20.6 K: the WNS is the draw's -- instrumentation now leads it, the top-down leaves `tdr_*` and the
+event bus, 35 endpoints). Lockstep: 0b47eae3 retires 185.3 M (-0.6%: the state machine's stores
+wait out their base's cycle).
+
+**M's OWN ACCESS STARTS FROM THE REGISTERED WALKING LOOKUP** (m2l: `m_addr -> u_lsu/o_nb`,
+`-> o_boff`, `-> o_kill`, 17 levels: the dTLB's walking lookup in front of the state machine's
+start for an AMO, LR/SC or CBO). The lookup's answer is registered; `xl_fp` (M held the port the
+cycle before too) makes it M's own, at the same address (asserted: two such accesses always have a
+cycle without a request between them, the latched completion withdrawing it). A cycle each.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

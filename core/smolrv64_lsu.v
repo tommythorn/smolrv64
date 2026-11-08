@@ -431,6 +431,19 @@ module smolrv64_lsu
    always @(posedge clk) begin
       s_ok_q <= s_ok;  s_flt_q <= s_flt;  s_nc_q <= s_nc;  s_dram_q <= s_dram;  s_cause_q <= s_cause;  s_paddr_q <= s_paddr;
    end
+   // M's own access (an AMO, LR/SC, CBO) starts from the walking lookup as the cycle before left it:
+   // xl_fp says M held the port then too, at the same address, so the registered answer is its own
+   // -- the dTLB's read and compare stay out of the start (a cycle per such access)
+   reg            t_ready_q, t_fault_q, t_unc_q;
+   reg  [3:0]     t_cause_q;
+   reg  [PAW-1:0] t_paddr_q;
+   reg  [63:0]    t_va_q;
+   always @(posedge clk) begin
+      t_ready_q <= t_ready;  t_fault_q <= t_fault;  t_unc_q <= t_uncached;  t_cause_q <= t_cause;  t_paddr_q <= t_paddr;
+      t_va_q <= req_vaddr;
+      if (!reset && xl_fp && (req_vaddr != t_va_q))
+         $fatal(1, "smolrv64_lsu: M's access at %h starts from the lookup of %h", req_vaddr, t_va_q);
+   end
    assign wk_done = wk_v & wk_own & t_ready;
    assign wk_pa   = t_paddr;
    assign wk_unc  = t_uncached;
@@ -455,16 +468,16 @@ module smolrv64_lsu
    // address alone decides (a page crossing, non-canonical, beyond the top under Bare) rides in
    // its entry like the walker's page fault, and traps from it at the ROB head
    wire mis_flt = xl_f & (xpage | amo_mis);
-   wire xl_flt  = xl_fp & t_ready & t_fault;
+   wire xl_flt  = xl_fp & t_ready_q & t_fault_q;
 
    assign fault       = req_valid & (mis_flt | xl_flt);
-   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(t_cause) : t_cause;
+   assign fault_cause = mis_flt ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(t_cause_q) : t_cause_q;
    assign fault_tval  = req_vaddr;
    assign xo_flt      = xl_x2 & (xpage | s_flt_q);
    assign xo_fc       = xpage ? (wr_class ? 4'd6 : 4'd4) : cbo_mgmt ? cbo_fc(s_cause_q) : s_cause_q;
 
    // an FSM-starting access can start: translated cleanly this cycle, FSM idle, port free
-   wire xl_ok_f  = xl_fp & t_ready & ~t_fault & ~xpage & ~pt_start & (req_store | port_free);
+   wire xl_ok_f  = xl_fp & t_ready_q & ~t_fault_q & ~xpage & ~pt_start & (req_store | port_free);
    // the translate-only pass completes: translated cleanly this cycle, whatever the FSM does
    wire xo_ok    = xl_x2 & s_ok_q & ~xpage;
    // ...or hands its VA over untranslated (the TLB does not hold it, or its perms failed, which
@@ -659,8 +672,8 @@ module smolrv64_lsu
    // of any store it has queued.
    wire take_next = (st == S_ST) & st_fin & ~xword_q & src_pt & pt_v & pt_store & ~(mmu_walking & pm_q);   // src_pt: M's op (a CBO) is not a store to chain from
    // M's own FSM start (AMO, LR/SC, CBO) took its PA from the walker's port
-   assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr;
-   assign eff_unc = (pt_start | take_next) ? pt_unc : t_uncached;
+   assign eff_pa  = (pt_start | take_next) ? pt_pa  : t_paddr_q;
+   assign eff_unc = (pt_start | take_next) ? pt_unc : t_unc_q;
 
    // ---------------------------------------------- FAST PATH: a queued load, non-blocking (C4a)
    // A queued load that is cached, inside one word and to memory (DRAM or the local SRAM) needs
