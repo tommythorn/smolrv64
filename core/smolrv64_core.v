@@ -1491,7 +1491,7 @@ module smolrv64_core
       // ---- the dispatch stage: the slot's op, held until the scheduler takes it ----
       (* max_fanout = 16 *) reg stg_v;   // ...the payload LUTRAMs' write enable: replicated
       reg [ROB_IDXB-1:0]   stg_rob;
-      reg [3*RN_PBITS-1:0] stg_ps;
+      (* max_fanout = 16 *) reg [3*RN_PBITS-1:0] stg_ps;   // ...compared with every entry's (the dependency rows): replicated
       reg [1:0]            stg_r;
       reg [RN_PBITS-1:0]   stg_prd;
       reg [LPLW-1:0]       stg_pl;
@@ -4275,13 +4275,21 @@ module smolrv64_core
    reg  [ROB_DEPTH-1:0] wk_e;   initial wk_e = {ROB_DEPTH{1'b0}};
    reg  [ROB_DEPTH-1:0] wk_kd_q;
    reg                  wk_rel_q = 1'b0;
+   // ...and the dispatch's sets a cycle late too, from registers: no weak conditional resolves the
+   // cycle after it dispatches (the resolution's check below would see one with none counted)
+   reg  [IW-1:0]        wk_sv_q = {IW{1'b0}};
+   reg  [ROB_SIXB-1:0]  wk_sx_q [0:IW-1];
    integer wdk;
    always @(posedge clk) begin
       wk_rel_q <= ~reset & fr_rel;
       wk_kd_q  <= rob_kd;
+      for (wdk = 0; wdk < IW; wdk = wdk + 1) begin
+         wk_sv_q[wdk] <= ~reset & ~redirect & s_takev[wdk] & s_is_branch[wdk] & weak_cond(s_pdet[wdk]);
+         wk_sx_q[wdk] <= rsi(s_rob[wdk]);
+      end
       if (wk_rel_q) for (wdk = 0; wdk < ROB_DEPTH; wdk = wdk + 1) if (wk_kd_q[wdk]) wk_e[wdk] <= 1'b0;
       for (wdk = 0; wdk < IW; wdk = wdk + 1)
-         if (s_takev[wdk] & s_is_branch[wdk] & weak_cond(s_pdet[wdk])) wk_e[rsi(s_rob[wdk])] <= 1'b1;
+         if (wk_sv_q[wdk]) wk_e[wk_sx_q[wdk]] <= 1'b1;
       for (wdk = 0; wdk < NL; wdk = wdk + 1)
          if (lr_v[wdk] & lr_br[wdk] & weak_cond(lr_pdet[wdk])) wk_e[rsl(lr_rob[wdk], wdk)] <= 1'b0;
       if (reset | redirect) wk_e <= {ROB_DEPTH{1'b0}};

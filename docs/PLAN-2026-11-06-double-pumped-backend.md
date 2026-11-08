@@ -634,6 +634,13 @@ register file -- and the data read lands it a cycle or two on; no pick stands be
 could match a stale writeback, and delaying the SQ's allocation would hide a just-dispatched store
 from a younger load's alias test.) The directed bench's register-file model now takes the
 writebacks, as the core's does; its data-path checks wait for the read.
+
+**m2m's build (cbff8942): -1.413 ns, 42.6 K failing endpoints, TNS -21.4 K** -- the best yet. Lockstep:
+cbff8942 retires 184.3 M. Its leader, `ln[].stg_ps -> ln[].u_iq/dep` (970 endpoints, 3 levels), is the
+staged op's tags against every entry's for the dependency rows: stg_ps is replicated. The walk
+hold's weak-branch bits are set a cycle after dispatch from registers too (`fe/d_valid -> wk_e`,
+`redirect_q -> wk_e`, 4 levels over 256 bits): no weak conditional resolves the cycle after it
+dispatches (the resolution's check).
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
