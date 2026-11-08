@@ -654,6 +654,19 @@ misaligned AMO's fault comes in that second cycle, and the start excludes it the
 is a register: an entry ready and not taken stays ready (a committed entry's bits clear only once
 it is freed past its hand-off, and none is outstanding until the next take); asserted against the
 live condition. The directed bench's drain waits for the offer.
+
+**m2n's build (1e7af192): -1.675 ns, 45.0 K, TNS -23.0 K** (the draw's: m2m -1.413). The tail past
+-1 ns keeps shrinking (m2g 12.1 K, m2m 3.8 K, m2n 5.3 K) while about 33 K endpoints sit between 0 and
+-0.75 ns, a sixth of them in the shell (which closed at this clock before the core moved onto it).
+
+**THE D$ ARRAYS' READ ADDRESS IS A REGISTER** (m2n: `m_is_mem -> u_dcache/arr[].u_a`, `u_dcache/sq_hp
+-> arr`, 6-8 levels, -1.6: the issue's arbitration on the block RAMs' address pins). The issue's row
+is registered (`a_row_q`) and read at C1's edge; the arrays drop their output register (latency 1),
+so the chunks still arrive in C2. The read-out, which shares the read port, is decided in C2 and
+pends a cycle (`ro_p`, the lookup yielding to it too), so the lookup issued with the decision reads
+first. A store written at C1's edge to the load's line is queued in C1, so the load waits behind it
+(`sq_ln`): the row-written-as-read check (w1) is unreachable and now an assertion. Lockstep:
+6ea83abc 184.3 M, 30483569 184.1 M.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
