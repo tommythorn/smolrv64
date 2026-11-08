@@ -127,7 +127,7 @@ module smolrv64_iq
    reg  [IDXB-1:0] qhead, qtail;
    initial begin qhead = {IDXB{1'b0}}; qtail = {IDXB{1'b0}}; end
 
-   reg             fs_v = 1'b0;
+   (* max_fanout = 16 *) reg fs_v = 1'b0;   // ...the payload LUTRAMs' write enable: replicated
    (* max_fanout = 16 *) reg [IDXB-1:0] fs_ix = {IDXB{1'b0}};   // ...the payload LUTRAMs' write address: replicated
    wire            do_disp;
    wire [NENT-1:0] freem_n = freem & ~(do_disp ? ({{(NENT-1){1'b0}}, 1'b1} << fs_ix) : {NENT{1'b0}});

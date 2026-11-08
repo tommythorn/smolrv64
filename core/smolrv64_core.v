@@ -287,7 +287,8 @@ module smolrv64_core
    // critical path. redirect_q doubles as the shadow flag: the cycle it is high is
    // exactly the cycle in which the frontend is squashing the extra wrong-path bundle
    // it fetched, and in which M must refuse that bundle.
-   reg                      redirect_q, redirect_is_trap_q;
+   (* max_fanout = 32 *) reg redirect_q;
+   reg                      redirect_is_trap_q;
    reg [PCW-1:0]            redirect_target_q;
    reg [SEQW-1:0]           redirect_seq_q;
    initial redirect_q = 1'b0;
@@ -1768,8 +1769,8 @@ module smolrv64_core
       wire [RN_PBITS-1:0]  q_src = bs ? (by0[gl] ? wa_ld_q : wa_fe_q) : wa_src;
       // the write register's enable and address reach every bank of the shard's copies (the PRF's
       // write is a cycle later, from here): replicated
-      (* max_fanout = 24 *) reg qv;
-      (* max_fanout = 24 *) reg [RN_PBITS-1:0] qprd;
+      (* max_fanout = 12 *) reg qv;
+      (* max_fanout = 12 *) reg [RN_PBITS-1:0] qprd;
       reg  [63:0]          qval;
       initial begin qv = 1'b0; qprd = {SHK, {RN_IDXB{1'b0}}}; qval = 64'd0; end
       always @(posedge clk) begin
@@ -4375,7 +4376,7 @@ module smolrv64_core
    // and an integer one's on its lane's port, straight through (by0) or at the drain. A redirect in
    // the landing's cycle drops it (the landing is younger, the wrong path).
    reg                 ld_any_q = 1'b0, ld_wb_q = 1'b0;
-   (* max_fanout = 24 *) reg [RN_PBITS-1:0] wa_ld_q;   // every SH_FL bank's write address
+   (* max_fanout = 12 *) reg [RN_PBITS-1:0] wa_ld_q;   // every SH_FL bank's write address
    reg  [63:0]         wb_ld_q;
    reg  [ROB_IDXB-1:0] ldw_rob_q;
    always @(posedge clk) begin
@@ -4397,7 +4398,7 @@ module smolrv64_core
    // FP register's on its own port (the F port's, the MD stage's) at the landing, an integer
    // register's on its lane's port, straight through (by2) or at the drain.
    reg                 fe_any_q = 1'b0;
-   (* max_fanout = 24 *) reg [RN_PBITS-1:0] wa_fe_q;   // every SH_FF bank's write address
+   (* max_fanout = 12 *) reg [RN_PBITS-1:0] wa_fe_q;   // every SH_FF bank's write address
    reg  [63:0]         wb_fe_q;
    reg  [ROB_IDXB-1:0] few_rob_q;
    always @(posedge clk) begin

@@ -43,7 +43,7 @@ module rv_mem_arbiter #(
    input  wire                mq_ready,
    output reg  [IDW-1:0]      mq_id,
    output reg                 mq_we,
-   output reg  [AW-1:0]       mq_addr,
+   (* max_fanout = 16 *) output reg [AW-1:0] mq_addr,
    output reg  [63:0]         mq_wmask,
    output reg  [511:0]        mq_wdata,
    input  wire                mr_valid,

@@ -135,7 +135,11 @@ module smolrv64_shell #(
    wire fbdiag_reset_req;
    (* async_reg = "true" *) reg [1:0] fbdiag_rst_sync = 2'b00;
    always @(posedge ui_clk) fbdiag_rst_sync <= {fbdiag_rst_sync[0], fbdiag_reset_req};
-   wire ui_cpu_reset_req = ui_rst | ~init_calib_complete | fbdiag_rst_sync[1];
+   // calibration's done, a register of our own (replicated): static once set, so a cycle late costs
+   // nothing, and the IP's flop no longer fans out across the memory controller
+   (* max_fanout = 16 *) reg cal_q = 1'b0;
+   always @(posedge ui_clk) cal_q <= init_calib_complete;
+   wire ui_cpu_reset_req = ui_rst | ~cal_q | fbdiag_rst_sync[1];
    reg  [1:0] ui_cpu_reset_sync = 2'b11;
    wire ui_cpu_reset = ui_cpu_reset_sync[1];
 
@@ -1990,7 +1994,7 @@ module smolrv64_shell #(
       .m_rlast(device_axi_rlast), .m_rvalid(device_axi_rvalid), .m_rready(device_axi_rready));
 
    ddr4_mem u_mem (
-      .clk(ui_clk), .reset(ui_cpu_reset), .cal_done(init_calib_complete),
+      .clk(ui_clk), .reset(ui_cpu_reset), .cal_done(cal_q),
       .q_valid(mq_valid), .q_ready(mq_ready), .q_id(mq_id), .q_we(mq_we), .q_addr(mq_addr),
       .q_wmask(mq_wmask), .q_wdata(mq_wdata),
       .r_valid(mr_valid), .r_ready(mr_ready), .r_id(mr_id), .r_beat(mr_beat), .r_last(mr_last),

@@ -686,6 +686,13 @@ entries in one cycle). `bfr`/`bhas`/`bfc` are registers: the lowest row free now
 this cycle allocates in the bank, and the count with it, so the dispatch credit (which reads the
 count) never promises a row the reservation lacks; a row freed now is counted from the next cycle.
 The count is the old one less the previous cycle's frees, so the credit stays conservative.
+
+**m2o's build (30483569): -1.543 ns, 45.3 K, TNS -20.4 K.** The tail past -1 ns is 2.6 K (m2n 5.3 K) while
+the middle grows: 37 K endpoints between 0 and -0.75 ns. 9.4 K of those have 0-2 logic levels -- fan-
+out, not depth: the DDR IP's calDone across the memory controller (1.8 K), core_reset (0.9 K), the
+PRF write addresses and valids (1.2 K), the phase flag into the I$ memory, redirect_q and fr_hd_q, the
+scheduler's free-slot valid, the arbiter's address into the line memory. The shell takes calibration's
+done into a register of its own (cal_q, replicated; static once set); the rest replicate harder.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

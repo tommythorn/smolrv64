@@ -168,7 +168,7 @@ module rv_soc_top #(
 
    // the core's reset is a clk2x flop (replicated near its loads): the shell's synchronised reset is a
    // clk flop, and its fan-out into the core's clk2x flops had half a clk cycle
-   (* max_fanout = 256 *) reg core_reset = 1'b1;
+   (* max_fanout = 48 *) reg core_reset = 1'b1;
    always @(posedge clk2x) core_reset <= reset;
    // ...and the SoC's clk2x side (the D$, its walkers' adapters and read door, the arbiter, the I$'s
    // line client, the crossings) takes its own: the reset was the largest clk -> clk2x family

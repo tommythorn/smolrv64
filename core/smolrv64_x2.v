@@ -26,7 +26,7 @@ module smolrv64_x2ph
    input  wire clk2x,
    output wire h2);
    reg tg = 1'b0, tg2 = 1'b0;
-   (* max_fanout = 64 *) reg h2r = 1'b1;
+   (* max_fanout = 24 *) reg h2r = 1'b1;
    always @(posedge clk)   tg  <= ~tg;
    always @(posedge clk2x) begin
       tg2 <= tg;
