@@ -813,6 +813,11 @@ data read's cancel and the tail's step back). The kill holds for cycles, and not
 it does, so `kds_q` takes the compares and the live `kd_v` ends them with the kill. The queue applies
 the kill from its second cycle, and the check that a dead op's fill meets the kill looks a cycle
 later. The directed bench holds its kill for two cycles, as the ROB's does.
+
+**THE WHOLE-LINE FLAG IS REGISTERED WITH THE REQUEST** (m2u: `u_arb/mq_wmask -> u_arb/mq_wdata`, 518
+endpoints at -1.29 ns, 8 levels: the L2's `&u_q_wmask` in its ready, into the arbiter's take of the
+512-bit request). The arbiter registers `mq_full = &g_wmask` with the mask, and the L2 takes it as
+`u_q_full` (asserted equal to its mask's AND). The L2 bench drives it from its own mask.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.

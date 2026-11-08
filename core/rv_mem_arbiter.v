@@ -45,6 +45,7 @@ module rv_mem_arbiter #(
    output reg                 mq_we,
    (* max_fanout = 16 *) output reg [AW-1:0] mq_addr,
    output reg  [63:0]         mq_wmask,
+   output reg                 mq_full,      // &mq_wmask, registered with it: a whole-line write
    output reg  [511:0]        mq_wdata,
    input  wire                mr_valid,
    output wire                mr_ready,
@@ -91,7 +92,7 @@ module rv_mem_arbiter #(
       else if (mq_ready) mq_valid <= 1'b0;
       if (take) begin
          mq_id <= {g_ix, g_slot}; mq_we <= g_we; mq_addr <= g_addr;
-         mq_wmask <= g_wmask; mq_wdata <= g_wdata;
+         mq_wmask <= g_wmask; mq_full <= &g_wmask; mq_wdata <= g_wdata;
       end
    end
 

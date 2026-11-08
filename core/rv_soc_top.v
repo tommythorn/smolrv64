@@ -1078,6 +1078,7 @@ module rv_soc_top #(
 
    wire            m_q_valid, m_q_ready, m_q_we;
    wire [MIDW-1:0] m_q_id;  wire [LAW-1:0] m_q_addr;  wire [63:0] m_q_wmask;  wire [511:0] m_q_wdata;
+   wire            m_q_full;
    wire            m_r_valid, m_r_ready, m_r_last, m_w_valid, m_w_ready;
    wire [MIDW-1:0] m_r_id, m_w_id;  wire [1:0] m_r_beat;  wire [127:0] m_r_data;
    rv_mem_arbiter #(.NC(MC), .CB(MCB), .SW(MSW), .AW(LAW)) u_arb
@@ -1089,7 +1090,7 @@ module rv_soc_top #(
       // the memory side is clk's: each channel transfers at a clk edge only, so the arbiter
       // (clk2x's) sees the other side's handshake in the second half (smolrv64_x2.v)
       .mq_valid(m_q_valid), .mq_ready(m_q_ready & h2), .mq_id(m_q_id), .mq_we(m_q_we),
-      .mq_addr(m_q_addr), .mq_wmask(m_q_wmask), .mq_wdata(m_q_wdata),
+      .mq_addr(m_q_addr), .mq_wmask(m_q_wmask), .mq_full(m_q_full), .mq_wdata(m_q_wdata),
       .mr_valid(m_r_valid & h2), .mr_ready(m_r_ready), .mr_id(m_r_id), .mr_beat(m_r_beat),
       .mr_last(m_r_last), .mr_data(m_r_data),
       .mw_valid(m_w_valid & h2), .mw_ready(m_w_ready), .mw_id(m_w_id));
@@ -1170,7 +1171,7 @@ module rv_soc_top #(
    rv_l2 #(.IDW(MIDW), .AW(LAW)) u_l2
      (.clk(clk), .reset(reset),
       .u_q_valid(m_q_valid & ~m_is_local), .u_q_ready(l2_q_ready), .u_q_id(m_q_id), .u_q_we(m_q_we),
-      .u_q_addr(m_q_addr), .u_q_wmask(m_q_wmask), .u_q_wdata(m_q_wdata),
+      .u_q_addr(m_q_addr), .u_q_wmask(m_q_wmask), .u_q_full(m_q_full), .u_q_wdata(m_q_wdata),
       .u_r_valid(l2_r_valid), .u_r_ready(m_r_ready), .u_r_id(l2_r_id), .u_r_beat(l2_r_beat),
       .u_r_last(l2_r_last), .u_r_data(l2_r_data),
       .u_w_valid(l2_w_valid), .u_w_ready(m_w_ready), .u_w_id(l2_w_id),

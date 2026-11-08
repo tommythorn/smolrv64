@@ -53,6 +53,7 @@ module rv_l2 #(
    input  wire              u_q_we,
    input  wire [AW-1:0]     u_q_addr,
    input  wire [63:0]       u_q_wmask,
+   input  wire              u_q_full,        // &u_q_wmask, from the requester's register (it gates u_q_ready)
    input  wire [511:0]      u_q_wdata,
    output reg               u_r_valid,
    input  wire              u_r_ready,
@@ -123,7 +124,9 @@ module rv_l2 #(
    wire [DLB-1:0] q_dl  = q_sn ? s_line : dl_of(u_q_addr);
    wire [SB-1:0]  q_set  = q_dl[SB-1:0];
    wire [TGB-1:0] q_tag  = q_dl[DLB-1:SB];
-   wire           q_full = &u_q_wmask;
+   wire           q_full = u_q_full;
+   always @(posedge clk) if (!reset && u_q_valid && (u_q_full != &u_q_wmask))
+      $fatal(1, "rv_l2: the request's whole-line flag %b is not its mask's (%h)", u_q_full, u_q_wmask);
 
    reg  [SB-1:0] ic;                             // the reset sweep's set
 

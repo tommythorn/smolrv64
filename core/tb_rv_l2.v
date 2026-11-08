@@ -44,7 +44,7 @@ module tb #(parameter integer SB = 4);
    reg            s_valid, s_keep, s_rel;  reg [25:0] s_line;  wire s_ack;
    rv_l2 #(.IDW(IDW), .SB(SB), .NM(NM), .NWB(NWB)) dut (.clk(clk), .reset(reset),
       .u_q_valid(u_q_valid), .u_q_ready(u_q_ready), .u_q_id(u_q_id), .u_q_we(u_q_we), .u_q_addr(u_q_addr),
-      .u_q_wmask(u_q_wmask), .u_q_wdata(u_q_wdata),
+      .u_q_wmask(u_q_wmask), .u_q_full(&u_q_wmask), .u_q_wdata(u_q_wdata),
       .u_r_valid(u_r_valid), .u_r_ready(1'b1), .u_r_id(u_r_id), .u_r_beat(u_r_beat), .u_r_last(u_r_last), .u_r_data(u_r_data),
       .u_w_valid(u_w_valid), .u_w_ready(1'b1), .u_w_id(u_w_id),
       .d_q_valid(d_q_valid), .d_q_ready(d_q_ready), .d_q_id(d_q_id), .d_q_we(d_q_we), .d_q_addr(d_q_addr),
