@@ -349,6 +349,25 @@ module smolrv64_lq
    generate for (gw = 0; gw < NW; gw = gw + 1) begin: g_widx
       assign d_idx[gw*IDXB +: IDXB] = ws[gw];
    end endgenerate
+   // THE AGE MATRIX TAKES A ROW'S ALLOCATIONS A CYCLE LATE (oa_q: the writers, their entries and
+   // rows, registered), so dispatch's decision reaches the matrix's enables through a flop. An entry
+   // is in no pick in its first cycle (every pick needs its address, which a fill writes a cycle
+   // after the allocation at the earliest), and a later allocation's column clear lands after its
+   // row, as the two arrive in order.
+   reg  [NW-1:0]   oa_q;
+   reg  [IDXB-1:0] ows_q [0:NW-1];
+   reg  [NENT-1:0] orow_q [0:NW-1];
+   reg  [NENT-1:0] opend;                // the entries whose row and column land this edge
+   integer         oq;
+   initial oa_q = {NW{1'b0}};
+   always @(posedge clk) begin
+      oa_q <= reset ? {NW{1'b0}} : d_alloc;
+      for (oq = 0; oq < NW; oq = oq + 1) begin ows_q[oq] <= ws[oq];  orow_q[oq] <= v | wahead[oq]; end
+   end
+   always @* begin
+      opend = {NENT{1'b0}};
+      for (oq = 0; oq < NW; oq = oq + 1) if (oa_q[oq]) opend[ows_q[oq]] = 1'b1;
+   end
    // THE ROW'S FIELDS, A BANK AT A TIME: its loads take distinct banks (wbk), so a bank's writer is
    // muxed once (one-hot, AND-OR) and each of its entries only enabled -- not a writers' priority mux
    // in front of every entry.
@@ -570,9 +589,9 @@ module smolrv64_lq
             wt[e] <= b_wt[aw];  rob[e] <= b_rob[aw];  prd[e] <= b_prd[aw];  rdn[e] <= b_rdn[aw];
             rdv[e] <= b_rdv[aw];  sqt[e] <= b_sqt[aw];  pch[e] <= b_pch[aw];  sqn[e] <= b_sqn[aw];
          end
-         for (aw = 0; aw < NW; aw = aw + 1) if (d_alloc[aw])
-            for (kw = 0; kw < NENT; kw = kw + 1) om[kw*NENT + ws[aw]] <= 1'b0;
-         for (aw = 0; aw < NW; aw = aw + 1) if (d_alloc[aw]) om[ws[aw]*NENT +: NENT] <= v | wahead[aw];
+         for (aw = 0; aw < NW; aw = aw + 1) if (oa_q[aw])
+            for (kw = 0; kw < NENT; kw = kw + 1) om[kw*NENT + ows_q[aw]] <= 1'b0;
+         for (aw = 0; aw < NW; aw = aw + 1) if (oa_q[aw]) om[ows_q[aw]*NENT +: NENT] <= orow_q[aw];
          cnt <= cnt + n_alloc - gone_n;
          bp  <= bp + n_alloc[BL-1:0];
 
@@ -636,10 +655,11 @@ module smolrv64_lq
    integer ia, ic;
    reg [NENT-1:0] v_first;               // the live entries no live entry is older than: one
    reg [IDXB:0]   v_n, f_n;              // ...counted, and the live entries
+   wire [NENT-1:0] v_om = v & ~opend;    // ...of those the matrix holds (not the ones landing now)
    always @* begin
       v_n = {(IDXB+1){1'b0}};  f_n = {(IDXB+1){1'b0}};
       for (ia = 0; ia < NENT; ia = ia + 1) begin
-         v_first[ia] = v[ia] & ~|(v & om[ia*NENT +: NENT]);
+         v_first[ia] = v_om[ia] & ~|(v_om & om[ia*NENT +: NENT]);
          v_n = v_n + {{IDXB{1'b0}}, v[ia]};
          f_n = f_n + {{IDXB{1'b0}}, v_first[ia]};
       end
@@ -659,8 +679,10 @@ module smolrv64_lq
          $fatal(1, "smolrv64_lq: %0d loads in a row, %0d banks", n_alloc, NB);
       if (cnt != v_n)
          $fatal(1, "smolrv64_lq: the count %0d is not the live entries' %0d", cnt, v_n);
-      if ((|v) && (f_n != {{IDXB{1'b0}}, 1'b1}))
+      if ((|v_om) && (f_n != {{IDXB{1'b0}}, 1'b1}))
          $fatal(1, "smolrv64_lq: the age matrix names %0d oldest live entries (v=%b)", f_n, v);
+      if (|(opend & (av | rpl | sent)))
+         $fatal(1, "smolrv64_lq: an entry the age matrix has not taken yet has its address, a replay or a send (%b)", opend);
       if (a_v & ~v[a_idx])
          $fatal(1, "smolrv64_lq: address written to a slot with no live entry (idx %0d)", a_idx);
       if (a_v & av[a_idx])

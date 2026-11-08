@@ -781,6 +781,14 @@ and the record stamps `cyc - 2`.
 counter index, in front of the 16:1 counter mux and the read case). The three ranges are each
 N = 3..31 at offset N of a 32-aligned block, so the block is `raddr[11:5]` and the index is
 `raddr[4:0] - 3` for all three (an elaboration check pins the bases).
+
+**THE LOAD QUEUE'S AGE MATRIX TAKES AN ALLOCATION A CYCLE LATE** (m2s: `fe/d_valid -> u_lq/om`, 44
+endpoints at -0.99 ns; m2n's `u_lq/v -> u_lq/om`: dispatch's decision and the live vector into the
+matrix's enables and rows). The writers, their entries and rows (`v | wahead`) are registered
+(`oa_q`) and land a cycle later. A new entry is in no pick in its first cycle, because every pick
+needs its address and the fill comes a cycle after the allocation at the earliest (asserted: a
+pending entry has no address, replay or send). A later allocation's column clear lands after the
+row, in arrival order. The one-oldest check leaves the pending entries out.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
