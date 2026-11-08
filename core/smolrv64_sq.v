@@ -441,8 +441,14 @@ module smolrv64_sq
    // the landing bypass: the cycle dv rose, the bytes are still in wb_q
    assign c_data = (ln_v & (ln_idx == ho)) ? ln_data : data[ho];
    assign c_size = sz[ho];
-   assign c_unc  = unc[ho];
-   assign c_fast = mem[ho] & ~unc[ho] & dw[ho];
+   // ...and its kind, registered with the offer: ho moves only with a take (which drops the offer), and a
+   // committed store is translated, so its fields are final (asserted equal to the live read)
+   reg    c_unc_q = 1'b0, c_fast_q = 1'b0;
+   always @(posedge clk) begin c_unc_q <= unc[ho];  c_fast_q <= mem[ho] & ~unc[ho] & dw[ho]; end
+   assign c_unc  = c_unc_q;
+   assign c_fast = c_fast_q;
+   always @(posedge clk) if (!reset && c_v_q && ((c_unc_q != unc[ho]) || (c_fast_q != (mem[ho] & ~unc[ho] & dw[ho]))))
+      $fatal(1, "smolrv64_sq: the offered entry %0d's registered kind (unc %b fast %b) is not its own", ho, c_unc_q, c_fast_q);
    // THE FORWARD'S READ, in its start cycle: the load's store, named by the flag's own register (so
    // the store the flag was computed for), through the same landing bypass as c_data, placed at its
    // doubleword offset as the D$ write places it (smolrv64_lsu's mem_wdata).

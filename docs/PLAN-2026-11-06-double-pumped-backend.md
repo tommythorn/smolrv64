@@ -864,6 +864,13 @@ the queues' live `uf_any` into `cr_cbo`, the frontend's take and the decode queu
 reads the queues' unfilled flags a cycle ago and the IR's and P's loads and stores a cycle ago (the
 entries allocated since), beside the live IR and P counts. It is never more permissive than the live
 form (asserted every cycle).
+
+**THE OFFERED STORE'S KIND IS REGISTERED WITH THE OFFER** (m2v: `u_sq/unc -> u_lsu/o_nb`, `fd_s`,
+`st_data_q`, `o_boff`, `pa2_q`, ~300 endpoints at -1.16 ns, 9-13 levels: `c_fast = mem[ho] & ~unc[ho] &
+dw[ho]`, a 32:1 read, into `sq_go`, the load start's yield and the LSU's start). `ho` moves only with a
+take, which drops the offer, and a committed store is translated, so `c_fast_q` and `c_unc_q` are
+read a cycle ahead beside `c_v_q` and asserted equal to the live read while offered. Every consumer
+is gated by the offer.
 ## 4. Verification, every increment
 
 - `src/lint.sh` clean, `core/run-vl.sh` 240/0, the unit benches.
