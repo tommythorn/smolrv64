@@ -89,13 +89,15 @@ module tb_vga_scanout;
    always @(posedge pix_clk) begin
       vs_d <= vs;
       if (armed && !synced && vs && !vs_d) begin
-         // VSYNC rises with the line v = VSS, h = 0 (positive polarity): lock the model there.
-         synced = 1;  mh = 0;  mv = VSS;
+         // VSYNC rises with HSYNC's leading edge on the line v = VSS (positive polarity): lock
+         // the model there.
+         synced = 1;  mh = HSS;  mv = VSS;
       end
       if (armed && synced) begin : check
-         reg exp_hs, exp_vs, act;  reg [15:0] p;  reg [15:0] exp_rgb;
+         reg exp_hs, exp_vs, act;  reg [15:0] p;  reg [15:0] exp_rgb;  integer hl;
          exp_hs = mh >= HSS && mh < HSE;
-         exp_vs = mv >= VSS && mv < VSE;
+         hl     = mh >= HSS ? mv : (mv == 0 ? VT - 1 : mv - 1);   // the line, counted from HSYNC
+         exp_vs = hl >= VSS && hl < VSE;
          act    = mh < HA && mv < VA;
          p      = pixel(mh, mv);
          exp_rgb = act ? p : 16'd0;

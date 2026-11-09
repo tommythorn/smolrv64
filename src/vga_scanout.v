@@ -223,7 +223,10 @@ module vga_scanout (
    always @(posedge pix_clk) begin
       act1 <= en_p[1] && h < h_active && act_v;
       hs1  <= en_p[1] && h >= h_sync_start && h < h_sync_end;
-      vs1  <= en_p[1] && v >= v_sync_start && v < v_sync_end;
+      // VSYNC changes with HSYNC's leading edge, as CEA-861 and VESA timings have it: a sink
+      // counts lines from HSYNC to HSYNC, and an edge inside a line moves its count by one.
+      if (!en_p[1])               vs1 <= 1'b0;
+      else if (h == h_sync_start) vs1 <= v >= v_sync_start && v < v_sync_end;
       sel1 <= h[1:0];
       lb_q <= lb[{seq_p[NSB-1:0], h[10:2]}];
    end
