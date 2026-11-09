@@ -95,3 +95,7 @@ has at least 160 pixels of horizontal blanking, enough for a two-packet island.
   PLIC source 13 (rv_soc_top's virtio_snd_irq), a keyboard+sound AXI arbiter (ID bit 2) into the
   VGA arbiter's second port, aud_valid/aud_frame out to the HDMI board's hdmi_tx; the HDMI board's
   DTB lists the device (tools/check-dts-timebase.py's @SOUND@).
+- Step 5 (e2c46ba5 on the HDMI board, 1280x720 at 50 Hz on an OLED monitor with HDMI audio): Linux
+  binds the device only when the kernel has `CONFIG_SOUND`, `CONFIG_SND` and `CONFIG_SND_VIRTIO`
+  built in (the board's kernels have no module support); 7.4.0-rc2 with them lists
+  `VirtIO SoundCard`, and `speaker-test -c 2 -r 44100` plays on the monitor.
