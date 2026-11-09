@@ -183,14 +183,15 @@ static void video_show(void)
 
 void video_init(void)
 {
-#ifdef VIDEO_1080P
-    // CEA 1920x1080@60 (VIC 16), at 1000 / 7 = 142.86 MHz (57.7 Hz): an HDMI transmitter's MMCM
-    // multiplies the pixel clock by ten, so its modes are 80 to 160 MHz (src/hdmi_tx.v).
-    static const struct vmode boot = { 148500, { 1920, 2008, 2052, 2200 }, { 1080, 1084, 1089, 1125 }, 1, 1 };
+#ifdef VIDEO_720P
+    // 1280x720 at 1000 / 14 = 71.43 MHz (50.0 Hz), the mode the HDMI board's OLED monitor takes:
+    // the HDMI transmitter's MMCM multiplies it by ten, a VCO of 714 MHz, under the 800 MHz
+    // rating (src/hdmi_tx.v); it locks and runs.
+    static const struct vmode boot = { 71430, { 1280, 1376, 1424, 1904 }, { 720, 725, 730, 750 }, 1, 1 };
 #else
     static const struct vmode boot = { 25175, { 640, 656, 752, 800 }, { 480, 490, 492, 525 }, 0, 0 };
 #endif
-    video_mode(&boot);                            // VESA 640x480@60, at 25 MHz (59.5 Hz), or 1080p60
+    video_mode(&boot);                            // VESA 640x480@60, at 25 MHz (59.5 Hz), or 720p
     on = 1;
     for (int i = 0; i < nearly; i++) video_putc(early[i]);
 }

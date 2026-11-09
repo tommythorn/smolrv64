@@ -9,7 +9,9 @@
 // the DDR4 PHY, which owns every BITSLICE_CONTROL and RIU in their bytes, so a native-mode
 // serializer cannot sit beside it. Their bit clock is 5x the pixel clock (DDR: 10 bits a pixel),
 // from an MMCM fed by the pixel clock at VCO = 10x, so it follows whatever pixel clock the
-// monitor's mode gives -- between 80 and 160 MHz, the MMCM's VCO range (1080p60 is 148.5).
+// monitor's mode gives -- between 80 and 160 MHz, the MMCM's rated VCO range (1080p60 is 148.5);
+// the monitor's boot mode, 1280x720 at 71.43 MHz, runs the VCO at 714 MHz, under the rating, and
+// it locks and runs on the board.
 // CLK and CLKDIV come from that one MMCM output through matched buffers (the CLK-CLKDIV skew
 // limit). At 1080p60 the bit clock, 742.5 MHz, exceeds OSERDESE3's -2 rating (1.600 ns min
 // period, 0.720 ns per half): report_pulse_width flags those three checks, and it runs cleanly
