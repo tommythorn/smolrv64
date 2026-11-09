@@ -10,6 +10,9 @@ module hdmi_xcku5p(
     input  wire        clk_50m,   // the board's 50 MHz oscillator, for the fan alone
     output reg         fan_pwm = 1'b0,
     input  wire [3:0]  key,
+    // USB keyboards and mice through a Raspberry Pi Pico (tools/hid-bridge): its UART TX on
+    // PMOD0_0, virtio_input's HID line.
+    input  wire        hid_rxd,
     input  wire        rxd,       // the CP2105's interface 0
     output wire [7:0]  led,
     output wire        txd,
@@ -96,7 +99,7 @@ module hdmi_xcku5p(
       .vid_rgb          (vid_rgb),
       .aud_valid        (aud_valid),
       .aud_frame        (aud_frame),
-      .hid_rxd          (1'b1),       // idle: the HID line is not wired yet
+      .hid_rxd          (hid_rxd),
       .c0_ddr4_act_n    (c0_ddr4_act_n),
       .c0_ddr4_adr      (c0_ddr4_adr),
       .c0_ddr4_ba       (c0_ddr4_ba),

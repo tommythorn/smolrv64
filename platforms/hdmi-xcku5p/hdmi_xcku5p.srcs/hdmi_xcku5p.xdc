@@ -31,6 +31,10 @@ set_property -dict {PACKAGE_PIN D18 IOSTANDARD LVCMOS18} [get_ports {led[5]}]
 set_property -dict {PACKAGE_PIN G15 IOSTANDARD LVCMOS18} [get_ports {led[6]}]
 set_property -dict {PACKAGE_PIN E22 IOSTANDARD LVCMOS18} [get_ports {led[7]}]
 
+# The Pico's HID line (virtio_input) on PMOD0_0 (J1 pin 1, bank 86, 3.3 V). The pull-up holds the
+# line idle with no Pico attached; virtio_input synchronizes it into ui_clk.
+set_property -dict {PACKAGE_PIN D10 IOSTANDARD LVCMOS33 PULLUP TRUE} [get_ports hid_rxd]
+
 # The console: the CP2105's interface 0 (UART2 on the schematic), VIO 1.8 V.
 set_property -dict {PACKAGE_PIN G19 IOSTANDARD LVCMOS18} [get_ports txd]
 set_property -dict {PACKAGE_PIN H17 IOSTANDARD LVCMOS18} [get_ports rxd]
