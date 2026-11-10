@@ -140,7 +140,6 @@ static int video_mode(const struct vmode *m)
     uint32_t d = m->khz ? (VCO_KHZ + m->khz / 2) / m->khz : 0;
     if (bad) ;
     else if (m->h[0] % 32)                bad = "the width must be a multiple of 32 (a stride of 64-byte lines)";
-    else if (m->h[0] > 2048)              bad = "the width is at most 2048 (the scanout's 4096-byte line)";
     else if (m->h[0] < 320 || m->v[0] < 240) bad = "the mode is at least 320x240 (the splash and a console)";
     else if ((uint64_t)m->h[0] * m->v[0] * 2 > FB_SIZE) bad = "the frame does not fit the 16 MiB framebuffer region";
     else if (d < D_MIN)                   bad = "the pixel clock is above 166.67 MHz, the bitstream's";
@@ -177,7 +176,7 @@ static void video_show(void)
     puts_(": pixel clock "); put2((hz + 5000) / 10000); puts_(" MHz (1000 / "); putdec(cur_d);
     puts_("), "); put2((uint32_t)(((uint64_t)hz * 100 + frame / 2) / frame)); puts_(" Hz, ");
     putc_(cur.hpos ? '+' : '-'); puts_("hsync "); putc_(cur.vpos ? '+' : '-'); puts_("vsync; ");
-    puts_(st & 1 ? "locked" : "NOT locked"); puts_(", lines fetched late: "); putdec(st >> 16);
+    puts_(st & 1 ? "locked" : "NOT locked"); puts_(", frames not shown whole: "); putdec(st >> 16);
     putc_('\n');
 }
 

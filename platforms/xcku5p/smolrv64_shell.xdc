@@ -80,16 +80,23 @@ set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] \
 # The pixel clock is an MMCM output fed from ui_clk, so Vivado would time ui_clk <-> pixel clock
 # as RELATED clocks at an off-integer ratio (and DRP retunes it at run time anyway). Every
 # crossing is designed as asynchronous (vga_scanout's header):
-#   ui_clk -> pixel: CTRL.enable through a 2-FF synchronizer; the mode registers quasi-static.
-#   pixel -> ui_clk: one toggle a line each -- a line shown (done_tog), a line scanned before it was
-#     whole (late_tog) -- and the scan's running (en_p), each through a synchronizer.
+#   ui_clk -> pixel: CTRL.enable through a 2-FF synchronizer; the mode registers quasi-static;
+#     the FIFO's landed count, Gray, through two flops (wp_s0, wp_s1).
+#   pixel -> ui_clk: the FIFO's taken count, Gray (rp_s0, rp_s1); a toggle a frame not shown whole
+#     (dry_tog); and the scan's running (en_p), each through a synchronizer.
 #   LOCKED -> both domains: an asynchronous status.
+# A Gray count holds only while its bits arrive within a clock of each other: a bus skew of
+# ui_clk's 3 ns bounds each, false paths notwithstanding (they do not override set_bus_skew).
 # Objects, not literal clock names (see the CDC note above: a lookup that matches nothing
 # fails silently).
 set vga_ui_clk  [get_clocks -of_objects [get_nets ui_clk]]
 set vga_pix_clk [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *vga_mmcm_inst/CLKOUT0}]]
 set_false_path -from $vga_ui_clk -to $vga_pix_clk
-set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/done_s_reg[0]/D}]
-set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/late_s_reg[0]/D}]
+set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/rp_s0_reg[*]/D}]
+set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/dry_s_reg[0]/D}]
 set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/en_a_reg[0]/D}]
+set_bus_skew -from [get_cells -hier -filter {NAME =~ *vga_scanout_inst/wp_g_reg[*]}] \
+             -to   [get_cells -hier -filter {NAME =~ *vga_scanout_inst/wp_s0_reg[*]}] 3.000
+set_bus_skew -from [get_cells -hier -filter {NAME =~ *vga_scanout_inst/rp_g_reg[*]}] \
+             -to   [get_cells -hier -filter {NAME =~ *vga_scanout_inst/rp_s0_reg[*]}] 3.000
 set_false_path -to [get_pins -hier -filter {NAME =~ *vga_scanout_inst/locked_s_reg[0]/D}]

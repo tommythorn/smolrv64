@@ -5,8 +5,9 @@
 // An AXI memory with random AR and R stalls holds a framebuffer whose every pixel is a known
 // function of its (x, y). The bench programs a small mode through the MMIO registers, finds the
 // first VSYNC edge, and from there predicts every output cycle -- syncs, blanking, and the RGB222
-// of each pixel -- for several frames, in two geometries (one burst per line, then three).
-// Any difference, any late line, or a frame that never syncs is a FAIL.
+// of each pixel -- for several frames, in several geometries (one burst per line, three, a
+// stride wider than the picture, a line of 2560 pixels). Any difference, any frame the scan ran
+// not shown whole, or a frame that never syncs is a FAIL.
 module tb_vga_scanout;
    reg clk = 1'b0, pix_clk = 1'b0, reset = 1'b1;
    always #1.5  clk = ~clk;        // 333 MHz, as ui_clk
@@ -84,7 +85,7 @@ module tb_vga_scanout;
 
    // ---- the mode, and the check ----
    integer HA, HSS, HSE, HT, VA, VSS, VSE, VT;
-   integer mh, mv, synced = 0, armed = 0, frames = 0, errors = 0, checking = 1;
+   integer k, dry = 0, mh, mv, synced = 0, armed = 0, frames = 0, errors = 0, checking = 1;
    reg     vs_d = 1'b0;
    always @(posedge pix_clk) begin
       vs_d <= vs;
@@ -133,7 +134,7 @@ module tb_vga_scanout;
          wait (frames == 4);
          @(posedge clk); mmio_addr <= 8'h30;  @(posedge clk);
          if (mmio_rdata[31:16] != 16'd0) begin
-            $display("FAIL: %0d lines fetched late", mmio_rdata[31:16]);  errors = errors + 1;
+            $display("FAIL: %0d frames not shown whole", mmio_rdata[31:16]);  errors = errors + 1;
          end
          $display("mode %0dx%0d stride %0d: 3 frames checked, %0d errors", ha, va, st, errors);
       end
@@ -143,23 +144,38 @@ module tb_vga_scanout;
       repeat (10) @(posedge clk);
       reset = 1'b0;
       if (dut.h_active != 12'd640 || dut.h_total != 12'd800 || dut.v_active != 12'd480 || dut.v_total != 12'd525
-          || dut.stride != 13'd1280 || dut.fb_base != 32'hFF00_0000 || dut.hs_pol || dut.vs_pol)
+          || dut.stride != 14'd1280 || dut.fb_base != 32'hFF00_0000 || dut.hs_pol || dut.vs_pol)
          $fatal(1, "reset values are not 640x480@60 at 0xFF000000");
-      // One burst per line, then three; odd porches so an off-by-one shows.
+      // One burst per line, then three, then a stride wider than the picture (its last 32 pixels
+      // taken in the blanking), then a line wider than 2048; odd porches so an off-by-one shows.
       run_mode(32, 35, 39, 44, 6, 7, 9, 11, 32'd64);
       run_mode(96, 101, 110, 117, 5, 6, 8, 9, 32'd192);
-      // The memory refuses every request for 400 line times, so the scan runs ~220 active lines
-      // ahead of the fetcher (shown late, not checked); once it answers, the fetcher catches up and
-      // every frame is the frame again -- an 8-bit line count wrapped past 128 and left the picture
-      // rotated by 252 lines, which a five-line frame shows (252 is a multiple of six).
+      run_mode(96, 101, 110, 140, 5, 6, 8, 9, 32'd256);
+      run_mode(2560, 2565, 2570, 2600, 3, 4, 5, 6, 32'd5120);
+      // The memory refuses every request for 200 to 450 line times, ending each time at another
+      // point of the 9-line frame: the FIFO shows 17 frames (2048 beats, 120 a frame), then the
+      // scan runs dry (black, each frame counted, not checked). Once the memory answers, the scan
+      // throws away what is left of the frame the fetcher was in, holds the next frame's first
+      // beat until a vertical blank, and every frame is the frame again.
       run_mode(96, 101, 110, 117, 5, 6, 8, 9, 32'd192);
-      checking = 0;  stall = 1'b1;
-      repeat (400 * 117) @(posedge pix_clk);
-      stall = 1'b0;
-      repeat (40 * 117) @(posedge pix_clk);
-      frames = 0;  checking = 1;
-      wait (frames == 4);
-      $display("after a 400-line stall: 3 frames checked, %0d errors", errors);
+      for (k = 0; k < 6; k = k + 1) begin
+         checking = 0;  stall = 1'b1;
+         repeat (200 * 117 + k * 4931) @(posedge pix_clk);
+         stall = 1'b0;
+         repeat (40 * 117) @(posedge pix_clk);
+         @(posedge clk); mmio_addr <= 8'h30;  @(posedge clk);
+         if (mmio_rdata[31:16] - dry < 5) begin
+            $display("FAIL: stall %0d: %0d dry frames counted", k, mmio_rdata[31:16] - dry);  errors = errors + 1;
+         end
+         dry = mmio_rdata[31:16];
+         frames = 0;  checking = 1;
+         wait (frames == 4);
+         @(posedge clk); mmio_addr <= 8'h30;  @(posedge clk);
+         if (mmio_rdata[31:16] != dry) begin
+            $display("FAIL: %0d frames not shown whole after stall %0d", mmio_rdata[31:16] - dry, k);  errors = errors + 1;
+         end
+      end
+      $display("after six stalls (%0d frames not shown whole): 3 frames checked after each, %0d errors", dry, errors);
       // DRP: one write, one read; the instant ack loops 0xBEEF back.
       wr(8'h40, 32'h8008_1234);
       repeat (10) @(posedge clk);
@@ -171,15 +187,7 @@ module tb_vga_scanout;
       $finish;
    end
 
-`ifdef TRACE
-   integer tn = 0;
-   always @(posedge clk) if (tn < 40) begin
-      if (dut.fs == 3'd1) begin $display("t=%0t fetch line %0d (v=%0d h=%0d)", $time, dut.f_line, dut.v, dut.h); tn = tn + 1; end
-      if (dut.lb_we && dut.lb_waddr[8:0] < 2) begin $display("t=%0t   lb[%0d] <= %h", $time, dut.lb_waddr, dut.lb_wdata); tn = tn + 1; end
-   end
-`endif
-
-   initial begin #20_000_000; $display("FAIL: timeout"); $finish; end
+   initial begin #60_000_000; $display("FAIL: timeout"); $finish; end
 endmodule
 
 `default_nettype wire
