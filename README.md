@@ -1,7 +1,5 @@
-![SmolRV64 running X11 and Quake](docs/SmolRV64-7f8f5a94-quake.jpeg)
 # SmolRV64
-
-![Geekbench 5 single-core score over time](docs/images/gb5-progress.svg)
+![SmolRV64 running QHD X11, Quake, mp3s, ...](docs/images/desktop.jpg)
 
 SmolRV64 is a 64-bit RISC-V application processor, written from scratch in Verilog, that
 boots stock Ubuntu on a Kintex UltraScale+ FPGA at 166.67 MHz and runs Geekbench on it.
@@ -12,6 +10,8 @@ four-deep FPU pipeline, a 2 MiB second-level cache in UltraRAM, and coherent DMA
 device's line is cleaned or flushed in the caches before it moves. Every committed
 instruction is checked in lockstep against an independent ISA model, and every non-trivial
 change has to boot Ubuntu to a login prompt on the board with zero faults before it lands.
+
+![Geekbench 5 single-core score over time](docs/images/gb5-progress.svg)
 
 ![Geekbench 5 single-core scores per subtest](docs/images/gb5-single-core.svg)
 
