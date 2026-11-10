@@ -1,26 +1,27 @@
 `default_nettype none
 // ddr_port_sync -- rv_soc_top's DDR memory port (clk_p, the core's probe_clk) across into ui_clk
-// (clk_m) where clk_p is clk_m / 2 from a BUFGCE_DIV: related clocks, so the crossing is registers,
-// not asynchronous FIFOs.
+// (clk_m) where clk_p is clk_m / DIV (DIV >= 2; 2 on the shipping build) from a BUFGCE_DIV: related
+// clocks, so the crossing is registers, not asynchronous FIFOs.
 //
-// THE PHASE. clk_p's edges fall on every other clk_m edge, late by the BUFGCE_DIV's insertion delay
+// THE PHASE. clk_p's edges fall on every DIV-th clk_m edge, late by the BUFGCE_DIV's insertion delay
 // (about 2.7 ns of the 3 ns on the board). The clk_p side toggles p_t every cycle; clk_m samples it
-// on its falling edge, half a cycle from where it changes, and the change marks CAP: the clk_m edge
-// two after clk_p's ideal edge (3.3 ns after its real one on the board). clk_m's edges alternate:
-// CAP edges and the others. So `cap` is a register, the complement of the last edge's compare: only
-// that one flop sees the falling edge's half cycle.
+// on its falling edge, half a cycle from where it changes, so the change shows at the clk_m edge two
+// after clk_p's ideal edge. `ph` is a one-hot ring of the DIV clk_m edges of a clk_p cycle, set from
+// that change and rotating between: ph[0] is CAP, the edge on clk_p's ideal edge (3.3 ns after its
+// real one on the board), and ph[1 % DIV] is LAUNCH, the edge after it. At DIV 2 the edges alternate,
+// CAP and LAUNCH. Both are registers: only the compare's flop sees the falling edge's half cycle.
 //
 // clk_p -> clk_m: a request presented by the port in a clk_p cycle is captured at that cycle's CAP
-// edge (timed as a multicycle path of 2: the XDC's ddr_port_sync constraints).
+// edge (timed as a multicycle path of DIV: the XDC's ddr_port_sync constraints).
 // clk_m -> clk_p: everything the port sees (the request's ready, the read beats, the write dones)
-// changes only at the other edges, one ui cycle after a clk_p edge, so the next clk_p edge samples
-// it with Vivado's default analysis (setup 3 ns plus the skew, hold the skew's margin). The read
-// beats and write dones land in a clk_p register first, by the core: the route from their launch
-// registers, by the controller, is register to register.
+// changes only at LAUNCH, one ui cycle after a clk_p edge, and holds a clk_p cycle, so exactly one
+// clk_p edge samples it, with Vivado's default analysis (setup 3 ns plus the skew, hold the skew's
+// margin). The read beats and write dones land in a clk_p register first, by the core: the route
+// from their launch registers, by the controller, is register to register.
 //
-// THE HANDSHAKE. The request's ready is a promise made at the edge before a CAP: the capture register
-// will be free at the CAP, so the request the port presents that clk_p cycle is captured then and the
-// port sees it taken at its next edge. Only that one bit, the request's valid, depends on clk_p's
+// THE HANDSHAKE. The request's ready is a promise made at LAUNCH: the capture register will be free
+// at the coming CAP (it only fills at a CAP), so the request the port presents that clk_p cycle is
+// captured then and the port sees it taken at its next edge. Only that one bit, the request's valid, depends on clk_p's
 // logic: the capture's enable is clk_m's own (the CAP and the promise), so no clk_p signal fans out
 // to the 600 capture flops. A read beat and a write done go back at one an other edge, so the port
 // sees each for exactly one of its cycles; the caches always take them (rv_mem_arbiter's
@@ -38,7 +39,8 @@
 // write is in the controller) goes the same way as the request, a toggle, a pulse (p_s_rel) again.
 // Both land in clk_p registers first, as the beats do.
 module ddr_port_sync #(
-   parameter integer IDW = 5
+   parameter integer IDW = 5,
+   parameter integer DIV = 2              // clk_m edges a clk_p cycle
 ) (
    // ---- core side (clk_p) ----
    input  wire           clk_p,
@@ -96,13 +98,17 @@ module ddr_port_sync #(
    reg m_tf, m_tr;
    always @(negedge clk_m) m_tf <= p_t;
    always @(posedge clk_m) m_tr <= m_tf;
-   reg cap;                             // this clk_m rising edge is a CAP edge
-   always @(posedge clk_m) cap <= (m_tf == m_tr);   // the last one was not
+   wire chg = m_tf != m_tr;             // this is the edge two after clk_p's ideal edge
+   reg [DIV-1:0] ph;                    // one-hot: this edge's place in the clk_p cycle
+   always @(posedge clk_m)
+      ph <= chg ? ({{(DIV-1){1'b0}}, 1'b1} << (3 % DIV)) : {ph[DIV-2:0], ph[DIV-1]};
+   wire cap = ph[0];                    // CAP
+   wire lch = ph[1 % DIV];              // LAUNCH
 
-   // ---- requests: the promise at the other edge, the capture at CAP, then the output register ----
+   // ---- requests: the promise at LAUNCH, the capture at CAP, then the output register ----
    reg            c_v;                     // the capture register: valid, and the request's fields
    reg  [IDW-1:0] c_id;  reg c_we;  reg [57:0] c_addr;  reg [63:0] c_wmask;  reg [511:0] c_wdata;
-   // the port's ready: launched at an other edge, held through CAP. It is the enable of the L2's
+   // the port's ready: launched at LAUNCH, held through CAP. It is the enable of the L2's
    // 512-bit write-back data among others (rv_l2 d_q_wdata), with an ui cycle to get there, so it
    // is replicated beside its loads.
    (* max_fanout = 32 *) reg promise;
@@ -118,14 +124,13 @@ module ddr_port_sync #(
       if (reset_m) begin
          c_v <= 1'b0;  m_q_valid <= 1'b0;  promise <= 1'b0;
       end else begin
-         if (!cap) promise <= !c_v || c_go;                    // free at the coming CAP
+         if (lch) promise <= !c_v || c_go;                     // free at the coming CAP
          if (cap && promise) c_v <= p_q_valid; else if (c_go) c_v <= 1'b0;
          if (c_go) m_q_valid <= 1'b1; else if (m_q_ready) m_q_valid <= 1'b0;
       end
    end
 
-   // ---- read beats and write dones: launched at the other edges, one a clk_p cycle, then a clk_p
-   // register ----
+   // ---- read beats and write dones: launched at LAUNCH, one a clk_p cycle, then a clk_p register ----
    reg           pr_v, pr_last, pw_v;       // clk_m: the launch registers, by the controller
    reg [IDW-1:0] pr_id, pw_id;
    reg [1:0]     pr_beat;
@@ -134,17 +139,17 @@ module ddr_port_sync #(
    reg [IDW-1:0] q_rid, q_wid;
    reg [1:0]     q_rbeat;
    reg [127:0]   q_rdata;
-   assign m_r_ready = !cap;                 // a beat or a done moves at an other edge
-   assign m_w_ready = !cap;
+   assign m_r_ready = lch;                  // a beat or a done moves at LAUNCH
+   assign m_w_ready = lch;
    assign p_r_valid = q_rv;  assign p_r_id = q_rid;  assign p_r_beat = q_rbeat;
    assign p_r_last  = q_rlast;  assign p_r_data = q_rdata;
    assign p_w_valid = q_wv;  assign p_w_id = q_wid;
    always @(posedge clk_m) begin
-      if (!cap) begin
+      if (lch) begin
          pr_id <= m_r_id;  pr_beat <= m_r_beat;  pr_last <= m_r_last;  pr_data <= m_r_data;  pw_id <= m_w_id;
       end
       if (reset_m) begin pr_v <= 1'b0;  pw_v <= 1'b0; end
-      else if (!cap) begin pr_v <= m_r_valid;  pw_v <= m_w_valid; end
+      else if (lch) begin pr_v <= m_r_valid;  pw_v <= m_w_valid; end
    end
    always @(posedge clk_p) begin
       q_rv <= !reset_p && pr_v;  q_wv <= !reset_p && pw_v;
@@ -152,7 +157,7 @@ module ddr_port_sync #(
    end
 
    // ---- the snoop channel ----
-   reg            s_tog, s_out, s_keep;  reg [25:0] s_line;   // clk_m: launched at the other edges
+   reg            s_tog, s_out, s_keep;  reg [25:0] s_line;   // clk_m: launched at LAUNCH
    reg            s_tq, a_tog;                                 // clk_p: the request's toggle, the answer's
    reg            c_atog;                                      // clk_m: the answer, captured at CAP
    assign p_s_valid = s_tq ^ a_tog;
@@ -167,7 +172,7 @@ module ddr_port_sync #(
          s_tog <= 1'b0;  s_out <= 1'b0;  c_atog <= 1'b0;
       end else if (s_out) begin
          if (c_atog == s_tog) begin s_out <= 1'b0;  m_s_ack <= 1'b1; end
-      end else if (m_s_valid && !m_s_ack && !cap) begin
+      end else if (m_s_valid && !m_s_ack && lch) begin
          s_tog <= ~s_tog;  s_out <= 1'b1;  s_line <= m_s_line;  s_keep <= m_s_keep;
       end
    end
@@ -177,7 +182,7 @@ module ddr_port_sync #(
    always @(posedge clk_p) begin r_tq <= !reset_p && r_tog;  r_seen <= !reset_p && r_tq; end
    always @(posedge clk_m)
       if (reset_m) begin r_tog <= 1'b0;  r_pend <= 1'b0; end
-      else if (!cap && (r_pend || m_s_rel)) begin r_tog <= ~r_tog;  r_pend <= 1'b0; end
+      else if (lch && (r_pend || m_s_rel)) begin r_tog <= ~r_tog;  r_pend <= 1'b0; end
       else if (m_s_rel) r_pend <= 1'b1;
 
 `ifndef SYNTHESIS
@@ -188,11 +193,14 @@ module ddr_port_sync #(
    end
    always @(posedge clk_m) if (!reset_m && c_v && cap && promise && !c_go)
       $fatal(1, "ddr_port_sync: a request captured over one not yet moved on");
-   // the registered phase against the compare it stands for, once clk_p runs
+   // the ring against the compare it is set from, once clk_p runs: one change a clk_p cycle, at the
+   // edge two after CAP; the ring one-hot
    reg ph_on = 1'b0;
+   initial if (DIV < 2) $fatal(1, "ddr_port_sync: DIV %0d (clk_p is clk_m / DIV, DIV >= 2)", DIV);
    always @(posedge clk_m) if (!reset_m) begin
-      if (m_tf != m_tr) ph_on <= 1'b1;
-      if (ph_on && cap != (m_tf != m_tr)) $fatal(1, "ddr_port_sync: the registered CAP %0d against the compare %0d", cap, m_tf != m_tr);
+      if (chg) ph_on <= 1'b1;
+      if (ph_on && (chg != ph[2 % DIV] || $countones(ph) != 1))
+         $fatal(1, "ddr_port_sync: the phase ring %b against the compare %0d", ph, chg);
    end
 `endif
 endmodule

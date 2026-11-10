@@ -1789,15 +1789,16 @@ subtests 0.4% to 3.1% -- while AES-XTS, Horizon Detection and HDR, which stream 
 register costs 0.2% of that (2.95% at read latency 4).
 
 The L2's misses and write-backs go out on the `ddr_*` port: the testbench's model, or on the board:
-- `ddr_port_sync`: into ui_clk as registers, probe_clk being ui_clk / 2 from a BUFGCE_DIV (its edges
-  ~2.7 ns late): ui_clk finds the phase from probe_clk's own toggle sampled on its falling edge (CAP
-  a register, as it alternates), and captures a request at the ui_clk edge 3.3 ns after the port's
-  (a multicycle path of 2 in the XDC), a second ui_clk register on to the controller; everything back
-  to the port is launched at the other ui_clk edges, the request's ready being a promise of room made
+- `ddr_port_sync`: into ui_clk as registers, probe_clk being ui_clk / DIV from a BUFGCE_DIV (2 on the
+  shipping build; `PROBE_CLK_DIVIDE`; its edges ~2.7 ns late): ui_clk finds the phase from probe_clk's
+  own toggle sampled on its falling edge, a one-hot ring of the DIV ui_clk edges of a probe_clk cycle
+  (registers), and captures a request at CAP, the ui_clk edge 3.3 ns after the port's (a multicycle
+  path of DIV in the XDC), a second ui_clk register on to the controller; everything back to the port
+  is launched at LAUNCH, the ui_clk edge after CAP, and held a probe_clk cycle, the request's ready being a promise of room made
   an edge ahead (replicated beside its loads: it enables the L2's 512-bit write-back data, with a ui
   cycle to get there), and a read beat or a write done lands in a probe_clk register by the core -- the long
   route is register to register. Its snoop channel runs the other way, a DMA line to clean or flush
-  and the release after a flush as toggles launched at the other edges into probe_clk registers, the
+  and the release after a flush as toggles launched at LAUNCH into probe_clk registers, the
   answer's toggle captured at CAP;
 - `ddr4_mem`: our DDR4 controller (`ddr4_ctl`) on the DDR4 IP's PHY-only port (AMD PG150), whose
   PHY and calibration train the DRAM before `calDone`. A requester owns its line buffers (this

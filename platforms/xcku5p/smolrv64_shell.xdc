@@ -61,12 +61,12 @@ add_cells_to_pblock [get_pblocks pb_l2] [get_cells shell/probe_core/u_l2]
 resize_pblock [get_pblocks pb_l2] -add {SLICE_X74Y0:SLICE_X85Y239 URAM288_X0Y0:URAM288_X0Y63 RAMB36_X6Y0:RAMB36_X7Y47 RAMB18_X6Y0:RAMB18_X7Y95}
 
 # ddr_port_sync (rk_xcku5p.v probe_sync): the core's memory port into ui_clk as registers.
-# probe_clk is BUFGCE_DIV(ui_clk) / 2, its edges ~2.7 ns after ui_clk's, so Vivado's default check
-# of a probe_clk -> ui_clk path lands on the ui_clk edge 0.3 ns after the launch. The crossing
-# captures at the edge after that (its CAP edge, found from probe_clk's own toggle sampled by
-# ui_clk's falling edge), so its capture registers -- the request's capture register (c_*) and that
-# falling-edge sample -- are multicycle 2. The paths back to probe_clk launch at the other ui_clk
-# edges and need no exception.
+# probe_clk is BUFGCE_DIV(ui_clk) / N (N = 2 shipping), its edges ~2.7 ns after ui_clk's, so
+# Vivado's default check of a probe_clk -> ui_clk path lands on the ui_clk edge 0.3 ns after the
+# launch. The request's capture registers (c_*) capture at probe_clk's next ideal edge, the CAP
+# edge, N ui_clk edges on: multicycle N. probe_clk's toggle is sampled by the first ui_clk falling
+# edge after it changes (m_tf): multicycle 2 at any N. The paths back to probe_clk launch at the ui
+# edge after a probe_clk edge (LAUNCH) and need no exception.
 # The device DNA's fold into net_mac (smolrv64_shell.v): dna_n and dna change only on
 # vga_drp_clk's edges -- ui_clk / 2, phase-aligned -- so each holds two ui_clk cycles at net_mac.
 # On HDMI-XCKU5P the two clock trees are 1.9 ns apart, and the default one-cycle check failed.
@@ -75,10 +75,14 @@ set_multicycle_path -setup 2 -end -from [get_cells -hier -filter {NAME =~ *dna_n
 set_multicycle_path -hold 1 -end -from [get_cells -hier -filter {NAME =~ *dna_n_reg* || NAME =~ *dna_reg*}] \
     -to [get_cells -hier -filter {NAME =~ *net_mac_reg*}]
 
-set_multicycle_path -setup 2 -end -from [get_clocks probe_clk] \
-    -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg* || NAME =~ *probe_sync/m_tf_reg}]
-set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] \
-    -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg* || NAME =~ *probe_sync/m_tf_reg}]
+set ddr_sync_n [expr {round([get_property PERIOD [get_clocks probe_clk]] / \
+    [get_property PERIOD [get_clocks -of_objects [get_pins -hier -filter {NAME =~ *probe_sync/m_tr_reg/C}]]])}]
+set_multicycle_path -setup $ddr_sync_n -end -from [get_clocks probe_clk] \
+    -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg*}]
+set_multicycle_path -hold [expr {$ddr_sync_n - 1}] -end -from [get_clocks probe_clk] \
+    -to [get_cells -hier -filter {NAME =~ *probe_sync/c_*_reg*}]
+set_multicycle_path -setup 2 -end -from [get_clocks probe_clk] -to [get_cells -hier -filter {NAME =~ *probe_sync/m_tf_reg}]
+set_multicycle_path -hold 1 -end -from [get_clocks probe_clk] -to [get_cells -hier -filter {NAME =~ *probe_sync/m_tf_reg}]
 
 # The core's two clocks (core/smolrv64_x2.v): a clk2x register that changes only at the clk2x
 # edges that are probe_clk edges carries x2_cedge, and probe_clk logic reading it has probe_clk's

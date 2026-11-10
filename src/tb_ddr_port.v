@@ -4,8 +4,8 @@
 // (the controller, its line port and its DMA AXI port, a DMA master on the latter) -> the DDR4 IP's
 // PHY-only port, modelled by ddr4_phy_model, which checks every DRAM rule. No system simulation
 // reaches this path (the Linux testbenches model the DDR at rv_soc_top's port), so this is where it
-// is proven, across the two clocks -- clk_p is clk_m / 2 and late by 2.7 ns, as the board's
-// BUFGCE_DIV makes it.
+// is proven, across the two clocks -- clk_p is clk_m / DIV (2 shipping; tb_ddr_port_div4.v runs 4)
+// and late by 2.7 ns, as the board's BUFGCE_DIV makes it.
 //
 // The core side keeps up to NFLY transactions in flight across its ids -- random reads, full and
 // partial-mask writes, never two in flight on one line (the data cache's promise) -- and checks
@@ -17,7 +17,7 @@
 //
 //   +n=N (transactions, default 20000)  +seed=N
 `include "tb_rand.vh"
-module tb;
+module tb #(parameter integer DIV = 2);   // DIV even
    integer ntrans, seedv;
    `TB_RAND(mrnd, mrs)   // the memory side (clk_m)
    `TB_RAND(prnd, prs)   // the port side (clk_p)
@@ -26,10 +26,14 @@ module tb;
       if (!$value$plusargs("seed=%d", seedv)) seedv = 1;
       mrs = `TB_SEED(seedv);  prs = `TB_SEED(seedv + 1);
    end
-   // clk_m free-running at 3 ns; clk_p = clk_m / 2, its edges 2.7 ns after clk_m's (the board's
+   // clk_m free-running at 3 ns; clk_p = clk_m / DIV, its edges 2.7 ns after clk_m's (the board's
    // BUFGCE_DIV insertion delay)
    reg clk_m = 0, clk_div = 0;
-   always #1.5 begin clk_m = ~clk_m; if (clk_m) clk_div = ~clk_div; end
+   integer cdn = 0;
+   always #1.5 begin
+      clk_m = ~clk_m;
+      if (clk_m) begin cdn = cdn + 1; if (cdn == DIV / 2) begin cdn = 0; clk_div = ~clk_div; end end
+   end
    wire clk_p;
    assign #2.7 clk_p = clk_div;
    reg reset_p = 1, reset_m = 1;
@@ -43,7 +47,7 @@ module tb;
    wire [1:0]  mr_beat;  wire [127:0] mr_data;
    wire        sm_valid, sm_keep, sm_ack, sm_rel, sp_valid, sp_keep, sp_rel;  wire [25:0] sm_line, sp_line;
    reg         sp_ack = 1'b0;
-   ddr_port_sync cdc
+   ddr_port_sync #(.DIV(DIV)) cdc
      (.clk_p(clk_p), .reset_p(reset_p),
       .p_q_valid(pq_valid), .p_q_ready(pq_ready), .p_q_id(pq_id), .p_q_we(pq_we), .p_q_addr(pq_addr),
       .p_q_wmask(pq_wmask), .p_q_wdata(pq_wdata),
@@ -221,8 +225,8 @@ module tb;
       end
       if (done == ntrans) begin
          if (errors == 0 && n_snoop >= dma_r + dma_w && n_snoop > 0)
-            $display("tb_ddr_port: PASS (%0d transactions, DMA %0d reads %0d writes, %0d snoops, %0d clk_p cycles)",
-                     ntrans, dma_r, dma_w, n_snoop, cyc);
+            $display("tb_ddr_port: PASS (DIV %0d, %0d transactions, DMA %0d reads %0d writes, %0d snoops, %0d clk_p cycles)",
+                     DIV, ntrans, dma_r, dma_w, n_snoop, cyc);
          else $display("tb_ddr_port: FAIL (%0d errors; %0d snoops for %0d DMA lines, %0d releases owed)", errors, n_snoop, dma_r + dma_w, rel_owed);
          $finish;
       end

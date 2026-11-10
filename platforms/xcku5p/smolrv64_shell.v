@@ -1767,7 +1767,7 @@ module smolrv64_shell #(
 
    // ===================== The core: rv_soc_top at probe_clk =====================
    // rv_soc_top (core + I$/D$ + CLINT/PLIC/UART + boot SRAM) at probe_clk; its tagged DDR
-   // memory port -> ddr_port_sync (registers: probe_clk is ui_clk / 2) -> ddr4_mem, our
+   // memory port -> ddr_port_sync (registers: probe_clk is ui_clk / PROBE_CLK_DIVIDE) -> ddr4_mem, our
    // controller, beside the DMA masters' AXI port. virtio-blk/net and the MMIO bridge hang off its
    // virtio passthrough below.
    wire         pq_valid, pq_ready, pq_we, pr_valid, pr_ready, pr_last, pw_valid, pw_ready;
@@ -1954,7 +1954,7 @@ module smolrv64_shell #(
    );
 `endif
 
-   ddr_port_sync probe_sync (
+   ddr_port_sync #(.DIV(`PROBE_CLK_DIVIDE)) probe_sync (
       .clk_p(probe_clk), .reset_p(probe_reset),
       .p_q_valid(pq_valid), .p_q_ready(pq_ready), .p_q_id(pq_id), .p_q_we(pq_we), .p_q_addr(pq_addr),
       .p_q_wmask(pq_wmask), .p_q_wdata(pq_wdata),
