@@ -772,6 +772,7 @@ module rv_soc_top #(
    wire dc_inv_req, dc_inv_busy;
    wire dc_ic_req, dc_ic_ack, dc_ic_dty;          // the I$'s line clean beside each fill
    wire ox_req, ox_keep, ox_ack;  wire [63:0] ox_pa;   // the D$'s outside request (below)
+   wire dma_sn_rel_f = dma_sn_rel & ~h2;             // the controller's release is clk's: once
    // Zihpm cache-event taps (D$/I$ line-lookup + miss pulses) -> core hpm_ev.
    wire dc_access, dc_miss, ic_access, ic_miss;
    // the D$'s memory-port client wires (client 0 of the arbiter below)
@@ -804,7 +805,7 @@ module rv_soc_top #(
       .wr_data(dmem_wdata), .wr_mask(dmem_wmask), .wr_nc(dmem_wuncached),
       .cbo_req(dmem_cbo & ~dc_wr_cpl & ~is_dev_w_q), .cbo_zero(dmem_cbo_zero), .cbo_keep(dmem_cbo_keep),
       .wr_room(dc_wr_room), .wr_acc(dc_wr_acc), .wr_cpl(dc_wr_cpl),
-      .ox_req(ox_req), .ox_pa(ox_pa), .ox_keep(ox_keep), .ox_ack(ox_ack), .ox_dty(dc_ic_dty), .ox_rel(dma_sn_rel),
+      .ox_req(ox_req), .ox_pa(ox_pa), .ox_keep(ox_keep), .ox_ack(ox_ack), .ox_dty(dc_ic_dty), .ox_rel(dma_sn_rel_f),
       .inv_req(dc_inv_req), .inv_busy(dc_inv_busy),
       .cq_valid(mc_q_valid[0]), .cq_ready(mc_q_ready[0]), .cq_slot(mc_q_slot[0*MSW +: MSW]),
       .cq_we(mc_q_we[0]), .cq_addr(mc_q_addr[0*LAW +: LAW]), .cq_wmask(mc_q_wmask[0*64 +: 64]),
