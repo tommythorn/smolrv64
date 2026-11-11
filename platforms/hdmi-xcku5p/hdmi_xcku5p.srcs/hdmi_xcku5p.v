@@ -65,17 +65,30 @@ module hdmi_xcku5p(
    assign led     = {4'd0, shell_led};
    assign hdmi_oe = 1'b1;
 
-   // The fan: 25 kHz at 75% (100% is loud). Its driver inverts -- an undriven pin is pulled up, which
-   // stops it -- so the pin is LOW for the on part: 1500 of each 2000 cycles of the 50 MHz oscillator.
-   // It runs from the board's own oscillator, so it turns from configuration on, whatever DDR4 or the
-   // core are doing.
+   // The fan: 25 kHz, its duty the larger of the die's temperature's and the floor that software
+   // sets (fan_ctl). Its driver inverts -- an undriven pin is pulled up, which stops it -- so the
+   // pin is LOW for the on part. It runs from the board's own oscillator, so it turns from
+   // configuration on, whatever DDR4 or the core are doing; until SYSMON's first reading it is full.
+   // SYSMON (its default sequence: the on-chip sensors, averaged) is read for the temperature
+   // every 2^16 cycles (1.3 ms); its ADC clock is 50 MHz / 10 = 5 MHz, within its 5.2.
    wire        clk_fan;
-   reg  [10:0] fan_cnt = 11'd0;
    BUFG bufg_fan (.I(clk_50m), .O(clk_fan));
+   wire [15:0] sm_do;
+   wire        sm_rdy, fan_on;
+   wire [ 6:0] fan_floor;
+   wire [22:0] fan_stat;
+   reg  [15:0] sm_cnt = 16'd0;
+   reg         sm_den = 1'b0;
    always @(posedge clk_fan) begin
-      fan_cnt <= (fan_cnt == 11'd1999) ? 11'd0 : fan_cnt + 11'd1;     // 50 MHz / 2000 = 25 kHz
-      fan_pwm <= fan_cnt >= 11'd1500;                                  // high (off) a quarter of it
+      sm_cnt  <= sm_cnt + 16'd1;
+      sm_den  <= &sm_cnt;
+      fan_pwm <= ~fan_on;
    end
+   SYSMONE4 #(.INIT_42(16'h0A00)) sysmon (
+      .DCLK(clk_fan), .DEN(sm_den), .DADDR(8'h00), .DWE(1'b0), .DI(16'h0000), .DO(sm_do), .DRDY(sm_rdy),
+      .RESET(1'b0), .CONVST(1'b0), .CONVSTCLK(1'b0));
+   fan_ctl fan (.clk(clk_fan), .t_v(sm_rdy), .t_code(sm_do), .fan_on(fan_on),
+      .rclk(ui_clk), .r_floor(fan_floor), .r_stat(fan_stat));
 
    // The pixel clock's MMCM comes up, and is timed, at 1000 MHz / 7 = 142.86 MHz: hdmi_tx's
    // MMCM multiplies it by ten, within its VCO's 1600 MHz, and 1080p60 is D = 7. The monitor
@@ -100,6 +113,8 @@ module hdmi_xcku5p(
       .vid_rgb          (vid_rgb),
       .aud_valid        (aud_valid),
       .aud_frame        (aud_frame),
+      .fan_floor        (fan_floor),
+      .fan_stat         (fan_stat),
       .hid_rxd          (hid_rxd),
       .c0_ddr4_act_n    (c0_ddr4_act_n),
       .c0_ddr4_adr      (c0_ddr4_adr),

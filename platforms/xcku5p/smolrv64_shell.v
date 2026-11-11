@@ -98,6 +98,11 @@ module smolrv64_shell #(
     // playback clock, in ui_clk (silence when nothing plays; a board without an output leaves them)
     output wire        aud_valid,
     output wire [31:0] aud_frame,
+    // The fan (fan_ctl, in a board's top): the floor that software sets, in percent, and back
+    // {the duty in use, the die's temperature code}, both in ui_clk. A board without a fan leaves
+    // the floor and gives zero.
+    output reg  [ 6:0] fan_floor = 7'd30,
+    input  wire [22:0] fan_stat,
 
     // USB keyboards and mice through a Raspberry Pi Pico (tools/hid-bridge): its UART TX,
     // virtio_input's HID line.
@@ -729,10 +734,12 @@ module smolrv64_shell #(
    reg  [ 7:0] rd_sel_q = 8'd0;   reg rd_dbg_q = 1'b0;
    reg  [31:0] rd_spi_q, rd_cd_q, rd_blk_q, rd_blkdb_q, rd_net_q, rd_netdb_q, rd_vga_q, rd_kbd_q, rd_keys_q, rd_snd_q;
 
-   // 0x10006000, the board's keys: [3:0] key[3:0] held now, [11:8] pressed since the CPU's
-   // reset (a write of 1 clears). Each key is synchronized and debounced: a level counts once it
-   // has held for 2^18 ui_clk cycles (0.8 ms). key[0] is the monitor's: pressed at its prompt,
-   // it boots over TFTP.
+   // 0x10006000, the board's page. Word 0, the keys: [3:0] key[3:0] held now, [11:8] pressed
+   // since the CPU's reset (a write of 1 clears). Each key is synchronized and debounced: a level
+   // counts once it has held for 2^18 ui_clk cycles (0.8 ms). key[0] is the monitor's: pressed at
+   // its prompt, it boots over TFTP. Word 1 (0x10006004, read): the die's temperature code in
+   // [15:0] (C = code x 509.314 / 65536 - 280.231) and the fan's duty in percent in [22:16].
+   // Word 2 (0x10006008): the fan's floor in percent, [6:0] (fan_ctl).
    (* async_reg = "true" *) reg [3:0] keys_m = 4'hf, keys_s = 4'hf;
    reg  [3:0]  keys_db = 4'hf;                      // debounced, active low like the pins
    reg  [3:0]  keys_hit = 4'h0;                     // pressed since the CPU's reset
@@ -751,9 +758,13 @@ module smolrv64_shell #(
       end
       if (ui_mmio_write && keys_sel && ui_mmio_address[11:2] == 10'd0)
          keys_hit <= keys_hit & ~ui_mmio_writedata[11:8];
+      if (ui_mmio_write && keys_sel && ui_mmio_address[11:2] == 10'd2)
+         fan_floor <= ui_mmio_writedata[6:0];
       if (ui_cpu_reset) keys_hit <= 4'h0;
    end
-   wire [31:0] keys_readdata = {20'd0, keys_hit, 4'd0, ~keys_db};
+   wire [31:0] keys_readdata = (ui_mmio_address[11:2] == 10'd1) ? {9'd0, fan_stat}
+                             : (ui_mmio_address[11:2] == 10'd2) ? {25'd0, fan_floor}
+                             : {20'd0, keys_hit, 4'd0, ~keys_db};
 
    always @(posedge ui_clk) begin
       if (ui_cpu_reset) begin

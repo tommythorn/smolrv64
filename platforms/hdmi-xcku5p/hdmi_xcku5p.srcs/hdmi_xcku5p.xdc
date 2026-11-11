@@ -8,7 +8,9 @@ set_property PACKAGE_PIN T24 [get_ports sys_clk_p]
 set_property PACKAGE_PIN U24 [get_ports sys_clk_n]
 set_property IOSTANDARD DIFF_SSTL12 [get_ports {sys_clk_p sys_clk_n}]
 
-# The fan (bank 67): 25 kHz PWM on E15 from the 50 MHz oscillator (E18), which nothing else uses.
+# The fan (bank 67): 25 kHz PWM on E15 from the 50 MHz oscillator (E18), which only the fan and
+# SYSMON's reads use. fan_ctl crosses to and from ui_clk with held values and toggles (each value
+# still for two receiving cycles after its toggle arrives), so the clocks are unrelated.
 set_property -dict {PACKAGE_PIN E18 IOSTANDARD LVCMOS18} [get_ports clk_50m]
 set_property -dict {PACKAGE_PIN E15 IOSTANDARD LVCMOS18} [get_ports fan_pwm]
 create_clock -period 20.000 -name clk_50m [get_ports clk_50m]

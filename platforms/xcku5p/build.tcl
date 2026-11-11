@@ -113,6 +113,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
     add_source_if_missing $fileset [file join $src_dir gmii_to_rgmii.v] Verilog
     add_source_if_missing $fileset [file join $src_dir gmii_phy.v] Verilog
     add_source_if_missing $fileset [file join $src_dir hdmi_tx.v] Verilog
+    add_source_if_missing $fileset [file join $src_dir fan_ctl.v] Verilog
     add_source_if_missing $fileset [file join $src_dir hdmi_symbols.v] Verilog
     add_source_if_missing $fileset [file join $src_dir virtio_snd.v] Verilog
     add_source_if_missing $fileset [file join $repo_root platforms xcku5p smolrv64_shell.v] Verilog
