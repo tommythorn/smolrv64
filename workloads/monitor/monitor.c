@@ -10,7 +10,8 @@
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
 //   N<addr> <path>   - load a file from the TFTP server (coffee), relative to G's directory
-//   G [dir], go [dir] - boot from the TFTP server: run dir/boot.txt (key[0] at the prompt: go)
+//   G [dir], go [dir] - boot from the TFTP server: run dir/boot.txt, dir the board's own when
+//                       none is given (key[0] at the prompt: go)
 //   L<addr> <path>   - load a file from the SD card's EFI System Partition
 //   D [path]         - list a directory there
 //   B                - boot from the SD card: run /smolrv64/boot.txt (for demos)
@@ -31,6 +32,12 @@
 
 #ifndef BOOT_DIR
 #define BOOT_DIR "/smolrv64"
+#endif
+
+// The TFTP directory a bare `go` (and key[0]) boots from: the board's own (the Makefile's per-board
+// builds), so the button can never start another board's kernel and device tree.
+#ifndef NET_DIR
+#define NET_DIR ""
 #endif
 
 // Firmware build stamp (YYYYMMDDHHMMSS as hex digits, like the RTL stamp).
@@ -484,6 +491,7 @@ static int net_boot(const char *dir)
     static char path[LINE_MAX];
     uint64_t n;
     int k = 0;
+    if (!*dir) dir = NET_DIR;
     while (*dir && k < LINE_MAX - 1) net_dir[k++] = *dir++;
     net_dir[k] = 0;
     int r = net_load(net_path("boot.txt", path), BOOT_TXT, BOOT_TXT_MAX, &n);
