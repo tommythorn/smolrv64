@@ -529,19 +529,21 @@ if {$step in {synth impl bit}} {
     run_if_needed synth_1 "" 12
     puts "Synthesis complete."
 
+    # This synthesis's own log: runme.log keeps every session since the run was created (a
+    # reset_run does not clear it), so the gates below read <top>.vds, which holds only this one.
+    set _slog [file join [get_property DIRECTORY [get_runs synth_1]] [get_property TOP [current_fileset]].vds]
+
     # RAM INFERENCE GATE. Whether an array is a RAM or a mux over flops is decided here,
     # silently, from its access pattern -- a broadcast read or a reset `for` loop demotes it
     # and nothing in lint, the testbenches or the cosim can see that. It shows up as slack
     # months later on a design that is 65-83% route-bound. tools/ram-manifest.txt records
     # which arrays must stay RAM; this fails the build the moment one does not.
-    set _rc [catch {exec python3 [file join $repo_root tools check-ram-inference.py] \
-                        [file join [get_property DIRECTORY [get_runs synth_1]] runme.log]} _rout]
+    set _rc [catch {exec python3 [file join $repo_root tools check-ram-inference.py] $_slog} _rout]
     puts $_rout
     if {$_rc} { error "RAM inference regressed -- see above and docs/rtl-rules.md I7" }
     # PORT WIDTH GATE. A connection narrower or wider than its port is only a warning to
     # Vivado (Synth 8-689), and it is how a regenerated IP with the wrong port width reaches a
     # bitstream (rule E3: a width mismatch across a hierarchy boundary is an error).
-    set _slog [file join [get_property DIRECTORY [get_runs synth_1]] runme.log]
     set _fh [open $_slog r]; set _txt [read $_fh]; close $_fh
     set _bad [regexp -all -inline -line {^.*\[Synth 8-689\].*$} $_txt]
     if {[llength $_bad] > 0} {

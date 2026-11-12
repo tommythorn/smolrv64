@@ -20,7 +20,7 @@ Neither shows up in lint, in a testbench, or in the cosim.  It shows up as slack
 later, on a design that is 65-83% route-bound (docs/rtl-rules.md I7).  So the intent is
 recorded here and CHECKED, rather than left to be rediscovered.
 
-Usage:  check-ram-inference.py <synth-runme.log> [manifest]
+Usage:  check-ram-inference.py <synthesis .vds> [manifest]
         manifest defaults to tools/ram-manifest.txt next to this script. A count `x{expr}` is
         evaluated in IW, the environment's SMOLRV64_IW (the build sets it to the width it built).
 Exit 0 = every required array is a RAM.  Exit 1 = at least one regressed.
@@ -122,13 +122,13 @@ def required_present(entry, have, final):
 
 def main():
     if len(sys.argv) < 2:
-        sys.exit("usage: check-ram-inference.py <synth-runme.log> [manifest]")
+        sys.exit("usage: check-ram-inference.py <synthesis .vds> [manifest]")
     log = sys.argv[1]
     here = os.path.dirname(os.path.abspath(__file__))
     manifest = sys.argv[2] if len(sys.argv) > 2 else os.path.join(here, "ram-manifest.txt")
     if not os.path.exists(log):
-        print("ram-check: no synth log at %s -- SKIPPED" % log)
-        return 0
+        print("ram-check: no synthesis log at %s -- not a pass" % log)
+        return 1
     have, final = inferred_rams(log)
     if not have:
         print("ram-check: parsed NO rams out of %s." % log)
