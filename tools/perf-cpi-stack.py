@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """Turn `perf stat` output from the SmolRV64 core into a top-down breakdown or a CPI stack + MPKI.
 
-TOP-DOWN (the `td` set, or any run with the TD_* events): the core charges every cycle to exactly
-one of bad speculation (TD_BS), front-end (TD_FE), back-end (TD_BE) or dispatching (the rest), by
-one classifier (smolrv64_core td_k, SmolRV64-Spec 11.2) -- the same one the simulator's TOPDOWN-SIM
-prints -- so the four buckets are cycles by construction, and the depth events are subsets of
-their parent. DPATCH (instructions dispatched) gives the slot view against IW x cycles. The TDK_*
-events are td_k itself, one per TOPDOWN-SIM bucket: the tdbe set counts the back-end's ten causes
-(they sum to TD_BE), the tdfe set bad speculation's and the front-end's and the dispatch width.
-
-    perf-smol td   CMD > /dev/null      # levels 1 and 2 (tools/perf-smol.sh, installed on the board)
-    perf-smol tdbe CMD > /dev/null      # the back-end's causes
-    perf-smol tdfe CMD > /dev/null      # bad speculation, front-end, width
+TOP-DOWN (every perf-smol set): the core charges every cycle to exactly one of bad speculation,
+front-end, back-end or dispatching, by one classifier (smolrv64_core td_k, SmolRV64-Spec 11.2) --
+the same one the simulator's TOPDOWN-SIM prints. The TDK_* events are td_k itself, one per
+TOPDOWN-SIM bucket, and the sixteen outside dispatching each have a fixed counter, so every set
+counts all of them beside its own events: levels 1 and 2 are their sums, and level 1 closes to the
+cycles by construction. DPATCH (instructions dispatched) gives the slot view against IW x cycles.
 
 perf-smol runs this script on its counts when the command ends; run it by hand to re-read a
 saved file (perf-smol.<set>.txt).
 
-The wait-cycle view below reads the ST_* events: they overlap (a cycle waits on several things
-at once) and are depth, never a partition.
+After the top-down, a set's own events: the wait-cycle view reads the ST_* events, which overlap
+(a cycle waits on several things at once) and are depth under the top-down, never a partition.
 
 A dispatch stall is the queue head holding an instruction it has no credit for (hd_wait,
 SmolRV64-Spec 3.2): ST_DSP and ST_ROB, and ST_IQ..ST_SRZ beneath ST_DSP, all describe the head.
@@ -91,6 +86,11 @@ TDK = {"bad speculation": [("TDK_REDIRECT", "a redirect"), ("TDK_DRAIN", "a reso
                     ("TDK_BE_SER", "serialising / CSR / CBO"), ("TDK_BE_HELD", "the IR held after a redirect or resteer")],
        "dispatching": [("TDK_OK1", "1 instruction"), ("TDK_OK2", "2"), ("TDK_OK3", "3"), ("TDK_OK4", "4")]}
 
+# The events a set counts beside the top-down's (perf-smol top counts only the top-down's): a run
+# with any of them prints the wait-cycle view after the top-down.
+OWN = ({k for k, _ in BACKEND + OCCUPANCY + DSP_SUB + MEM_SUB + MEM_CNT + FE_SUB}
+       | {"REDIR", "LOAD", "STORE", "DCACC", "ICACC", "MEM_LDINFL", "MEM_LDSENT", "MEM_LQOCC", "MEM_SQOCC"})
+
 # Every event name the reports read: the table must name them all (see main).
 USED = ({k for k, _ in BACKEND + OCCUPANCY + DSP_SUB + MEM_SUB + MEM_CNT + FE_SUB + REDIR_SUB}
         | {k for rows in TDK.values() for k, _ in rows}
@@ -157,8 +157,9 @@ class Report:
                 print("    " + n.rjust(w) + "   " + "  " * d + l + ("   " + note if note else ""))
             i = j
 
-def topdown(v, width, R):
-    """The closing top-down report. Returns False if the run has no TD_* events."""
+def topdown(v, width, R, rates):
+    """The closing top-down report, with the redirect and miss rates unless the set's own view
+    prints them (rates false). Returns False if the run has no TD_* events."""
     if v.get("TD_BE") is None or v.get("TD_FE") is None or v.get("TD_BS") is None:
         return False
     g = lambda k: (v.get(k) or 0)
@@ -180,7 +181,7 @@ def topdown(v, width, R):
                 rest -= g(k)
         if any(v.get(k) is not None for _, k in rows):
             R.row(1, "- " + rest_label, pc(rest))
-    have3 = tdk(v, {"bad speculation": bs, "front-end": fe, "back-end": be, "dispatching": disp}, pc, R)
+    tdk(v, {"bad speculation": bs, "front-end": fe, "back-end": be, "dispatching": disp}, pc, R)
     R.text("\n  level 2")
     R.row(0, "bad speculation", pc(bs))
     if v.get("RD_WAIT") is not None:
@@ -189,12 +190,12 @@ def topdown(v, width, R):
         R.row(1, "- the redirect itself", pc(bs - drain))
     R.row(0, "front-end", pc(fe))
     sub(fe, [("latency: iMMU walk / no fetch bytes", "TD_FE_LAT")],
-        "bytes but no whole instruction, or not yet in the IR" + ("" if have3 else " (tdfe splits)"))
+        "bytes but no whole instruction, or not yet in the IR")
     R.row(0, "back-end", pc(be))
     sub(be, [("memory: a head op in M / an integer-load wait", "TD_BE_MEM"),
              ("no ROB room", "TD_BE_ROB"),
              ("no scheduler / load / store queue room", "TD_BE_IQ")],
-        "rename, serialising, FP results, the held IR" + ("" if have3 else " (tdbe splits)"))
+        "rename, serialising, FP results, the held IR")
     if v.get("DPATCH") is not None:
         slots = width * cyc
         R.text("\n  slots (%d x cycles)" % width)
@@ -204,13 +205,10 @@ def topdown(v, width, R):
     rows = [("conditional branch", "RED_BR"), ("indirect jump", "RED_JLR"), ("exception / interrupt / fault / replay", "RED_TRP"),
             ("D$ line fills", "DCMISS"), ("I$ misses", "ICMISS"), ("dMMU walker starts", "DTLB_MISS")]
     got = [(l, k) for l, k in rows if v.get(k) is not None]
-    if got:
+    if got and rates:
         R.text("\n  per 1000 instructions")
         for l, k in got:
             R.row(0, l, "%.3f" % (1000.0 * g(k) / ins))
-    if not have3:
-        R.text("\n  level 3: perf-smol top (every cause in one run, on a bitstream with the fixed counters),"
-               "\n  or perf-smol tdbe and perf-smol tdfe, each a run of its own")
     return True
 
 # td_k's causes outside dispatching, one counter each (perf-smol top). Level 1 and level 2 are
@@ -224,6 +222,10 @@ def from_causes(v, cyc):
     if v.get("TD_BS") is not None or any(v.get(k) is None for k in STALL_TDK):
         return
     g = lambda k: v.get(k) or 0
+    if not sum(g(k) for k in STALL_TDK):
+        sys.exit("error: the sixteen fixed top-down counters (16..31) read 0 over %d cycles: the\n"
+                 "       bitstream predates them (main d9cbe5bf), or the DTB lacks their counter map\n"
+                 "       (riscv,raw-event-to-mhpmcounters; make -C workloads/ubuntu dtbs)." % cyc)
     v["TD_BS"] = g("TDK_REDIRECT") + g("TDK_DRAIN")
     v["TD_FE"] = sum(g(k) for k, _ in TDK["front-end"])
     v["TD_BE"] = sum(g(k) for k, _ in TDK["back-end"])
@@ -297,7 +299,9 @@ def main():
     if not cyc or not ins:
         sys.exit("error: need both cycles and instructions; got %s" % sorted(v))
     from_causes(v, cyc)
-    if topdown(v, width, R):
+    own = any(v.get(k) is not None for k in OWN)
+    td = topdown(v, width, R, not own)
+    if td and not own:
         if unknown:
             R.text("\n  ignored unrecognised events: %s" % ", ".join(sorted(set(unknown))))
         R.show()
@@ -311,54 +315,57 @@ def main():
     no_backend = not any(v.get(k) is not None for k, _ in BACKEND)
     share = lambda n: "%7.3f  %5.1f%%" % (n / ins, 100.0 * n / cyc)    # cycles per insn, share of cycles
 
-    R.text("  cycles %-16d instructions %-16d IPC %.3f   CPI %.3f" % (cyc, ins, ins/cyc, cpi))
-    R.text("  (the wait-cycle view: its events overlap, so it is depth, not a partition -- the td sets close)")
-    R.text("\n  wait cycles per instruction (dispatch is %d per cycle, so %.3f is the floor)"
-           % (width, 1.0 / width))
-    R.row(0, "dispatch floor (%d per cycle)" % width, "%7.3f  %5.1f%%" % (1.0 / width, 100.0*floor/cyc))
-    for k, label in BACKEND:
-        if v.get(k) is not None and g(k):
-            R.row(0, "stall: " + label, share(g(k)))
-            # the memory events sit beside ST_MEM, not inside it: each is its own condition
-            if k == "ST_MEM" and any(v.get(kk) is not None for kk, _ in MEM_SUB + MEM_CNT + [("MEM_LDINFL", "")]):
-                for kk, ll in MEM_SUB:
-                    if v.get(kk) is not None:
-                        R.row(1, "~ " + ll, share(g(kk)))
-                if v.get("MEM_LDINFL") is not None:
-                    R.row(1, "~ mean fast loads in flight", "%.2f" % (g("MEM_LDINFL")/cyc), "loads")
-                    if g("MEM_LDSENT"):
-                        R.row(1, "~ mean fast-load latency", "%.2f" % (g("MEM_LDINFL")/g("MEM_LDSENT")), "cycles")
-                for kk, ll in MEM_CNT:
-                    if v.get(kk) is not None:
-                        R.row(1, "~ " + ll, "%.3f" % per_k(g(kk)), "per 1k insns")
-                for kk, ll in (("MEM_LQOCC", "load queue"), ("MEM_SQOCC", "store queue")):
-                    if v.get(kk) is not None:
-                        R.row(1, "~ mean %s occupancy" % ll, "%.2f" % (g(kk)/cyc), "entries")
-            # ST_DSP's disjoint parts (the `hold` set): a breakdown, never added alongside it.
-            if k == "ST_DSP" and any(v.get(kk) is not None for kk, _ in DSP_SUB):
-                for kk, ll in DSP_SUB:
-                    if g(kk):
-                        R.row(1, "- " + ll, share(g(kk)))
-    for k, label in OCCUPANCY:
-        if v.get(k) is not None:
-            R.row(0, label, share(g(k)), "(occupancy, not in the sum)")
-    if fe_bub:
-        tag = " (derived)" if v.get("_FE_BUB_DERIVED") else ""
-        R.row(0, "frontend bubble" + tag, share(fe_bub))
-        other = fe_bub - sum(g(k) for k, _ in FE_SUB)
-        for k, label in FE_SUB:
-            if g(k):
-                R.row(1, "- " + label, share(g(k)))
-        # FE_MMU + FE_IC + FE_ALN + FE_QUE = FE_BUB in the RTL: a remainder is a broken event map
-        if abs(other) > 0.0005 * cyc:
-            R.row(1, "- other", share(other), "<-- unattributed")
-    flag = ""
-    if unattr > 0.005 * cyc:
-        flag = ("<-- no backend events in this run: use perf-smol cpi" if no_backend
-                else "<-- a cause with no counter (or events dropped from the set)")
-    elif unattr < -0.005 * cyc:
-        flag = "(events overlap: a cycle blocked on two units counts in both)"
-    R.row(0, "unattributed", share(unattr), flag)
+    # The stack, when the run counted a wait or a front-end event: after a top-down, a set of
+    # only counts and rates (mem, br) has nothing to stack.
+    if not td or not no_backend or fe_bub:
+        R.text(("\n" if td else "") + "  cycles %-16d instructions %-16d IPC %.3f   CPI %.3f" % (cyc, ins, ins/cyc, cpi))
+        R.text("  (the wait-cycle view: its events overlap, so it is depth, not a partition -- the top-down above closes)")
+        R.text("\n  wait cycles per instruction (dispatch is %d per cycle, so %.3f is the floor)"
+               % (width, 1.0 / width))
+        R.row(0, "dispatch floor (%d per cycle)" % width, "%7.3f  %5.1f%%" % (1.0 / width, 100.0*floor/cyc))
+        for k, label in BACKEND:
+            if v.get(k) is not None and g(k):
+                R.row(0, "stall: " + label, share(g(k)))
+                # the memory events sit beside ST_MEM, not inside it: each is its own condition
+                if k == "ST_MEM" and any(v.get(kk) is not None for kk, _ in MEM_SUB + MEM_CNT + [("MEM_LDINFL", "")]):
+                    for kk, ll in MEM_SUB:
+                        if v.get(kk) is not None:
+                            R.row(1, "~ " + ll, share(g(kk)))
+                    if v.get("MEM_LDINFL") is not None:
+                        R.row(1, "~ mean fast loads in flight", "%.2f" % (g("MEM_LDINFL")/cyc), "loads")
+                        if g("MEM_LDSENT"):
+                            R.row(1, "~ mean fast-load latency", "%.2f" % (g("MEM_LDINFL")/g("MEM_LDSENT")), "cycles")
+                    for kk, ll in MEM_CNT:
+                        if v.get(kk) is not None:
+                            R.row(1, "~ " + ll, "%.3f" % per_k(g(kk)), "per 1k insns")
+                    for kk, ll in (("MEM_LQOCC", "load queue"), ("MEM_SQOCC", "store queue")):
+                        if v.get(kk) is not None:
+                            R.row(1, "~ mean %s occupancy" % ll, "%.2f" % (g(kk)/cyc), "entries")
+                # ST_DSP's disjoint parts (the `hold` set): a breakdown, never added alongside it.
+                if k == "ST_DSP" and any(v.get(kk) is not None for kk, _ in DSP_SUB):
+                    for kk, ll in DSP_SUB:
+                        if g(kk):
+                            R.row(1, "- " + ll, share(g(kk)))
+        for k, label in OCCUPANCY:
+            if v.get(k) is not None:
+                R.row(0, label, share(g(k)), "(occupancy, not in the sum)")
+        if fe_bub:
+            tag = " (derived)" if v.get("_FE_BUB_DERIVED") else ""
+            R.row(0, "frontend bubble" + tag, share(fe_bub))
+            other = fe_bub - sum(g(k) for k, _ in FE_SUB)
+            for k, label in FE_SUB:
+                if g(k):
+                    R.row(1, "- " + label, share(g(k)))
+            # FE_MMU + FE_IC + FE_ALN + FE_QUE = FE_BUB in the RTL: a remainder is a broken event map
+            if abs(other) > 0.0005 * cyc:
+                R.row(1, "- other", share(other), "<-- unattributed")
+        flag = ""
+        if unattr > 0.005 * cyc:
+            flag = ("<-- no backend events in this run: use perf-smol cpi" if no_backend
+                    else "<-- a cause with no counter (or events dropped from the set)")
+        elif unattr < -0.005 * cyc:
+            flag = "(events overlap: a cycle blocked on two units counts in both)"
+        R.row(0, "unattributed", share(unattr), flag)
 
     mpki = []
     if any(v.get(k) is not None for k, _ in REDIR_SUB):
@@ -388,8 +395,8 @@ def main():
         R.text("\n  MPKI (per 1000 instructions)")
         for label, val, note in mpki:
             R.row(0, label, val, note)
-    else:
-        R.text("\n  MPKI: no redirect / miss / drain events in this run (perf-smol.sh cpi, br, mem)")
+    elif not td:
+        R.text("\n  MPKI: no redirect / miss / drain events in this run (perf-smol cpi, br, mem)")
 
     for code, label in (("LOAD", "loads"), ("STORE", "stores")):
         if g(code):
@@ -398,4 +405,5 @@ def main():
         R.text("\n  ignored unrecognised events: %s" % ", ".join(sorted(set(unknown))))
     R.show()
 
-main()
+if __name__ == "__main__":
+    main()

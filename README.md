@@ -296,9 +296,10 @@ after pass until a key: the data lines, the address lines, every word holding it
 random data at full bandwidth, and random data in a scattered order that opens a row on nearly
 every access; `M <addr> <len> [n]` tests a range for n passes.
 On the board,
-`perf-smol td <cmd>` (installed from coffee by `tools/perf-smol-install.sh`) runs a command
-under the Top-Down event set and prints the report; `docs/SmolRV64-Spec.md` §11, "Reading the report",
-explains each line and the `cpi` and `mem` sets that go under it.
+`perf-smol top <cmd>` (installed from coffee by `tools/perf-smol-install.sh`) runs a command
+under the Top-Down events and prints the report, and `perf-smol rec td <cmd>` shows which
+functions lose the cycles and to what; `perf-smol` alone prints its help, and
+`docs/SmolRV64-Spec.md` §11, "Reading the report", explains each line.
 
 ## Repository layout
 

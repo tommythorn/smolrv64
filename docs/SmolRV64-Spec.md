@@ -2143,10 +2143,9 @@ its leaves registered, with feedback of its own (`tdr_k`): `td_k` reads the cycl
 M and redirect signals, and its cone was the end of theirs. The copy is `td_k` delayed exactly (asserted
 every cycle), and its causes and depth events reach the counters at the same edge `td_k`'s did. A cycle whose IR group dispatches is a
 dispatching cycle whatever waits behind it (the queue head's credit is the next group's), so the
-dispatching cycles' instructions are exactly `DPATCH`. `perf-smol top CMD` counts every cause in
-one run (the fixed counters) and prints all three levels, deriving level 1 and 2 from the causes;
-`perf-smol td CMD` prints level 1, the depth under each parent, and the slots from the `TD_*`
-events, and the `tdbe` and `tdfe` sets add level 3 on the general counters alone.
+dispatching cycles' instructions are exactly `DPATCH`. Every `perf-smol` set counts every cause
+(the fixed counters) and prints all three levels, deriving level 1 and 2 from the causes, and
+`perf-smol rec td CMD` samples every bucket, so each function gets a top-down of its own cycles.
 
 | event | id | meaning |
 |---|---|---|
@@ -2212,27 +2211,37 @@ the schedulers reported the cycle before; each scheduler reports its lowest-slot
 (it compares no age).
 
 **Reading the report.** On coffee, `tools/perf-smol-install.sh` installs `perf-smol`
-(`tools/perf-smol.sh`), `perf-cpi-stack.py` and the event table together into the boards' shared
-home (`~/bin`, on PATH at login); `perf-cpi-stack.py` refuses a table older than itself. On the
-board (once, `tools/perf-smol-setup.sh` lowers `perf_event_paranoid` so no `sudo` is needed),
-each run prints its report on stderr when the command ends and keeps the counts in
-`perf-smol.<set>.txt`:
+(`tools/perf-smol.sh`), `perf-cpi-stack.py`, `perf-smol-rec.py` and the event table together into
+the boards' shared home (`~/bin`, on PATH at login); `perf-cpi-stack.py` refuses a table older than
+itself. On the board (once, `tools/perf-smol-setup.sh` lowers `perf_event_paranoid` so no `sudo`
+is needed), each run prints its report on stderr when the command ends and keeps the counts in
+`perf-smol.<set>.txt`; `perf-smol` alone prints the help, `perf-smol events` the event names:
 
-    perf-smol top    CMD > /dev/null    # every top-down level in one run
-    perf-smol td     CMD > /dev/null    # where the cycles go
-    perf-smol tdbe   CMD > /dev/null    # the back-end's causes
-    perf-smol tdfe   CMD > /dev/null    # bad speculation, front-end, width
-    perf-smol cpi    CMD > /dev/null    # the wait events, in depth
-    perf-smol memcpi CMD > /dev/null    # the memory events, fast-load latency
+    perf-smol top    CMD > /dev/null    # every top-down level, the dispatch widths, the rates
+    perf-smol cpi    CMD > /dev/null    # ... then the wait events, in depth
+    perf-smol memcpi CMD > /dev/null    # ... then the memory events, fast-load latency
+    perf-smol rec td CMD > /dev/null    # which functions lose the cycles, and to what
 
-Each set is one run that fits the counters (`top`: 10 general events and the 16 fixed); never ask
-for more (`all`), which multiplexes. `perf stat`
+Every set counts the sixteen causes on the fixed counters and its own events on the general ones
+(`top` 10, `cpi` and `memcpi` 13), so none multiplexes; the report prints the top-down, then the
+set's own view, and stops if the fixed counters read 0 (a bitstream without them). `perf-smol rec`
+samples instead (`perf record -g`, Sscofpmf): for `td` every td_k bucket, so a function's cycles
+are its buckets' sum and its causes shares of them; for named events, each function's share of
+each. A sample lands up to a sweep (29 cycles) after its event, plus the interrupt, so it names
+the function, not the instruction.
+
+**Counting costs.** perf's own kernel work runs in the counted task, and grows with the number of
+events: counting the 20 td_k buckets against cycles and instructions alone, a Python loop on
+HDMI-XCKU5P (d9cbe5bf, Xorg running) counted 16% more cycles and 9% more instructions and ran 40%
+longer, while its user-mode counts (`:u`) were unchanged. Sampling the 20 buckets costs more: 1.7x the run
+time at 200 samples a second, 2.2x at 1,000 (`perf-smol rec`'s default). Compare runs of the same set
+only, and read a kernel-heavy share with that in mind. `perf stat`
 counts the whole command, so the answer is about the whole command: run the region of interest
 in a loop long enough to dominate start-up, or read it with a different window and say so. For
 Geekbench, `IV=1000 tools/board/gb5-run.sh <rtl>` counts each second as well (+0.12% cycles), and
 `tools/gb5-subtests.py <perf.txt> <ts.log>` sums the seconds into each subtest.
 
-The `td` report, top to bottom:
+The top-down report, top to bottom:
 
 - **level 1** partitions the cycles: *dispatching* (the IR's group dispatched), *bad
   speculation*, *front-end*, *back-end*. It sums to 100% by construction; if it does not, the
@@ -2242,16 +2251,16 @@ The `td` report, top to bottom:
   point at the predictor, exceptions and replays at the program and the memory speculation.
 - **front-end**: the IR was empty with nothing waiting behind it. *latency* is the iMMU or no
   fetch bytes (the I$; see `I$ misses` per 1k); the rest is alignment and the queue refilling
-  after a redirect (`tdfe`).
+  after a redirect (level 3 splits them).
 - **back-end**: *memory* is M holding a head op or a scheduler waiting on an integer load
   (`memcpi` next); *the ROB is full* means something long-latency at the head with nothing behind
-  it to retire; *a scheduler or load/store queue is full* means one class saturated; `tdbe` gives
+  it to retire; *a scheduler or load/store queue is full* means one class saturated; level 3 gives
   every cause, the rest (rename, serialisation, FP waits, the IR held after a redirect) included.
 - **slots** are IW per cycle: *retired* is the IPC as a share, and *dispatched, squashed* is
   the wrong-path work.
 
 The `cpi` set's wait-cycle rows overlap (a cycle waiting on a load and on ROB room counts in
-both), so they are depth under the `td` buckets, not a second partition; its *unattributed*
+both), so they are depth under the top-down's buckets, not a second partition; its *unattributed*
 line is what no event names. The simulator's `TOPDOWN-SIM` prints the same classifier for a
 whole simulated run, and `workloads/rvbench` (`make run B=<name>`) runs the bare-metal programs
 there; before reasoning from a surprising board number, look for the same shape in simulation.
