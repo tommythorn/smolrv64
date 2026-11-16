@@ -46,5 +46,13 @@ cp "$here/release/nfs-root.sh" "$out/"
 (cd "$out" && sha256sum -- * > SHA256SUMS)
 ls -la "$out"
 if [ "$publish" = --publish ]; then
-    gh release create "$tag" --draft --title "SmolRV64 $tag" --notes-file "$out/MANIFEST.txt" "$out"/*
+    notes=$(mktemp)
+    {
+        echo "Boot Ubuntu 25.04 on the RK-XCKU5P-F v1.2 or the HDMI-XCKU5P: [Running it on a board](https://github.com/tommythorn/smolrv64#running-it-on-a-board)."
+        echo; echo '```'; cat "$out/MANIFEST.txt"; echo '```'
+    } > "$notes"
+    # gh finds the repository from the checkout's remote, so it runs there.
+    (cd "$here" && gh release create "$tag" --draft --target "$(git rev-parse HEAD)" \
+        --title "SmolRV64 $tag" --notes-file "$notes" "$out"/*)
+    rm "$notes"
 fi
