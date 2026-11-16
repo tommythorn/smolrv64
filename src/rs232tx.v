@@ -32,9 +32,9 @@ module rs232tx
    );
 
    parameter           CLK_FREQ    = 0;
-   parameter           BAUD        = 0;
-   parameter           period      = (CLK_FREQ + BAUD/2) / BAUD;
-   // Worst-case period: 300 bps @ 500 MHz = 2 000 000 ~= 2^19
+   parameter           BPS        = 0;
+   parameter           period      = (CLK_FREQ + BPS/2) / BPS;
+   // Worst-case period: 300 b/s @ 500 MHz = 2 000 000 ~= 2^19
    parameter           TTYCLK_SIGN = 20; // 2^TTYCLK_SIGN > period_max * 2
    parameter           COUNT_SIGN  = 4;
 

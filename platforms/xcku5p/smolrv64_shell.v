@@ -3,7 +3,7 @@
 // ---- probe-core clock (BUFGCE_DIV: ui_clk / N) --------------------------------------
 // ONE knob for the Fmax sweep. The UART CLK_FREQ below and the CLINT SCALE_DIV in
 // core/rv_soc_top.v are DERIVED from it, so a sweep cannot silently
-// skew the console baud or the timebase (both bit us before -- see the comments at each
+// skew the console bit rate or the timebase (both bit us before -- see the comments at each
 // site).
 //
 // It is BUFGCE_DIV(ui_clk)/N, reaching 333.3 / 166.7 / 111.1 / 83.3 / 66.7 MHz.  An MMCM
@@ -59,9 +59,9 @@ module smolrv64_shell #(
     // domain is timed at (1000 MHz VCO / VID_CLK_D): the fastest pixel clock a mode may use. The
     // monitor sets each mode's divider over DRP.
     parameter integer VID_CLK_D = 6,
-    // The console's baud rate: what the board's USB-UART bridge can take (the RK board's 3 Mbps;
-    // a CP2105's interface 0 stops at 2 Mbps).
-    parameter integer UART_BAUD = 3_000_000
+    // The console's bit rate: what the board's USB-UART bridge can take (the RK board's 3 Mb/s;
+    // a CP2105's interface 0 stops at 2 Mb/s).
+    parameter integer UART_BPS = 3_000_000
 ) (
     // Differential system clock (fed directly to DDR4 IP)
     input  wire       sys_clk_p,
@@ -1985,7 +1985,7 @@ module smolrv64_shell #(
       end
       if (probe_reset) kbd_route <= 1'b0;
    end
-   // Keyboard bytes cross to ui_clk, where virtio_input lives. At 3 Mbps a byte every 3.3 us and
+   // Keyboard bytes cross to ui_clk, where virtio_input lives. At 3 Mb/s a byte every 3.3 us and
    // the reader takes one a cycle, so this never fills.
    // Block RAM, as mmio_cmd_fifo/mmio_rsp_fifo: in LUT-RAM this crossing's read path missed
    // 333 MHz on clock-root skew (-0.0006 ns, build 68b4997b), the failure those two document.
@@ -2207,17 +2207,17 @@ module smolrv64_shell #(
       .wrData(wrData), .wrDataMask(wrDataMask), .wrDataEn(wrDataEn), .wrDataAddr(wrDataAddr),
       .rdDataEn(rdDataEn), .rdDataAddr(rdDataAddr), .rdData(rdData), .per_rd_done(per_rd_done));
 
-   // UART at probe_clk, UART_BAUD (the board's: 3 Mbaud on the RK board, 2 on a CP2105). rs232
-   // ROUNDS the divisor (period=(CLK+BAUD/2)/BAUD): 166.67 MHz / 3 Mbaud -> 56 -> 2.976 Mbaud,
-   // / 2 Mbaud -> 83 -> 2.008 Mbaud, both well within tolerance.
-   // CLK_FREQ MUST track probe_clk's divider: a stale value skews the baud (leaving 41.67
+   // UART at probe_clk, UART_BPS (the board's: 3 Mb/s on the RK board, 2 on a CP2105). rs232
+   // ROUNDS the divisor (period=(CLK+BPS/2)/BPS): 166.67 MHz / 3 Mb/s -> 56 -> 2.976 Mb/s,
+   // / 2 Mb/s -> 83 -> 2.008 Mb/s, both well within tolerance.
+   // CLK_FREQ MUST track probe_clk's divider: a stale value skews the bit rate (leaving 41.67
    // here while the clock runs /5 transmits ~60% too fast -> garbage on the wire).
-   // `make connect` opens the console at the board Makefile's BAUD.
+   // `make connect` opens the console at the board Makefile's BPS.
    // rs232tx.ready (output, ready-to-accept) feeds rv_soc_top.uart_tx_ready directly.
-   rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(UART_BAUD)) probe_tx
+   rs232tx #(.CLK_FREQ(`PROBE_CLK_HZ), .BPS(UART_BPS)) probe_tx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(ptx_data), .valid(ptx_valid), .ready(ptx_ready), .tx(txd));
-   rs232rx #(.CLK_FREQ(`PROBE_CLK_HZ), .BAUD(UART_BAUD)) probe_rx
+   rs232rx #(.CLK_FREQ(`PROBE_CLK_HZ), .BPS(UART_BPS)) probe_rx
      (.clk(probe_clk), .rst_n(~probe_reset),
       .data(prx_data), .valid(prx_valid), .ready(1'b1), .rxd(rxd), .overflow());
 
@@ -2428,11 +2428,11 @@ module sd_spi_oc_tiny(input  wire        clock,
    localparam [7:0] REG_TXDATA  = 8'h04;
    localparam [7:0] REG_STATUS  = 8'h08;
    localparam [7:0] REG_CONTROL = 8'h0c;
-   localparam [7:0] REG_BAUD    = 8'h10;
+   localparam [7:0] REG_DIV    = 8'h10;
 
    reg [7:0] control = 8'd0;
-   reg [7:0] baud = 8'd255;
-   reg [7:0] baud_count = 8'd0;
+   reg [7:0] div = 8'd255;
+   reg [7:0] div_count = 8'd0;
    reg [7:0] tx_shift = 8'hff;
    reg [7:0] rx_shift = 8'd0;
    reg [7:0] pending_tx = 8'hff;
@@ -2449,7 +2449,7 @@ module sd_spi_oc_tiny(input  wire        clock,
    wire cpha = control[0];
    wire [7:0] reg_addr = address[7:0] & 8'hfc;
    wire       txdata_write = write && byteenable[0] && reg_addr == REG_TXDATA;
-   wire       completing = busy && baud_count == 0 && phase && bit_index == 0;
+   wire       completing = busy && div_count == 0 && phase && bit_index == 0;
    wire [7:0] completed_rx = cpha ? {rx_shift[7:1], spi_miso} : rx_shift;
 
    task start_transfer;
@@ -2457,7 +2457,7 @@ module sd_spi_oc_tiny(input  wire        clock,
       begin
          busy <= 1'b1;
          phase <= 1'b0;
-         baud_count <= baud;
+         div_count <= div;
          bit_index <= 3'd7;
          tx_shift <= value;
          rx_shift <= 8'd0;
@@ -2472,7 +2472,7 @@ module sd_spi_oc_tiny(input  wire        clock,
         REG_TXDATA:  read_data = {24'd0, txr_data};
         REG_STATUS:  read_data = {30'd0, txr_valid, !busy && !pending_valid};
         REG_CONTROL: read_data = {24'd0, control};
-        REG_BAUD:    read_data = {24'd0, baud};
+        REG_DIV:    read_data = {24'd0, div};
         default:     read_data = 32'd0;
       endcase
    end
@@ -2480,8 +2480,8 @@ module sd_spi_oc_tiny(input  wire        clock,
    always @(posedge clock) begin
       if (reset) begin
          control <= 8'd0;
-         baud <= 8'd255;
-         baud_count <= 8'd0;
+         div <= 8'd255;
+         div_count <= 8'd0;
          tx_shift <= 8'hff;
          rx_shift <= 8'd0;
          pending_tx <= 8'hff;
@@ -2519,7 +2519,7 @@ module sd_spi_oc_tiny(input  wire        clock,
                  if (!busy)
                     spi_clk <= write_data[1];
               end
-              REG_BAUD: baud <= write_data[7:0];
+              REG_DIV: div <= write_data[7:0];
               default: begin
               end
             endcase
@@ -2531,10 +2531,10 @@ module sd_spi_oc_tiny(input  wire        clock,
             rx_valid <= 1'b0;
 
          if (busy) begin
-            if (baud_count != 0) begin
-               baud_count <= baud_count - 1'b1;
+            if (div_count != 0) begin
+               div_count <= div_count - 1'b1;
             end else begin
-               baud_count <= baud;
+               div_count <= div;
                if (!phase) begin
                   spi_clk <= ~cpol;
                   phase <= 1'b1;

@@ -35,7 +35,7 @@ module tb_virtio_input;
    reg         awready = 1'b0, wready = 1'b0, bvalid = 1'b0, arready = 1'b0, rvalid = 1'b0;
    reg  [63:0] rdata_ax = 64'd0;
 
-   virtio_input #(.ESC_TIMEOUT(TMO), .CLK_HZ(BIT * 1_000_000), .HID_BAUD(1_000_000)) dut (
+   virtio_input #(.ESC_TIMEOUT(TMO), .CLK_HZ(BIT * 1_000_000), .HID_BPS(1_000_000)) dut (
       .clock(clk), .reset(reset),
       .address(address), .read(rd), .read_data(rdata), .write(wr), .write_data(wdata), .byteenable(be),
       .irq(irq), .key_valid(key_valid), .key_byte(key_byte), .hid_rxd(hid_rxd),
