@@ -19,9 +19,9 @@ int main(void)
 {
     video_init();
     const char *s = "\nsmolrv64 monitor  rtl=2a9f0c41 fw=20261005104512 err=0000000000000000\n"
-                    "go: boot from coffee over TFTP (or key[0]); B: from the SD card; ? for help\n"
+                    "go: boot over TFTP (or key[0]); B: from the SD card; ? for help\n"
                     "> go\n"
-                    "net: 192.168.1.180 from DHCP\n"
+                    "net: 192.168.1.180 from DHCP for 02:53:7c:76:21:25, TFTP from 192.168.1.10 (next-server)\n"
                     "boot.txt: 160 bytes in 2 ms (blksize 1468)\n"
                     "boot> N80000000 fw_payload.bin\n"
                     "...................\nfw_payload.bin: 19657736 bytes in 2900 ms (blksize 1468)\n"

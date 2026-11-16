@@ -2534,6 +2534,21 @@ includes after naming its project, flash, console, monitor image and placer dire
 | Flash | MX25U51245G | MT25QU128 (the schematic says MT25QU256) |
 | Placement | `AltSpreadLogic_medium` | `Explore` (the default missed by 0.055 ns at b2cc02fb) |
 
+**The boot path.** The monitor's `go` loads over TFTP from the server the DHCP reply names as
+next-server (`siaddr`), and from 192.168.1.145 when the reply names none; `B` loads from the SD
+card's EFI System Partition. Both run `/smolrv64/boot.txt` (TFTP: `<dir>/boot.txt`) when there is
+one, and otherwise load `fw_payload.bin` and `smolrv64.dtb` at the board's addresses (Monitor row).
+The device tree decides the root: `--sd-root` the card's first partition, else NFS at
+`--nfsroot=[SERVER:]PATH` (`tools/check-dts-timebase.py`); a tree without SERVER, as the release's
+are (`release/make-release.sh`, `/srv/smolrv64`), has Linux mount from next-server too.
+
+**A monitor change without a build.** The monitor is the INIT of `lmem`'s 57 RAMB36 (14 cascades
+of four 36 x 1K for line bits 0-503, one 9 x 4K for 504-511; `tools/lmem-init.py`).
+`tools/monitor-eco.sh` writes a new image into a met build's routed checkpoint and writes its
+bitstream: placement and routing are untouched, so the build's timing stands. It refuses unless the
+checkpoint's INIT strings are exactly the build's own image under that packing, and checks the new
+image's the same way before writing.
+
 **Measured on HDMI-XCKU5P** (b2cc02fb with `Explore`, WNS +0.044 ns; 763e1d3d's receive phase as an
 ECO, WHS +0.011 ns): the monitor's `M` over all 1 GiB, 0 errors, 240-450 MiB/s across its phases;
 `go hdmi` boots Ubuntu over TFTP and NFS to `login:` with zero faults (2026-11-05).

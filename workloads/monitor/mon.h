@@ -79,7 +79,7 @@ void vio_reset(volatile uint32_t *dev);
 void vq_add(struct vq *q, uint16_t head);       // make a chain available (not yet visible)
 void vq_kick(struct vq *q);                      // clean the queue, notify the device
 int  vq_used(struct vq *q, uint32_t *len);       // the next used head, or -1
-// net.c: virtio-net, DHCP and a TFTP client to the server on coffee
+// net.c: virtio-net, DHCP and a TFTP client to the DHCP reply's next-server
 int  net_load(const char *path, uint64_t addr, uint64_t max, uint64_t *size);   // -2: no such file
 void net_quiesce(void);
 

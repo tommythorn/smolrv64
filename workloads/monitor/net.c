@@ -1,7 +1,7 @@
 // The network for the monitor: the virtio-net device (polled), Ethernet, ARP, IPv4 and UDP, a
-// DHCP client for the board's address and a TFTP client that loads files from the server on
-// coffee (TFTP_SERVER, tftpd-hpa on port 69) into memory. This is the development boot path;
-// the SD card (disk.c) is for demos.
+// DHCP client for the board's address and a TFTP client that loads files into memory from the
+// server the DHCP reply names as next-server (siaddr), the server Linux's nfsroot defaults to as
+// well; a reply without one leaves TFTP_SERVER. The SD card (disk.c) boots without a server.
 //
 // The device takes one descriptor per frame, a 12-byte virtio_net_hdr_v1 and then the Ethernet
 // frame, and it does not filter by address. The board's MAC is the device's (VIRTIO_NET_F_MAC:
@@ -12,7 +12,7 @@
 
 #define VNET            ((volatile uint32_t *)0x10003000)
 #ifndef TFTP_SERVER
-#define TFTP_SERVER     0xC0A80191u                     // 192.168.1.145, coffee
+#define TFTP_SERVER     0xC0A80191u                     // 192.168.1.145, for a reply without next-server
 #endif
 #define NET_BASE        (DMA_BASE + 0x20000)
 #define RXQ_BASE        NET_BASE
@@ -29,7 +29,7 @@ static struct vq rxq, txq;
 static int       net_up;
 static uint8_t       my_mac[6] = { 0x02, 'S', 'M', 'O', 'L', 0x01 };
 static const uint8_t bcast[6]  = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-static uint32_t my_ip, netmask, gateway;
+static uint32_t my_ip, netmask, gateway, tftp_server;
 static uint32_t arp_ip;                                  // a cache of one: the next hop
 static uint8_t  arp_mac[6];
 
@@ -279,10 +279,13 @@ static int dhcp(void)
                 int t = dhcp_reply(xid, &server);
                 if (t == 5) {
                     my_ip = be32(udp_buf + 16);
+                    tftp_server = be32(udp_buf + 20);
+                    if (!tftp_server) tftp_server = TFTP_SERVER;
                     if (!netmask) netmask = 0xffffff00u;
                     puts_("net: "); putip(my_ip); puts_(" from DHCP for ");
                     for (int i = 0; i < 6; i++) { if (i) putc_(':'); puthex8(my_mac[i]); }
-                    putc_('\n');
+                    puts_(", TFTP from "); putip(tftp_server);
+                    puts_(be32(udp_buf + 20) ? " (next-server)\n" : " (no next-server: the default)\n");
                     return 0;
                 }
                 if (t == 6) break;
@@ -304,7 +307,7 @@ int net_load(const char *path, uint64_t addr, uint64_t max, uint64_t *size)
 {
     if (net_init()) return -1;
     if (!my_ip && dhcp()) return -1;
-    const uint32_t srv = TFTP_SERVER;
+    const uint32_t srv = tftp_server;
     const uint16_t lport = (uint16_t)(0xc000 | (now() & 0x3fff));
     uint32_t n = 2;
     put16(pkt, 1);

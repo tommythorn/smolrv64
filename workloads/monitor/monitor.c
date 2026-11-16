@@ -9,12 +9,12 @@
 //   Y<addr>          - receive XMODEM-1K upload to address
 //   C<addr> <len>    - blake3-256 of len bytes at address
 //   Z<addr> <len> [b] - fill len bytes at address with byte b (default 0)
-//   N<addr> <path>   - load a file from the TFTP server (coffee), relative to G's directory
+//   N<addr> <path>   - load a file from the TFTP server, relative to G's directory
 //   G [dir], go [dir] - boot from the TFTP server: run dir/boot.txt, dir the board's own when
 //                       none is given (key[0] at the prompt: go)
 //   L<addr> <path>   - load a file from the SD card's EFI System Partition
 //   D [path]         - list a directory there
-//   B                - boot from the SD card: run /smolrv64/boot.txt (for demos)
+//   B                - boot from the SD card's EFI System Partition: run /smolrv64/boot.txt
 //   X<addr> [a0 [a1]] - jump to address and execute
 //   P                - dump core debug counters; Pc clears them
 //   M [<addr> <len> [n]] - test DRAM, all of it by default, n passes or until a key (memtest.c)
@@ -744,7 +744,7 @@ static int run_cmd(const char *p)
         puts_("go [dir]         boot from the TFTP server: run dir/boot.txt (key[0]: go)\n");
         puts_("L<addr> <path>   load a file from the SD card's EFI System Partition\n");
         puts_("D [path]         list a directory there\n");
-        puts_("B                boot from the SD card (/smolrv64/boot.txt), for demos\n");
+        puts_("B                boot from the SD card: /smolrv64/ on its EFI System Partition\n");
         puts_("X<addr> [a0 [a1]] execute from address\n");
         puts_("P                dump core debug counters; Pc clears them\n");
         puts_("E                integrity log: which invariant fired, and when\n");
@@ -800,7 +800,7 @@ int main(void)
 #ifdef SIM_SDBOOT
     sd_boot();
 #endif
-    puts_("go: boot from coffee over TFTP (or key[0]); B: from the SD card; ? for help\n");
+    puts_("go: boot over TFTP (or key[0]); B: from the SD card; ? for help\n");
     for (;;) {
         puts_("> ");
         readline(buf);
