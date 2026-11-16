@@ -2210,9 +2210,10 @@ result counts in both, and only `td_k` ranks them (dep-load before dep-fp). The 
 the schedulers reported the cycle before; each scheduler reports its lowest-slot waiting entry
 (it compares no age).
 
-**Reading the report.** On coffee, `tools/perf-smol-install.sh` installs `perf-smol`
+**Reading the report.** `tools/perf-smol-install.sh [dir]` installs `perf-smol`
 (`tools/perf-smol.sh`), `perf-cpi-stack.py`, `perf-smol-rec.py` and the event table together into
-the boards' shared home (`~/bin`, on PATH at login); `perf-cpi-stack.py` refuses a table older than
+the board's `~/bin` (on PATH at login), or into `dir`, the NFS server's copy of it;
+`perf-cpi-stack.py` refuses a table older than
 itself. On the board (once, `tools/perf-smol-setup.sh` lowers `perf_event_paranoid` so no `sudo`
 is needed), each run prints its report on stderr when the command ends and keeps the counts in
 `perf-smol.<set>.txt`; `perf-smol` alone prints the help, `perf-smol events` the event names:

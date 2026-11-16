@@ -1,11 +1,13 @@
-# The Vivado release: VIVADO_VER=2026.1 builds with the newer one, whose libraries live in its xic tree.
+# The Vivado release under XILINX (the installer's default, ~/Xilinx): VIVADO_VER=2026.1 builds with
+# the newer one, whose libraries live in its xic tree.
+XILINX     ?= $(HOME)/Xilinx
 VIVADO_VER ?= 2025.1
 ifeq ($(VIVADO_VER),2025.1)
-VIVADO_DIR := /home/tommy/Xilinx/2025.1/Vivado
+VIVADO_DIR := $(XILINX)/2025.1/Vivado
 VIVADO_LIB := $(VIVADO_DIR)/lib/lnx64.o/Ubuntu/24
 else
-VIVADO_DIR := /home/tommy/Xilinx/$(VIVADO_VER)/$(VIVADO_VER)/Vivado
-VIVADO_LIB := /home/tommy/Xilinx/$(VIVADO_VER)/xic/lib/lnx64.o/Ubuntu/24
+VIVADO_DIR := $(XILINX)/$(VIVADO_VER)/$(VIVADO_VER)/Vivado
+VIVADO_LIB := $(XILINX)/$(VIVADO_VER)/xic/lib/lnx64.o/Ubuntu/24
 endif
 VIVADO   := $(VIVADO_DIR)/bin/vivado
 VFLAGS   := -mode batch -nojournal -nolog

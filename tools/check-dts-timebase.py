@@ -53,14 +53,14 @@ def rtl_id():
     except Exception:
         return "unknown"
 
-# The root file system: coffee's NFS export (the kernel's own DHCP brings the link up), one per
-# board, so two boards never write one tree and no root is anyone's by default -- the 2 GiB board
-# mounts /srv/ubuntu-root-2g, the 4 GiB board (16 Gb parts) /srv/ubuntu-root-4g, HDMI-XCKU5P
-# /srv/ubuntu-root-hdmi -- or the SD
-# card's first partition (the root's own networking takes over; no DHCP wait without a cable).
-# Both NFS roots mount tommy's home from /srv/ubuntu-home.
+# The root file system: an NFS export (the kernel's own DHCP brings the link up) or the SD card's
+# first partition (the root's own networking takes over; no DHCP wait without a cable).
+# --nfsroot=[SERVER:]PATH names the export, %s in it the board; without SERVER the kernel mounts
+# from the DHCP reply's next-server, as the monitor's TFTP does (the release's trees). The default
+# is the development server's, one root per board so two boards never write one tree.
 # NFS 4.2 with 1 MiB transfers: the nfsroot default is 4.0 and 4 KiB, an RPC per 4 KiB read.
-ROOT_NFS = "root=/dev/nfs nfsroot=192.168.1.145:/srv/ubuntu-root-%s,vers=4.2,tcp,rsize=1048576,wsize=1048576 ip=dhcp"
+NFSROOT  = "192.168.1.145:/srv/ubuntu-root-%s"
+ROOT_NFS = "root=/dev/nfs nfsroot=%s,vers=4.2,tcp,rsize=1048576,wsize=1048576 ip=dhcp"
 ROOT_SD  = "root=/dev/vda1 rootwait"
 
 # The sound device (virtio_snd.v): every board has it, the HDMI board alone an output for it, so
@@ -87,12 +87,12 @@ BOARDS = {
     "hdmi": ("reg = <0 0x80000000 0 0x40000000>; // 1 GiB, the framebuffer included", "bf000000", "hdmi", " (HDMI-XCKU5P, 1 GiB)"),
 }
 
-def generate(div8, tmpl, out, polled=False, rtl=None, sd_root=False, board="2g"):
+def generate(div8, tmpl, out, polled=False, rtl=None, sd_root=False, board="2g", nfsroot=NFSROOT):
     hz, tb = real_rate(div8)
     txt = pathlib.Path(tmpl).read_text()
     txt = txt.replace("@TIMEBASE@", str(tb))
     mem, fb, root, suffix = BOARDS[board]
-    txt = txt.replace("@ROOT@", ROOT_SD if sd_root else ROOT_NFS % root)
+    txt = txt.replace("@ROOT@", ROOT_SD if sd_root else ROOT_NFS % (nfsroot.replace("%s", root)))
     txt = txt.replace("@MODEL@", "SmolRV64 %s @ %.2f MHz%s%s%s"
                       % (rtl or rtl_id(), hz / 1e6, " (polled UART)" if polled else "",
                          " (SD root)" if sd_root else "", suffix))
@@ -108,11 +108,11 @@ def generate(div8, tmpl, out, polled=False, rtl=None, sd_root=False, board="2g")
 
 def main():
     if len(sys.argv) >= 2 and sys.argv[1] == "--gen":
-        args = [x for x in sys.argv[2:] if x not in ("--polled", "--sd-root", "--4g", "--hdmi") and not x.startswith("--rtl=")]
-        rtl = next((x[6:] for x in sys.argv[2:] if x.startswith("--rtl=")), None)
+        args = [x for x in sys.argv[2:] if not x.startswith("--")]
+        opt = lambda k: next((x[len(k):] for x in sys.argv[2:] if x.startswith(k)), None)
         board = "4g" if "--4g" in sys.argv else "hdmi" if "--hdmi" in sys.argv else "2g"
-        generate(int(args[0]), args[1], args[2], polled="--polled" in sys.argv, rtl=rtl,
-                 sd_root="--sd-root" in sys.argv, board=board)
+        generate(int(args[0]), args[1], args[2], polled="--polled" in sys.argv, rtl=opt("--rtl="),
+                 sd_root="--sd-root" in sys.argv, board=board, nfsroot=opt("--nfsroot=") or NFSROOT)
         return
     if len(sys.argv) < 3:
         sys.exit(__doc__)

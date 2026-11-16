@@ -112,7 +112,7 @@ if [ "${NO_STAMP:-0}" = 0 ] && [ -z "$(git status --porcelain --untracked-files=
 fi
 if [ -n "$SRC" ]; then
    echo "--- stamping $(basename "$SRC") (these sources, met at WNS $(awk '/^wns:/ {print $2}' "$SRC/meta.txt")) ---"
-   XIL=${XIL:-/home/tommy/Xilinx/2025.1/Vivado}
+   XIL=${XIL:-$HOME/Xilinx/2025.1/Vivado}
    ( export LD_LIBRARY_PATH=$XIL/lib/lnx64.o/Ubuntu/24
      "$XIL/bin/vivado" -mode batch -nojournal -nolog -source "$REPO/tools/stamp-identity.tcl" -tclargs \
         "$SRC/routed.dcp" "$(git rev-parse --short=8 HEAD)" 0 \

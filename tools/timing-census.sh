@@ -10,7 +10,7 @@ out=./census; dcps=()
 while [ $# -gt 0 ]; do case $1 in -o) out=$2; shift 2;; *) dcps+=("$1"); shift;; esac; done
 [ ${#dcps[@]} -gt 0 ] || { echo "usage: tools/timing-census.sh <dcp>... [-o <dir>]"; exit 2; }
 mkdir -p "$out"
-VIVADO_DIR=${VIVADO_DIR:-/home/tommy/Xilinx/2025.1/Vivado}
+VIVADO_DIR=${VIVADO_DIR:-$HOME/Xilinx/2025.1/Vivado}
 VIV="env LD_LIBRARY_PATH=$VIVADO_DIR/lib/lnx64.o/Ubuntu/24 $VIVADO_DIR/bin/vivado -mode batch -nojournal -nolog"
 txts=()
 for d in "${dcps[@]}"; do

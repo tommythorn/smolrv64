@@ -32,7 +32,7 @@ scalar instructions per image, where Geekbench's reference machine uses SIMD, an
 no vector extension. Its hot loop, a naive SGEMM, walks a column of a matrix at a 2048- or
 4096-byte stride, which puts every element of a column in one set of the data cache, whose 32
 ways hold 32 of them; the 2048-entry dTLB keeps the walk out of the page walker. A vector unit is the larger lever on all three,
-and whether one fits without giving up the clock is an open question below.
+and whether one fits without giving up the clock is an open question.
 
 ## Why it is interesting
 
@@ -251,7 +251,102 @@ direction from here, four uniform execution lanes behind a front end that never 
 its fetch queue, is [docs/PLAN-2026-10-01-uniform-lanes.md](docs/PLAN-2026-10-01-uniform-lanes.md).
 SPEC results will be added as they are run.
 
-## Quick start
+## Running it on a board
+
+Each [release](https://github.com/tommythorn/smolrv64/releases) holds what a board needs to boot
+Ubuntu 25.04:
+
+| File | Contents |
+|---|---|
+| `smolrv64-rk-xcku5p.bit`, `smolrv64-hdmi-xcku5p.bit` | The FPGA image, with the ROM monitor, for the RK-XCKU5P-F v1.2 (2 GiB) and the HDMI-XCKU5P (1 GiB) |
+| `fw_payload.bin` | OpenSBI and Linux, the same for both boards |
+| `rk-xcku5p-sd.dtb`, `hdmi-xcku5p-sd.dtb` | The device tree with the root file system on the SD card |
+| `rk-xcku5p-nfs.dtb`, `hdmi-xcku5p-nfs.dtb` | The device tree with the root file system over NFS |
+| `nfs-root.sh`, `MANIFEST.txt`, `SHA256SUMS` | The NFS root's setup, what each file was built from, the checksums |
+
+You also need:
+
+- **Ubuntu 25.04's riscv64 server image:**
+  [ubuntu-25.04-preinstalled-server-riscv64.img.xz](https://old-releases.ubuntu.com/releases/25.04/ubuntu-25.04-preinstalled-server-riscv64.img.xz)
+  (1.1 GB; SHA-256 `8809989c96c7146748e19fdf64869f6a0f1b47367595cd76367ba5d4597fd0d5`). It is used
+  as it is: the payload carries its own kernel.
+- **Vivado** to load the bitstream over JTAG; the free ML Standard edition covers the XCKU5P.
+  From this repository, `make -C platforms/rk-xcku5p-f-v1.2 program BIT=smolrv64-rk-xcku5p.bit`
+  loads it until the next power cycle, and `flash` in place of `program` writes it into the
+  board's configuration flash (`platforms/hdmi-xcku5p` for the other board; `XILINX=` names
+  where Vivado is installed when it is not `~/Xilinx`).
+- **A serial console**, 8N1: on the RK-XCKU5P-F the JTAG cable's second port at 3,000,000 baud, on
+  the HDMI-XCKU5P the CP2105's first port at 2,000,000 baud (`screen /dev/ttyUSB1 3000000`, say).
+  The monitor's prompt also appears on the screen (VGA on the RK-XCKU5P-F's 40-pin header, HDMI on
+  the other); Linux's console goes to both.
+
+Once the bitstream is loaded, the monitor waits at its prompt:
+
+```
+smolrv64 monitor  rtl=ac4e9592 fw=0020261115210850 err=0000000000000000
+go: boot over TFTP (or key[0]); B: from the SD card; ? for help
+>
+```
+
+Either way, the first boot runs cloud-init, which creates the user `ubuntu` with the password
+`ubuntu`; the first login asks for a new one.
+
+### SD card: the easiest
+
+1. Write the image to an SD card of 8 GB or more:
+   ```
+   xzcat ubuntu-25.04-preinstalled-server-riscv64.img.xz | sudo dd of=/dev/sdX bs=4M conv=fsync status=progress
+   ```
+2. Put the payload and the board's SD device tree into `/smolrv64` on the card's EFI System
+   Partition, partition 15 (labelled `UEFI`, 100 MB free):
+   ```
+   sudo blockdev --rereadpt /dev/sdX                       # the card's new partition table
+   sudo mount /dev/sdX15 /mnt
+   sudo mkdir /mnt/smolrv64
+   sudo cp fw_payload.bin /mnt/smolrv64/
+   sudo cp rk-xcku5p-sd.dtb /mnt/smolrv64/smolrv64.dtb     # hdmi-xcku5p-sd.dtb on the HDMI-XCKU5P
+   sudo umount /mnt
+   ```
+3. Put the card in the board and type `B` at the prompt. The monitor loads the two files from the
+   card and starts Linux, whose root is the card's first partition. On the first boot, cloud-init
+   also grows that partition to fill the card.
+
+### NFS root and TFTP: the best
+
+The board loads the payload over TFTP and mounts its root file system over NFS from a Linux server
+on its network. That is faster than the SD card, an SPI link at 23.8 MHz that moves at most
+3 MB/s, and the board's files are the server's.
+
+1. **TFTP.** Install a TFTP server (`tftpd-hpa` serves `/srv/tftp`) and put the payload and the
+   board's NFS device tree where a bare `go` looks: the top directory for the RK-XCKU5P-F, `hdmi/`
+   for the HDMI-XCKU5P (`go <dir>` names any other):
+   ```
+   cp fw_payload.bin /srv/tftp/
+   cp rk-xcku5p-nfs.dtb /srv/tftp/smolrv64.dtb
+   ```
+2. **The NFS root.** Install an NFS server (`nfs-kernel-server`), make the root from the image with
+   `nfs-root.sh`, which copies its root partition and takes the SD card's mounts out of its
+   `/etc/fstab`, and export it. The device tree mounts `/srv/smolrv64`:
+   ```
+   sudo ./nfs-root.sh ubuntu-25.04-preinstalled-server-riscv64.img.xz /srv/smolrv64
+   echo '/srv/smolrv64 192.168.1.0/24(rw,sync,no_root_squash,no_subtree_check)' | sudo tee -a /etc/exports
+   sudo exportfs -ra
+   ```
+   One root serves one board: two boards booting the same root corrupt it.
+3. **The server's address.** The board takes its address by DHCP, and both the monitor's TFTP and
+   Linux's NFS mount go to the server the DHCP reply names as *next-server*. Set it to the server's
+   address in your DHCP server: `dhcp-boot=smolrv64,server,192.168.1.10` for dnsmasq,
+   `next-server 192.168.1.10;` for ISC dhcpd. The monitor prints the server it uses:
+   `net: 192.168.1.180 from DHCP for 02:53:..., TFTP from 192.168.1.10 (next-server)`.
+   Many home routers cannot set next-server; on such a network, boot from the SD card, or make
+   dnsmasq on the server the network's DHCP server.
+4. Type `go` at the prompt, or press key[0].
+
+To use another export path or a fixed server, generate the device tree with
+`tools/check-dts-timebase.py --gen 48 [--hdmi] --nfsroot=SERVER:/PATH workloads/ubuntu/ubuntu-nfs.dts.in out.dts`
+and compile it with `dtc`. `release/make-release.sh` builds a release from met builds.
+
+## Building and testing
 
 ```
 git clone --recursive https://github.com/tommythorn/smolrv64
@@ -283,12 +378,12 @@ The board boots through the ROM monitor, which turns the VGA output on at reset 
 device tree's framebuffer): a splash, and a console that shows everything it prints; `V` followed
 by an X11 modeline sets another mode, up to a 166.67 MHz pixel clock (`tools/vga-mode.py` prints
 the line), and the monitor writes the mode into the device tree it boots Linux with. It waits at
-its prompt. `go [dir]`, or key[0], boots from the TFTP server on coffee (tftpd-hpa serving
-`/srv/tftp`): the monitor takes an address by DHCP and runs `dir/boot.txt`, monitor commands
+its prompt. `go [dir]`, or key[0], boots over TFTP from the server the DHCP reply names as
+next-server: the monitor takes an address by DHCP and runs `dir/boot.txt`, monitor commands
 that load the OpenSBI+Linux payload and the device tree (`N<addr> <file>`) and jump to the
 payload; without `boot.txt` it loads `fw_payload.bin` at `0x8000_0000` and `smolrv64.dtb` at
 `0xfeff_f000`. `B` boots the same way from the SD card's EFI System Partition
-(`/smolrv64/boot.txt`, for demos; `workloads/sdboot/install-esp.sh` puts the files there), and
+(`/smolrv64/boot.txt`, or the two files without one; `workloads/sdboot/install-esp.sh` puts them there), and
 `workloads/ubuntu/ubuntu-boot.sh` uploads over the serial console at 3 Mbaud. The device tree
 decides the root filesystem: `ubuntu-nfs.dtb` mounts NFS, `ubuntu-sd.dtb` the SD card's first
 partition (both `make -C workloads/ubuntu dtbs`). `M` at the prompt tests the DRAM, all of it, pass
@@ -296,7 +391,7 @@ after pass until a key: the data lines, the address lines, every word holding it
 random data at full bandwidth, and random data in a scattered order that opens a row on nearly
 every access; `M <addr> <len> [n]` tests a range for n passes.
 On the board,
-`perf-smol top <cmd>` (installed from coffee by `tools/perf-smol-install.sh`) runs a command
+`perf-smol top <cmd>` (installed in `~/bin` by `tools/perf-smol-install.sh`) runs a command
 under the Top-Down events and prints the report, and `perf-smol rec td <cmd>` shows which
 functions lose the cycles and to what; `perf-smol` alone prints its help, and
 `docs/SmolRV64-Spec.md` §11, "Reading the report", explains each line.
@@ -308,23 +403,12 @@ functions lose the cycles and to what; `perf-smol` alone prints its help, and
 | `core/` | The core and its SoC top (`rv_soc_top.v`), the caches and the memory-port arbiter, the core's testbenches and run scripts |
 | `src/` | The blocks the core shares (fetch, aligner, decode, ALU, MMU, CSRs, the FPU wrapper), the SoC devices (CLINT, PLIC, UART, virtio, Ethernet, SD, the DDR line bridge), their benches, the lint gate, the cosim DPI |
 | `platforms/rk-xcku5p-f-v1.2/` | The FPGA build: top level, constraints, the scripted Vivado flow, the timing and utilization reports, the ILA debug cores |
+| `release/` | `make-release.sh`, which assembles a release from met builds, and `nfs-root.sh` |
 | `tools/` | The gate, the netlist boot, the RAM and function-read checks, the perf event sets and CPI stack, the Geekbench trace and chart tools, the frontend and predictor models |
 | `workloads/` | The Linux images and device trees (tiny128, Ubuntu over NFS, Geekbench), the glibc and systemd cosim harnesses, the ROM monitor, the bare-metal microbenchmarks |
 | `tests/` | riscv-tests binaries |
 | `docs/` | The specification (`SmolRV64-Spec.md`, normative), `rtl-rules.md`, the current plans, and `history/`, the dated design records |
 | `third_party/cvfpu` | CVFPU (fpnew): the subset the build uses, vendored by `tools/cvfpu-import.sh` (`UPSTREAM` names the commit) |
-
-## What comes next
-
-- The memory system's last step ([docs/PLAN-2026-10-21-memory-system.md](docs/PLAN-2026-10-21-memory-system.md)):
-  64-byte fills into the data cache. Then the data cache's dTLB read beside the data and a
-  second load lookup ([docs/PLAN-2026-10-03-dcache-vipt-l2.md](docs/PLAN-2026-10-03-dcache-vipt-l2.md)).
-- One out-of-order load/store pipe: loads and stores issued out of order, translated in
-  their queues, with memory speculation and replay.
-- The clock: two lanes at the memory controller's 333 MHz, every loop two cycles, for the same
-  work per nanosecond in less area ([docs/PLAN-2026-10-27-333mhz.md](docs/PLAN-2026-10-27-333mhz.md)).
-- The question of whether a vector unit fits without giving up the clock.
-- SPEC CPU on the board.
 
 ## Licensing
 

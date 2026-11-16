@@ -6,7 +6,7 @@
 #   MAXCYC=8000 MINCHARS=40 tools/netlist-boot.sh
 set -u
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-XIL=${XIL:-/home/tommy/Xilinx/2025.1/Vivado}; export LD_LIBRARY_PATH=$XIL/lib/lnx64.o/Ubuntu/24
+XIL=${XIL:-$HOME/Xilinx/2025.1/Vivado}; export LD_LIBRARY_PATH=$XIL/lib/lnx64.o/Ubuntu/24
 SHA=$(git -C "$REPO" rev-parse --short HEAD); O=$REPO/gate-results/netlist-$SHA; mkdir -p "$O"; cd "$O"
 [ -f "$REPO/src/mem.linehex" ] || python3 "$REPO/src/binline.py" "$REPO/workloads/monitor/monitor.bin" > "$REPO/src/mem.linehex"
 echo "netlist-boot $SHA: synthesizing rv_soc_top out of context ($(date +%H:%M))"
