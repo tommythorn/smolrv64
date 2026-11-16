@@ -210,7 +210,7 @@ XMODEM=""
 if [ -n "${BOARD:-}" ]; then
    # A named board boots over TFTP, as the monitor's `go` does: this tree's payload and the board's
    # device tree go to coffee's /srv/tftp/$BOARD with the boot.txt `go $BOARD` runs: 19.7 MB in a
-   # few seconds; XMODEM at the console's baud takes a minute or two. VGA=1 turns the scanout on, as ubuntu-boot.sh does.
+   # few seconds; XMODEM at the console's bit rate takes a minute or two. VGA=1 turns the scanout on, as ubuntu-boot.sh does.
    T=/srv/tftp/$BOARD
    cp "$UB/fw_payload.bin" "$T/fw_payload.bin" && cp "$UB/$DTB" "$T/smolrv64.dtb" \
       || { echo "BOARD: FAIL (staging $T)"; exit 1; }

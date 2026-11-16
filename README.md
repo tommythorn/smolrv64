@@ -130,7 +130,7 @@ is read off the RTL or measured with the workload named):
   mechanism; a pending interrupt waits out a page-straddling fetch rather than abandoning
   it.
 
-**An SoC that runs the real thing.** CLINT, PLIC, an NS16550A UART hardwired to 3 Mbaud with a 4 KiB receive FIFO,
+**An SoC that runs the real thing.** CLINT, PLIC, an NS16550A UART hardwired to 3 Mb/s (2 Mb/s on the HDMI-XCKU5P) with a 4 KiB receive FIFO,
 virtio-blk backed by an SD card over SPI, virtio-net over RGMII with an eight-slot receive
 ring and word-wide DMA, a virtio keyboard and mouse fed by USB devices through a Pico (see
 [Virtio devices](#virtio-devices)), a 256 KiB boot SRAM holding a ROM monitor that boots over TFTP or from the
@@ -270,13 +270,17 @@ You also need:
   [ubuntu-25.04-preinstalled-server-riscv64.img.xz](https://old-releases.ubuntu.com/releases/25.04/ubuntu-25.04-preinstalled-server-riscv64.img.xz)
   (1.1 GB; SHA-256 `8809989c96c7146748e19fdf64869f6a0f1b47367595cd76367ba5d4597fd0d5`). It is used
   as it is: the payload carries its own kernel.
-- **Vivado** to load the bitstream over JTAG; the free ML Standard edition covers the XCKU5P.
-  From this repository, `make -C platforms/rk-xcku5p-f-v1.2 program BIT=smolrv64-rk-xcku5p.bit`
-  loads it until the next power cycle, and `flash` in place of `program` writes it into the
-  board's configuration flash (`platforms/hdmi-xcku5p` for the other board; `XILINX=` names
-  where Vivado is installed when it is not `~/Xilinx`).
-- **A serial console**, 8N1: on the RK-XCKU5P-F the JTAG cable's second port at 3,000,000 baud, on
-  the HDMI-XCKU5P the CP2105's first port at 2,000,000 baud (`screen /dev/ttyUSB1 3000000`, say).
+- **[openFPGALoader](https://github.com/trabucayre/openFPGALoader)** to load the bitstream over
+  JTAG, on any OS: `openFPGALoader -c ft2232 smolrv64-rk-xcku5p.bit` on the RK-XCKU5P-F, whose JTAG
+  cable is an FT2232, or `openFPGALoader -c digilent_hs2 smolrv64-hdmi-xcku5p.bit` on the
+  HDMI-XCKU5P (`--ftdi-serial` picks one of several cables). The load lasts until the next power
+  cycle.
+- **Vivado**, only to keep the bitstream across power cycles: from this repository,
+  `make -C platforms/rk-xcku5p-f-v1.2 flash BIT=smolrv64-rk-xcku5p.bit` writes it into the board's
+  configuration flash (`platforms/hdmi-xcku5p` for the other board; `XILINX=` names where Vivado
+  is installed when it is not `~/Xilinx`). The free ML Standard edition covers the XCKU5P.
+- **A serial console**, 8N1: on the RK-XCKU5P-F the JTAG cable's second port at 3 Mb/s, on
+  the HDMI-XCKU5P the CP2105's first port at 2 Mb/s (`screen /dev/ttyUSB1 3000000`, say).
   The monitor's prompt also appears on the screen (VGA on the RK-XCKU5P-F's 40-pin header, HDMI on
   the other); Linux's console goes to both.
 
@@ -384,7 +388,7 @@ that load the OpenSBI+Linux payload and the device tree (`N<addr> <file>`) and j
 payload; without `boot.txt` it loads `fw_payload.bin` at `0x8000_0000` and `smolrv64.dtb` at
 `0xfeff_f000`. `B` boots the same way from the SD card's EFI System Partition
 (`/smolrv64/boot.txt`, or the two files without one; `workloads/sdboot/install-esp.sh` puts them there), and
-`workloads/ubuntu/ubuntu-boot.sh` uploads over the serial console at 3 Mbaud. The device tree
+`workloads/ubuntu/ubuntu-boot.sh` uploads over the serial console at 3 Mb/s. The device tree
 decides the root filesystem: `ubuntu-nfs.dtb` mounts NFS, `ubuntu-sd.dtb` the SD card's first
 partition (both `make -C workloads/ubuntu dtbs`). `M` at the prompt tests the DRAM, all of it, pass
 after pass until a key: the data lines, the address lines, every word holding its own address,
