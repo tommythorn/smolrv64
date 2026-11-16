@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Assemble a SmolRV64 release: for each platform its bitstream and its device trees (SD-card root and
-# NFS root), the OpenSBI+Linux payload every platform boots, nfs-root.sh, a manifest and SHA256SUMS.
+# NFS root), the OpenSBI+Linux payload every platform boots, tools/hid-bridge's firmware for the
+# Pico and the Pico W, nfs-root.sh, a manifest and SHA256SUMS.
 #
 #   release/make-release.sh <tag> <fw_payload.bin> <rk build> <hdmi build> [--publish]
 #
 # A build is a directory holding <project>.bit and meta.txt: a met bitcache entry, or the output of
-# tools/monitor-eco.sh. The files land in ./smolrv64-<tag>/; --publish then creates the GitHub
-# release <tag> with them (gh), as a draft to review before it is published.
+# tools/monitor-eco.sh. The firmware is built here, with PICO_SDK_PATH naming pico-sdk 1.5.1 (its
+# TinyUSB at 0.17.0) and arm-none-eabi-gcc on PATH. The files land in ./smolrv64-<tag>/; --publish
+# then creates the GitHub release <tag> with them (gh), as a draft to review before it is published.
 #
 # The NFS trees name no server: the kernel mounts /srv/smolrv64 from the DHCP reply's next-server,
 # the server the monitor's `go` loads the payload from.
 set -eu
 here=$(cd "$(dirname "$0")/.." && pwd)
-[ $# -ge 4 ] || { sed -n '2,13p' "$0"; exit 2; }
+[ $# -ge 4 ] || { sed -n '2,16p' "$0"; exit 2; }
+: "${PICO_SDK_PATH:?names pico-sdk 1.5.1, for tools/hid-bridge}"
 tag=$1 fw=$(realpath "$2") rk=$(realpath "$3") hdmi=$(realpath "$4") publish=${5:-}
 out=$PWD/smolrv64-$tag
 [ ! -e "$out" ] || { echo "$out exists" >&2; exit 1; }
@@ -42,6 +45,18 @@ for p in rk-xcku5p:"$rk":rk_xcku5p: hdmi-xcku5p:"$hdmi":hdmi_xcku5p:--hdmi; do
     done
     { echo; echo "smolrv64-$name.bit:"; sed 's/^/  /' "$dir/meta.txt"; } >> "$out/MANIFEST.txt"
 done
+hb=$(mktemp -d)
+for board in pico pico_w; do
+    cmake -S "$here/tools/hid-bridge" -B "$hb/$board" -DPICO_BOARD=$board > /dev/null
+    make -C "$hb/$board" -j"$(nproc)" > /dev/null
+    cp "$hb/$board/hid-bridge.uf2" "$out/hid-bridge-$board.uf2"
+done
+rm -rf "$hb"
+{
+    echo
+    echo "hid-bridge-pico.uf2, hid-bridge-pico_w.uf2: tools/hid-bridge for the Pico and the Pico W,"
+    echo "  pico-sdk 1.5.1, TinyUSB $(git -C "$PICO_SDK_PATH/lib/tinyusb" describe --tags), $(arm-none-eabi-gcc --version | head -1)"
+} >> "$out/MANIFEST.txt"
 cp "$here/release/nfs-root.sh" "$out/"
 (cd "$out" && sha256sum -- * > SHA256SUMS)
 ls -la "$out"

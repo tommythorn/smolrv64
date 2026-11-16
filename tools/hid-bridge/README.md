@@ -37,15 +37,21 @@ Diagnostics on the FPGA side: `0x1000_4F00[31:16]` counts events lost to a full 
 
 ## Build and flash
 
-The firmware needs pico-sdk 1.5.1 with TinyUSB 0.17.0, the same versions ps2x2pico uses.
+Each [release](https://github.com/tommythorn/smolrv64/releases) carries the firmware:
+`hid-bridge-pico.uf2` for the Pico, `hid-bridge-pico_w.uf2` for the Pico W. To build it, use
+pico-sdk 1.5.1 with TinyUSB 0.17.0, the same versions ps2x2pico uses, and an `arm-none-eabi-gcc`
+(Arm's GNU toolchain 13.3.rel1 builds the release's):
 
 ```sh
 git clone --branch 1.5.1 https://github.com/raspberrypi/pico-sdk
 git -C pico-sdk submodule update --init lib/tinyusb
 git -C pico-sdk/lib/tinyusb fetch origin tag 0.17.0 && git -C pico-sdk/lib/tinyusb checkout 0.17.0
-export PICO_SDK_PATH=$PWD/pico-sdk          # and arm-none-eabi-gcc on PATH
-cmake -S tools/hid-bridge -B build/hid-bridge && make -C build/hid-bridge
+export PICO_SDK_PATH=$PWD/pico-sdk
+cmake -S tools/hid-bridge -B build/hid-bridge -DPICO_BOARD=pico_w && make -C build/hid-bridge
 ```
 
-To flash, hold BOOTSEL while plugging the Pico into a computer, then copy
-`build/hid-bridge/hid-bridge.uf2` to the drive that appears.
+`-DPICO_BOARD=pico` builds for the Pico. The Pico lights its LED when a keyboard or mouse
+attaches; the Pico W's LED is behind its wireless chip, which the firmware does not use.
+
+To flash, hold BOOTSEL while plugging the Pico into a computer, then copy the `.uf2` file to the
+drive that appears.

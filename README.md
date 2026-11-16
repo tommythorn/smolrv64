@@ -262,6 +262,7 @@ Ubuntu 25.04:
 | `fw_payload.bin` | OpenSBI and Linux, the same for both boards |
 | `rk-xcku5p-sd.dtb`, `hdmi-xcku5p-sd.dtb` | The device tree with the root file system on the SD card |
 | `rk-xcku5p-nfs.dtb`, `hdmi-xcku5p-nfs.dtb` | The device tree with the root file system over NFS |
+| `hid-bridge-pico.uf2`, `hid-bridge-pico_w.uf2` | The firmware that makes a Pico or a Pico W the board's USB keyboard and mouse host |
 | `nfs-root.sh`, `MANIFEST.txt`, `SHA256SUMS` | The NFS root's setup, what each file was built from, the checksums |
 
 You also need:
@@ -378,19 +379,11 @@ The board turns the terminal's bytes back into key presses:
 plug in directly or through a hub, on the Pico's micro-USB port through an OTG adapter. The Pico
 sends their events to the board over one wire at 1 Mb/s.
 
-1. Build the firmware with pico-sdk 1.5.1 and TinyUSB 0.17.0 (an `arm-none-eabi-gcc` on `PATH`):
-   ```
-   git clone --branch 1.5.1 https://github.com/raspberrypi/pico-sdk
-   git -C pico-sdk submodule update --init lib/tinyusb
-   git -C pico-sdk/lib/tinyusb fetch origin tag 0.17.0 && git -C pico-sdk/lib/tinyusb checkout 0.17.0
-   export PICO_SDK_PATH=$PWD/pico-sdk
-   cmake -S tools/hid-bridge -B build/hid-bridge && make -C build/hid-bridge
-   ```
-   The build is for the Pico W; add `-DPICO_BOARD=pico` to the `cmake` line for a Pico.
-2. Flash it: hold BOOTSEL while you plug the Pico into a computer, then copy
-   `build/hid-bridge/hid-bridge.uf2` to the drive that appears. After that, the Pico's USB port
-   is a host port, for the keyboards and mice.
-3. Connect it to the board while the board's power is off:
+1. Flash the release's firmware, `hid-bridge-pico.uf2` for a Pico or `hid-bridge-pico_w.uf2` for
+   a Pico W: hold BOOTSEL while you plug the Pico into a computer, then copy the file to the drive
+   that appears. After that, the Pico's USB port is a host port, for the keyboards and mice. The
+   bridge's [README](tools/hid-bridge/README.md) builds it from source.
+2. Connect it to the board while the board's power is off:
 
    | Pico | RK-XCKU5P-F, 40-pin header J1 | HDMI-XCKU5P |
    |---|---|---|
