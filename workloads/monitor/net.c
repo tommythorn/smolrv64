@@ -337,11 +337,12 @@ int net_load(const char *path, uint64_t addr, uint64_t max, uint64_t *size)
         else if (udp_sport != tid) continue;
         tries = 0;
         uint16_t op = be16(udp_buf);
-        if (op == 5) {                                   // ERROR
+        if (op == 5) {                                   // ERROR; code 1 is "file not found"
+            if (be16(udp_buf + 2) == 1) { puts_("net: no such file: "); puts_(path); putc_('\n'); return -2; }
             puts_("net: TFTP: ");
             udp_buf[udp_len < sizeof udp_buf ? udp_len : sizeof udp_buf - 1] = 0;
             puts_((const char *)udp_buf + 4);  putc_('\n');
-            return be16(udp_buf + 2) == 1 ? -2 : -1;
+            return -1;
         }
         if (op == 6) {                                   // OACK: the server took blksize
             for (uint32_t i = 2; i < udp_len; ) {
