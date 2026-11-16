@@ -18,11 +18,11 @@ output with the event line.
 | pin 4, IO1_P (D11, LVCMOS33) | pin 6, GP4 (UART1 TX) |
 
 The keyboard, mouse, or a hub goes on the Pico's micro-USB port through an OTG adapter.
-UART0 (GP0, pin 1, 115200 baud) logs the devices as they attach.
+UART0 (GP0, pin 1, 115.2 kb/s) logs the devices as they attach.
 
 ## The line
 
-The line runs at 1 Mbps, 8N1. Each event is 28 bits, `{type[1:0], code[9:0], value[15:0]}`,
+The line runs at 1 Mb/s, 8N1. Each event is 28 bits, `{type[1:0], code[9:0], value[15:0]}`,
 with the value sign-extended to 32 bits. It is sent as four bytes of 7 bits each, most
 significant first. Bit 7 is set on the first byte only, so the receiver resynchronizes on the
 next event after a lost byte. Each USB report ends with `SYN_REPORT`.

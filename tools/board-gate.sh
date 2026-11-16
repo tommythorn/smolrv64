@@ -50,7 +50,7 @@ SCREEN=${SCREEN:-$(screen -ls | awk '/\t[0-9]+\./ {print $1; exit}')}
 # never grew (2026-11-04, after a power-on). The tty is named by the cable (ttyUSB numbers move).
 if [ -z "${REPLAY:-}" ] && ! screen -ls | grep -qE "^[[:space:]]+[0-9]+\.${SCREEN:-NONE}[[:space:]]"; then
    echo "BOARD: FAIL (no screen session '${SCREEN:-}' on the console; start it:"
-   echo "  screen -dmS ${SCREEN:-<name>} -L -Logfile $CON ${TTYDEV:-<its console tty>} $BAUD)"
+   echo "  screen -dmS ${SCREEN:-<name>} -L -Logfile $CON ${TTYDEV:-<its console tty>} $BPS)"
    exit 1
 fi
 # The board's address is read off ITS console (the kernel's IP-Config line, from byte $1 on),

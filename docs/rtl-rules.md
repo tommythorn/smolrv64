@@ -755,7 +755,7 @@ full boot cosim.
 
 **F2. No module name defined twice in the source list.**
 `rs232.v` defined `rs232rx`/`rs232tx` a second time, with a different `rs232rx`
-port list and a different default baud. Verilator's glob took `rs232.v` first,
+port list and a different default bit rate. Verilator's glob took `rs232.v` first,
 so every simulation build bound a *different UART than the board*:
 `smolrv64_shell.v` instantiates the standalone pair with `.ready()`/`.overflow()`,
 which `rs232.v`'s five-port `rs232rx` does not have. It was harmless only

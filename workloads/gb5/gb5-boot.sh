@@ -10,7 +10,7 @@
 # hardware run and the golden reference are executing identical code on identical
 # data — which is what "matching exactly what Geekbench 5 is doing" requires.
 #
-# At 3 Mbaud the initramfs takes roughly 10-15 minutes to upload.
+# At 3 Mb/s the initramfs takes roughly 10-15 minutes to upload.
 #
 # Prereqs: FPGA programmed (make -C platforms/rk-xcku5p-f-v1.2 program), and a
 # `screen -L` session attached to the serial TTY.

@@ -239,7 +239,7 @@ if {1} {
  (approximately -- 120/96/72 are 66.7/83.3/111.1 MHz exactly)."
     }
     # Fmax sweep knob: probe_clk = 1000 MHz * 8 / PROBE_CLK_DIV8, continuous rather than the
-    # 5-rung BUFGCE_DIV ladder. The UART baud and the CLINT timebase are DERIVED from it in
+    # 5-rung BUFGCE_DIV ladder. The UART bit rate and the CLINT timebase are DERIVED from it in
     # RTL, so they cannot drift out of sync with a sweep.
     if {[info exists env(PROBE_CLK_DIV8)] && $env(PROBE_CLK_DIV8) ne ""} {
         set _d8 $env(PROBE_CLK_DIV8)

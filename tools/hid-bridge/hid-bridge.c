@@ -3,7 +3,7 @@
 // ps2x2pico (github.com/No0ne/ps2x2pico, MIT) with its PS/2 side replaced. usbin.c is its USB
 // host side, kept: TinyUSB with hubs, report and boot protocols, NKRO keyboards, any number of
 // keyboards and mice at once. This file turns what it reports into Linux input events and sends
-// each on UART1 TX (GPIO4) at 1 Mbps, 8N1, to virtio_input's HID line (src/virtio_input.v):
+// each on UART1 TX (GPIO4) at 1 Mb/s, 8N1, to virtio_input's HID line (src/virtio_input.v):
 //
 //   event  {type[1:0], code[9:0], value[15:0]}, the value sign-extended to 32 bits by the FPGA
 //   bytes  1 type[1:0] code[9:5] | 0 code[4:0] value[15:14] | 0 value[13:7] | 0 value[6:0]
@@ -22,7 +22,7 @@
 
 #define EV_UART uart1
 #define EV_TX   4
-#define EV_BAUD 1000000          // virtio_input's HID_BAUD
+#define EV_BPS  1000000          // virtio_input's HID_BPS
 
 #define EV_SYN    0
 #define EV_KEY    1
@@ -97,7 +97,7 @@ void ms_send_movement(u8 buttons, s16 x, s16 y, s16 z) {
 
 int main() {
   board_init();
-  uart_init(EV_UART, EV_BAUD);
+  uart_init(EV_UART, EV_BPS);
   gpio_set_function(EV_TX, GPIO_FUNC_UART);
   printf("\n%s-%s\n", PICO_PROGRAM_NAME, PICO_PROGRAM_VERSION_STRING);
 

@@ -22,8 +22,8 @@ typedef unsigned char uint8_t;
 #define LSR_THRE  0x20  // Transmit Holding Register Empty
 #define LSR_DR    0x01  // Data Ready
 
-static void uart_init(volatile uint8_t *base, int clk_freq, int baud) {
-    int div = clk_freq / (16 * baud);
+static void uart_init(volatile uint8_t *base, int clk_freq, int bps) {
+    int div = clk_freq / (16 * bps);
     if (div < 1) div = 1;
     base[UART_LCR] = LCR_DLAB;
     base[UART_DLL] = div & 0xFF;

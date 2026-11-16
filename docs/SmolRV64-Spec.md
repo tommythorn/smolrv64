@@ -1909,7 +1909,7 @@ board with bitstream O. `tb_virtio_net` toggles the flag mid-delivery both ways.
 | on-chip SRAM (boot/monitor) | `0x7000_0000` | 256 KiB |
 | DDR4 | `0x8000_0000` | 1, 2 or 4 GiB (§13, DDR4) |
 
-UART is **hardwired in RTL per board** (`smolrv64_shell`'s `UART_BAUD`): **3 Mbps** on the RK boards, **2 Mbps** on
+UART is **hardwired in RTL per board** (`smolrv64_shell`'s `UART_BPS`): **3 Mb/s** on the RK boards, **2 Mb/s** on
 HDMI-XCKU5P, whose CP2105 stops there — not derived from the DTS or the kernel printout.
 Receive goes through a **4 KiB FIFO** behind RBR, 13.7 ms of input: the line has no flow
 control, so a byte that finds the FIFO full is dropped and sets LSR.OE. The THR is one byte
@@ -2529,7 +2529,7 @@ includes after naming its project, flash, console, monitor image and placer dire
 | Video | TinyVGA RGB222 on the 40-pin header | HDMI mode with audio (`src/hdmi_symbols.v`: video preambles and guard bands, a data island in every line's horizontal blanking with the Audio Sample, Audio Clock Regeneration and AVI/Audio InfoFrame packets), TMDS through four component-mode OSERDESE3 at DIFF_SSTL12 (`src/hdmi_tx.v`): bank 65 holds the DDR4 command pins, whose PHY owns the bank's native-mode resources; the bit clock is 5x the pixel clock, from an MMCM fed by it, above the -2 OSERDESE3 rating at 1080p (the one waived pulse-width check, `probe_clk_check.tcl`) |
 | Pixel clock at configuration | 1000 MHz / 6 = 166.67 MHz | 1000 MHz / 7 = 142.86 MHz (`VID_CLK_D`), 1080p60 at 57.7 Hz; the monitor starts the screen at 1280x720, 1000 MHz / 14 = 71.43 MHz (50.0 Hz) |
 | Ethernet | RTL8211F, RGMII (`gmii_to_rgmii`) | RTL8211EG strapped GMII (`src/gmii_phy.v`): the HD bank's RXCLK through BUFGCE_HDIO to an MMCM, sampled at -130.5 degrees; the PHY's reset is the FPGA's |
-| Console | 3 Mbps, the JTAG cable's second channel | 2 Mbps, a CP2105's interface 0 |
+| Console | 3 Mb/s, the JTAG cable's second channel | 2 Mb/s, a CP2105's interface 0 |
 | Monitor | `monitor.bin`: framebuffer `0xFF00_0000`, DTB `0xFEFF_F000` | `monitor-hdmi.bin`: framebuffer `0xBF00_0000`, DTB `0xBEFF_F000`, 1 GiB stated, 1280x720 at reset |
 | Device tree, NFS root | `ubuntu-nfs.dts`, `ubuntu-nfs-4g.dts`; `/srv/ubuntu-root-2g`, `-4g` | `ubuntu-nfs-hdmi.dts`; `/srv/ubuntu-root-hdmi` |
 | Flash | MX25U51245G | MT25QU128 (the schematic says MT25QU256) |

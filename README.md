@@ -224,7 +224,7 @@ words. Ubuntu's NFS root runs through it.
 - **Event sources:**
   - The HID line comes from a Raspberry Pi Pico running [tools/hid-bridge](tools/hid-bridge).
     The Pico is the USB host for any number of keyboards and mice and sends finished Linux input
-    events at 1 Mbps on header J1 pin 4. The bridge's README has the wiring and the line format.
+    events at 1 Mb/s on header J1 pin 4. The bridge's README has the wiring and the line format.
   - The serial console is the second source, once key[1] steers UART RX to the keyboard. Its
     bytes, including xterm escape sequences, are translated into key presses.
 - **Delivery:** events are delivered only while the driver runs, and up to 64 wait for a

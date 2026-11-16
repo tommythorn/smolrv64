@@ -340,7 +340,7 @@ module rv_soc_top #(
    // DTS declares the IRQ, so the 8250 driver waits for a THRE interrupt to drain its xmit
    // buffer -- without it userspace wedges in its first console write() while polled printk
    // still looks healthy. DTS fifo-size=<1> is the THR's depth.
-   // Receive is a 4 KiB FIFO behind RBR, 13.7 ms of input at 3 Mbps. The board's line has no
+   // Receive is a 4 KiB FIFO behind RBR, 13.7 ms of input at 3 Mb/s. The board's line has no
    // flow control: a byte that finds the FIFO full is dropped and sets LSR.OE, which reading
    // LSR clears; FCR bit 1 empties the FIFO. The counts carry a wrap bit above the index. The
    // block RAM is read at rxq_r every cycle and returns garbage for an address written in the

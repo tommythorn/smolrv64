@@ -193,7 +193,7 @@ API).
 
 ### 4b. The host side: the terminal is the keyboard
 
-The board has no keyboard; its only input is the 3 Mbps UART. This is simmerv's terminal mode
+The board has no keyboard; its only input is the 3 Mb/s UART. This is simmerv's terminal mode
 (`--graphics` drawn in iTerm2), so do what simmerv does there.
 
 1. **A UART RX demux.** Each received byte goes either to the 16550's RX FIFO, as today, or to
@@ -230,7 +230,7 @@ The board has no keyboard; its only input is the 3 Mbps UART. This is simmerv's 
    - ESC followed by an ordinary byte → that key with Alt.
    - **A lone ESC.** simmerv calls an ESC that ends a host `read()` the Esc key. The FSM
      cannot see reads, so use a timeout: ESC with no next byte within about 1 ms is the Esc
-     key. At 3 Mbps a byte is 3.3 µs, and a terminal sends a sequence in one write.
+     key. At 3 Mb/s a byte is 3.3 µs, and a terminal sends a sequence in one write.
    - The keycodes are the Linux ones `hid_to_linux` produces (simmerv
      `src/device/virtio_input.rs`).
 3. **One source of truth.** Generate the ROMs from simmerv's tables, or at least test the RTL

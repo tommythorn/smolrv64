@@ -48,7 +48,7 @@
 
 // NS16550A UART at 0x10000000
 #define UART0_BASE  ((volatile uint8_t *)0x10000000)
-#define CLK_FREQ    166666667       // the line is 3 Mbps in hardware; the divisor is not used
+#define CLK_FREQ    166666667       // the line is 3 Mb/s in hardware; the divisor is not used
 #define UART_SPEED  3000000
 
 #define UART_THR  0
@@ -77,9 +77,9 @@
 #define BUILD_ID_BASE   ((volatile uint32_t *)0x1000F000)
 #define BUILD_ID_MAGIC  0x534d4f4cu
 
-static void uart_init(volatile uint8_t *base, int clk_freq, int baud)
+static void uart_init(volatile uint8_t *base, int clk_freq, int bps)
 {
-    int div = clk_freq / (16 * baud);
+    int div = clk_freq / (16 * bps);
     if (div < 1) div = 1;
     base[UART_LCR] = LCR_DLAB;
     base[UART_DLL] = div & 0xFF;

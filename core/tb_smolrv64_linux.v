@@ -47,7 +47,7 @@ module tb;
 `endif
    wire        rx_ready;
 
-   // Model the hardware's 3 Mbps serializer instead of an instant drain: a 10-bit
+   // Model the hardware's 3 Mb/s serializer instead of an instant drain: a 10-bit
    // frame at 66.67 MHz is ~222 core cycles, so uart_tx_ready stays low that long
    // after each accepted byte. THR then stays full between characters and THRE
    // interrupts land while the kernel is BUSY -- the interrupt pacing the FPGA sees,
@@ -63,7 +63,7 @@ module tb;
       else if (txcnt != 8'd0)           txcnt <= txcnt - 8'd1;
 
    // Console input: +uart_in=<file> types the file into the UART's receive FIFO from cycle
-   // +uart_at=<n>, a byte every +uart_gap=<n> cycles (default 555: 3 Mbps at 166.67 MHz), with
+   // +uart_at=<n>, a byte every +uart_gap=<n> cycles (default 555: 3 Mb/s at 166.67 MHz), with
    // no flow control, as the board's line has none: a byte that finds the FIFO full is lost.
    reg  [7:0]       uin [0:65535];
    reg  [63:0]      uin_n, uin_i, uin_at, uin_gap, uin_t;
