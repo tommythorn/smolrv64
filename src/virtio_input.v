@@ -11,7 +11,7 @@
 //
 // Events have two sources, taken one event at a time, the HID line first (it cannot wait):
 //
-// The HID line (hid_rxd, 8N1 at HID_BPS): a Raspberry Pi Pico is the USB host for any number of
+// The HID line (hid_rxd, 8N1 at HID_BAUD): a Raspberry Pi Pico is the USB host for any number of
 // keyboards and mice (tools/hid-bridge) and sends finished Linux input events, SYN_REPORT
 // included, so this side translates nothing. An event is 28 bits, {type[1:0], code[9:0],
 // value[15:0]} with the value sign-extended to 32, sent as four bytes of 7 bits, most
@@ -26,7 +26,7 @@
 // printable ASCII (US layout), control characters, xterm escape sequences with modifiers, and
 // ESC + byte = Alt. The one difference is the lone ESC: simmerv calls an ESC that ends a host
 // read() the Esc key; here it is an ESC followed by nothing for ESC_TIMEOUT cycles (1 ms; a
-// terminal sends a sequence in one write, 3.3 us a byte at 3 Mb/s). tb_virtio_input checks the
+// terminal sends a sequence in one write, 3.3 us a byte at 3 Mbps). tb_virtio_input checks the
 // translation against vectors produced by simmerv's own translate() (kbd_vectors.txt).
 //
 // Each key press becomes events as simmerv's term_keys::send emits them: the modifiers down
@@ -36,7 +36,7 @@
 module virtio_input #(
     parameter integer ESC_TIMEOUT = 333_333,       // ui_clk cycles: 1 ms at 333.33 MHz
     parameter integer CLK_HZ      = 333_333_333,   // ui_clk
-    parameter integer HID_BPS    = 1_000_000
+    parameter integer HID_BAUD    = 1_000_000
 )(
     input  wire        clock,
     input  wire        reset,
@@ -205,7 +205,7 @@ module virtio_input #(
 
    // ================== the HID line: bytes -> events, 64 deep ==================
    wire       hid_v;  wire [7:0] hid_b;
-   rs232rx #(.CLK_FREQ(CLK_HZ), .BPS(HID_BPS)) hid_rx (
+   rs232rx #(.CLK_FREQ(CLK_HZ), .BAUD(HID_BAUD)) hid_rx (
       .clk(clock), .rst_n(!reset), .data(hid_b), .valid(hid_v), .ready(1'b1), .rxd(hid_rxd), .overflow());
    reg  [1:0]  hn;                 // bytes of the current event received; 0: waiting for a first byte
    reg  [20:0] hacc;

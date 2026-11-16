@@ -1909,7 +1909,7 @@ board with bitstream O. `tb_virtio_net` toggles the flag mid-delivery both ways.
 | on-chip SRAM (boot/monitor) | `0x7000_0000` | 256 KiB |
 | DDR4 | `0x8000_0000` | 1, 2 or 4 GiB (§13, DDR4) |
 
-UART is **hardwired in RTL per board** (`smolrv64_shell`'s `UART_BPS`): **3 Mb/s** on the RK boards, **2 Mb/s** on
+UART is **hardwired in RTL per board** (`smolrv64_shell`'s `UART_BAUD`): **3 Mb/s** on the RK boards, **2 Mb/s** on
 HDMI-XCKU5P, whose CP2105 stops there — not derived from the DTS or the kernel printout.
 Receive goes through a **4 KiB FIFO** behind RBR, 13.7 ms of input: the line has no flow
 control, so a byte that finds the FIFO full is dropped and sets LSR.OE. The THR is one byte
