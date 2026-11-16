@@ -282,7 +282,8 @@ You also need:
 - **A serial console**, 8N1: on the RK-XCKU5P-F the JTAG cable's second port at 3 Mb/s, on
   the HDMI-XCKU5P the CP2105's first port at 2 Mb/s (`screen /dev/ttyUSB1 3000000`, say).
   The monitor's prompt also appears on the screen (VGA on the RK-XCKU5P-F's 40-pin header, HDMI on
-  the other); Linux's console goes to both.
+  the other). Linux's console is the screen; the serial line gets the kernel's messages and a login
+  of its own.
 
 Once the bitstream is loaded, the monitor waits at its prompt:
 
@@ -350,6 +351,69 @@ To use another export path or a fixed server, generate the device tree with
 `tools/check-dts-timebase.py --gen 48 [--hdmi] --nfsroot=SERVER:/PATH workloads/ubuntu/ubuntu-nfs.dts.in out.dts`
 and compile it with `dtc`. `release/make-release.sh` builds a release from met builds.
 
+### The screen, its keyboard and mouse, and X
+
+Linux's console is the screen (`console=tty0` is the last `console=` in the device tree's
+bootargs). The kernel's messages also go to the serial line, which has its own login on `ttyS0`.
+The screen runs at the mode the monitor set: 640x480 at 60 Hz on the RK-XCKU5P-F and 1280x720 at
+50 Hz on the HDMI-XCKU5P, unless a `V` line with an X11 modeline came before the boot
+(`tools/vga-mode.py` prints the line for a mode). The screen's keyboard and mouse are the
+virtio-input device, which takes input from two sources.
+
+**The serial terminal as the keyboard.** Press key[1] to send what you type in the serial
+terminal to the virtio keyboard instead of the UART. key[1] is the button labelled KEY2 on the
+RK-XCKU5P-F and the second of the four on the HDMI-XCKU5P. Your keys then go to the screen: its
+text console (Ubuntu's login on `tty1`) or X. The serial terminal still shows what the board
+prints to the serial line. Press key[1] again to give the input back to the UART, where the
+serial line's login reads it. Every reset starts with the input on the UART.
+The board turns the terminal's bytes back into key presses:
+- printable ASCII (US layout) and control characters;
+- xterm escape sequences with their modifiers: the arrows, Home, End, Page Up and Down, Insert,
+  Delete and the function keys;
+- ESC followed by a byte is Alt with that key, and an ESC followed by nothing for 1 ms is the
+  Esc key.
+
+**USB keyboards and mice through a Raspberry Pi Pico.** A Pico running
+[tools/hid-bridge](tools/hid-bridge) is the USB host for any number of keyboards and mice. They
+plug in directly or through a hub, on the Pico's micro-USB port through an OTG adapter. The Pico
+sends their events to the board over one wire at 1 Mb/s.
+
+1. Build the firmware with pico-sdk 1.5.1 and TinyUSB 0.17.0 (an `arm-none-eabi-gcc` on `PATH`):
+   ```
+   git clone --branch 1.5.1 https://github.com/raspberrypi/pico-sdk
+   git -C pico-sdk submodule update --init lib/tinyusb
+   git -C pico-sdk/lib/tinyusb fetch origin tag 0.17.0 && git -C pico-sdk/lib/tinyusb checkout 0.17.0
+   export PICO_SDK_PATH=$PWD/pico-sdk
+   cmake -S tools/hid-bridge -B build/hid-bridge && make -C build/hid-bridge
+   ```
+   The build is for the Pico W; add `-DPICO_BOARD=pico` to the `cmake` line for a Pico.
+2. Flash it: hold BOOTSEL while you plug the Pico into a computer, then copy
+   `build/hid-bridge/hid-bridge.uf2` to the drive that appears. After that, the Pico's USB port
+   is a host port, for the keyboards and mice.
+3. Connect it to the board while the board's power is off:
+
+   | Pico | RK-XCKU5P-F, 40-pin header J1 | HDMI-XCKU5P |
+   |---|---|---|
+   | pin 6, GP4 (UART1 TX) | pin 4, IO1_P | PMOD0_0, header J1 pin 1 (3.3 V) |
+   | pin 38, GND | pin 1, GND | a GND pin of the same PMOD |
+   | pin 40, VBUS | pin 2, +5V | not connected |
+
+   On the RK-XCKU5P-F, the board's +5V on VBUS powers the Pico and the USB devices on its port.
+   The HDMI-XCKU5P has no easily reached +5V, so there the Pico's port takes a powered OTG USB
+   hub, which powers the Pico and the devices; only GND and the serial line go to the board.
+
+The Pico's UART0 (GP0, pin 1, 115.2 kb/s) logs the devices as they attach. The bridge's
+[README](tools/hid-bridge/README.md) describes the line.
+
+**X.** Ubuntu's server image has no X. X runs on the board's framebuffer through Xorg's fbdev
+driver and finds the virtio keyboard and mouse through libinput, with no configuration file.
+Install X and a light desktop, for example LXDE:
+```
+sudo apt install xserver-xorg xserver-xorg-video-fbdev xinit lxde-core
+```
+Then log in on the screen's console and run `startx /usr/bin/startlxde`. If you prefer a
+graphical login, install a display manager such as `sddm`.
+
 ## Building and testing
 
 ```
@@ -378,9 +442,9 @@ make -C platforms/rk-xcku5p-f-v1.2 census     # every near-critical endpoint, gr
 tools/gate.sh                                 # build, program, boot Ubuntu to login:, judge
 ```
 
-The board boots through the ROM monitor, which turns the VGA output on at reset (640x480, the
-device tree's framebuffer): a splash, and a console that shows everything it prints; `V` followed
-by an X11 modeline sets another mode, up to a 166.67 MHz pixel clock (`tools/vga-mode.py` prints
+The board boots through the ROM monitor, which turns the screen on at reset (640x480 VGA, the
+device tree's framebuffer; 1280x720 HDMI on the HDMI-XCKU5P): a splash, and a console that shows
+everything it prints; `V` followed by an X11 modeline sets another mode, up to a 166.67 MHz pixel clock (`tools/vga-mode.py` prints
 the line), and the monitor writes the mode into the device tree it boots Linux with. It waits at
 its prompt. `go [dir]`, or key[0], boots over TFTP from the server the DHCP reply names as
 next-server: the monitor takes an address by DHCP and runs `dir/boot.txt`, monitor commands
