@@ -10,6 +10,10 @@
 //      good frame, one kernel rx_dropped per retransmitted NFS segment
 //   E  an FCS-bad frame is counted, not delivered
 //   F  a frame longer than a slot is counted, not delivered (built at -GSLOT_BYTES=1024)
+//   G  the gmii domain is reset, its clock stopped (as when the PHY's receive clock stops for a
+//      link renegotiation), with frames held and one arriving, and the backend releases a slot
+//      while the clock is stopped: the held frames come out whole and in order, the one cut
+//      off never does, and a whole lap of the ring after it goes through with no drops
 #include "Veth_rx_engine_loop_top.h"
 #include "verilated.h"
 #include <cstdio>
@@ -18,7 +22,8 @@
 
 static Veth_rx_engine_loop_top* dut;
 static uint8_t txbuf[2048];
-static long t = 0;
+static long t = 0, gcnt = 0;
+static bool g_run = true;
 static int ui_prev = 0, g_prev = 0, g_rise = 0, ui_rise = 0;
 static int fails = 0;
 #define CHECK(ok, ...) do { if (!(ok)) { printf("FAIL: "); printf(__VA_ARGS__); printf("\n"); fails++; } } while (0)
@@ -26,7 +31,8 @@ static int fails = 0;
 // one tick: ui period 10 ticks, gmii period 6 ticks (independent, incommensurate enough)
 static void tick() {
     t++;
-    int ui = (t / 5) % 2, g = (t / 3) % 2;
+    if (g_run) gcnt++;
+    int ui = (t / 5) % 2, g = (gcnt / 3) % 2;
     dut->gmii_clk = g; dut->ui_clk = ui;
     dut->tx_rd_data = txbuf[dut->tx_rd_index & 0x7ff];
     dut->eval();
@@ -87,11 +93,11 @@ int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     dut = new Veth_rx_engine_loop_top;
     const int SLOTS = 8;
-    dut->gmii_rst = 1; dut->ui_rst = 1;
+    dut->gmii_rst = 1;
     dut->send = 0; dut->tx_frame_len = 0; dut->tx_rd_data = 0; dut->corrupt = 0;
     dut->rx_rd_addr = 0; dut->rx_frame_ack = 0;
     ticks(60);
-    dut->gmii_rst = 0; dut->ui_rst = 0;
+    dut->gmii_rst = 0;
     ticks(60);
 
     // ---- A: one short frame, padded to 60 ----
@@ -144,6 +150,29 @@ int main(int argc, char** argv) {
     expect_no_frame("F");
     send_frame(43, 90); wait_tx_done();
     expect_frame(43, 90, "F next");
+
+    // ---- G: a gmii-domain reset with frames held, one arriving, and a release in flight.
+    // 29 frames have been committed; one more puts the reset mid-lap with odd toggles. ----
+    send_frame(49, 70); wait_tx_done(); expect_frame(49, 70, "G first");
+    unsigned drops0 = dut->rx_drop_count, bad0 = dut->rx_bad_count, oflow0 = dut->rx_oflow_count;
+    for (int i = 0; i < 3; i++) send_frame(50 + i, 80 + i);
+    wait_tx_done();
+    send_frame(53, 400);
+    gmii_cycles(100);                                      // frame 53 is half received
+    dut->gmii_rst = 1; dut->eval();                        // the lock is lost: reset, clock stops
+    g_run = false;
+    expect_frame(50, 80, "G before");                      // read and released, no gmii clock
+    ticks(600);
+    g_run = true;
+    gmii_cycles(2); dut->gmii_rst = 0;                     // the shell's synchronizer
+    expect_frame(51, 81, "G");
+    expect_frame(52, 82, "G");
+    expect_no_frame("G");                                  // nothing of frame 53
+    CHECK(dut->rx_drop_count == drops0 && dut->rx_bad_count == bad0 && dut->rx_oflow_count == oflow0,
+          "G: the counts changed across the reset (%u %u %u)", dut->rx_drop_count, dut->rx_bad_count, dut->rx_oflow_count);
+    unsigned drops = dut->rx_drop_count;
+    for (int i = 0; i < SLOTS; i++) { send_frame(60 + i, 90); wait_tx_done(); expect_frame(60 + i, 90, "G lap"); }
+    CHECK(dut->rx_drop_count == drops, "G: busy drops %u, expected %u", dut->rx_drop_count, drops);
 
     printf("drops=%u bad=%u oflow=%u, %d failure(s)\n",
            dut->rx_drop_count, dut->rx_bad_count, dut->rx_oflow_count, fails);

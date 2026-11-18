@@ -687,6 +687,21 @@ change that moves when an event fires lists the event's consumers -- every hold,
 commit that names it -- and re-derives each window in the same commit, with the hazard asserted
 (A6: the ROB now asserts that no flagged load is ever behind the pointer).
 
+**D22. A handshake that crosses clock domains is reset by neither domain.** A toggle pair (or
+any request/acknowledge state split across two clocks) is one piece of state living in two
+places; a reset that reaches only one place loses a handshake or invents one. Each side derives
+what it needs -- pending, held, busy -- as the XOR of the two toggles as it sees them, and a
+domain's reset abandons only the work in flight on its own side. The case that matters is a
+domain whose clock can stop: the GMII side runs on the PHY's receive clock and is held in reset
+until its MMCM relocks after a renegotiation. `eth_tx_engine` reset `done_tgl` and `send_sync`
+there but not ui_clk's `busy`: after 50.6 h on the HDMI-XCKU5P (2026-11-18) a lock loss with a
+frame in flight left `busy` high for good, the backend's 3 ms timeout completed every later frame
+unsent, and the board went silent while it still received; a JTAG readback named the flops.
+`eth_rx_engine` had the same split (`ws`, `held_g`, `done_tgl` against ui_clk's `rs` and
+`held_ui`): its bench, given a reset mid-lap, stalls the receive path. Both benches now reset the
+GMII side with its clock stopped: TX at every point of a frame's life, RX with frames held, one
+arriving and one released while the clock is stopped.
+
 ## E. Widths and lint
 
 **E1. The lint gate is `-Werror` on the load-bearing rules.**

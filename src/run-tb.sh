@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build and run every unit testbench under src/ (tb_*.v, and the two C++-driven ones: the SD-SPI
-# host and virtio_blk against the behavioural SD card) with Verilator, in parallel, and count
-# PASS. These cover the blocks the core shares (aligner, fetch, decode, ALU, MMU, mul/div, FPU
+# Build and run every unit testbench under src/ (tb_*.v, and the C++-driven ones: the SD-SPI
+# host and virtio_blk against the behavioural SD card, and the Ethernet TX engine through both
+# MACs) with Verilator, in parallel, and count PASS. These cover the blocks the core shares (aligner, fetch, decode, ALU, MMU, mul/div, FPU
 # wrapper) and the SoC devices (CLINT, PLIC, DDR line bridge, virtio-net). The core's own benches
 # live in core/run-*-tb.sh. Rule G4: run this after any port change to a shared module.
 #
@@ -49,7 +49,9 @@ cxx() {
 res=$( { ls tb_*.v | xargs -P 8 -I{} bash -c 'one {}';
          cxx sd_spi_host_tb sd_spi_host -GSLOW_HALF=3 -GFAST_HALF=4 -GINIT_BYTES=4 sd_spi_host.v sd_spi_host_tb.cpp;
          cxx virtio_blk_tb virtio_blk -GSD_SLOW_HALF=3 -GSD_FAST_HALF=4 -GSD_INIT_TICKS=20 \
-             virtio_blk.v sd_spi_host.v dma_master.v virtio_blk_tb.cpp; } | sort)
+             virtio_blk.v sd_spi_host.v dma_master.v virtio_blk_tb.cpp;
+         cxx eth_tx_engine_tb eth_tx_engine_loop_top eth_tx_engine_loop_top.v eth_tx_engine.v \
+             eth_mac_tx.v eth_mac_rx.v crc32_d8.v eth_tx_engine_tb.cpp; } | sort)
 echo "$res" | grep -v ' PASS$'
 echo "----"
 echo "tb pass=$(echo "$res" | grep -c ' PASS$') / $(echo "$res" | grep -c .)"

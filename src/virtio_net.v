@@ -180,6 +180,7 @@ module virtio_net #(
    reg        tx_busy_seen;    // saw eth_tx_engine accept the send
    reg [19:0] tx_timeout;      // guard: complete even if the link/TX never drains
    reg [31:0] tx_frame_count;
+   reg [20:0] tx_timeouts;     // frames completed to the driver unsent: the engine never freed
    reg [10:0] tx_last_len;
    reg [31:0] tx_dbg_desc_addr;
    reg [31:0] tx_dbg_desc_len;
@@ -238,7 +239,7 @@ module virtio_net #(
    reg  [63:0] nxt_word;  reg nxt_valid, rd_ahead, rd_err;  reg [63:0] rd_end;
 
    assign debug_tx_frame_count = tx_frame_count;
-   assign debug_tx_last_len    = {21'd0, tx_last_len};
+   assign debug_tx_last_len    = {tx_timeouts, tx_last_len};
    assign debug_tx_desc_addr   = tx_dbg_desc_addr;
    assign debug_tx_desc_len    = tx_dbg_desc_len;
 
@@ -415,6 +416,7 @@ module virtio_net #(
          tx_send_len <= 11'd0;
          tx_busy_seen <= 1'b0;
          tx_frame_count <= 32'd0;
+         tx_timeouts <= 21'd0;
          tx_last_len <= 11'd0;
          tx_dbg_desc_addr <= 32'd0;
          tx_dbg_desc_len <= 32'd0;
@@ -571,12 +573,22 @@ module virtio_net #(
                     first_word  <= 1'b1;
                     start_off   <= desc_addr[2:0] + 3'd4;            // (desc+12)[2:0]
                     desc_addr   <= (desc_addr + 64'd12) & ~64'd7;    // aligned word
+                    tx_timeout  <= 20'hf_ffff;
                     state       <= S_FRAME_RD;
                  end
               end
            end
            S_FRAME_RD: begin                          // the first word (later ones are read ahead)
-              if (dma_cmd_ready) begin
+              // The engine's buffer is written only while it is free: a frame it still holds
+              // (its GMII clock stopped mid-frame: it is sent again when the clock is back)
+              // keeps it, up to the timeout; then this frame is completed unsent, and counted.
+              if (tx_busy) begin
+                 tx_timeout <= tx_timeout - 20'd1;
+                 if (tx_timeout == 20'd0) begin
+                    tx_timeouts <= tx_timeouts + 21'd1;
+                    state <= S_WRITE_USED_ID;
+                 end
+              end else if (dma_cmd_ready) begin
                  start_read64(desc_addr);
                  desc_addr <= desc_addr + 64'd8;
                  state <= S_WAIT_FRAME;
@@ -622,13 +634,14 @@ module virtio_net #(
               state        <= S_WAIT_SEND;
            end
            S_WAIT_SEND: begin
-              // Complete on TX drain, OR on timeout so virtio never wedges if
-              // the PHY link is down (gmii_rx_clk not running -> busy never
-              // clears).  A dropped frame here is no worse than the old behavior.
+              // Complete on TX drain, OR on timeout so virtio never wedges while the link is
+              // down (gmii_rx_clk not running: the engine holds the frame, busy stays high);
+              // a timeout is counted.
               if (tx_busy) tx_busy_seen <= 1'b1;
               tx_timeout <= tx_timeout - 20'd1;
               if ((tx_busy_seen && !tx_busy) || tx_timeout == 20'd0) begin
                  tx_frame_count <= tx_frame_count + 32'd1;
+                 if (!(tx_busy_seen && !tx_busy)) tx_timeouts <= tx_timeouts + 21'd1;
                  tx_last_len    <= frame_total;
                  state <= S_WRITE_USED_ID;
               end

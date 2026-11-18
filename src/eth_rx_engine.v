@@ -22,8 +22,13 @@
 // (they change rarely; a torn read is off by one count).
 //
 // CDC: the byte ring is a two-clock BRAM (gmii write / ui read); each slot has a
-// done toggle (gmii -> ui) and an ack toggle (ui -> gmii); len is written before
-// the done toggle and read after the synchronised pulse (quasi-static).
+// done toggle (gmii -> ui) and an ack toggle (ui -> gmii), and a slot is held while
+// they differ, as each side sees them; len is written before the done toggle and
+// read once the toggles differ (quasi-static).  No reset touches the toggles, the
+// slot pointers or the counters: the gmii domain is held in reset whenever its
+// clock is not good (the PHY's receive clock, which stops while the link
+// renegotiates), and a handshake reset on one side of the crossing loses or invents
+// frames.  That reset abandons only the frame being received.
 module eth_rx_engine #(
     parameter integer SLOTS      = 8,      // frames held; a power of two
     parameter integer SLOT_BYTES = 2048    // bytes per slot (a frame is <= 1536); a power of two
@@ -38,7 +43,6 @@ module eth_rx_engine #(
 
     // ui_clk (virtio backend) domain
     input  wire        ui_clk,
-    input  wire        ui_rst,
     output wire        frame_valid,   // the oldest held frame is ready to read
     output wire [10:0] frame_len,     // its length (stable while frame_valid)
     input  wire [10:0] rd_addr,       // backend reads frame bytes: rd_data one cycle later
@@ -57,35 +61,29 @@ module eth_rx_engine #(
    reg [7:0] ram [0:SLOTS*SLOT_BYTES-1];
 
    // ---- gmii-domain capture ---------------------------------------------
-   reg  [SB-1:0]    ws;             // slot being written
+   reg  [SB-1:0]    ws = {SB{1'b0}};          // slot being written
    reg  [OB-1:0]    wptr;           // bytes captured so far in it
    reg              in_frame;       // a frame is in progress (first byte seen, no rx_last yet)
    reg              cap;            // ...and it is being captured (decided at its first byte)
    reg              ovf;            // ...and it outgrew the slot
-   reg  [SLOTS-1:0] held_g;         // slot committed, ui ack not yet seen
    reg  [OB-1:0]    len_g [0:SLOTS-1];
-   reg  [SLOTS-1:0] done_tgl;       // toggles on each commit, per slot
-   reg  [SLOTS-1:0] ack_tgl;        // ui -> gmii, per slot
-   reg  [2:0]       ack_sync [0:SLOTS-1];
-   reg  [15:0]      busy_g, bad_g, oflow_g;
+   reg  [SLOTS-1:0] done_tgl = {SLOTS{1'b0}};   // gmii: flips on each commit, per slot
+   reg  [SLOTS-1:0] ack_tgl  = {SLOTS{1'b0}};   // ui: flips on each release, per slot
+   (* async_reg = "true" *) reg [SLOTS-1:0] ack_s0 = {SLOTS{1'b0}}, ack_s1 = {SLOTS{1'b0}};
+   reg  [SLOTS-1:0] ack_s2 = {SLOTS{1'b0}};     // ack_tgl as gmii_clk sees it
+   wire [SLOTS-1:0] held_g = done_tgl ^ ack_s2; // committed, its release not yet seen
+   reg  [15:0]      busy_g = 16'd0, bad_g = 16'd0, oflow_g = 16'd0;
 
    wire start   = rx_valid & ~in_frame;
    wire cap_now = start ? ~held_g[ws] : cap;    // the decision, at the first byte
    wire wr_ok   = rx_valid & cap_now & ~ovf;
    wire commit  = rx_last & rx_good & cap & ~ovf & (wptr != {OB{1'b0}});
 
-   integer i;
    always @(posedge gmii_clk) begin
+      {ack_s2, ack_s1, ack_s0} <= {ack_s1, ack_s0, ack_tgl};
       if (gmii_rst) begin
-         ws <= {SB{1'b0}}; wptr <= {OB{1'b0}}; in_frame <= 1'b0; cap <= 1'b0; ovf <= 1'b0;
-         held_g <= {SLOTS{1'b0}}; done_tgl <= {SLOTS{1'b0}};
-         busy_g <= 16'd0; bad_g <= 16'd0; oflow_g <= 16'd0;
-         for (i = 0; i < SLOTS; i = i + 1) ack_sync[i] <= 3'd0;
+         wptr <= {OB{1'b0}}; in_frame <= 1'b0; cap <= 1'b0; ovf <= 1'b0;
       end else begin
-         for (i = 0; i < SLOTS; i = i + 1) begin
-            ack_sync[i] <= {ack_sync[i][1:0], ack_tgl[i]};
-            if (ack_sync[i][2] ^ ack_sync[i][1]) held_g[i] <= 1'b0;   // backend released it
-         end
          if (rx_valid) begin
             in_frame <= 1'b1;
             cap      <= cap_now;
@@ -99,7 +97,6 @@ module eth_rx_engine #(
             if (commit) begin
                len_g[ws]    <= wptr;
                done_tgl[ws] <= ~done_tgl[ws];
-               held_g[ws]   <= 1'b1;
                ws           <= ws + 1'b1;
             end else if (~rx_good)  bad_g   <= bad_g   + 16'd1;
             else if (~cap)          busy_g  <= busy_g  + 16'd1;
@@ -116,9 +113,10 @@ module eth_rx_engine #(
          $fatal(1, "eth_rx_engine: rx_last together with rx_valid");
 
    // ---- ui-domain handoff ------------------------------------------------
-   reg  [SB-1:0]    rs;             // slot being read
-   reg  [SLOTS-1:0] held_ui;        // committed and not yet acked, as the ui side sees it
-   reg  [2:0]       done_sync [0:SLOTS-1];
+   reg  [SB-1:0]    rs = {SB{1'b0}};             // slot being read
+   (* async_reg = "true" *) reg [SLOTS-1:0] done_s0 = {SLOTS{1'b0}}, done_s1 = {SLOTS{1'b0}};
+   reg  [SLOTS-1:0] done_s2 = {SLOTS{1'b0}};       // done_tgl as ui_clk sees it
+   wire [SLOTS-1:0] held_ui = done_s2 ^ ack_tgl;   // committed and not yet acked, as ui sees it
 
    assign frame_valid = held_ui[rs];
    /* verilator lint_off WIDTHEXPAND */
@@ -126,30 +124,20 @@ module eth_rx_engine #(
    /* verilator lint_on WIDTHEXPAND */
 
    always @(posedge ui_clk) begin
-      if (ui_rst) begin
-         rs <= {SB{1'b0}}; held_ui <= {SLOTS{1'b0}}; ack_tgl <= {SLOTS{1'b0}};
-         drop_count <= 16'd0; bad_count <= 16'd0; oflow_count <= 16'd0;
-         for (i = 0; i < SLOTS; i = i + 1) done_sync[i] <= 3'd0;
-      end else begin
-         for (i = 0; i < SLOTS; i = i + 1) begin
-            done_sync[i] <= {done_sync[i][1:0], done_tgl[i]};
-            if (done_sync[i][2] ^ done_sync[i][1]) held_ui[i] <= 1'b1;
-         end
-         if (frame_ack && held_ui[rs]) begin
-            held_ui[rs] <= 1'b0;
-            ack_tgl[rs] <= ~ack_tgl[rs];
-            rs          <= rs + 1'b1;
-         end
-         drop_count  <= busy_g;                 // approximate crossings (rarely change)
-         bad_count   <= bad_g;
-         oflow_count <= oflow_g;
+      {done_s2, done_s1, done_s0} <= {done_s1, done_s0, done_tgl};
+      if (frame_ack && held_ui[rs]) begin
+         ack_tgl[rs] <= ~ack_tgl[rs];
+         rs          <= rs + 1'b1;
       end
+      drop_count  <= busy_g;                    // approximate crossings (rarely change)
+      bad_count   <= bad_g;
+      oflow_count <= oflow_g;
       rd_data <= ram[{rs, rd_addr[OB-1:0]}];    // the registered read; addr leads by a cycle
    end
 
    // An ack with nothing held is a backend defect, not a no-op.
    always @(posedge ui_clk)
-      if (!ui_rst && frame_ack && !held_ui[rs])
+      if (frame_ack && !held_ui[rs])
          $fatal(1, "eth_rx_engine: frame_ack with no frame held (rs=%0d)", rs);
 
 endmodule

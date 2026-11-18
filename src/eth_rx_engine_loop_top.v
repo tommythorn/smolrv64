@@ -17,7 +17,6 @@ module eth_rx_engine_loop_top #(
     output wire        tx_busy,
     input  wire        corrupt,
     input  wire        ui_clk,
-    input  wire        ui_rst,
     output wire        rx_frame_valid,
     output wire [10:0] rx_frame_len,
     input  wire [10:0] rx_rd_addr,
@@ -44,7 +43,7 @@ module eth_rx_engine_loop_top #(
    eth_rx_engine #(.SLOTS(SLOTS), .SLOT_BYTES(SLOT_BYTES)) u_eng(
       .gmii_clk(gmii_clk), .gmii_rst(gmii_rst),
       .rx_valid(rxv), .rx_data(rxd), .rx_last(rxl), .rx_good(rxg),
-      .ui_clk(ui_clk), .ui_rst(ui_rst),
+      .ui_clk(ui_clk),
       .frame_valid(rx_frame_valid), .frame_len(rx_frame_len),
       .rd_addr(rx_rd_addr), .rd_data(rx_rd_data),
       .frame_ack(rx_frame_ack), .drop_count(rx_drop_count),

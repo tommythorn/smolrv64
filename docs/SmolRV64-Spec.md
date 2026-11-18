@@ -1888,6 +1888,18 @@ engine. Before this every RX byte was its own AXI transaction (1,518 round trips
 1500-byte frame) and every TX word was fetched and then copied in series. `tb_virtio_net`
 at the DDR latencies measured on the board (reads 28, writes 15): RX 31,919 -> 3,953
 cycles per 1500-byte frame, TX 7,839 -> 6,534 (RX 4,018 with the flag re-read below).
+**The Ethernet engines' handshakes survive a stopped clock** (2026-11-18): the GMII side runs
+on the PHY's receive clock, which stops while the link renegotiates, and is held in reset until
+its MMCM locks again (`gmii_clk_ok`). No reset touches the toggles that cross between it and
+ui_clk, their synchronizers, the RX slot pointers or the counters; each side's state is the
+XOR of the two toggles as it sees them (TX: a frame pending; RX: a slot held). The reset
+abandons only the frame on the wire: a frame being received is dropped, a frame being sent
+stays pending and goes out again, whole, when the clock is back (twice, if the reset fell in
+its inter-frame gap). The backend writes the TX buffer only while the engine is free, and a
+frame that waits ~3 ms for it, or for its send to drain, is completed to the driver unsent and
+counted in `0x1000_3F3C[31:11]` (`[10:0]` is the last frame's length). The TX side's reset of
+one end of its handshake left the engine busy for good after 50.6 h on the HDMI-XCKU5P, every
+frame since dropped, receive unaffected.
 **Each virtio device's DMA port is `dma_master`** (2026-10-24): one command at a time. A
 payload's words (blk's sectors, net's frames) are STREAM accesses through its 64-byte line
 buffer: a read fills it with one 8-beat burst, writes merge into it under their strobes and
@@ -2437,14 +2449,15 @@ from the checkpoint's first instruction.
 | lint | `src/lint.sh` | `lint: clean` |
 | riscv-tests | `core/run-vl.sh` | `pass=240 fail=0` |
 | directed tests, for what riscv-tests never does (a misaligned AMO; a counter overflow, Sscofpmf) | `core/run-directed.sh` (after `run-vl.sh`) | `PASS` for every test in `core/directed/` |
-| unit benches of the shared blocks and devices, under Verilator (the two C++-driven benches, the SD-SPI host and virtio_blk, included) | `src/run-tb.sh` | `tb pass=23 / 23` |
+| unit benches of the shared blocks and devices, under Verilator (the C++-driven benches, the SD-SPI host, virtio_blk and the Ethernet TX engine, included) | `src/run-tb.sh` | `tb pass=28 / 28` |
 | Linux lockstep vs simmerv | `CYC=300000000 core/run-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
 | the D$ | `core/run-dcache-tb.sh` | `DCACHE-TB: 48 of 48 runs pass` (6 seeds × in-order/reordering memory × default, slow, fast-with-stores, remap-heavy; every outcome occurs; memory equals gold after every clean) |
 | `rv_cache`, both shapes (no longer instantiated) | `core/run-cache-tb.sh` | PASS at LAT=4/20/100/200 |
 | load/store queues | `core/run-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `core/run-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | virtio-net DMA, both directions | `src/run-tb.sh` (`tb_virtio_net.v`) | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |
-| Ethernet RX engine (MACs + the slot ring, two clocks) | `core/run-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long) |
+| Ethernet RX engine (MACs + the slot ring, two clocks) | `core/run-ethrx-tb.sh` | `eth_rx_engine: PASS` (a burst, a full ring, an ack landing mid-frame, FCS-bad, over-long, a GMII reset with its clock stopped while frames are held, one arrives and one is released) |
+| Ethernet TX engine (the engine and both MACs, two clocks) | `src/run-tb.sh` (`eth_tx_engine_tb.cpp`) | `eth_tx_engine_loop_top: PASS` (a GMII reset with its clock stopped at each of 140 points of a frame's life: the frame arrives whole, busy clears) |
 | CBO behind and ahead of stores | `make -C workloads/fphammer cbozero.bin && FW=$PWD/workloads/fphammer/cbozero.bin CYC=4000000 core/run-linux.sh` | `cbozero: ok` (the tiny128 boot issues no cbo.zero; the Geekbench image does, at SLUB init) |
 | long guest (per batch) | `core/run-cosim-gb5.sh` | no divergence through the kernel boot (>400 M cycles) |
 | disk-backed lockstep: virtio-blk, coherent DMA (`dma-coherent`: the testbench's slave snoops each line through `rv_soc_top`'s DMA port first; 1.5 G cycles, ~80 min: userspace starts after ~1.3 G) | `make -C workloads/tiny128 cosim-blk` | no divergence, `BLKCHECK-OK` on the console (the initrd's S99blkcheck mounts the 4 MiB ext4 image, verifies every byte, writes a copy back and re-reads it past the page cache); the runner fails on `BLKCHECK-FAIL` or its absence |

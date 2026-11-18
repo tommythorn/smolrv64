@@ -9,20 +9,27 @@
 //
 // The frame buffer is an async-read RAM (so eth_mac_tx's combinational rd_data
 // contract holds) written in ui_clk and read in gmii_clk; it is the CDC for
-// the payload.  send/done cross via toggle synchronizers.  send_len is sampled
-// only while a transfer is in flight, during which it is held stable.
+// the payload.  The backend writes it only while busy is low, and send_len is
+// held in len_latch until the frame is done.
+//
+// send and done cross as toggles: a frame is pending while send_tgl and done_tgl
+// differ, and busy is that difference as ui_clk sees it.  Neither toggle is ever
+// reset, by either domain: the gmii domain is held in reset whenever its clock is
+// not good (the PHY's receive clock, which stops while the link renegotiates), and
+// a toggle reset on one side of the crossing loses or invents a handshake.  The
+// reset aborts only the frame on the wire (eth_mac_tx and `inflight`); the frame
+// stays pending and is sent again, whole, when the clock is back.
 module eth_tx_engine #(
     parameter integer BUF_BYTES = 1536
 )(
     // ui_clk (virtio backend) domain
     input  wire        ui_clk,
-    input  wire        ui_rst,
-    input  wire        wr_en,       // write one frame byte at wr_addr
+    input  wire        wr_en,       // write one frame byte at wr_addr (only while !busy)
     input  wire [10:0] wr_addr,
     input  wire [ 7:0] wr_data,
     input  wire        send,        // 1-cycle pulse: transmit send_len bytes
     input  wire [10:0] send_len,
-    output reg         busy,        // high from send accept until TX done
+    output wire        busy,        // high from send accept until TX done
 
     // gmii_clk (PHY RX-clock) domain
     input  wire        gmii_clk,
@@ -41,45 +48,48 @@ module eth_tx_engine #(
       if (wr_en) frame_buf[wr_addr] <= wr_data;
    /* verilator lint_on WIDTHEXPAND */
 
-   // ---- length latch + send/done CDC ------------------------------------
-   reg [10:0] len_latch;            // stable while busy (read in gmii domain)
-   reg        send_tgl;             // toggles in ui_clk on each accepted send
-   reg [2:0]  send_sync;            // -> gmii_clk
-   reg        done_tgl;             // toggles in gmii_clk when a TX finishes
-   reg [2:0]  done_sync;            // -> ui_clk
+   // ---- length latch + send/done toggles ---------------------------------
+   reg [10:0] len_latch = 11'd0;    // stable while busy (read in gmii domain)
+   reg        send_tgl  = 1'b0;     // ui_clk: flips on each accepted send
+   (* async_reg = "true" *) reg [2:0] send_sync = 3'd0;   // -> gmii_clk
+   reg        done_tgl  = 1'b0;     // gmii_clk: catches up with send_tgl when a frame is out
+   (* async_reg = "true" *) reg [2:0] done_sync = 3'd0;   // -> ui_clk
 
-   wire send_pulse_gmii = send_sync[2] ^ send_sync[1];
-   wire done_pulse_ui   = done_sync[2] ^ done_sync[1];
+   assign busy = send_tgl ^ done_sync[2];
 
    always @(posedge ui_clk) begin
-      if (ui_rst) begin
-         busy <= 1'b0; send_tgl <= 1'b0; done_sync <= 3'd0; len_latch <= 11'd0;
-      end else begin
-         done_sync <= {done_sync[1:0], done_tgl};
-         if (send && !busy) begin
-            busy      <= 1'b1;
-            len_latch <= send_len;
-            send_tgl  <= ~send_tgl;
-         end else if (done_pulse_ui) begin
-            busy <= 1'b0;
-         end
+      done_sync <= {done_sync[1:0], done_tgl};
+      if (send && !busy) begin
+         len_latch <= send_len;
+         send_tgl  <= ~send_tgl;
       end
    end
 
+   always @(posedge ui_clk)
+      if (wr_en && busy)
+         $fatal(1, "eth_tx_engine: frame buffer written while a frame is pending");
+
    // ---- gmii-domain transmit --------------------------------------------
-   reg        tx_send;
+   reg        tx_send   = 1'b0;
    wire       tx_busy;
-   reg        tx_busy_d;
+   reg        tx_busy_d = 1'b0;
+   reg        inflight  = 1'b0;     // eth_mac_tx has the pending frame
+   wire       pending   = send_sync[2] ^ done_tgl;
 
    always @(posedge gmii_clk) begin
+      send_sync <= {send_sync[1:0], send_tgl};
+      tx_send   <= 1'b0;
       if (gmii_rst) begin
-         send_sync <= 3'd0; tx_send <= 1'b0; done_tgl <= 1'b0; tx_busy_d <= 1'b0;
+         inflight <= 1'b0;  tx_busy_d <= 1'b0;
       end else begin
-         send_sync <= {send_sync[1:0], send_tgl};
-         tx_send   <= send_pulse_gmii;       // 1-cycle kick to eth_mac_tx
          tx_busy_d <= tx_busy;
-         if (tx_busy_d && !tx_busy)           // falling edge = TX complete
+         if (!inflight && pending) begin
+            tx_send  <= 1'b1;               // 1-cycle kick to eth_mac_tx
+            inflight <= 1'b1;
+         end else if (inflight && tx_busy_d && !tx_busy) begin   // falling edge = TX complete
             done_tgl <= ~done_tgl;
+            inflight <= 1'b0;
+         end
       end
    end
 

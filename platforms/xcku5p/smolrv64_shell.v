@@ -1183,7 +1183,6 @@ module smolrv64_shell #(
 
    eth_tx_engine #(.BUF_BYTES(1536)) eth_tx_engine_inst(
       .ui_clk     (ui_clk),
-      .ui_rst     (ui_cpu_reset),
       .wr_en      (virtio_net_tx_wr_en),
       .wr_addr    (virtio_net_tx_wr_addr),
       .wr_data    (virtio_net_tx_wr_data),
@@ -1218,7 +1217,6 @@ module smolrv64_shell #(
       .rx_last     (eth_rx_last),
       .rx_good     (eth_rx_good),
       .ui_clk      (ui_clk),
-      .ui_rst      (ui_cpu_reset),
       .frame_valid (eth_rx_frame_valid),
       .frame_len   (eth_rx_frame_len),
       .rd_addr     (eth_rx_rd_addr),
@@ -1290,7 +1288,7 @@ module smolrv64_shell #(
         6'd12: virtio_net_debug_word = virtio_net_debug_last_ring_word_lo;
         6'd13: virtio_net_debug_word = virtio_net_debug_last_ring_word_hi;
         6'd14: virtio_net_debug_word = virtio_net_debug_tx_frame_count;
-        6'd15: virtio_net_debug_word = virtio_net_debug_tx_last_len;
+        6'd15: virtio_net_debug_word = virtio_net_debug_tx_last_len;   // {TX timeouts, last length}
         6'd16: virtio_net_debug_word = virtio_net_debug_tx_desc_addr;
         6'd17: virtio_net_debug_word = virtio_net_debug_tx_desc_len;
         6'd18: virtio_net_debug_word = {eth_rx_bad_ui, eth_rx_good_ui};

@@ -2,10 +2,9 @@
 `default_nettype none
 
 // Sim-only: eth_tx_engine -> (GMII) -> eth_mac_rx, to verify the frame buffer,
-// the send/done CDC handshake, and the framing roundtrip.
+// the send/done CDC handshake across a gmii-domain reset, and the framing roundtrip.
 module eth_tx_engine_loop_top(
     input  wire        ui_clk,
-    input  wire        ui_rst,
     input  wire        wr_en,
     input  wire [10:0] wr_addr,
     input  wire [ 7:0] wr_data,
@@ -26,7 +25,6 @@ module eth_tx_engine_loop_top(
 
    eth_tx_engine #(.BUF_BYTES(1536)) u_eng(
       .ui_clk     (ui_clk),
-      .ui_rst     (ui_rst),
       .wr_en      (wr_en),
       .wr_addr    (wr_addr),
       .wr_data    (wr_data),
