@@ -117,6 +117,7 @@ module smolrv64_sq
     output wire [PBITS-1:0]      r_preg,
     input  wire [63:0]           r_data,      // ...and its value, read this cycle
     output wire [ROBB-1:0]       kc_rob,
+    output wire                  kc_any,      // an uncommitted entry exists (kc_rob is its slot), ready or not
     output wire [PAW-1:0]        kc_addr,     // ...its PA, for the cosim's retire record
     output wire [63:0]           kc_data,     // ...its value and size, for the cosim's store-data check
     output wire [1:0]            kc_size,
@@ -428,6 +429,7 @@ module smolrv64_sq
                  & ((ho_n == {(IDXB+1){1'b0}}) | c_done);
    assign kc_v   = (kcc != tailc) & v[kc] & av[kc] & dv[kc] & tv[kc] & ~flt[kc];
    assign kc_rob = rob[kc];
+   assign kc_any = (kcc != tailc);
    wire [PAW-1:0] kc_am = addr_m[kc], kc_aw = addr_w[kc];
    assign kc_addr= addr_lv[kc] ? kc_aw : kc_am;
    // The same landing bypass as c_data: the entry commits in the cycle its bytes are still
@@ -926,6 +928,7 @@ module smolrv64_sq
    //   4 stray       an entry live outside [head, tail): a store the ROB waits on that can never commit
    //   5 alloc_over  more stores allocate than the queue has free entries
    //   6 kill_order  a dead entry that is not among the youngest
+   // (bit 15 of the LSU's sixteen, the orphan store, is smolrv64_core's)
    wire [NENT-1:0] stray, kold;
    genvar gy;
    generate for (gy = 0; gy < NENT; gy = gy + 1) begin : g_stray

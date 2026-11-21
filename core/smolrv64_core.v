@@ -1877,6 +1877,7 @@ module smolrv64_core
    wire sq_sp_go  = sq_c_v &  sq_c_fast & (~lsu_sp_busy | lsu_sp_done);
    wire                sq_l_arr_q;   // the store queue's arrival hold (the irrevocable pointer's rp_all)
    wire [6:0]          sq_err;    wire [15:0] lsu_err_u;
+   wire                sq_kc_any;
    wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [PABITS-1:0] sq_kc_addr;
    wire [63:0]         sq_kc_data; wire [1:0] sq_kc_size;   // the cosim's store-data check
    wire [ROB_IDXB-1:0] rob_irr_idx;  wire rob_irr_v;
@@ -1946,7 +1947,7 @@ module smolrv64_core
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
-      .kc_v(sq_kc_v), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
+      .kc_v(sq_kc_v), .kc_any(sq_kc_any), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
       // THE ALIAS TEST LIVES HERE, not at issue: smolrv64_lq exports its entries, smolrv64_sq keeps
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
       .l_off(lq_e_off), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
@@ -2557,7 +2558,49 @@ module smolrv64_core
       .fault_cause(lsu_fault_cause), .fault_tval(lsu_fault_tval), .ld_infl(lsu_ld_infl), .ld_sent(lsu_ld_sent), .ld_fkill(lsu_ld_fkill),
       .err(lsu_err_u), .idle(lsu_idle));
    // the integrity log's LSU field: the LSU's eight bits, the store queue's seven above them
-   assign lsu_err = {1'b0, sq_err, lsu_err_u[7:0]};
+   // THE ORPHAN STORE (the integrity log's LSU bit 15). The first uncommitted store's ROB slot is
+   // the store's until it commits (sq_k_take): no other port completes it, no commit port retires
+   // it first, and the ROB is not empty while it waits. A store the ROB has passed can never commit
+   // (its slot never meets the irrevocable pointer again), the store queue never drains, and the
+   // next serialising op waits for ever with an empty ROB. The ports and the queue's slot are
+   // registered and compared a cycle later, so the check adds a flop's load to each. orph_rec
+   // keeps the first breach for a readback: {ROB empty, retired, completed, the completion port,
+   // the slot}.
+   reg  [ROB_NW-1:0]          ow_v;
+   reg  [ROB_NW*ROB_IDXB-1:0] ow_ix;
+   reg  [IW-1:0]              oc_v;
+   reg  [IW*ROB_IDXB-1:0]     oc_ix;
+   reg                        o_any, o_take, o_mt;
+   reg  [ROB_IDXB-1:0]        o_rob;
+   initial begin ow_v = {ROB_NW{1'b0}}; oc_v = {IW{1'b0}}; o_any = 1'b0; o_take = 1'b0; o_mt = 1'b0; end
+   always @(posedge clk) begin
+      ow_v  <= reset ? {ROB_NW{1'b0}} : rob_wv;   ow_ix <= rob_wix;
+      oc_v  <= reset ? {IW{1'b0}} : rc_v;         oc_ix <= rc_idxv;
+      o_any <= ~reset & sq_kc_any;  o_take <= sq_k_take;  o_mt <= rob_empty;  o_rob <= sq_kc_rob;
+   end
+   reg        o_w, o_c;
+   reg  [3:0] o_port;
+   integer    owk;
+   always @* begin
+      o_w = 1'b0;  o_c = 1'b0;  o_port = 4'd0;
+      for (owk = ROB_NW - 1; owk >= 0; owk = owk - 1)
+         if ((owk != 3) && ow_v[owk] && (ow_ix[owk*ROB_IDXB +: ROB_IDXB] == o_rob)) begin o_w = 1'b1;  o_port = owk[3:0]; end
+      for (owk = 0; owk < IW; owk = owk + 1)
+         if (oc_v[owk] && (oc_ix[owk*ROB_IDXB +: ROB_IDXB] == o_rob)) o_c = 1'b1;
+   end
+   wire [2:0] o_why = {o_mt, o_c & ~o_take, o_w} & {3{o_any}};
+   reg        e_orph;
+   (* dont_touch = "true" *) reg [ROB_IDXB+6:0] orph_rec;
+   initial begin e_orph = 1'b0; orph_rec = {(ROB_IDXB+7){1'b0}}; end
+   always @(posedge clk) begin
+      e_orph <= ~reset & (|o_why);
+      if (reset) orph_rec <= {(ROB_IDXB+7){1'b0}};
+      else if ((|o_why) & ~(|orph_rec[ROB_IDXB+6 -: 3])) orph_rec <= {o_why, o_port, o_rob};
+      if (!reset && (|o_why))
+         $fatal(1, "smolrv64_core: the first uncommitted store's ROB slot %0d was passed (ROB empty %b, retired %b, completed %b by port %0d)",
+                o_rob, o_why[2], o_why[1], o_why[0], o_port);
+   end
+   assign lsu_err = {e_orph, sq_err, lsu_err_u[7:0]};
    // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
    // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
    // only older stores, so the wait ends.
