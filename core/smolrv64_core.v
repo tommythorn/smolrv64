@@ -900,6 +900,8 @@ module smolrv64_core
    wire [1:0]             s_ccls [0:IW-1];          // a call or a return (the retired RAS pointer)
    wire [IW*RN_PBITS-1:0] s_prd_gv;
    wire [ROB_CB-1:0]      s_pos [0:IW-1];           // the slot's program position in the group
+   wire [IW-1:0]          s_clsbad;                 // its queue class is not its decoded fields' (the check with the orphan store's)
+   wire [15:0]            s_gc [0:IW-1];
    genvar gs;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: sl
       `IR_DECL(q_)
@@ -912,6 +914,9 @@ module smolrv64_core
          assign s_pos[gs] = (K >= fe_fc) ? K - fe_fc : K + IW[ROB_CB-1:0] - fe_fc;
       end
       wire st_nb = q_gc[GC_ST], ld_nb = q_gc[GC_LD];
+      assign s_gc[gs] = q_gc;
+      assign s_clsbad[gs] = fe_dv[gs] & ((st_nb != (q_is_store & ~q_is_amo & ~q_is_cbo))
+                                        | (ld_nb != (q_is_mem & ~q_is_store & ~q_is_amo & ~q_is_cbo)));
       wire [2:0] shard = shard_of(q_rd[5], q_is_mem, LANE);
       wire [RN_PBITS-1:0] prs1 = rn_prs1v[gs*RN_PBITS +: RN_PBITS], prs2 = rn_prs2v[gs*RN_PBITS +: RN_PBITS],
                           prs3 = rn_prs3v[gs*RN_PBITS +: RN_PBITS], prd = rn_prdv[gs*RN_PBITS +: RN_PBITS];
@@ -2600,7 +2605,31 @@ module smolrv64_core
          $fatal(1, "smolrv64_core: the first uncommitted store's ROB slot %0d was passed (ROB empty %b, retired %b, completed %b by port %0d)",
                 o_rob, o_why[2], o_why[1], o_why[0], o_port);
    end
-   assign lsu_err = {e_orph, sq_err, lsu_err_u[7:0]};
+   // THE QUEUE CLASS IS THE INSTRUCTION'S (the same bit). Dispatch allocates a store or load queue
+   // entry by the class the decode queue carries (smolrv64_gclass, GC_ST and GC_LD), and the lane
+   // fills the entry by the record's decoded fields: a slot whose class says store and whose fields
+   // do not leaves an entry no address ever reaches, which is the orphan above. Compared in the IR,
+   // from its flops; cls_rec keeps the first breach for a readback: {the slots, the first one's
+   // class, instruction and PC}.
+   reg        e_cls;
+   (* dont_touch = "true" *) reg [IW+16+32+39-1:0] cls_rec;
+   reg [16+32+39-1:0] cls_first;
+   integer    clk_i;
+   always @* begin
+      cls_first = {(16+32+39){1'b0}};
+      for (clk_i = IW - 1; clk_i >= 0; clk_i = clk_i - 1)
+         if (s_clsbad[clk_i]) cls_first = {s_gc[clk_i], s_insn[clk_i], s_pc[clk_i][38:0]};
+   end
+   initial begin e_cls = 1'b0; cls_rec = {(IW+16+32+39){1'b0}}; end
+   always @(posedge clk) begin
+      e_cls <= ~reset & (|s_clsbad);
+      if (reset) cls_rec <= {(IW+16+32+39){1'b0}};
+      else if ((|s_clsbad) & ~(|cls_rec[16+32+39 +: IW])) cls_rec <= {s_clsbad, cls_first};
+      if (!reset && (|s_clsbad))
+         $fatal(1, "smolrv64_core: slots %b: the queue class %h is not the instruction's (insn %h at %h)",
+                s_clsbad, cls_first[32+39 +: 16], cls_first[39 +: 32], cls_first[38:0]);
+   end
+   assign lsu_err = {e_orph | e_cls, sq_err, lsu_err_u[7:0]};
    // FENCE.I's drain: every store older than it handed to the D$. The store queue is senior to
    // retirement, so at the fire a committed store may still wait in it; after the redirect it holds
    // only older stores, so the wait ends.
