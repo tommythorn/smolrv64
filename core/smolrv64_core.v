@@ -2876,7 +2876,7 @@ module smolrv64_core
    // family at IW=3. One more cycle of FP latency; the integer side does not pay.
    fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(5), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
      (.clk(clk), .reset(reset),
-      .iss_valid(fp_start), .iss_ready(fp_iss_ready),
+      .iss_valid(fp_want), .iss_ready(fp_iss_ready),
       .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
       .iss_int_fmt(ff_int),
       .iss_rnd(ff_rnd == 3'b111 ? csr_frm : ff_rnd),      // dynamic rm -> fcsr.frm
@@ -2990,7 +2990,11 @@ module smolrv64_core
    // f-register results are never held, their shard always has room.
    wire        f_ic     = f_valid & ~ff_use_fpu;
    wire        f_int    = f_rd_v & ~ff_wrfp;                  // the op writes an integer register
-   wire        fp_start = f_valid & ff_use_fpu & ~redirect & ~(f_int & (icr_v | fpu_int_inflight));
+   // The unit sees the request without the redirect: an op it takes in a redirect's cycle dies in
+   // its flush (fp_unit's valids, and fpnew's input registers, clear over a load), so the redirect
+   // stays off the enables of its request and input registers. The stage's own books keep it.
+   wire        fp_want  = f_valid & ff_use_fpu & ~(f_int & (icr_v | fpu_int_inflight));
+   wire        fp_start = fp_want & ~redirect;
    wire        fp_disp  = fp_start & fp_iss_ready;   // accepted by the unit this cycle
    reg         icr_v;
    reg  [4:0]  icr_fflags;
@@ -4303,8 +4307,13 @@ module smolrv64_core
          smolrv64_bankq #(.W(64), .DEPTH(LBN), .NW(2), .NR(1), .NB(2)) u_lbd
            (.clk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
             .wd({wb_fe, wb_ld}), .rp(hh), .ro(1'b0), .rd(lb_hd));
-         assign lp[glp] = lb_any[glp] ? {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]}
-                        :               {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
+         // the SYSQ's result drains in lane A alone (p1), so only lane A's slot carries it
+         wire [2+RN_PBITS+64+ROB_IDXB-1:0] lpe = {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]};
+         if (glp == 0) begin: g_sy
+            assign lp[glp] = lb_any[glp] ? lpe : {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
+         end else begin: g_nsy
+            assign lp[glp] = lpe;
+         end
          assign lb_t2[glp] = lb_t[glp] + {{(LBB-1){1'b0}}, en0[glp]};
       end
    endgenerate

@@ -486,7 +486,9 @@ module rv_dcache #(
    // (the dirty bits' one write port). Nothing of the main lookup's depends on it.
    wire            sb_wait = (sb_set1 & ~(k_ld & hit)) | fb_v | fl_v;
    wire            fp_wr   = sb_hd & bhit & ~sb_wait;            // it writes the line: done
-   wire            fp_mg   = sb_hd & ~bhit & sb_ms & sb_mgok;    // its bytes into the fill's merge buffer: done
+   // (no copy is valid while an MSHR fills its line -- invariant 5 -- so the merge needs no ~bhit: the
+   // tag compare stays off the merge buffer's write enables)
+   wire            fp_mg   = sb_hd & sb_ms & sb_mgok;            // its bytes into the fill's merge buffer: done
    wire            fp_miss = sb_hd & ~bhit & ~sb_ms;             // to the main lookup
    wire            fp_back = sb_v & ~fp_wr & ~fp_mg & ~fp_miss;  // back to the queue, to issue again
    wire [WYB-1:0] hw     = onehot_ix(hitv);
@@ -894,7 +896,7 @@ module rv_dcache #(
    //   2 wdone       a write completion for no write sent
    //   3 beat        beats out of order within a burst
    //   4 two         two valid ways hold one line (the main lookup)
-   //   5 st_two      two valid ways hold one line (the store lookup)
+   //   5 st_two      two valid ways hold one line, or a way holds the line an MSHR fills (the store lookup)
    //   6 tag_reuse   a requester tag reused while outstanding
    //   7 dead_wait   a waiter parked on an MSHR that is not live, or on any freeing with nothing
    //                 left that can free
@@ -911,7 +913,7 @@ module rv_dcache #(
    wire e_wdone   = cw_valid & ~cw_ok & ~fin_nc;
    wire e_beat    = cr_f & ms_v[cr_m] & (cr_beat != ms_bt[cr_m]);
    wire e_two     = l1_v & ((hitv & (hitv - 1'b1)) != 0);
-   wire e_btwo    = sb_hd & ((bhitv & (bhitv - 1'b1)) != 0);
+   wire e_btwo    = sb_hd & (((bhitv & (bhitv - 1'b1)) != 0) | (bhit & sb_ms));
    wire [TB-1:0] rd_wi = wi(rd_tag), f_wi = wi(f_tag);   // the requests' waiter entries
    wire e_wtbusy  = new_go & (wt_v[rd_wi] | (s1_v & (s1_tag == rd_wi)));
    // A READ NAMES A DOUBLEWORD and is answered with it as stored: the LSU aligns its loads, a

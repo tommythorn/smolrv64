@@ -102,39 +102,42 @@ module divider
    assign done   = (st == S_FIN);
    assign result = spec ? spec_res : fin;
 
+   // The state alone sees reset and abort. The datapath follows the state: a register loaded in
+   // a cycle that aborts, or while idle with no start, is loaded again before anything reads it.
    always @(posedge clk) begin
       if (reset || abort) begin
          st <= S_IDLE;
       end else case (st)
-         S_IDLE: if (start) begin
-            want_rem <= f3[1]; w_r <= is_w;
-            q_neg <= sgn & (an ^ bn); r_neg <= sgn & an;
-            if (div0 || ovf) begin
-               spec <= 1'b1; spec_res <= spec_val; st <= S_FIN;
-            end else begin
-               spec <= 1'b0; ua_q <= ua; dvsr <= ub; st <= S_NORM;
-            end
-         end
-         S_NORM: begin
-            rem   <= rem_n;
-            divd  <= divd_n;
-            dvsr3 <= {2'b00, dvsr} + {1'b0, dvsr, 1'b0};
-            cnt   <= j[6:1];
-            st    <= j == 7'd0 ? S_FIN : S_RUN;
-         end
-         S_RUN: begin
-            rem  <= rem_s;
-            divd <= {divd[61:0], qd};               // shift the dividend up, two quotient bits in
-            cnt  <= cnt - 6'd1;
-            if (cnt == 6'd1) st <= S_FIN;            // the last step
-         end
-         S_FIN: st <= S_IDLE;                        // result presented this cycle
+         S_IDLE: if (start) st <= (div0 || ovf) ? S_FIN : S_NORM;
+         S_NORM: st <= j == 7'd0 ? S_FIN : S_RUN;
+         S_RUN:  if (cnt == 6'd1) st <= S_FIN;       // the last step
+         S_FIN:  st <= S_IDLE;                       // result presented this cycle
          default: begin
             $fatal(1, "divider: unknown state %0d", st);
             st <= S_IDLE;
          end
       endcase
    end
+   always @(posedge clk) case (st)
+      S_IDLE: begin
+         want_rem <= f3[1]; w_r <= is_w;
+         q_neg <= sgn & (an ^ bn); r_neg <= sgn & an;
+         spec <= div0 || ovf; spec_res <= spec_val;
+         ua_q <= ua; dvsr <= ub;
+      end
+      S_NORM: begin
+         rem   <= rem_n;
+         divd  <= divd_n;
+         dvsr3 <= {2'b00, dvsr} + {1'b0, dvsr, 1'b0};
+         cnt   <= j[6:1];
+      end
+      S_RUN: begin
+         rem  <= rem_s;
+         divd <= {divd[61:0], qd};                  // shift the dividend up, two quotient bits in
+         cnt  <= cnt - 6'd1;
+      end
+      default: ;
+   endcase
    always @(posedge clk)
       if (!reset && st == S_RUN && rem_s >= dvsr)
          $fatal(1, "divider: the remainder %h is not below the divisor %h", rem_s, dvsr);

@@ -43,10 +43,14 @@ module mul3
       if (reset || abort) begin
          v1 <= 1'b0; v2 <= 1'b0; v3 <= 1'b0;
       end else begin
-         v1 <= start;  a1 <= $signed(a_ext); b1 <= $signed(b_ext); w1 <= is_w; hi1 <= hi;
-         v2 <= v1;     p2 <= a1 * b1;        w2 <= w1; hi2 <= hi1;
-         v3 <= v2;     res3 <= res_d;
+         v1 <= start;  v2 <= v1;  v3 <= v2;
       end
+   end
+   // the datapath runs free: only the valids see reset and abort
+   always @(posedge clk) begin
+      a1 <= $signed(a_ext); b1 <= $signed(b_ext); w1 <= is_w; hi1 <= hi;
+      p2 <= a1 * b1;        w2 <= w1; hi2 <= hi1;
+      res3 <= res_d;
    end
 
    // busy: a multiply in some stage (the registered stages only, not start)
