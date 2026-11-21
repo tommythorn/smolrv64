@@ -45,7 +45,10 @@ cp[*].dmap.smap_d x{IW if IW >= 4 else 0} : its second copy past 15 reads (the d
 # port k and by the walk (lanes 5.4d/e). The load and store queues' ROB indexes (`rob`) are flops:
 # the kill looks every entry's up each cycle it holds.
 col[*].mem x{IW} : ROB entries, one column per slot {pold, noret, rd, prd}
-rob_ffr : an FP op's exception flags by ROB slot: written when its result lands, read by the retire ports
+ffc[*].fr x{IW} : an FP op's exception flags by ROB slot, a column per lane: written when its result lands, read at the head's row
+ffc[*].fa x{IW} : ...and whether they landed: the bit the allocation writes
+ffc[*].fb x{IW} : ...and the bit the landing writes (landed where the two differ)
+vr : the ROB's live columns by row: written whole at allocation, cut back at a release; read at the head's, irr's and the walk's rows
 rcc[*].m x{IW} : each ROB entry's {call, ret}, a column per lane: written at dispatch, read at the head's row for the retired RAS pointer
 # The banked queues (smolrv64_bankq): a bank per position mod NB, one write each. The decoupling
 # queue's QNB = next_pow2(FW) = 8, the fetch ring's 8, the training queue's 4, each lane's landing

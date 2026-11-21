@@ -642,7 +642,8 @@ bit vectors.
 | `rd` | 6 | architectural destination, unified numbering (0–31 int, 32–63 FP) |
 | `prd` | `PBITS`=9 | physical register allocated; **0 when none** |
 | | **25** | × 64 rows × `IW` columns = **6,400 bits** at IW=4 |
-| `v`, `done` | 2 × 64 × 2^⌈log2 `IW`⌉ | separate flops — `v` is bulk-cleared by the flush and the kill; `done` is read only under `v`, so its allocation alone clears it |
+| `v` | 64 × 2^⌈log2 `IW`⌉ | a row's valid bits are one word of the distributed RAM `vr`, written whole at the row's allocation and cut back to the branch when a kill releases the row; it is read only at positions in [head, tail), so neither the flush nor a commit clears it |
+| `done` | 64 × 2^⌈log2 `IW`⌉ | separate flops; read only under `v`, so its allocation alone clears it |
 
 **Three fields are deliberately absent**, each recoverable from state the design already
 keeps. The ROB is sized by the *window*; the scheduler that needs execute detail is sized by
@@ -900,8 +901,9 @@ and no scheduler is in-order.
 ### Out-of-order FP: why the flags are safe and the rounding mode is not
 
 Reordering FP is safe for the exception FLAGS because they **wait for commit**: a result's
-flags land by its op's ROB slot (`rob_ffr`, a distributed RAM the landing result writes, with
-`rob_ffv`, a bit per slot cleared when the slot is allocated and set when the result lands), and
+flags land by its op's ROB slot (`ffc[*].fr`, a distributed RAM per ROB column that the landing
+result writes, with a landed bit per slot kept as two one-bit memories: the allocation makes
+`fa` equal `fb`, the landing makes `fb` differ from `fa`, and the bit is their XOR), and
 the flags of the ops retiring in a cycle are ORed into `fcsr[4:0]`. The order results land in cannot
 change the answer (the OR accumulates), and a squashed op's flags never reach `fcsr` (its
 slot never commits). Completion and commit may fall in one cycle, so the landing result
@@ -1949,15 +1951,16 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `col[0..IW-1].mem` | `smolrv64_rob` | 64 each | 25 | 6 400 | LUTRAM | column k, lane k's entries `{pold, noret, rd, prd}`: 1W (lane k's dispatch), 2R (the head's row, the walk's row; the ports rotate them into program order) |
 | `fc` | `smolrv64_rob` | 64 | 2 | 128 | LUTRAM | each row's first column: 1W (dispatch), read at the next head row, `irr`'s, the walk's and the walked-to branch's rows (`hfc`, the head row's, is a flop) |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
-| `v`, `done` | `smolrv64_rob` | 256 | 1 each | 512 | flops | by storage index; `v` bulk-cleared, `done` cleared at allocation |
+| `vr` | `smolrv64_rob` | 64 | 4 | 256 | LUTRAM | a row's valid bits, a bit per column: 1W (an allocation's row, else the walk's release of the row it stands on), 3R (the head's row, `irr`'s, the walk's) |
+| `done` | `smolrv64_rob` | 256 | 1 | 256 | flops | by storage index, cleared at allocation |
 | `head`, `tail`, `irr` | `smolrv64_rob` | 1 each | 9 | 27 | flops | positions `{ring wrap, row, p}`; `irr` the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
 | `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
 | `ho_va`, `ho_dat`, `ho_rec`, `ho_v` | `smolrv64_core` | 1 | 64/64/282/1 | 411 | flops | the head-op register (§8) |
 | `u_tq` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 x 8 | 117 | 3 744 | LUTRAM | the training queue's payload (a CTI's PC, RVC bit, taken-target, predict details, kind and outcome), written a cycle late from registers (`WLATE`: the head's read bypasses them): one write a bank (a lane's CTI at the tail plus its rank), read at the head into `res_*_q` (§4.2) |
 | `tq_seq`, `tq_rob`, `tq_dk`, `tq_rt` | `smolrv64_core` | 32 | 9/9/1/1 | 640 | flops | the training queue's entries as every one is compared: the redirect's seq, the retire ports' and the kill's ROB index |
-| `rob_ffr` | `smolrv64_core` | 256 | 5 | 1 280 | LUTRAM | an FP op's exception flags by ROB slot: 1W (the landing result), 1R per retire port |
-| `rob_ffv` | `smolrv64_core` | 256 | 1 | 256 | flops | the slot's FP result landed: cleared by its allocation, set by the landing |
+| `ffc[*].fr` | `smolrv64_core` | 64 a column | 5 | 1 280 | LUTRAM | an FP op's exception flags by ROB slot, a memory per column: 1W (a landing result in that column), 1R (the head's row; the retire ports rotate the columns into program order) |
+| `ffc[*].fa`, `ffc[*].fb` | `smolrv64_core` | 64 a column, each | 1 | 512 | LUTRAM | the slot's FP result landed is `fa ^ fb`: the allocation writes `fa` (= `fb`), the landing writes `fb` (= `~fa`); 1W each, read at the head's row and at the writer's own row |
 | `mdw` | `smolrv64_core` | 256 | 2 | 512 | LUTRAM | the memory-dependence wait table: read at dispatch by the load's PC and by training, 1W (a replay, else one training event, else the forget's step; §8) |
 | `spl_ld`, `spl_st` | `smolrv64_core` | 16, 32 | 8+274 = 282 | 13 536 | LUTRAM | a lane load's or store's record by LQ/SQ entry: four banks by entry, 1W each (a group's row), 1R at M's pick (§8) |
 | `u_la`, `u_sa` `wb[0..IW-1].mem` | `smolrv64_mwram` (in `smolrv64_core`) | 16, 32 a bank | 64 | 9 216 | LUTRAM | the lanes' arrived VAs, a bank per lane (1W, its lane), 1R at M's pick; `lvt` (2 bits an entry, flops) names the bank that wrote the entry last (§8) |

@@ -4381,23 +4381,51 @@ module smolrv64_core
 
    // FP EXCEPTION FLAGS COMMIT WITH THEIR OP. An FP op completes out of order, possibly on a path
    // that a mispredicted branch older than it squashes later, so its flags wait by its ROB slot
-   // and reach fcsr only when the op retires: a distributed RAM written when the result lands (its
-   // one write), and a bit per slot saying it did -- cleared when the slot is allocated, set when the
-   // result lands -- so a slot whose op is not the F stage's commits none. Completion and commit
-   // can be the same cycle (the ROB's w_hits), hence the bypass from the landing result.
-   reg  [4:0]           rob_ffr [0:ROB_DEPTH-1];
-   reg  [ROB_DEPTH-1:0] rob_ffv;
+   // and reach fcsr only when the op retires. Lane k's op is in column k and every commit port
+   // reads the head's row, so each column is memories of ROB_ROWS: the flags, written when the
+   // result lands, and whether it has landed, so a slot whose op is not the F stage's commits
+   // none -- a bit the allocation writes (fa) and a bit the landing writes (fb), each its
+   // memory's one write: the allocation makes them equal, the landing makes them differ.
+   // Completion and commit can be the same cycle (the ROB's w_hits), hence the bypass from the
+   // landing result.
+   wire [ROB_IDXB-ROB_CB-2:0] rc_row = rc_idx[0][ROB_IDXB-1:ROB_CB+1];   // the head's row
+   wire [4:0]           ffr_c [0:IW-1];   // the head's row, by column: its flags...
+   wire [IW-1:0]        ffv_c;            // ...and they have landed
+   reg  [ROB_DEPTH-1:0] rob_ffv;          // the checks' record of the same, a flop an entry (not built)
    integer    ffk;
-   initial begin rob_ffv = {ROB_DEPTH{1'b0}}; for (ffk = 0; ffk < ROB_DEPTH; ffk = ffk + 1) rob_ffr[ffk] = 5'd0; end
+   initial rob_ffv = {ROB_DEPTH{1'b0}};
    always @(posedge clk) begin
       for (ffk = 0; ffk < IW; ffk = ffk + 1) if (s_takev[ffk]) rob_ffv[rsi(s_rob[ffk])] <= 1'b0;
       if (fp_complete) rob_ffv[rsi(ft_rob)] <= 1'b1;
    end
-   always @(posedge clk) if (fp_complete) rob_ffr[rsi(ft_rob)] <= fl_fflags;
-   wire [4:0] rt_ff [0:IW-1];             // retire port k's slot's flags (a read port each)
    genvar     gff;
+   generate for (gff = 0; gff < IW; gff = gff + 1) begin: ffc
+      (* ram_style = "distributed" *) reg [4:0] fr [0:ROB_ROWS-1];
+      (* ram_style = "distributed" *) reg       fa [0:ROB_ROWS-1];
+      (* ram_style = "distributed" *) reg       fb [0:ROB_ROWS-1];
+      integer fi;
+      initial for (fi = 0; fi < ROB_ROWS; fi = fi + 1) begin fr[fi] = 5'd0;  fa[fi] = 1'b0;  fb[fi] = 1'b0; end
+      wire [ROB_IDXB-ROB_CB-2:0] arow = s_rob[gff][ROB_IDXB-1:ROB_CB+1];
+      wire [ROB_IDXB-ROB_CB-2:0] frow = ft_rob[ROB_IDXB-1:ROB_CB+1];
+      wire                       land = fp_complete & (ft_rob[ROB_CB-1:0] == gff);
+      always @(posedge clk) if (s_takev[gff]) fa[arow] <= fb[arow];
+      always @(posedge clk) if (land) fb[frow] <= ~fa[frow];
+      always @(posedge clk) if (land) fr[frow] <= fl_fflags;
+      assign ffr_c[gff] = fr[rc_row];
+      assign ffv_c[gff] = fa[rc_row] ^ fb[rc_row];
+      always @(posedge clk) if (!reset) begin
+         if (s_takev[gff] & land & (arow == frow))
+            $fatal(1, "smolrv64_core: an FP result lands in ROB entry %0d as it is allocated", ft_rob);
+         if (land & (fa[frow] ^ fb[frow]))
+            $fatal(1, "smolrv64_core: an FP result lands in ROB entry %0d, which holds one", ft_rob);
+      end
+   end endgenerate
+   wire [4:0] rt_ff [0:IW-1];             // retire port k's slot's flags
    generate for (gff = 0; gff < IW; gff = gff + 1) begin: rff
-      assign rt_ff[gff] = rob_ffv[rc_sx[gff]] ? rob_ffr[rc_sx[gff]] : 5'd0;
+      wire [ROB_CB-1:0] c = rc_idx[gff][ROB_CB-1:0];
+      assign rt_ff[gff] = ffv_c[c] ? ffr_c[c] : 5'd0;
+      always @(posedge clk) if (!reset && rc_v[gff] && (ffv_c[c] != rob_ffv[rc_sx[gff]]))
+         $fatal(1, "smolrv64_core: commit port %0d's ROB entry %0d: its flags landed %b, the record says %b", gff, rc_idx[gff], ffv_c[c], rob_ffv[rc_sx[gff]]);
    end endgenerate
    reg  [4:0] ret_fflags;
    integer    ffh;
@@ -4986,7 +5014,6 @@ module smolrv64_core
    // k's op is in column k and every commit port reads the head's row, so each column is a memory
    // of ROB_ROWS with one write and one read.
    wire [1:0]     rcls_c [0:IW-1];                    // the head's row, by column
-   wire [ROB_IDXB-ROB_CB-2:0] rc_row = rc_idx[0][ROB_IDXB-1:ROB_CB+1];
    reg [RASB-1:0] rsp_r;
    initial rsp_r = {RASB{1'b0}};
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rcc
