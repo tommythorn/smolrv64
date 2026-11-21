@@ -100,7 +100,7 @@ module virtio_input #(
    reg         used_irq;
    wire [31:0] q0_num, q1_num;  wire q0_ready, q1_ready;
    wire [63:0] q0_desc, q0_driver, q0_device, q1_desc, q1_driver, q1_device;
-   wire [127:0] qs_num;  wire [3:0] qs_ready;  wire [255:0] qs_desc, qs_driver, qs_device;   // the transport's four
+   wire [63:0] qs_num;  wire [1:0] qs_ready;  wire [127:0] qs_desc, qs_driver, qs_device;   // the transport's two
    wire [ 7:0] dev_status;
    wire        cfg_write;  wire [7:0] cfg_off;  wire [31:0] cfg_wdata;  wire [3:0] cfg_be;
    wire [31:0] mmio_rdata, cfg_rdata;

@@ -8,7 +8,7 @@ module virtio_mmio #(
     parameter [31:0] DEVICE_FEATURES_1 = 32'h0000_0003,
     parameter [31:0] QUEUE_NUM_MAX = 32'd8,
     parameter [31:0] QUEUE_COUNT = 32'd1,
-    parameter integer NQ = 4                    // queues this transport holds (QUEUE_COUNT <= NQ)
+    parameter integer NQ = QUEUE_COUNT          // queues this transport holds: the live ones
 ) (
     input  wire        clock,
     input  wire        reset,
@@ -39,7 +39,7 @@ module virtio_mmio #(
 
     output reg  [31:0] driver_features_0,
     output reg  [31:0] driver_features_1,
-    // queue q's registers at [q*32 +: 32], [q], [q*64 +: 64]: up to NQ queues (QUEUE_COUNT live)
+    // queue q's registers at [q*32 +: 32], [q], [q*64 +: 64]
     output wire [NQ*32-1:0] queues_num,
     output wire [NQ-1:0]    queues_ready,
     output wire [NQ*64-1:0] queues_desc,
@@ -133,6 +133,8 @@ module virtio_mmio #(
       if (!read) begin
          read_data = 32'd0;
       end else begin
+         // The readable registers. The others (the selectors, DriverFeatures, QueueNum, QueueNotify,
+         // InterruptACK and the queue addresses) are write-only in virtio-mmio version 2 and read 0.
          case (reg_addr)
            REG_MAGIC_VALUE:      read_data = VIRTIO_MAGIC;
            REG_VERSION:          read_data = VIRTIO_VERSION;
@@ -140,22 +142,10 @@ module virtio_mmio #(
            REG_VENDOR_ID:        read_data = VENDOR_ID;
            REG_DEVICE_FEATURES:  read_data = device_features_sel == 32'd0 ? DEVICE_FEATURES_0 :
                                              device_features_sel == 32'd1 ? DEVICE_FEATURES_1 : 32'd0;
-           REG_DEVICE_FEAT_SEL:  read_data = device_features_sel;
-           REG_DRIVER_FEATURES:  read_data = driver_features_sel == 32'd0 ? driver_features_0 :
-                                             driver_features_sel == 32'd1 ? driver_features_1 : 32'd0;
-           REG_DRIVER_FEAT_SEL:  read_data = driver_features_sel;
-           REG_QUEUE_SEL:        read_data = queue_sel;
            REG_QUEUE_NUM_MAX:    read_data = q_active ? QUEUE_NUM_MAX : 32'd0;
-           REG_QUEUE_NUM:        read_data = q_active ? q_num[qsel_i] : 32'd0;
            REG_QUEUE_READY:      read_data = {31'd0, q_active && q_ready[qsel_i]};
            REG_INTERRUPT_STATUS: read_data = {30'd0, interrupt_status};
            REG_STATUS:           read_data = {24'd0, device_status};
-           REG_QUEUE_DESC_LOW:   read_data = q_active ? q_desc[qsel_i][31:0]    : 32'd0;
-           REG_QUEUE_DESC_HIGH:  read_data = q_active ? q_desc[qsel_i][63:32]   : 32'd0;
-           REG_QUEUE_AVAIL_LOW:  read_data = q_active ? q_driver[qsel_i][31:0]  : 32'd0;
-           REG_QUEUE_AVAIL_HIGH: read_data = q_active ? q_driver[qsel_i][63:32] : 32'd0;
-           REG_QUEUE_USED_LOW:   read_data = q_active ? q_device[qsel_i][31:0]  : 32'd0;
-           REG_QUEUE_USED_HIGH:  read_data = q_active ? q_device[qsel_i][63:32] : 32'd0;
            REG_CONFIG_GEN:       read_data = 32'd0;
            default:              read_data = address[11:8] != 4'h0 ? config_read_data : 32'd0;
          endcase
