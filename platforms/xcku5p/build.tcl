@@ -130,7 +130,7 @@ proc configure_cvfpu_sources {repo_root src_dir} {
 
 
 # The core: rv_soc_top and its modules from core/. It carries its own memory subsystem
-# (rv_cache / rv_l2_arbiter); the SoC devices and the DDR line bridge come from src/.
+# (rv_icache, rv_dcache, rv_l2, rv_mem_arbiter); the SoC devices and the DDR line bridge come from src/.
 proc configure_smolrv64_sources {repo_root src_dir smolrv64_dir} {
     set fileset [current_fileset]
     foreach f [lsort [glob -nocomplain [file join $smolrv64_dir *.v]]] {
@@ -271,10 +271,10 @@ if {1} {
     # Fetch window halfwords. 8 is the shipping build AND the RTL default since 2026-09-05
     # (smolrv64_core.v and rv_soc_top.v agree): a 16-byte window, validated on the board as builds
     # K, M and N; sha256sum's frontend bubble went from 43% of cycles to 10%. The I$ reads it
-    # as the 64-bit chunk pair (rv_cache caps the bank width), so the wide-BRAM geometry that
+    # as the 64-bit chunk pair (the I$ caps the bank width), so the wide-BRAM geometry that
     # once fetched garbage on real BRAM is never built. 4 was the shipping build before.
     if {[info exists env(SMOLRV64_HW)] && $env(SMOLRV64_HW) ne ""} {
-        # 8 is allowed since 2026-09-05: rv_cache caps its BANK width at 64 whatever RDW is
+        # 8 is allowed: the I$ caps its BANK width at 64 whatever RDW is
         # (a 128-bit read is the even/odd chunk pair, 16-byte aligned), so the sdpram guard is
         # never reached and the BRAM geometry is the one every bitstream has shipped with.
         if {$env(SMOLRV64_HW) != 2 && $env(SMOLRV64_HW) != 4 && $env(SMOLRV64_HW) != 8} {

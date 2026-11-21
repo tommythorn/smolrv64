@@ -18,18 +18,15 @@ set per  [expr {[info exists ::env(OOC_PERIOD)] && $::env(OOC_PERIOD) ne "" ? $:
 set root [file normalize [file join [file dirname [info script]] ../..]]
 
 # THE SHIPPED GEOMETRY, NOT THE MODULE DEFAULTS. Without -generic, synth_design elaborates
-# the parameter defaults: for rv_cache that is PAW=34, SIZE_KB=128, PREFETCH=0 -- a 2048-set
-# array with 18-bit tags that nothing instantiates. The 178 MHz figure recorded on 2026-09-03
-# was measured on that shape; the SoC's D$ is PAW=64/64 KB (49-bit tags) and its I$ adds
-# PREFETCH=1. Pass the instance's parameters, and pass BOTH roles for a two-role module:
-#   make ooc MODULE=rv_cache GENERICS="PAW=64 SIZE_KB=64 WRITABLE=1 WRTHRU=0 PERF_ID=1"   # D$
-#   make ooc MODULE=rv_cache GENERICS="PAW=64 SIZE_KB=64 RDW=64 WRITABLE=0 PREFETCH=1"    # I$
+# the parameter defaults, which need not be a shape anything instantiates. Pass the instance's
+# parameters, and each role's for a module with several:
+#   make ooc MODULE=smolrv64_rob GENERICS="ROWS=64 CAP=57 IDXB=9 IW=4 NW=13"
 set generics {}
 if {[info exists ::env(OOC_GENERICS)] && $::env(OOC_GENERICS) ne ""} {
     foreach g $::env(OOC_GENERICS) { lappend generics -generic $g }
     puts "OOC generics: $::env(OOC_GENERICS)"
 } else {
-    puts "OOC generics: NONE -- module defaults (for rv_cache that is NOT the shipped shape)"
+    puts "OOC generics: NONE -- module defaults (which may not be the shipped shape)"
 }
 
 set report [expr {[info exists ::env(OOC_REPORT)] ? $::env(OOC_REPORT) : ""}]

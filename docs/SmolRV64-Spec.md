@@ -276,7 +276,7 @@ the irrevocable pointer (§6) are architecturally done and drain after the flush
   1.39 on the board (three back-to-back runs after boot), against 0.90 with two-wide fetch
   alone (T1F3).
 - **VHPR I-cache: the run-ahead fetch buffer is gone; the I$ is virtually hit** (Stage 2,
-  2026-09-13). The L1 I$ is virtually indexed AND virtually tagged (`rv_cache` `VIRT=1`,
+  2026-09-13). The L1 I$ is virtually indexed AND virtually tagged (`rv_icache`,
   §9.1): a hit is `valid & (vtag == VA) & (epoch == cur_epoch)`, so address translation is
   **off** the fetch hit path. The iMMU still translates every fetch, but its PA is used only
   as the miss-path **physical tag** (for reconcile) and for the L2 fill — never on the hit
@@ -2452,7 +2452,6 @@ from the checkpoint's first instruction.
 | unit benches of the shared blocks and devices, under Verilator (the C++-driven benches, the SD-SPI host, virtio_blk and the Ethernet TX engine, included) | `src/run-tb.sh` | `tb pass=28 / 28` |
 | Linux lockstep vs simmerv | `CYC=300000000 core/run-cosim-linux.sh` | no assertion, no divergence; the retire count against `cosim-expected.txt`; every plain RAM store byte-exact (below) |
 | the D$ | `core/run-dcache-tb.sh` | `DCACHE-TB: 48 of 48 runs pass` (6 seeds × in-order/reordering memory × default, slow, fast-with-stores, remap-heavy; every outcome occurs; memory equals gold after every clean) |
-| `rv_cache`, both shapes (no longer instantiated) | `core/run-cache-tb.sh` | PASS at LAT=4/20/100/200 |
 | load/store queues | `core/run-lqsq-tb.sh` | `LQSQ-TB PASS` (85 directed checks) |
 | load/store queues, random | `core/run-lqsq-rand-tb.sh` | `LQSQ-RAND PASS` |
 | virtio-net DMA, both directions | `src/run-tb.sh` (`tb_virtio_net.v`) | `VNET-TB PASS` (8 TX + 8 RX frames at every alignment, cycles per frame printed) |

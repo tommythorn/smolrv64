@@ -171,7 +171,7 @@ floorplan:
 #   DCP= keeps the routed checkpoint, for `make weigh INST=. DCP=<file>` (the module's own cells).
 #   HIER=1 is the weight census: synthesis only, each submodule's LUTs/LUTRAM/flops (ooc.tcl).
 #   GENERICS is the INSTANCE's parameters -- without it the module DEFAULTS are measured,
-#   which for rv_cache is a 128 KB / PAW=34 cache nothing instantiates (see ooc.tcl).
+#   which need not be a shape anything instantiates (see ooc.tcl).
 # The flat design is 65-83% route and placement-dominated (rules I2/I7), so it cannot judge a
 # STRUCTURE. This can. Compare a replacement against the incumbent at the same interface here
 # first, then confirm in the full build.

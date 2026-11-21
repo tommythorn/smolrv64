@@ -863,7 +863,7 @@ module smolrv64_shell #(
     * SD card is now driven in SPI mode by sd_spi_host inside virtio_blk_backend. */
 
    // virtio_blk's transport registers, per queue (virtio_mmio's buses: queue q at [q*32 +: 32], [q*64 +: 64])
-   wire [127:0] virtio_blk_qs_num;  wire [3:0] virtio_blk_qs_ready;  wire [255:0] virtio_blk_qs_desc, virtio_blk_qs_driver, virtio_blk_qs_device;
+   wire [31:0] virtio_blk_qs_num;  wire [0:0] virtio_blk_qs_ready;  wire [63:0] virtio_blk_qs_desc, virtio_blk_qs_driver, virtio_blk_qs_device;
    assign virtio_blk_queue0_num = virtio_blk_qs_num[0 +: 32];  assign virtio_blk_queue0_ready = virtio_blk_qs_ready[0];
    assign virtio_blk_queue0_desc = virtio_blk_qs_desc[0 +: 64];  assign virtio_blk_queue0_driver = virtio_blk_qs_driver[0 +: 64];  assign virtio_blk_queue0_device = virtio_blk_qs_device[0 +: 64];
    virtio_mmio #(
@@ -1010,7 +1010,7 @@ module smolrv64_shell #(
                           net_mac[39:32], net_mac[47:40]} >> {ui_mmio_address[2:0], 3'b000};
 `ifndef NO_VIRTIO_NET
    // virtio_net's transport registers, per queue (virtio_mmio's buses: queue q at [q*32 +: 32], [q*64 +: 64])
-   wire [127:0] virtio_net_qs_num;  wire [3:0] virtio_net_qs_ready;  wire [255:0] virtio_net_qs_desc, virtio_net_qs_driver, virtio_net_qs_device;
+   wire [63:0] virtio_net_qs_num;  wire [1:0] virtio_net_qs_ready;  wire [127:0] virtio_net_qs_desc, virtio_net_qs_driver, virtio_net_qs_device;
    assign virtio_net_queue0_num = virtio_net_qs_num[0 +: 32];  assign virtio_net_queue0_ready = virtio_net_qs_ready[0];
    assign virtio_net_queue0_desc = virtio_net_qs_desc[0 +: 64];  assign virtio_net_queue0_driver = virtio_net_qs_driver[0 +: 64];  assign virtio_net_queue0_device = virtio_net_qs_device[0 +: 64];
    assign virtio_net_queue1_num = virtio_net_qs_num[32 +: 32];  assign virtio_net_queue1_ready = virtio_net_qs_ready[1];
@@ -2393,177 +2393,3 @@ module IOBUF(input wire I,
    assign O = IO;
 endmodule
 `endif
-
-module sd_gpio_dat(input  wire        clock,
-                   input  wire        reset,
-                   input  wire        write,
-                   input  wire [31:0] write_data,
-                   input  wire [ 3:0] byteenable,
-                   output reg  [ 7:0] gpio_out = 8'h01,
-                   output wire [31:0] read_data);
-   assign read_data = {24'd0, gpio_out};
-
-   always @(posedge clock) begin
-      if (reset)
-         gpio_out <= 8'h01;
-      else if (write && byteenable[0])
-         gpio_out <= write_data[7:0];
-   end
-endmodule
-
-module sd_spi_oc_tiny(input  wire        clock,
-                      input  wire        reset,
-                      input  wire [ 7:0] address,
-                      output reg  [31:0] read_data,
-                      input  wire        read,
-                      input  wire        write,
-                      input  wire [31:0] write_data,
-                      input  wire [ 3:0] byteenable,
-                      output reg         spi_clk = 1'b0,
-                      output reg         spi_mosi = 1'b1,
-                      input  wire        spi_miso);
-   localparam [7:0] REG_RXDATA  = 8'h00;
-   localparam [7:0] REG_TXDATA  = 8'h04;
-   localparam [7:0] REG_STATUS  = 8'h08;
-   localparam [7:0] REG_CONTROL = 8'h0c;
-   localparam [7:0] REG_DIV    = 8'h10;
-
-   reg [7:0] control = 8'd0;
-   reg [7:0] div = 8'd255;
-   reg [7:0] div_count = 8'd0;
-   reg [7:0] tx_shift = 8'hff;
-   reg [7:0] rx_shift = 8'd0;
-   reg [7:0] pending_tx = 8'hff;
-   reg [7:0] txr_data = 8'd0;
-   reg [7:0] rx_data = 8'd0;
-   reg [2:0] bit_index = 3'd7;
-   reg       busy = 1'b0;
-   reg       phase = 1'b0;
-   reg       pending_valid = 1'b0;
-   reg       txr_valid = 1'b0;
-   reg       rx_valid = 1'b0;
-
-   wire cpol = control[1];
-   wire cpha = control[0];
-   wire [7:0] reg_addr = address[7:0] & 8'hfc;
-   wire       txdata_write = write && byteenable[0] && reg_addr == REG_TXDATA;
-   wire       completing = busy && div_count == 0 && phase && bit_index == 0;
-   wire [7:0] completed_rx = cpha ? {rx_shift[7:1], spi_miso} : rx_shift;
-
-   task start_transfer;
-      input [7:0] value;
-      begin
-         busy <= 1'b1;
-         phase <= 1'b0;
-         div_count <= div;
-         bit_index <= 3'd7;
-         tx_shift <= value;
-         rx_shift <= 8'd0;
-         spi_clk <= cpol;
-         spi_mosi <= value[7];
-      end
-   endtask
-
-   always @* begin
-      case (reg_addr)
-        REG_RXDATA:  read_data = {24'd0, rx_data};
-        REG_TXDATA:  read_data = {24'd0, txr_data};
-        REG_STATUS:  read_data = {30'd0, txr_valid, !busy && !pending_valid};
-        REG_CONTROL: read_data = {24'd0, control};
-        REG_DIV:    read_data = {24'd0, div};
-        default:     read_data = 32'd0;
-      endcase
-   end
-
-   always @(posedge clock) begin
-      if (reset) begin
-         control <= 8'd0;
-         div <= 8'd255;
-         div_count <= 8'd0;
-         tx_shift <= 8'hff;
-         rx_shift <= 8'd0;
-         pending_tx <= 8'hff;
-         txr_data <= 8'd0;
-         rx_data <= 8'd0;
-         bit_index <= 3'd7;
-         busy <= 1'b0;
-         phase <= 1'b0;
-         pending_valid <= 1'b0;
-         txr_valid <= 1'b0;
-         rx_valid <= 1'b0;
-         spi_clk <= 1'b0;
-         spi_mosi <= 1'b1;
-      end else begin
-         if (write && byteenable[0]) begin
-            case (reg_addr)
-              REG_TXDATA: begin
-                 txr_valid <= 1'b0;
-                 if (rx_valid && !busy && !pending_valid) begin
-                    txr_data <= rx_data;
-                    txr_valid <= 1'b1;
-                    rx_valid <= 1'b0;
-                 end
-                 if (busy && !completing)
-                    {pending_valid, pending_tx} <= {1'b1, write_data[7:0]};
-                 else if (!busy)
-                    start_transfer(write_data[7:0]);
-              end
-              REG_STATUS: begin
-                 txr_valid <= txr_valid & write_data[1];
-                 rx_valid <= rx_valid & write_data[0];
-              end
-              REG_CONTROL: begin
-                 control <= write_data[7:0];
-                 if (!busy)
-                    spi_clk <= write_data[1];
-              end
-              REG_DIV: div <= write_data[7:0];
-              default: begin
-              end
-            endcase
-         end
-
-         if (read && reg_addr == REG_TXDATA && txr_valid)
-            txr_valid <= 1'b0;
-         if (read && reg_addr == REG_RXDATA && rx_valid)
-            rx_valid <= 1'b0;
-
-         if (busy) begin
-            if (div_count != 0) begin
-               div_count <= div_count - 1'b1;
-            end else begin
-               div_count <= div;
-               if (!phase) begin
-                  spi_clk <= ~cpol;
-                  phase <= 1'b1;
-                  if (!cpha)
-                     rx_shift[bit_index] <= spi_miso;
-                  else
-                     spi_mosi <= tx_shift[bit_index];
-               end else begin
-                  spi_clk <= cpol;
-                  phase <= 1'b0;
-                  if (cpha)
-                     rx_shift[bit_index] <= spi_miso;
-                  if (bit_index == 0) begin
-                     busy <= 1'b0;
-                     spi_mosi <= 1'b1;
-                     if (pending_valid || txdata_write) begin
-                        txr_data <= completed_rx;
-                        txr_valid <= 1'b1;
-                        pending_valid <= 1'b0;
-                        start_transfer(pending_valid ? pending_tx : write_data[7:0]);
-                     end else begin
-                        rx_data <= completed_rx;
-                        rx_valid <= 1'b1;
-                     end
-                  end else begin
-                     bit_index <= bit_index - 1'b1;
-                     spi_mosi <= tx_shift[bit_index - 1'b1];
-                  end
-               end
-            end
-         end
-      end
-   end
-endmodule
