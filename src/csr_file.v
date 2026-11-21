@@ -1053,6 +1053,33 @@ module csr_file
          if (hpm_lcof) mip[LCOFIP_B] <= 1'b1;
       end
    end
+   // The trap history, for a readback capture: the last eight traps, frozen at the first exception
+   // taken in S whose epc lies in the trap entry itself (a kernel that faults in its own entry
+   // loops there and reports nothing). Each record: {cycle[39:0], sscratch[39:0], tval[39:0],
+   // epc[39:0], cause[3:0], interrupt, to S, the enable of the level it went to, priv}.
+   localparam integer THW = 40 + 40 + 40 + 40 + 4 + 1 + 1 + 1 + 2;
+   (* dont_touch = "true" *) reg [8*THW-1:0] th_rec;
+   (* dont_touch = "true" *) reg             th_frz, th_irq_off;
+   reg [39:0] th_cyc;
+   wire [39:0] th_off  = trap_epc - {stvec[39:2], 2'b0};
+   wire        th_lvl  = trap_to_s ? mstatus[SIE_B] : mstatus[MIE_B];
+   wire        th_same = trap_to_s ? (priv == S) : (priv == M);
+   initial begin th_rec = {8*THW{1'b0}}; th_frz = 1'b0; th_irq_off = 1'b0; th_cyc = 40'd0; end
+   always @(posedge clk) begin
+      th_cyc <= reset ? 40'd0 : th_cyc + 40'd1;
+      if (reset) begin th_frz <= 1'b0; th_irq_off <= 1'b0; end
+      else if (trap_v) begin
+         if (~th_frz)
+            th_rec <= {th_rec[7*THW-1:0], th_cyc, sscratch[39:0], `VA_PACK40(trap_tval), trap_epc,
+                       trap_cause[3:0], trap_is_intr, trap_to_s, th_lvl, priv};
+         if (~trap_is_intr & trap_to_s & (priv == S) & (th_off < 40'd512)) th_frz <= 1'b1;
+         // an interrupt into the level the hart runs at, with that level's enable off
+         if (trap_is_intr & th_same & ~th_lvl) begin
+            th_irq_off <= 1'b1;
+            $fatal(1, "csr_file: an interrupt (cause %0d) taken at priv %0d with its enable off, epc %h", trap_cause[3:0], priv, trap_epc);
+         end
+      end
+   end
 endmodule
 
 `default_nettype wire
