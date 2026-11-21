@@ -4973,15 +4973,26 @@ module smolrv64_core
          cti_cls = {is_jump & lrd, is_jalr & lrs & ~lrd};
       end
    endfunction
-   // The retired pointer: each ROB entry's {call, ret}, written at dispatch, read at commit.
-   reg [1:0]      rcls [0:ROB_DEPTH-1];
-   integer        rck;
+   // The retired pointer: each ROB entry's {call, ret}, written at dispatch, read at commit. Lane
+   // k's op is in column k and every commit port reads the head's row, so each column is a memory
+   // of ROB_ROWS with one write and one read.
+   wire [1:0]     rcls_c [0:IW-1];                    // the head's row, by column
+   wire [ROB_IDXB-ROB_CB-2:0] rc_row = rc_idx[0][ROB_IDXB-1:ROB_CB+1];
    reg [RASB-1:0] rsp_r;
-   integer ri;
-   initial begin rsp_r = {RASB{1'b0}}; for (ri = 0; ri < ROB_DEPTH; ri = ri + 1) rcls[ri] = 2'b00; end
-   always @(posedge clk) begin
-      for (rck = 0; rck < IW; rck = rck + 1) if (s_takev[rck]) rcls[rsi(s_rob[rck])] <= s_ccls[rck];
-   end
+   initial rsp_r = {RASB{1'b0}};
+   generate for (gs = 0; gs < IW; gs = gs + 1) begin: rcc
+      (* ram_style = "distributed" *) reg [1:0] m [0:ROB_ROWS-1];
+      integer ri;
+      initial for (ri = 0; ri < ROB_ROWS; ri = ri + 1) m[ri] = 2'b00;
+      always @(posedge clk) if (s_takev[gs]) m[s_rob[gs][ROB_IDXB-1:ROB_CB+1]] <= s_ccls[gs];
+      assign rcls_c[gs] = m[rc_row];
+      always @(posedge clk) begin
+         if (s_takev[gs] && (s_rob[gs][ROB_CB-1:0] != gs))
+            $fatal(1, "smolrv64_core: lane %0d dispatches into ROB column %0d", gs, s_rob[gs][ROB_CB-1:0]);
+         if (rc_v[gs] && (rc_idx[gs][ROB_IDXB-1:ROB_CB+1] != rc_row))
+            $fatal(1, "smolrv64_core: commit port %0d retires ROB entry %0d, off the head's row %0d", gs, rc_idx[gs], rc_row);
+      end
+   end endgenerate
    function [RASB-1:0] rsp_step;    // +1 for a call, -1 for a return
       input [1:0] cls;
       rsp_step = cls[1] ? {{(RASB-1){1'b0}}, 1'b1} : cls[0] ? {RASB{1'b1}} : {RASB{1'b0}};
@@ -4990,7 +5001,7 @@ module smolrv64_core
    integer         rsk;
    always @* begin
       rsp_c = {RASB{1'b0}};
-      for (rsk = 0; rsk < IW; rsk = rsk + 1) if (rc_v[rsk]) rsp_c = rsp_c + rsp_step(rcls[rc_sx[rsk]]);
+      for (rsk = 0; rsk < IW; rsk = rsk + 1) if (rc_v[rsk]) rsp_c = rsp_c + rsp_step(rcls_c[rc_idx[rsk][ROB_CB-1:0]]);
    end
    always @(posedge clk) rsp_r <= reset ? {RASB{1'b0}} : rsp_r + rsp_c;
    wire [RASB-1:0] cf_rsp  = cf_pdet[PD_RSP +: RASB]

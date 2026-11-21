@@ -46,6 +46,7 @@ cp[*].dmap.smap_d x{IW if IW >= 4 else 0} : its second copy past 15 reads (the d
 # the kill looks every entry's up each cycle it holds.
 col[*].mem x{IW} : ROB entries, one column per slot {pold, noret, rd, prd}
 rob_ffr : an FP op's exception flags by ROB slot: written when its result lands, read by the retire ports
+rcc[*].m x{IW} : each ROB entry's {call, ret}, a column per lane: written at dispatch, read at the head's row for the retired RAS pointer
 # The banked queues (smolrv64_bankq): a bank per position mod NB, one write each. The decoupling
 # queue's QNB = next_pow2(FW) = 8, the fetch ring's 8, the training queue's 4, each lane's landing
 # buffer's 2 (6 at IW=3), and next_pow2(IW) = 4 each for what a dispatch group's row writes: the
