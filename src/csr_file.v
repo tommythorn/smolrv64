@@ -767,9 +767,22 @@ module csr_file
                         & ((upd_addr == FRM) | (upd_addr == FCSR) | (upd_addr == MENVCFG)
                          | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0));
 
+   // A write that can make an interrupt deliverable -- a global enable (mstatus.MIE/SIE) rising with
+   // something pending and enabled, or any write of mie/sie/mip/sip/mideleg -- refetches what
+   // follows it, and the core presents the interrupt pseudo-op first in that refetch: the trap is
+   // taken right behind the write, as the privileged spec has it. Without this the pseudo-op queues
+   // behind everything already fetched, a later write that clears the enable among it, and reaches
+   // the head with the enable off, where it does nothing: in a perfectly predicted loop with a
+   // short enabled window (a kernel's idle loop with a WFI that does not wait) that repeats forever.
+   wire        do_irqen = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
+                        & ( ((upd_addr == MSTATUS) & (((newms_m & ~mstatus) & 64'hA) != 64'd0) & (ip_ie != 14'd0))
+                          | ((upd_addr == SSTATUS) & (((newms_s & ~mstatus) & 64'hA) != 64'd0) & (ip_ie != 14'd0))
+                          | (upd_addr == MIE) | (upd_addr == SIE) | (upd_addr == MIP) | (upd_addr == SIP)
+                          | (upd_addr == MIDELEG) );
+
    // redir_valid/redir_is_trap reflect only the active system op (consumed by exec_shard);
    // external injections (xtrap_v) redirect via csr_redir_tgt in backend_top instead.
-   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw;
+   assign redir_valid   = sysop_exc | irq_take | do_mret | do_sret | do_sfence | do_fschg | do_dxchg | do_satp | do_ctxw | do_irqen;
    assign redir_is_trap = sysop_exc | irq_take;     // op's own exception OR delivered interrupt
    // ---- redirect target (combinational) ----
    // An external injection (xtrap_v: page fault / interrupt) takes priority over a coincident
@@ -787,6 +800,7 @@ module csr_file
       else if (do_dxchg)        redir_target = upd_pc + 40'd4;   // CSR op is 4 bytes
       else if (do_satp)         redir_target = upd_pc + 40'd4;   // refetch under the new satp
       else if (do_ctxw)         redir_target = upd_pc + 40'd4;   // refetch under the new frm/enables
+      else if (do_irqen)        redir_target = upd_pc + 40'd4;   // refetch behind the interrupt
       else                      redir_target = trap_tgt;
    end
 

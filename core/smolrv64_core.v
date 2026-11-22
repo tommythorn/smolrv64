@@ -4703,8 +4703,12 @@ module smolrv64_core
          // cycle is taken into a queue the redirect empties at the same edge; inject_inflight
          // is cleared by redirect_q the cycle after, and the interrupt, still pending, is
          // presented again.
-         irq_inject_q <= ~redirect_q & ~fr_v &
-                         (irq_inject_q ? ~irq_taken                     // hold until taken
+         // The cycle behind a redirect schedules too: the frontend is empty and fetch has not fired,
+         // so the pseudo-op is the first thing of the new stream. A CSR write that makes an
+         // interrupt deliverable redirects for exactly this (csr_file's do_irqen).
+         irq_inject_q <= ~fr_v &
+                         (redirect_q   ? csr_irq_v
+                        : irq_inject_q ? ~irq_taken                     // hold until taken
                                        : csr_irq_v & ~inject_inflight); // schedule
 
          if (irq_taken)                               inject_inflight <= 1'b1;

@@ -236,8 +236,22 @@ lost.
 | CSR-induced redirect | `sret`/`mret`/`sfence`, serializing | full refill |
 | `fence.i` | `ifence`, must be ROB head | full refill; the I$ is invalidated only after a device write |
 | interrupt injection | `irq_inject`, a solo SYSTEM pseudo-op that traps in M | full refill |
+| interrupt-enabling CSR write | `csr_file`'s `do_irqen`: `mstatus`/`sstatus` raising MIE/SIE with an interrupt pending and enabled, or any write of `mie`/`sie`/`mip`/`sip`/`mideleg` | full refill to the fall-through, the pseudo-op first |
 
 Measured redirect rate: **3.4 per 1000 instructions** (Linux cosim).
+
+**An interrupt is taken right behind the write that makes it deliverable.** The pseudo-op is
+injected at fetch, so it executes behind everything already fetched; it traps only if the
+interrupt is still deliverable when it reaches the head, and otherwise does nothing. A CSR op
+does not drain, so a loop that raises a global enable for a few instructions and clears it again
+(a kernel's idle loop: `wfi` does not wait in this core) would have every pseudo-op arrive behind
+the next clearing write, forever, once the loop predicts perfectly. Hence the `do_irqen`
+redirect: the write refetches its fall-through, and `irq_inject` is scheduled in the cycle behind
+any redirect in which an interrupt is deliverable, when the frontend is empty and fetch has not
+fired, so the pseudo-op is the first thing of the new stream and `xepc` is the instruction after
+the write (as it is after an `xret`, which redirects anyway). `core/directed/irqwin.S` checks
+`mepc` for enabled windows of 0 to 40 instructions; `irqwarm.S` raises the interrupt in the
+middle of the warm loop.
 
 **Measured mispredict cost (`workloads/brbench`, the lanes core at IW=3 with restart at
 resolve, 5.4e-3, 2026-10-05, L1-resident).** A loop with one random-direction branch per
