@@ -482,6 +482,7 @@ module smolrv64_core
    wire [IW*RN_PBITS-1:0] rn_prdv, rn_poldv;
    // the walk (5.4e): the ROB's dead rows, a row a cycle, into rename
    wire [IW-1:0]          rob_wl_v;
+   wire                   rob_wl_on;
    wire [IW*6-1:0]        rob_wl_rd;
    wire [IW*RN_PBITS-1:0] rob_wl_prd, rob_wl_pold;
    wire                   rob_wl_done;
@@ -510,7 +511,7 @@ module smolrv64_core
       // commit comes from the ROB head and the entries behind it
       .c_valid(rc_v), .c_rd(rc_rd), .c_rd_v(rc_rdv), .c_prd(rc_prd), .c_pold_in(rc_pold),
       .flush(redirect),
-      .w_v(rob_wl_v), .w_rd(rob_wl_rd), .w_pold(rob_wl_pold), .w_prd(rob_wl_prd),
+      .w_run(rob_wl_on), .w_v(rob_wl_v), .w_rd(rob_wl_rd), .w_pold(rob_wl_pold), .w_prd(rob_wl_prd),
       .w_chk(cf_red_fire & rob_wl_done),
       .stall(rn_stall), .shard_low(rn_shard_low));
 
@@ -558,7 +559,7 @@ module smolrv64_core
    endfunction
    // THE KILL (5.4e): every entry younger than the walked-to branch, from the ROB's flops. Each
    // structure holding an op clears it when dead(its rob) -- the position test of
-   // smolrv64_kill.vh against the ROB's kh and kb; the vector rob_kd serves the per-entry clears.
+   // smolrv64_kill.vh against the ROB's kh and kb; the vector rob_kd serves the checks.
    // The kill holds until the flush.
    wire                   rob_kd_v;
    wire [ROB_DEPTH-1:0]   rob_kd;
@@ -1120,7 +1121,7 @@ module smolrv64_core
       .d_valid(mv_f),.d_ready(rf_ready),
       .d_rob(stg_rob_f),
       .d_ps(stg_ps_f),.d_r(stg_r_f | wkq_f),
-      .d_prd(stg_prd_f),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_ent(rf_d_ent),
+      .d_prd(stg_prd_f),.d_long(1'b0),.d_hx(1'b0),.d_ag(1'b0),.d_mk(1'b0),.mk_any(),.d_ent(rf_d_ent),
       .wb_v(wkv_fp),.wb_preg(wkp_fp),.s_v(1'b0),.s_preg({RN_PBITS{1'b0}}),.sv_v(1'b0),.sv_ok(1'b0),.iss_spec(),.iss_hq(),
       .unit_busy(j_v & ~j_adv),.hx_busy(1'b0),.ag_only(1'b0),   // j_* can't take: occupied and its op not draining
       .iss_v(rf_iss_v),.iss_ent(rf_iss_ent),.iss_rob(rf_iss_rob),
@@ -1453,6 +1454,7 @@ module smolrv64_core
    wire [RN_PBITS-1:0]   l_ps1 [0:NL-1], l_ps2 [0:NL-1], l_wa [0:NL-1], l_qprd [0:NL-1], l_blk_pr [0:NL-1];
    wire [63:0]           l_wb [0:NL-1], l_qval [0:NL-1], l_res [0:NL-1], l_mres [0:NL-1], l_rs2 [0:NL-1];
    wire                  l_we [0:NL-1], l_qv [0:NL-1], l_wv [0:NL-1], l_cti [0:NL-1], l_mis [0:NL-1];
+   wire [NL-1:0]         l_wk;
    wire                  l_ready [0:NL-1], l_stg_v [0:NL-1], l_blk_v [0:NL-1], l_pick [0:NL-1];
    wire [IBI:0]          l_free [0:NL-1];
    wire [LPLW-1:0]       l_pl [0:NL-1];
@@ -1483,7 +1485,7 @@ module smolrv64_core
       reg [RN_PBITS-1:0]   stg_prd;
       reg [LPLW-1:0]       stg_pl;
       initial stg_v = 1'b0;
-      wire                 ready, iss_v, iss_spec, blk_v;
+      wire                 ready, iss_v, iss_spec, blk_v, iq_wk;
       wire [IBI-1:0]       d_ent, iss_ent;
       wire [2*NI-1:0]      iss_hq;
       wire [ROB_IDXB-1:0]  iss_rob;
@@ -1517,7 +1519,7 @@ module smolrv64_core
         (.clk(clk),.reset(reset),
          .d_valid(mv),.d_ready(ready),.d_rob(stg_rob),
          .d_ps(stg_ps[2*RN_PBITS-1:0]),.d_r(stg_r),.d_prd(stg_prd),.d_long(stg_late),.d_hx(stg_hx),
-         .d_ag(is_lmem(sg_insn)),.d_ent(d_ent),
+         .d_ag(is_lmem(sg_insn)),.d_mk(sg_is_branch & weak_cond(sg_pdet)),.mk_any(iq_wk),.d_ent(d_ent),
          .wb_v(wkv_i),.wb_preg(wkp),.s_v(sw_v),.s_preg(sw_p),.sv_v(sv_v),.sv_ok(sv_ok),.iss_spec(iss_spec),.iss_hq(iss_hq),
          // busy: the multiply's reserved slot, a waiting landing, and in lane 0 a system op at the ROB head
          .unit_busy(m1 | ((gl == 0) & sy_at_head)),.hx_busy(hx_busy),.ag_only(lb_any[gl]),
@@ -1758,6 +1760,8 @@ module smolrv64_core
       assign l_wb[gl] = wb;        assign l_qv[gl] = qv;        assign l_qprd[gl] = qprd;
       assign l_qval[gl] = qval;    assign l_res[gl] = result;   assign l_rs2[gl] = rs2;
       assign l_cti[gl] = cti;      assign l_mis[gl] = mis;      assign l_pl[gl] = pl;
+      // a weak conditional in this lane, from its dispatch to its execution (walk_hold)
+      assign l_wk[gl] = (stg_v & sg_is_branch & weak_cond(sg_pdet)) | iq_wk | (v & q_is_branch & weak_cond(q_pdet));
       assign l_ready[gl] = ready;  assign l_stg_v[gl] = stg_v;  assign l_blk_v[gl] = blk_v;
       assign l_blk_pr[gl] = blk_pr;  assign l_free[gl] = free;  assign l_pick[gl] = iss_v;
       assign l_addr[gl] = addr;    assign l_tgt[gl] = target;   assign l_ttgt[gl] = taken_tgt;
@@ -1904,11 +1908,10 @@ module smolrv64_core
    wire [LQ_N-1:0]     lq_kmask;
    wire [SQ_IB-1:0]    sq_k_idx;
    wire [LQ_IB-1:0]    lq_k_idx;
-   wire [38:0]         sq_k_va, lq_k_va, sq_f_pc, lq_f_pc;
+   wire [38:0]         sq_k_va, lq_k_va;
    wire [ROB_IDXB-1:0] sq_f_rob, lq_f_rob;
    wire [LQ_IB-1:0]    lq_f_idx;
    wire [3:0]          sq_f_fc, lq_f_fc;
-   wire [SEQW-1:0]     sq_f_seq, lq_f_seq;
    wire                lsu_wk_done, lsu_wk_unc, lsu_wk_mem, lsu_wk_flt, lsu_xo_tv;
    wire [PABITS-1:0]   lsu_wk_pa;
    wire                lsu_xo_flt;           // the fill's address alone faults: the entry carries it
@@ -1924,13 +1927,26 @@ module smolrv64_core
    wire                wk_v  = wk_lk;
    // the kill names the entry the walker holds, or the one it would take (each by its own queue)
    wire                wk_new_dead = sq_k_v ? sq_kmask[sq_k_idx] : lq_kmask[lq_k_idx];
+   // An entry's full VA, written at its fill: a trap's tval (a non-canonical address is wider than
+   // the entries' VA[38:0]) and the walk's VA
+   reg  [63:0] fva_l [0:LQ_N-1];
+   reg  [63:0] fva_s [0:SQ_N-1];
+   always @(posedge clk) begin
+      if (m_lq_fill) fva_l[m_lq_idx] <= m_addr;
+      if (m_sq_fill) fva_s[m_sq_tag] <= m_addr;
+   end
    wire                wk_cur_dead = wk_lk_st ? sq_kmask[sq_k_idx] : lq_kmask[wk_lk_li];
    wire                wk_st = wk_lk_st;
    wire [38:0]         wk_va = wk_lk_va;
    always @(posedge clk) begin
       // the payload follows the choice while the walker is free; only the lock bit sees the flush
       // (rule I11: the redirect gates no enable)
-      if (~wk_lk) begin wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? sq_k_va : lq_k_va;  wk_lk_li <= lq_k_idx; end
+      // the entry's VA is read from the full-VA arrays (fva_s, fva_l: written with the queues' own at the
+      // fill), so the queues' k_va, a mux over every entry's flops, serves the check alone and is not built
+      if (~wk_lk) begin wk_lk_st <= sq_k_v;  wk_lk_va <= sq_k_v ? fva_s[sq_k_idx][38:0] : fva_l[lq_k_idx][38:0];  wk_lk_li <= lq_k_idx; end
+      if (!reset && (sq_k_v ? (sq_k_va != fva_s[sq_k_idx][38:0]) : (lq_k_v & (lq_k_va != fva_l[lq_k_idx][38:0]))))
+         $fatal(1, "smolrv64_core: the walk's entry (store %b %0d, load %0d) holds VA %h / %h, the full-VA arrays %h / %h",
+                sq_k_v, sq_k_idx, lq_k_idx, sq_k_va, lq_k_va, fva_s[sq_k_idx][38:0], fva_l[lq_k_idx][38:0]);
       if (~wk_lk & (sq_k_v | lq_k_v) & ~wk_new_dead) wk_lk <= 1'b1;   // never a dead entry
       if (lsu_wk_done)                wk_lk <= 1'b0;
       if (wk_lk & wk_cur_dead)        wk_lk <= 1'b0;   // its entry dies
@@ -1940,16 +1956,16 @@ module smolrv64_core
    end
 
    smolrv64_sq #(.NENT(SQ_N), .IDXB(SQ_IB), .PAW(PABITS), .PBITS(RN_PBITS),
-             .ROBB(ROB_IDXB), .NWB(NWB_C), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW), .NW(IW)) u_sq
+             .ROBB(ROB_IDXB), .NWB(NWB_C), .NWQ(NL), .LQN(LQ_N), .LQIB(LQ_IB), .SEQW(SEQW), .NW(IW)) u_sq
      (.clk(clk), .reset(reset),
       .d_alloc(g_st), .d_rank(q_strk), .d_rob(q_rob), .d_dpreg(q_prs2), .d_rdy(s_r2rdy),
-      .d_pc(q_pc), .d_seq(q_seq),
+      .d_seq(q_seq),
       .d_ready(sq_d_ready), .d_free(sq_free), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .ar(sa_v), .pk_v(sq_pk_v), .pk_idx(sq_pk_idx), .pk_seq(sq_pk_seq),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
       .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
       .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
-      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}),
+      .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}), .wb_dq({128'd0, l_qvalv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_size(sq_c_size), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
       .kc_v(sq_kc_v), .kc_any(sq_kc_any), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
@@ -1968,7 +1984,7 @@ module smolrv64_core
       .k_v(sq_k_v), .k_idx(sq_k_idx), .k_va(sq_k_va),
       .w_v(lsu_wk_done & wk_st), .w_idx(sq_k_idx), .w_pa(lsu_wk_pa), .lw_v(lsu_wk_done & ~wk_st), .lw_idx(wk_lk_li), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
-      .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc), .f_pc(sq_f_pc), .f_seq(sq_f_seq),
+      .f_v(sq_f_v), .f_rob(sq_f_rob), .f_fc(sq_f_fc),
       .occupancy(sq_occ), .flush(redirect), .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(sq_kmask),
       .err(sq_err));
 
@@ -2080,7 +2096,7 @@ module smolrv64_core
       .k_v(lq_k_v), .k_idx(lq_k_idx), .k_va(lq_k_va),
       .w_v(lsu_wk_done & ~wk_st), .w_idx(wk_lk_li), .w_pa(lsu_wk_pa), .w_unc(lsu_wk_unc), .w_mem(lsu_wk_mem),
       .w_flt(lsu_wk_flt), .w_fc(lsu_wk_fc),
-      .f_new(lq_f_new), .f_v(lq_f_v), .f_idx(lq_f_idx), .f_rp(lq_f_rp), .f_rob(lq_f_rob), .f_fc(lq_f_fc), .f_pc(lq_f_pc), .f_seq(lq_f_seq),
+      .f_new(lq_f_new), .f_v(lq_f_v), .f_idx(lq_f_idx), .f_rp(lq_f_rp), .f_rob(lq_f_rob), .f_fc(lq_f_fc),
       .x_devwait(lq_x_devwait), .occupancy(lq_occ), .av_any(lq_av_any), .e_dprd(lq_e_dprd), .uf_any(lq_uf_any), .ar(la_v), .pk_v(lq_pk_v), .pk_idx(lq_pk_idx), .pk_seq(lq_pk_seq), .rob_head(rob_head_idx), .flush(redirect),
       .kd_v(rob_kd_v), .kh(rob_kh), .kb(rob_kb), .kmask(lq_kmask));
 
@@ -2208,7 +2224,7 @@ module smolrv64_core
       .d_pold(rn_poldv),
       // the walk starts the cycle after the resolve, from the registered branch
       .k_v(fr_set_q), .k_idx(fr_rob),
-      .wl_v(rob_wl_v), .wl_rd(rob_wl_rd), .wl_prd(rob_wl_prd), .wl_pold(rob_wl_pold), .wl_done(rob_wl_done),
+      .wl_on(rob_wl_on), .wl_v(rob_wl_v), .wl_rd(rob_wl_rd), .wl_prd(rob_wl_prd), .wl_pold(rob_wl_pold), .wl_done(rob_wl_done),
       .kd_v(rob_kd_v), .kd(rob_kd), .kh(rob_kh), .kb(rob_kb), .rel(fr_rel));
 
    // The M-equivalence assertion that guarded the previous two commits is GONE, deliberately
@@ -2801,14 +2817,16 @@ module smolrv64_core
    // The record is registered on its way in, so the SYSQ's inputs are flops, never the queues'
    // muxes and the head compare; its valid bit leaves out a redirect cycle (the entry dies at that
    // edge), and the payload rides with no redirect in its enable (rule I11).
-   // An entry's full VA, written at its fill: a trap's tval (a non-canonical address is wider than
-   // the entries' VA[38:0])
-   reg  [63:0] fva_l [0:LQ_N-1];
-   reg  [63:0] fva_s [0:SQ_N-1];
-   always @(posedge clk) begin
-      if (m_lq_fill) fva_l[m_lq_idx] <= m_addr;
-      if (m_sq_fill) fva_s[m_sq_tag] <= m_addr;
-   end
+   // The faulting or replaying entry's op is the ROB head, so its PC and seq are read there: a file of
+   // the ROB's shape (lane k's op in column k), written at dispatch at the tail's row, read at the
+   // head's.
+   wire [SEQW+38:0] hps_c [0:IW-1];             // the head's row, by column: {seq, pc}
+   genvar ghp;
+   generate for (ghp = 0; ghp < IW; ghp = ghp + 1) begin: hps
+      (* ram_style = "distributed" *) reg [SEQW+38:0] mem [0:ROB_ROWS-1];
+      always @(posedge clk) if (s_takev[ghp]) mem[s_rob[ghp][ROB_IDXB-1:ROB_CB+1]] <= {s_seq[ghp], s_pc[ghp][38:0]};
+      assign hps_c[ghp] = mem[rob_head_idx[ROB_IDXB-1:ROB_CB+1]];
+   end endgenerate
    wire qf_sq = sq_f_v & (sq_f_rob == rob_head_idx) & ~rob_empty;
    wire qf_lq = lq_f_v & (lq_f_rob == rob_head_idx) & ~rob_empty;
    reg                qfr_v, qfr_rp;
@@ -2824,8 +2842,7 @@ module smolrv64_core
       qfr_rob <= qf_sq ? sq_f_rob : lq_f_rob;
       qfr_fc  <= qf_sq ? sq_f_fc  : lq_f_fc;
       qfr_va  <= qf_sq ? fva_s[sq_k_idx] : fva_l[lq_f_idx];   // the faulting load; the faulting store is the first uncommitted
-      qfr_pc  <= qf_sq ? sq_f_pc  : lq_f_pc;
-      qfr_seq <= qf_sq ? sq_f_seq : lq_f_seq;
+      {qfr_seq, qfr_pc} <= hps_c[rob_head_idx[ROB_CB-1:0]];
    end
    // The faulting entry is the ROB head, so anything else in the SYSQ (a CSR op waiting for the
    // head) is younger and dies at the trap's redirect: the record takes the SYSQ from it.
@@ -4112,15 +4129,24 @@ module smolrv64_core
       rt_v_q <= reset ? {IW{1'b0}} : rc_v;
       for (rti = 0; rti < IW; rti = rti + 1) rt_idx_q[rti] <= rc_idx[rti];
    end
+   // The ports retire one row's positions, so an entry is named by that row and its own column's port (a tag
+   // carries its row's wrap bit, so row and column name it).
+   localparam integer RCB = $clog2(IW);
+   wire [ROB_IDXB-RCB-2:0] rt_row = rt_idx_q[0][ROB_IDXB-1:RCB+1];
+   reg  [(1 << RCB)-1:0]   rt_cv;                  // the column retired
+   always @* begin
+      rt_cv = {(1 << RCB){1'b0}};
+      for (rti = 0; rti < IW; rti = rti + 1) if (rt_v_q[rti]) rt_cv[rt_idx_q[rti][RCB-1:0]] = 1'b1;
+   end
    wire [TQN-1:0] tq_rm;
-   genvar tqg, tqr;
+   genvar tqg;
    generate for (tqg = 0; tqg < TQN; tqg = tqg + 1) begin: rmq
-      wire [IW-1:0] hit;
-      for (tqr = 0; tqr < IW; tqr = tqr + 1) begin: rc
-         assign hit[tqr] = rt_v_q[tqr] & (rt_idx_q[tqr] == tq_rob[tqg]);
-      end
-      assign tq_rm[tqg] = |hit;
+      assign tq_rm[tqg] = (tq_rob[tqg][ROB_IDXB-1:RCB+1] == rt_row) & rt_cv[tq_rob[tqg][RCB-1:0]];
    end endgenerate
+   always @(posedge clk) if (!reset) begin
+      for (rti = 0; rti < IW; rti = rti + 1) if (rt_v_q[rti] && (rt_idx_q[rti][ROB_IDXB-1:RCB+1] != rt_row))
+         $fatal(1, "smolrv64_core: retire port %0d is of row %0d, port 0 of row %0d", rti, rt_idx_q[rti][ROB_IDXB-1:RCB+1], rt_row);
+   end
    initial begin tq_h = 0; tq_t = 0; tq_n = 0; end
    wire [TQB:0] tq_free = TQN[TQB:0] - tq_n;
    reg  [NL-1:0] tq_w;
@@ -4143,6 +4169,24 @@ module smolrv64_core
    end
    wire [NL-1:0] l_call = lr_jmp & l_lrd, l_ret = lr_jalr & l_lrs & ~l_lrd;
    integer tk;
+   // An entry's bank is its index's low bits (u_tq's banks): the bank takes the lane whose rank lands in it, so
+   // the lanes' tags are muxed once a bank and an entry's write is its bank's enable and its row.
+   reg  [NL-1:0]        tq_bw;
+   reg  [TQB-RKB-1:0]   tq_ba [0:NL-1];
+   reg  [ROB_IDXB-1:0]  tq_bd [0:NL-1];
+   always @* for (tqi = 0; tqi < NL; tqi = tqi + 1) begin : bank
+      reg [RKB-1:0] r;
+      reg [TQB-1:0] a;
+      r = tqi[RKB-1:0] - tq_t[RKB-1:0];
+      a = tq_t + {{(TQB-RKB){1'b0}}, r};
+      tq_ba[tqi] = a[TQB-1:RKB];
+      tq_bw[tqi] = 1'b0;
+      tq_bd[tqi] = {ROB_IDXB{1'b0}};
+      for (tqj = 0; tqj < NL; tqj = tqj + 1) if (tq_w[tqj] & (rk[tqj] == r)) begin
+         tq_bw[tqi] = 1'b1;
+         tq_bd[tqi] = tq_bd[tqi] | lr_rob[tqj];
+      end
+   end
    wire [3:0] tq_wn4 = ones_nl(tq_w);                // the lanes' CTIs enqueuing this cycle
    wire [TQB:0] tq_wn = {{(TQB-3){1'b0}}, tq_wn4};
    always @(posedge clk) begin
@@ -4159,12 +4203,10 @@ module smolrv64_core
                else if (~tq_rt[tk] & ~tq_rm[tk])          tq_dk[tk] <= 1'b1;
             end
          end
-         for (tk = 0; tk < NL; tk = tk + 1) if (tq_w[tk]) begin : enq
-            reg [TQB-1:0] a;
-            a = tq_t + {{(TQB-RKB){1'b0}}, rk[tk]};
-            tq_rob[a] <= lr_rob[tk];
-            tq_dk[a] <= redirect;              // a redirect's: younger than it (never an enable, rule I11)
-            tq_rt[a] <= 1'b0;
+         for (tk = 0; tk < TQN; tk = tk + 1) if (tq_bw[tk % NL] & (tq_ba[tk % NL] == tk[TQB-1:RKB])) begin
+            tq_rob[tk] <= tq_bd[tk % NL];
+            tq_dk[tk] <= redirect;             // a redirect's: younger than it (never an enable, rule I11)
+            tq_rt[tk] <= 1'b0;
          end
          tq_t <= tq_t + tq_wn[TQB-1:0];
          tq_h <= tq_h + {{(TQB-1){1'b0}}, tq_out};
@@ -4214,8 +4256,10 @@ module smolrv64_core
          weak_cond = pd[DCR_HIT] & (c[1] ^ c[0]);
       end
    endfunction
-   // the weak conditionals in flight, a bit per ROB entry: set as one dispatches, cleared as it
-   // resolves, by the redirect, and at a release for the dead (which never resolve)
+   // The weak conditionals in flight ride with their ops (l_wk): a lane's dispatch stage, its scheduler, its select
+   // register and its resolved CTI (lr_wk). wk_e is the checks' record of them, a bit per ROB entry: set as one dispatches,
+   // cleared as it resolves, by the redirect, and at a release for the dead (which never resolve). Nothing but the
+   // check reads it (or the ROB's kill vector), so neither is built.
    reg  [ROB_DEPTH-1:0] wk_e;   initial wk_e = {ROB_DEPTH{1'b0}};
    integer wdk;
    always @(posedge clk) begin
@@ -4230,7 +4274,11 @@ module smolrv64_core
             if (lr_v[wdk] & lr_br[wdk] & weak_cond(lr_pdet[wdk]) & ~wk_e[rsi(lr_rob[wdk])])
                $fatal(1, "smolrv64_core: weak conditional rob %0d resolved with none counted in flight", lr_rob[wdk]);
    end
-   wire walk_hold = (|wk_e) & ~fr_v;
+   reg  [NL-1:0] lr_wk;
+   always @* for (wdk = 0; wdk < NL; wdk = wdk + 1) lr_wk[wdk] = lr_v[wdk] & lr_br[wdk] & weak_cond(lr_pdet[wdk]);
+   wire walk_hold = (|{l_wk, lr_wk}) & ~fr_v;
+   always @(posedge clk) if (!reset && (walk_hold != ((|wk_e) & ~fr_v)))
+      $fatal(1, "smolrv64_core: the lanes hold weak conditionals %b, the record says %b (fr_v %b)", l_wk | lr_wk, |wk_e, fr_v);
    // ...and the I$ holds a miss's line read on the same terms: the pending restart that ends the
    // hold reaches the fetch ring in the cycle the hold drops, and the I$ takes the cancel first.
    assign imem_hold = walk_hold;

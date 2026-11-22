@@ -66,6 +66,8 @@ module smolrv64_iq
     input  wire                  d_long,     // its result comes later than the next cycle (a multiply): no wake at select
     input  wire                  d_hx,       // it hands itself on through a one-op register (hx_busy)
     input  wire                  d_ag,       // it generates an address (a load or store): SPEC's wake is its
+    input  wire                  d_mk,       // a mark the op carries while it holds an entry...
+    output wire                  mk_any,     // ...a marked op holds one
     output wire [IDXB-1:0]       d_ent,      // slot taken; index the payload with it
 
     // ---- wakeup ----
@@ -119,6 +121,8 @@ module smolrv64_iq
    reg [NENT-1:0]        e_long;           // a later result: its dependents wake at its writeback
    reg [NENT-1:0]        e_hx;             // hands itself on (d_hx)
    reg [NENT-1:0]        e_ag;             // an address generator (d_ag)
+   reg [NENT-1:0]        e_mk;             // marked (d_mk)
+   assign mk_any = |(v & e_mk);
    reg [NENT-1:0]        e_sp;             // issued on the speculative wake, held for its verdict
    initial begin e_long = {NENT{1'b0}}; e_hx = {NENT{1'b0}}; e_ag = {NENT{1'b0}}; e_sp = {NENT{1'b0}}; end
 
@@ -356,6 +360,7 @@ module smolrv64_iq
             e_long[fsel] <= d_long;
             e_hx[fsel]   <= d_hx;
             e_ag[fsel]   <= d_ag;
+            e_mk[fsel]   <= d_mk;
             e_sp[fsel]   <= 1'b0;
             for (q = 0; q < NSRC; q = q + 1) begin
                dep[fsel*NSRC+q] <= drow[q];               // registers only; its producer issuing now wakes it next cycle (swk)

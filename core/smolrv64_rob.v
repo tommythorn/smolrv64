@@ -114,6 +114,7 @@ module smolrv64_rob
     // reached its branch (until the flush).
     input  wire                   k_v,
     input  wire [IDXB-1:0]        k_idx,
+    output wire                   wl_on,        // the walk runs (a register)
     output wire [IW-1:0]          wl_v,
     output wire [IW*6-1:0]        wl_rd,
     output wire [IW*PBITS-1:0]    wl_prd, wl_pold,
@@ -125,7 +126,7 @@ module smolrv64_rob
     output reg  [ROWS*(1 << CB)-1:0] kd,
     // ...and the same kill as a position, for a structure to test its own entry with
     // smolrv64_kill.vh's kdead(): kh, the head row's first tag when the walk began, and kb, the
-    // branch's distance from it. kd stays for the per-entry clears (this ROB's, the core's).
+    // branch's tag. kd is the checks' (this ROB's, the core's): nothing built reads it.
     output reg  [IDXB-1:0]        kh,
     output reg  [IDXB-1:0]        kb,
     // THE RELEASE: the walk has reached the branch and every dead op is gone, so the dead entries
@@ -148,7 +149,11 @@ module smolrv64_rob
    // columns, written whole at allocation and cut back to the branch at a release, and read only
    // at positions in [head, tail), where it is current (a committed position's bit stays set
    // behind the head; a row past the tail keeps what it last held).
-   reg [DEPTH-1:0] v, done;                     // done: bulk decode of the completion ports, so flops
+   // done is the checks' record likewise. What is built is dn: per column, a one-bit memory of ROWS for
+   // each completion port and one for the allocation; an entry is done when the XOR of its bits is 1.
+   // A completion flips its port's bit (an entry completes once, on one port: asserted), and an
+   // allocation flips its own where the XOR is 1.
+   reg [DEPTH-1:0] v, done;
    (* ram_style = "distributed" *) reg [NCOL-1:0] vr [0:ROWS-1];
    reg [SB:0]      head, tail, irr;             // positions {ring wrap, row, p}; head <= irr <= tail
    reg [CB-1:0]    fc [0:ROWS-1];               // each row's first column
@@ -217,7 +222,34 @@ module smolrv64_rob
    endfunction
    wire [RB-1:0] irow = irr[SB-1:CB];
    wire [NCOL-1:0] vh = vr[hrow], vi = vr[irow];        // the head's row, irr's row
-   wire head_done = ~empty & vh[hsx[CB-1:0]] & ((done[hsx] & ~c_hold) | h_fin);
+   wire [NCOL-1:0] dn_h, dn_i;                          // done, the head's row and irr's row by column
+   genvar gdc, gdq;
+   generate for (gdc = 0; gdc < NCOL; gdc = gdc + 1) begin: dn
+      wire [NW:0] xh, xi, xt;                           // each memory's bit at the head's row, irr's, the tail's
+      for (gdq = 0; gdq < NW; gdq = gdq + 1) begin: w
+         (* ram_style = "distributed" *) reg m [0:ROWS-1];
+         integer i;
+         initial for (i = 0; i < ROWS; i = i + 1) m[i] = 1'b0;
+         wire [RB-1:0] wr = w_ix[gdq*IDXB + CB + 1 +: RB];
+         always @(posedge clk) if (!reset & w_v[gdq] & (w_ix[gdq*IDXB +: CB] == gdc)) m[wr] <= ~m[wr];
+         assign xh[gdq] = m[hrow];  assign xi[gdq] = m[irow];  assign xt[gdq] = m[trow];
+      end
+      (* ram_style = "distributed" *) reg ma [0:ROWS-1];
+      integer i;
+      initial for (i = 0; i < ROWS; i = i + 1) ma[i] = 1'b0;
+      if (gdc < IW) begin: al
+         always @(posedge clk) if (!reset & do_alloc[gdc] & (^xt)) ma[trow] <= ~ma[trow];
+      end
+      assign xh[NW] = ma[hrow];  assign xi[NW] = ma[irow];  assign xt[NW] = ma[trow];
+      assign dn_h[gdc] = ^xh;  assign dn_i[gdc] = ^xi;
+      always @(posedge clk) if (!reset) begin
+         if (~empty & vh[gdc] & (dn_h[gdc] != done[{hrow, gdc[CB-1:0]}]))
+            $fatal(1, "smolrv64_rob: the head row %0d's column %0d reads done %b, the record says %b", hrow, gdc, dn_h[gdc], done[{hrow, gdc[CB-1:0]}]);
+         if ((irr != tail) & vi[gdc] & (dn_i[gdc] != done[{irow, gdc[CB-1:0]}]))
+            $fatal(1, "smolrv64_rob: irr's row %0d's column %0d reads done %b, the record says %b", irow, gdc, dn_i[gdc], done[{irow, gdc[CB-1:0]}]);
+      end
+   end endgenerate
+   wire head_done = ~empty & vh[hsx[CB-1:0]] & ((dn_h[hsx[CB-1:0]] & ~c_hold) | h_fin);
    assign irr_idx = tag_of(irow, ifc, irr[CB-1:0]);
    assign irr_v   = (irr != tail);
    // A row per cycle: the pointer crosses every position of its row, from its own on, that is done
@@ -235,7 +267,7 @@ module smolrv64_rob
          for (q = 0; q < NW; q = q + 1)
             if (IRR_FWD[q] && w_v[q] && (six(w_ix[q*IDXB +: IDXB]) == ix)) fw = 1'b1;
       end
-      assign ir_wait[gic] = vi[ix[CB-1:0]] & ((~done[ix] & ~fw) | (rp_v & (ix == six(rp_ix)))) & (gic >= irr[CB-1:0]);
+      assign ir_wait[gic] = vi[ix[CB-1:0]] & ((~dn_i[ix[CB-1:0]] & ~fw) | (rp_v & (ix == six(rp_ix)))) & (gic >= irr[CB-1:0]);
    end endgenerate
    reg  [SB:0] irr_step;
    integer     ick;
@@ -269,6 +301,7 @@ module smolrv64_rob
    wire [RB-1:0]  kn_row = k_idx[IDXB-1:CB+1];
    wire [CB-1:0]  kn_fc  = fc[kn_row];
    initial begin wl_run = 1'b0; wl_end = 1'b0; wl_row = 0; wl_fc = 0; wl_lim = 0; k_row = 0; k_p = 0; k_wc = 0; end
+   assign wl_on   = wl_run;
    assign wl_done = wl_end & ~wl_run & ~k_v;      // not in a cycle that names a new, older branch
    localparam [CB:0] NCOL_S = NCOL;
    always @(posedge clk) begin
@@ -297,11 +330,11 @@ module smolrv64_rob
                             | ((kr[RB-1:0] == kn_row) & ({kc[CB-1:0] < kn_fc, kc[CB-1:0]} > k_idx[CB:0]));
    initial begin kd_v = 1'b0; kd = {DEPTH{1'b0}}; kh = {IDXB{1'b0}}; kb = {IDXB{1'b0}}; end
    always @(posedge clk) begin
-      if (k_v) begin kd <= kd_n;  kh <= {hrow, 1'b0, {CB{1'b0}}};  kb <= {kb_rel, k_idx[CB:0]}; end
+      if (k_v) begin kd <= kd_n;  kh <= {hrow, 1'b0, {CB{1'b0}}};  kb <= k_idx; end
       kd_v <= ~reset & ~flush & ~rel & (kd_v | k_v);
    end
    // the position form names exactly the vector's entries (kd_n's rows past the branch's from the
-   // head, and its own row's later tags, are the entries farther from kh than kb)
+   // head, and its own row's later tags, are the entries farther from kh than kb is)
    localparam integer ROBB = IDXB;
 `include "smolrv64_kill.vh"
    integer kx;
@@ -385,7 +418,7 @@ module smolrv64_rob
          assign cv[0] = (hp == P) & head_done & ~c_kill[0];
       end else begin: b
          assign cv[gk] = (hp == P) ? (head_done & ~c_kill[gk])
-                       : (hp < P) & cv[gk-1] & vh[hc] & done[ix] & ~c_kill[gk] & ~c_hold & ~flush;
+                       : (hp < P) & cv[gk-1] & vh[hc] & dn_h[hc] & ~c_kill[gk] & ~c_hold & ~flush;
       end
       assign c_head[gk]               = (hp == P);
       assign c_idx[gk*IDXB +: IDXB]   = tag_of(hrow, hfc, P);

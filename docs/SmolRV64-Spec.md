@@ -547,8 +547,10 @@ reads at `h_hi + (g < h_lo)`, its next free entry; which slot allocates from whi
 intra-group bypass (a source that is an earlier slot's destination) is applied at `r_prs*`
 alone; the core's pending lookup indexes the MAP's candidate and masks its result with `r_byp*`.
 The group is a cyclic run of slots from `r_fc` (§3.2): slot k looks at the slots k-1, k-2, ...
-cyclically, nearest first, as far back as its program position, and a register two slots write
-takes the younger's copy (`newer`). A group allocates one register from a lane's shard -- lane
+cyclically, nearest first, as far back as its program position, and of two slots that write a
+register only the younger writes the map. The map is a copy per writer, a register's mapping the
+XOR of the copies' words at it: a writer stores its mapping XORed with the other copies' words, so
+no table names the current copy. A group allocates one register from a lane's shard -- lane
 k's integer destination is lane k's shard -- and up to `IW` from an FP shard: the k-th of a list's
 allocations in program order takes its head's k-th entry, which the list's four banks already read
 (from the head pointer alone, so no class decode reaches a read address). Program order, not slot
@@ -623,8 +625,8 @@ the allocation of the group in the IR (smolrv64_rename `low_n`).
   row's instructions start at its **first column** `fc[row]` and run on cyclically: position p
   is column `(fc + p) % IW`. An op's **tag** is `{row, wrap, column}`, the wrap bit set when its
   column is below `fc` (it is younger than its column suggests), so tags order as numbers in
-  program order and every age compare outside the ROB -- `kdead`, a distance from the head -- is
-  the plain one. The storage index is `{row, column}`, the tag without its wrap bit (`rsi`), and
+  program order and every age compare outside the ROB -- `kdead`, two compares against the head's row
+  and the branch -- is the plain one. The storage index is `{row, column}`, the tag without its wrap bit (`rsi`), and
   indexes every per-entry array. A row has 2^⌈log2 `IW`⌉ columns (at IW=3 the fourth is never
   valid); the dispatch credit is a free row.
 - **Sized by one knob**, `SMOLRV64_ROB_ROWS` (a power of two; 64 in the shipping build), **and
@@ -657,7 +659,7 @@ bit vectors.
 | `prd` | `PBITS`=9 | physical register allocated; **0 when none** |
 | | **25** | × 64 rows × `IW` columns = **6,400 bits** at IW=4 |
 | `v` | 64 × 2^⌈log2 `IW`⌉ | a row's valid bits are one word of the distributed RAM `vr`, written whole at the row's allocation and cut back to the branch when a kill releases the row; it is read only at positions in [head, tail), so neither the flush nor a commit clears it |
-| `done` | 64 × 2^⌈log2 `IW`⌉ | separate flops; read only under `v`, so its allocation alone clears it |
+| `done` | 64 × 2^⌈log2 `IW`⌉ | per column, a one-bit distributed RAM of 64 for each completion port and one for the allocation: an entry is done when the XOR of its bits is 1 (a completion flips its port's bit, an allocation flips its own where the XOR is 1); read only under `v` |
 
 **Three fields are deliberately absent**, each recoverable from state the design already
 keeps. The ROB is sized by the *window*; the scheduler that needs execute detail is sized by
@@ -725,11 +727,12 @@ without waiting for the branch to reach the head:
   speculative free-list head back over its register. An older mispredict resolving meanwhile
   moves the target back and the cursor goes on.
 - **The kill.** The cycle after the resolve the ROB turns the branch into a position, from
-  flops: `kh`, the head row's first tag when the walk began, and `kb`, the branch's distance from
-  it. An op is dead while the kill holds when its tag is farther from `kh` than `kb` -- the rows
-  after the branch's and its row's later tags -- which each structure tests for its own entries
-  with one subtract and compare (`core/smolrv64_kill.vh`), not by indexing a 256-entry vector;
-  the vector (`kd`, asserted equal) serves only the per-entry clears at the release. Every
+  flops: `kh`, the head row's first tag when the walk began, and `kb`, the branch's tag. An op is dead
+  while the kill holds when its tag is farther from `kh` than the branch's -- the rows after the
+  branch's and its row's later tags -- which each structure tests for its own entries with two
+  compares side by side (the tag against `kb`, and against `kh` for which side of the ring's wrap
+  it is on: `core/smolrv64_kill.vh`), not by indexing a 256-entry vector; the vector (`kd`, asserted
+  equal) serves only the checks and is not built. Every
   structure that holds an op clears its dead ones each cycle the kill holds: the schedulers,
   dispatch stages, multiplies, landing buffers (a dead entry drains as a bubble), F, MD (the
   divider aborts), the SYSQ, M and the head-op register, the arrival flags, the walker lock,
@@ -1958,21 +1961,21 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `lb_prd`, `lb_rob`, `lb_fe`, `lb_dk` | `smolrv64_core` | 3×4 | 10/8/1/1 | 240 | flops | the lanes' landing buffers (§8): what the kill and the wakes read at every entry |
 | `g_lp[*].u_lbd` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 × 2 × 2 | 64 | 1 024 | LUTRAM | the landing buffers' data: the LD stream's at the tail, the FE stream's after it, read at the head |
 | `fp[0].mem`, `fp[1].mem` | `smolrv64_prf` | 64 each | 64 | 8 192 | LUTRAM | 4R (the store queue's, the FP port's 3), 1W each: SH_FL (the load landing) and SH_FF (the F stage) |
-| `cp[0..IW-1].smap` | `smolrv64_rename` | 64 each, twice at IW=4 (`smap_d`) | 9 | 4 608 | LUTRAM | one copy per rename slot (1W each: the slot's rename, the walk's column, the sweep's lane; `newer` picks), 5*IW reads (the sources and destinations, the commits' dirty tests) |
-| `cp[0..IW-1].rmap` | `smolrv64_rename` | 64 each | 9 | 2 304 | LUTRAM | one copy per commit port (1W each, `rnewer` picks), 2*IW reads (the commits' displaced mappings, the sweep) |
+| `cp[0..IW-1].smap` | `smolrv64_rename` | 64 each, twice at IW=4 (`smap_d`) | 9 | 4 608 | LUTRAM | one copy per rename slot (1W each: the slot's rename, the walk's position, the sweep's lane; a mapping is the XOR of the copies' words), 5*IW reads (the sources and destinations, the commits' dirty tests) and `IW` more in `smap_d` (each writer's address, for the word it stores) |
+| `cp[0..IW-1].rmap` | `smolrv64_rename` | 64 each | 9 | 2 304 | LUTRAM | one copy per commit port (1W each; a mapping is the XOR of the copies' words), 2*IW reads (the commits' registers, for the word each stores; the sweep) |
 | `dirty` | `smolrv64_rename` | 64 | 1 | 64 | flops | the registers the sweep rewrites after a squash |
 | `fl[*].u.bank[*].mem` | `smolrv64_rename` | 64 per shard | 6 | 384 per shard | LUTRAM | one free list per shard in use (lanes 0..IW-1, SH_FL, SH_FF), `next_pow2(IW)` banks each |
 | `col[0..IW-1].mem` | `smolrv64_rob` | 64 each | 25 | 6 400 | LUTRAM | column k, lane k's entries `{pold, noret, rd, prd}`: 1W (lane k's dispatch), 2R (the head's row, the walk's row; the ports rotate them into program order) |
 | `fc` | `smolrv64_rob` | 64 | 2 | 128 | LUTRAM | each row's first column: 1W (dispatch), read at the next head row, `irr`'s, the walk's and the walked-to branch's rows (`hfc`, the head row's, is a flop) |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
 | `vr` | `smolrv64_rob` | 64 | 4 | 256 | LUTRAM | a row's valid bits, a bit per column: 1W (an allocation's row, else the walk's release of the row it stands on), 3R (the head's row, `irr`'s, the walk's) |
-| `done` | `smolrv64_rob` | 256 | 1 | 256 | flops | by storage index, cleared at allocation |
+| `dn[0..3].w[0..12].m`, `dn[0..3].ma` | `smolrv64_rob` | 56 × 64 | 1 | 3 584 | LUTRAM | `done`: per column a bit per row for each completion port and one for the allocation, 1W each (the bit flips), read at its write row and the head's, `irr`'s and the tail's rows |
 | `head`, `tail`, `irr` | `smolrv64_rob` | 1 each | 9 | 27 | flops | positions `{ring wrap, row, p}`; `irr` the irrevocable pointer (§6) |
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
 | `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
 | `ho_va`, `ho_dat`, `ho_rec`, `ho_v` | `smolrv64_core` | 1 | 64/64/282/1 | 411 | flops | the head-op register (§8) |
 | `u_tq` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 x 8 | 117 | 3 744 | LUTRAM | the training queue's payload (a CTI's PC, RVC bit, taken-target, predict details, kind and outcome), written a cycle late from registers (`WLATE`: the head's read bypasses them): one write a bank (a lane's CTI at the tail plus its rank), read at the head into `res_*_q` (§4.2) |
-| `tq_seq`, `tq_rob`, `tq_dk`, `tq_rt` | `smolrv64_core` | 32 | 9/9/1/1 | 640 | flops | the training queue's entries as every one is compared: the redirect's seq, the retire ports' and the kill's ROB index |
+| `tq_seq`, `tq_rob`, `tq_dk`, `tq_rt` | `smolrv64_core` | 32 | 9/9/1/1 | 640 | flops | the training queue's entries as every one is compared: the redirect's seq, the retire ports' row and column and the kill's ROB index; an entry's write is its bank's (index mod 4) one muxed tag |
 | `ffc[*].fr` | `smolrv64_core` | 64 a column | 5 | 1 280 | LUTRAM | an FP op's exception flags by ROB slot, a memory per column: 1W (a landing result in that column), 1R (the head's row; the retire ports rotate the columns into program order) |
 | `ffc[*].fa`, `ffc[*].fb` | `smolrv64_core` | 64 a column, each | 1 | 512 | LUTRAM | the slot's FP result landed is `fa ^ fb`: the allocation writes `fa` (= `fb`), the landing writes `fb` (= `~fa`); 1W each, read at the head's row and at the writer's own row |
 | `mdw` | `smolrv64_core` | 256 | 2 | 512 | LUTRAM | the memory-dependence wait table: read at dispatch by the load's PC and by training, 1W (a replay, else one training event, else the forget's step; §8) |
@@ -1983,7 +1986,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `plmem` (payload) | `smolrv64_core` | 38 (10+10+10+8) | 274 | 10 412 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each; the immediate is stored as its low 32 bits, which it sign-extends (the queue's write asserts it), and a fetch fault's address as one bit, set for a straddler's pc+2 (`imm` and `fault_tval` are rebuilt from them) |
 | `ipend`, `fpend` | `smolrv64_pending` | 256, 128 | 1 | 384 | flops | readiness, a table per file indexed by {shard, index}: 23R, 16 that read both and let the number's file pick (the slots' rs1/rs2, 8; the lanes' operands, 8) and 7 of the FP table alone (the slots' rs3, 4; the F FIFO head's sources, 3), and each writeback its own register (the integrity check); 4 sets, 6 clears into the integer table (the lanes', the streams' integer landings) and 2 into the FP (the streams'), bulk-clear |
 | `u_pa` `wb[0..1].mem` | `smolrv64_mwram` (in `smolrv64_lq`) | 16 a bank | 33 (`PABITS`) | 1 056 | LUTRAM | the load queue's PA, a bank per writer (M's fill, the walker's answer), 3R (the start's entry, the landing's two candidates); `lvt` (a bit an entry, flops) names the writer |
-| `pcm` | `smolrv64_lq` | 16 | 39 | 624 | LUTRAM | a load's PC: four banks by entry, 1W each at dispatch a cycle late from registers (`WLATE`, the read bypasses them), 1R the fault pick; `pch` (16 × 8 flops) keeps its wait-table bits, which every entry reports |
+| `hps[0..IW-1].mem` | `smolrv64_core` | 64 each | 48 | 12 288 | LUTRAM | every op's {seq, PC} by ROB row and column: 1W each at dispatch (the tail's row), 1R the head's row; the queue-fault record's PC and seq (a faulting or replaying load or store is the ROB head). `pch` (`smolrv64_lq`, 16 × 8 flops) keeps a load's wait-table bits, which every entry reports |
 | `om` | `smolrv64_lq` | 16 | 16 | 256 | flops | the load queue's program order: an entry's row names the entries older than it, written at its allocation (the row the live entries, its column cleared); every "oldest of these" reads it |
 | `data` | `smolrv64_sq` | 32 | 64 | 2 048 | LUTRAM | the store queue's bytes: 1W (the landing, one entry a cycle), 2R (the handoff entry, a forward's store; the lockstep's record of the committing entry is a third, in simulation only) |
 | `addr_m`, `addr_w` | `smolrv64_sq` | 32 each | 33 (`PABITS`) | 2 112 | LUTRAM | the store queue's PA: 1W each (M's fill, the walker's answer), 1R (the handoff entry; the lockstep's record a second, in simulation only); `addr_lv`, a bit per entry in flops, picks the copy |

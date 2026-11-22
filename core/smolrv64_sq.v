@@ -34,6 +34,7 @@ module smolrv64_sq
     parameter PBITS = 9,
     parameter ROBB  = 4,
     parameter NWB   = 3,
+    parameter NWQ   = 0,               // the first NWQ writeback ports' data is their sender's register (wb_dq)
     parameter LQN   = 4,               // smolrv64_lq's NENT
     parameter LQIB  = 2,               // smolrv64_lq's IDXB
     parameter VAW   = 39,              // Sv39: the VA an entry keeps beside its PA
@@ -51,8 +52,7 @@ module smolrv64_sq
     input  wire [NW*ROBB-1:0]    d_rob,       // rides with the store; commit is at the head
     input  wire [NW*PBITS-1:0]   d_dpreg,     // renamed rs2 AT DISPATCH -- see the snoop
     input  wire [NW-1:0]         d_rdy,       // ...and its value is already in a register file: no writeback is coming
-    input  wire [NW*VAW-1:0]     d_pc,        // the store's PC and seq, for a trap from its translation
-    input  wire [NW*SEQW-1:0]    d_seq,
+    input  wire [NW*SEQW-1:0]    d_seq,       // the store's seq (the oldest unresolved store's, pk_seq)
     output wire                  d_ready,
     output wire [IDXB:0]         d_free,      // free entries, from flops (the dispatch credit's)
     output wire [IDXB-1:0]       d_idx,
@@ -89,6 +89,7 @@ module smolrv64_sq
     input  wire [NWB-1:0]        wb_v,
     input  wire [NWB*PBITS-1:0]  wb_preg,
     input  wire [NWB*64-1:0]     wb_data,
+    input  wire [NWB*64-1:0]     wb_dq,      // ports 0..NWQ-1: the port's data the cycle after, held by its sender
 
     // ---- drain: the oldest committed store not yet handed off, once its data has arrived ----
     // A store is HANDED OFF (c_take) to the LSU and FREED (c_done) when memory has it. A store the
@@ -206,8 +207,6 @@ module smolrv64_sq
     output wire                  f_v,
     output wire [ROBB-1:0]       f_rob,
     output wire [3:0]            f_fc,
-    output wire [VAW-1:0]        f_pc,
-    output wire [SEQW-1:0]       f_seq,
 
     output wire [IDXB:0]         occupancy,
     input  wire                  flush,
@@ -290,13 +289,28 @@ module smolrv64_sq
    // the commit and a forward read it): the data read's when one lands, else the oldest entry whose
    // register a writeback names. An entry the landing leaves out is fetched by the data read, as a
    // value already in a register file at allocation is -- its value is in one now.
-   reg [(NWB+1)*64-1:0]  wb_q;            // last cycle's writeback data, and the data read's above it
+   // A port whose sender registers its data anyway (a lane's write register) lends that register:
+   // wb_q holds the other ports'.
+   reg [(NWB+1-NWQ)*64-1:0] wb_q;         // last cycle's writeback data (ports NWQ up), and the data read's above it
+   wire [(NWB+1)*64-1:0] wb_l;            // ...with the senders' registers below
+   generate
+      if (NWQ > 0) begin: g_wq
+         assign wb_l = {wb_q, wb_dq[NWQ*64-1:0]};
+         reg [NWQ*64-1:0] wb_chk;         // the checks' copy of those ports' data last cycle (not built)
+         always @(posedge clk) begin
+            wb_chk <= wb_data[NWQ*64-1:0];
+            if (!reset && ln_v && ({29'd0, ln_w} < NWQ) && (wb_chk[ln_w*64 +: 64] != ln_data))
+               $fatal(1, "smolrv64_sq: port %0d's register holds %h, its writeback was %h", ln_w, ln_data, wb_chk[ln_w*64 +: 64]);
+         end
+      end
+      else         begin: g_wq assign wb_l = wb_q; end
+   endgenerate
    reg                   ln_v;            // an entry's bytes land from wb_q this cycle...
    reg [IDXB-1:0]        ln_idx;          // ...this entry's...
    reg [2:0]             ln_w;            // ...from this slot (a writeback port, or NWB: the data read)
    initial begin ln_v = 1'b0; ln_idx = {IDXB{1'b0}}; ln_w = 3'd0; end
    initial if (NWB > 7) $fatal(1, "smolrv64_sq: ln_w holds a slot index of at most 3 bits, NWB=%0d ports and the data read", NWB);
-   wire [63:0]           ln_data = wb_q[ln_w*64 +: 64];
+   wire [63:0]           ln_data = wb_l[ln_w*64 +: 64];
    // THE SNOOP, ARMED FROM ALLOCATE (see the writeback loop): entry k's register is written back this
    // cycle, on one port at most -- a register is written once. The entries allocated this cycle
    // (the tail on, whose dpr is written at this edge) match on their own, al_m: they are the
@@ -407,10 +421,6 @@ module smolrv64_sq
    generate for (gaw = 0; gaw < NW; gaw = gaw + 1) begin: g_alwp
       assign al_wp[gaw*IDXB +: IDXB] = al_e[gaw];
    end endgenerate
-   smolrv64_bankq #(.W(VAW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_pc
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_pc), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_pc));
-   smolrv64_bankq #(.W(SEQW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_sqn_kc
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(kc), .ro({$clog2(SNB){1'b0}}), .rd(f_seq));
    smolrv64_bankq #(.W(SEQW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(SNB), .PICK(1), .AB(IDXB)) u_sqn_pk
      (.clk(clk), .reset(reset), .wv(d_alloc), .wp(al_wp), .wd(d_seq), .rp(pk_idx), .ro({$clog2(SNB){1'b0}}), .rd(pk_seq));
 
@@ -886,7 +896,7 @@ module smolrv64_sq
             else                                          rd[al_e[aw]] <= 1'b1;
          end
       end
-      wb_q <= {r_data, wb_data};
+      wb_q <= {r_data, wb_data[NWB*64-1:NWQ*64]};
       // THE KILL, after every other arm (the snoop above included). A flush in its cycle (a trap
       // at the head, which also ends the kill) wins: it cuts at the first uncommitted entry.
       if (!reset & (|kmk) & ~flush) begin

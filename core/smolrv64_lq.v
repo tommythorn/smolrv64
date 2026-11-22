@@ -76,7 +76,7 @@ module smolrv64_lq
     input  wire [NW-1:0]         d_rd_v,
     input  wire [NW*SQIB-1:0]    d_sqtag,     // store-seqno captured at the same dispatch
     input  wire [NW-1:0]         d_wt,        // the load's wait bit: it waits for older stores' unknown addresses
-    input  wire [NW*VAW-1:0]     d_pc,        // the load's PC and seq, for a trap from its translation
+    input  wire [NW*VAW-1:0]     d_pc,        // the load's PC (the dependence predictor's hash) and seq
     input  wire [NW*SEQW-1:0]    d_seq,
     output wire                  d_ready,
     output wire [NB*(BRB+1)-1:0] d_bfree,     // each bank's free entries, from flops (the dispatch credit's)
@@ -199,8 +199,6 @@ module smolrv64_lq
     output wire                  f_rp,        // ...a replay (it read before an older store that overlaps it), not a fault
     output wire [ROBB-1:0]       f_rob,
     output wire [3:0]            f_fc,
-    output wire [VAW-1:0]        f_pc,
-    output wire [SEQW-1:0]       f_seq,
 
     output wire [IDXB:0]         occupancy,
     output wire                  av_any,      // an entry with a known address: a load older than M's op, not landed (rule C5)
@@ -426,7 +424,6 @@ module smolrv64_lq
    assign f_rp  = rpl[fi];
    assign f_rob = rob[fi];
    assign f_fc  = fc[fi];
-   assign f_seq = sqn[fi];
    // M's load can start its access in its fill pass whenever the entry is live and unfilled
    assign b_ok = v[b_idx] & ~av[b_idx];
    // the older-store query is about M's load when it holds an unfilled one, else the oldest filled
@@ -581,9 +578,6 @@ module smolrv64_lq
       end
    end
 
-   // the load's PC, read at the fault pick: a bank of the allocation's, one write each
-   smolrv64_bankq #(.W(VAW), .DEPTH(NENT), .NW(NW), .NR(1), .NB(NB), .PICK(1), .AB(IDXB), .WLATE(1)) u_pcm
-     (.clk(clk), .reset(reset), .wv(d_alloc), .wp(d_idx), .wd(d_pc), .rp(fi), .ro({BL{1'b0}}), .rd(f_pc));
 
    // D12 (2026-09-17): the "DRAM, idempotent, may issue speculatively" bit names the entry's OWN
    // address. smolrv64_lsu derives it from the translate; here it is recomputed from the PA the
