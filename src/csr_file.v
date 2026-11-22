@@ -1055,19 +1055,22 @@ module csr_file
    end
    // The trap history, for a readback capture: the last eight traps, frozen at the first exception
    // taken in S whose epc lies in the trap entry itself (a kernel that faults in its own entry
-   // loops there and reports nothing). Each record: {cycle[39:0], sscratch[39:0], tval[39:0],
+   // loops there and reports nothing) or when an interrupt has been deliverable for 2^26 cycles. Each record: {cycle[39:0], sscratch[39:0], tval[39:0],
    // epc[39:0], cause[3:0], interrupt, to S, the enable of the level it went to, priv}.
    localparam integer THW = 40 + 40 + 40 + 40 + 4 + 1 + 1 + 1 + 2;
    (* dont_touch = "true" *) reg [8*THW-1:0] th_rec;
    (* dont_touch = "true" *) reg             th_frz, th_irq_off;
    reg [39:0] th_cyc;
+   reg [26:0] th_wd;      // cycles an interrupt has been deliverable; 2^26 freezes the history too
    wire [39:0] th_off  = trap_epc - {stvec[39:2], 2'b0};
    wire        th_lvl  = trap_to_s ? mstatus[SIE_B] : mstatus[MIE_B];
    wire        th_same = trap_to_s ? (priv == S) : (priv == M);
-   initial begin th_rec = {8*THW{1'b0}}; th_frz = 1'b0; th_irq_off = 1'b0; th_cyc = 40'd0; end
+   initial begin th_rec = {8*THW{1'b0}}; th_frz = 1'b0; th_irq_off = 1'b0; th_cyc = 40'd0; th_wd = 27'd0; end
    always @(posedge clk) begin
       th_cyc <= reset ? 40'd0 : th_cyc + 40'd1;
+      th_wd  <= (reset | ~irq_v) ? 27'd0 : th_wd + {26'd0, ~th_wd[26]};
       if (reset) begin th_frz <= 1'b0; th_irq_off <= 1'b0; end
+      else if (th_wd[26]) th_frz <= 1'b1;
       else if (trap_v) begin
          if (~th_frz)
             th_rec <= {th_rec[7*THW-1:0], th_cyc, sscratch[39:0], `VA_PACK40(trap_tval), trap_epc,

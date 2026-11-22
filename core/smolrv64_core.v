@@ -4728,6 +4728,34 @@ module smolrv64_core
         $fatal(1, "smolrv64_core: interrupt pseudo-op consumed twice for one interrupt");
    end
 
+   // An interrupt that stays deliverable is taken within a few hundred cycles. One deliverable for
+   // 2^26 cycles is a machine that no longer takes interrupts: eight snapshots of what the pipe
+   // waits on (core_dbg, M's and decode's pc, the cause, the retirements counted since it became
+   // deliverable) are kept from that moment, spaced 0, 1, 2, 3, 2^10, 2^16, 2^20 and 2^24 cycles
+   // on, for a readback.
+   localparam integer WDW = 128 + 2*PCW + 4 + 24;
+   (* dont_touch = "true" *) reg [8*WDW-1:0] wd_rec;
+   (* dont_touch = "true" *) reg             wd_deaf;
+   reg [27:0] wd;
+   reg [23:0] wd_ret;
+   wire [27:0] wd_o = wd - 28'h400_0000;
+   wire wd_snap = wd[26] & ((wd_o < 28'd4) | (wd_o == 28'h400) | (wd_o == 28'h1_0000) | (wd_o == 28'h10_0000) | (wd_o == 28'h100_0000));
+   initial begin wd_rec = {8*WDW{1'b0}}; wd_deaf = 1'b0; wd = 28'd0; wd_ret = 24'd0; end
+   always @(posedge clk) begin
+      if (reset | ~csr_irq_v) begin wd <= 28'd0; wd_ret <= 24'd0; end
+      else begin
+         if (~wd[27]) wd <= wd + 28'd1;
+         if (~&wd_ret[23:6]) wd_ret <= wd_ret + {18'd0, hpm_ret_q};
+      end
+      if (reset) wd_deaf <= 1'b0;
+      else if (csr_irq_v & wd_snap) begin
+         wd_deaf <= 1'b1;
+         wd_rec  <= {wd_rec[7*WDW-1:0], core_dbg, m_pc, d_pc, csr_irq_cause, wd_ret};
+         if (wd_o == 28'd0)
+           $fatal(1, "smolrv64_core: an interrupt (cause %0d) deliverable for 2^26 cycles and not taken", csr_irq_cause);
+      end
+   end
+
 `ifdef SMOLRV64_COSIM
    // ======================= cosim retire stream (VERIFY-ONLY) =======================
    // Hand every retiring instruction (and every trap) to simmerv via probe_retire(),
