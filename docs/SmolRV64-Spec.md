@@ -1916,7 +1916,9 @@ abandons only the frame on the wire: a frame being received is dropped, a frame 
 stays pending and goes out again, whole, when the clock is back (twice, if the reset fell in
 its inter-frame gap). The backend writes the TX buffer only while the engine is free, and a
 frame that waits ~3 ms for it, or for its send to drain, is completed to the driver unsent and
-counted in `0x1000_3F3C[31:11]` (`[10:0]` is the last frame's length). The TX side's reset of
+counted in `0x1000_3F3C[31:11]`. That page holds only the counters of what the device declined or lost: DMA
+errors (`0x3F1C`), frames with no receive buffer (`0x3F54`), the receive engine's busy drops (`0x3F58`) and
+its over-long and bad-FCS frames (`0x3F68`); every other word reads 0. The TX side's reset of
 one end of its handshake left the engine busy for good after 50.6 h on the HDMI-XCKU5P, every
 frame since dropped, receive unaffected.
 **Each virtio device's DMA port is `dma_master`** (2026-10-24): one command at a time. A

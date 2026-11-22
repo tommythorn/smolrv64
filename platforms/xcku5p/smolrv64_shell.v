@@ -369,20 +369,7 @@ module smolrv64_shell #(
    wire [63:0] virtio_blk_queue0_device;
    wire [ 7:0] virtio_blk_device_status;
 
-   wire [31:0] virtio_net_debug_status;
-   wire [31:0] virtio_net_debug_notify_count;
-   wire [31:0] virtio_net_debug_read_avail_count;
-   wire [31:0] virtio_net_debug_empty_avail_count;
-   wire [31:0] virtio_net_debug_read_ring_count;
-   wire [31:0] virtio_net_debug_complete_count;
-   wire [31:0] virtio_net_debug_irq_count;
    wire [31:0] virtio_net_debug_dma_error_count;
-   wire [31:0] virtio_net_debug_indices;
-   wire [31:0] virtio_net_debug_used_head;
-   wire [31:0] virtio_net_debug_last_avail_word_lo;
-   wire [31:0] virtio_net_debug_last_avail_word_hi;
-   wire [31:0] virtio_net_debug_last_ring_word_lo;
-   wire [31:0] virtio_net_debug_last_ring_word_hi;
    wire [ 2:0] virtio_net_axi_awid;
    wire [31:0] virtio_net_axi_awaddr;
    wire [ 7:0] virtio_net_axi_awlen;
@@ -1063,20 +1050,7 @@ module smolrv64_shell #(
       .tx_queue_device         (virtio_net_queue1_device),
       .device_status           (virtio_net_device_status),
       .used_buffer_interrupt   (virtio_net_used_buffer_interrupt),
-      .debug_status            (virtio_net_debug_status),
-      .debug_notify_count      (virtio_net_debug_notify_count),
-      .debug_read_avail_count  (virtio_net_debug_read_avail_count),
-      .debug_empty_avail_count (virtio_net_debug_empty_avail_count),
-      .debug_read_ring_count   (virtio_net_debug_read_ring_count),
-      .debug_complete_count    (virtio_net_debug_complete_count),
-      .debug_irq_count         (virtio_net_debug_irq_count),
       .debug_dma_error_count   (virtio_net_debug_dma_error_count),
-      .debug_indices           (virtio_net_debug_indices),
-      .debug_used_head         (virtio_net_debug_used_head),
-      .debug_last_avail_word_lo(virtio_net_debug_last_avail_word_lo),
-      .debug_last_avail_word_hi(virtio_net_debug_last_avail_word_hi),
-      .debug_last_ring_word_lo (virtio_net_debug_last_ring_word_lo),
-      .debug_last_ring_word_hi (virtio_net_debug_last_ring_word_hi),
 
       .tx_wr_en                (virtio_net_tx_wr_en),
       .tx_wr_addr              (virtio_net_tx_wr_addr),
@@ -1084,10 +1058,7 @@ module smolrv64_shell #(
       .tx_send                 (virtio_net_tx_send),
       .tx_send_len             (virtio_net_tx_send_len),
       .tx_busy                 (virtio_net_tx_busy),
-      .debug_tx_frame_count    (virtio_net_debug_tx_frame_count),
       .debug_tx_last_len       (virtio_net_debug_tx_last_len),
-      .debug_tx_desc_addr      (virtio_net_debug_tx_desc_addr),
-      .debug_tx_desc_len       (virtio_net_debug_tx_desc_len),
       .rx_queue_num            (virtio_net_queue0_num),
       .rx_queue_ready          (virtio_net_queue0_ready),
       .rx_queue_desc           (virtio_net_queue0_desc),
@@ -1098,7 +1069,6 @@ module smolrv64_shell #(
       .rx_rd_addr              (eth_rx_rd_addr),
       .rx_rd_data              (eth_rx_rd_data),
       .rx_frame_ack            (eth_rx_frame_ack),
-      .debug_rx_deliver_count  (virtio_net_debug_rx_deliver_count),
       .debug_rx_nobuf_count    (virtio_net_debug_rx_nobuf_count),
 
       .m_axi_awid              (virtio_net_axi_awid),
@@ -1151,11 +1121,7 @@ module smolrv64_shell #(
    wire        virtio_net_tx_send;
    wire [10:0] virtio_net_tx_send_len;
    wire        virtio_net_tx_busy;
-   wire [31:0] virtio_net_debug_tx_frame_count;
    wire [31:0] virtio_net_debug_tx_last_len;
-   wire [31:0] virtio_net_debug_tx_desc_addr;
-   wire [31:0] virtio_net_debug_tx_desc_len;
-   wire [31:0] virtio_net_debug_rx_deliver_count;
    wire [31:0] virtio_net_debug_rx_nobuf_count;
 
    wire        eth_rx_valid;
@@ -1227,79 +1193,15 @@ module smolrv64_shell #(
       .oflow_count (eth_rx_oflow_count)
    );
 
-   // Passive good/bad frame counters (count every frame eth_mac_rx sees, incl
-   // ones the single-buffered engine drops while busy) for the debug overlay.
-   (* dont_touch = "true" *) reg [15:0] eth_rx_good_cnt = 16'd0;
-   (* dont_touch = "true" *) reg [15:0] eth_rx_bad_cnt  = 16'd0;
-   // Debug: capture the first 8 deframed bytes + length + FCS-good of the most
-   // recent RX frame (good or bad), so devmem can compare against the known
-   // host frame (e.g. ARP reply: first 6 bytes = board MAC 4a 18 30 e1 28 bc).
-   // Garbage/shift => PHY RX capture timing; correct bytes => deframer/FCS.
-   (* dont_touch = "true" *) reg [63:0] rx_dbg_head = 64'd0;  // bytes 0..7, LE
-   (* dont_touch = "true" *) reg [10:0] rx_dbg_len  = 11'd0;
-   (* dont_touch = "true" *) reg        rx_dbg_good = 1'b0;
-   reg [10:0] rx_dbg_cnt = 11'd0;
-   always @(posedge gmii_rx_clk) begin
-      if (eth_rx_valid) begin
-         if (rx_dbg_cnt < 11'd8)
-            rx_dbg_head[rx_dbg_cnt[2:0]*8 +: 8] <= eth_rx_data;
-         rx_dbg_cnt <= rx_dbg_cnt + 11'd1;
-      end
-      if (eth_rx_last) begin
-         rx_dbg_len  <= rx_dbg_cnt;
-         rx_dbg_good <= eth_rx_good;
-         rx_dbg_cnt  <= 11'd0;
-         if (eth_rx_good) eth_rx_good_cnt <= eth_rx_good_cnt + 16'd1;
-         else             eth_rx_bad_cnt  <= eth_rx_bad_cnt  + 16'd1;
-      end
-   end
-
-   // Bring the RX counters into ui_clk for the debug overlay. Plain multi-bit
-   // sampling: they change rarely (once per RX frame) and are stable between,
-   // so a devmem read is coherent in practice (approximate during an increment).
-   (* async_reg = "true" *) reg [15:0] eth_rx_good_ui0, eth_rx_good_ui;
-   (* async_reg = "true" *) reg [15:0] eth_rx_bad_ui0,  eth_rx_bad_ui;
-   (* async_reg = "true" *) reg [63:0] rx_dbg_head_ui0, rx_dbg_head_ui;
-   (* async_reg = "true" *) reg [11:0] rx_dbg_lg_ui0, rx_dbg_lg_ui;  // {good, len}
-   always @(posedge ui_clk) begin
-      eth_rx_good_ui0 <= eth_rx_good_cnt; eth_rx_good_ui <= eth_rx_good_ui0;
-      eth_rx_bad_ui0  <= eth_rx_bad_cnt;  eth_rx_bad_ui  <= eth_rx_bad_ui0;
-      rx_dbg_head_ui0 <= rx_dbg_head;     rx_dbg_head_ui <= rx_dbg_head_ui0;
-      rx_dbg_lg_ui0   <= {rx_dbg_good, rx_dbg_len};
-      rx_dbg_lg_ui    <= rx_dbg_lg_ui0;
-   end
-
-   // Debug overlay: reads to 0x10003f00..f7c return TX/RX bring-up state
-   // (devmem from Linux).  Word index = ui_mmio_address[7:2].
+   // Reads of 0x10003f00..f7c: the counters of what the device declined or lost (devmem from Linux).
+   // Word index = ui_mmio_address[7:2].
    always @(*) begin
       case (ui_mmio_address[7:2])
-        6'd0:  virtio_net_debug_word = virtio_net_debug_status;
-        6'd1:  virtio_net_debug_word = virtio_net_debug_notify_count;
-        6'd2:  virtio_net_debug_word = virtio_net_debug_read_avail_count;
-        6'd3:  virtio_net_debug_word = virtio_net_debug_empty_avail_count;
-        6'd4:  virtio_net_debug_word = virtio_net_debug_read_ring_count;
-        6'd5:  virtio_net_debug_word = virtio_net_debug_complete_count;
-        6'd6:  virtio_net_debug_word = virtio_net_debug_irq_count;
         6'd7:  virtio_net_debug_word = virtio_net_debug_dma_error_count;
-        6'd8:  virtio_net_debug_word = virtio_net_debug_indices;
-        6'd9:  virtio_net_debug_word = virtio_net_debug_used_head;
-        6'd10: virtio_net_debug_word = virtio_net_debug_last_avail_word_lo;
-        6'd11: virtio_net_debug_word = virtio_net_debug_last_avail_word_hi;
-        6'd12: virtio_net_debug_word = virtio_net_debug_last_ring_word_lo;
-        6'd13: virtio_net_debug_word = virtio_net_debug_last_ring_word_hi;
-        6'd14: virtio_net_debug_word = virtio_net_debug_tx_frame_count;
-        6'd15: virtio_net_debug_word = virtio_net_debug_tx_last_len;   // {TX timeouts, last length}
-        6'd16: virtio_net_debug_word = virtio_net_debug_tx_desc_addr;
-        6'd17: virtio_net_debug_word = virtio_net_debug_tx_desc_len;
-        6'd18: virtio_net_debug_word = {eth_rx_bad_ui, eth_rx_good_ui};
-        6'd19: virtio_net_debug_word = 32'h4554_4830; // "ETH0" sentinel
-        6'd20: virtio_net_debug_word = virtio_net_debug_rx_deliver_count;
+        6'd15: virtio_net_debug_word = virtio_net_debug_tx_last_len;   // [31:11]: TX timeouts
         6'd21: virtio_net_debug_word = virtio_net_debug_rx_nobuf_count;
         6'd22: virtio_net_debug_word = {16'd0, eth_rx_drop_count}; // engine busy-drops
         6'd26: virtio_net_debug_word = {eth_rx_oflow_count, eth_rx_bad_count}; // engine: too long / FCS bad
-        6'd23: virtio_net_debug_word = rx_dbg_head_ui[31:0];   // RX bytes 0..3
-        6'd24: virtio_net_debug_word = rx_dbg_head_ui[63:32];  // RX bytes 4..7
-        6'd25: virtio_net_debug_word = {20'd0, rx_dbg_lg_ui};  // {good, len} of last RX
         default: virtio_net_debug_word = 32'd0;
       endcase
    end

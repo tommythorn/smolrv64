@@ -16,20 +16,7 @@ module virtio_net #(
     input  wire [63:0] tx_queue_device,
     input  wire [ 7:0] device_status,
     output reg         used_buffer_interrupt,
-    output wire [31:0] debug_status,
-    output wire [31:0] debug_notify_count,
-    output wire [31:0] debug_read_avail_count,
-    output wire [31:0] debug_empty_avail_count,
-    output wire [31:0] debug_read_ring_count,
-    output wire [31:0] debug_complete_count,
-    output wire [31:0] debug_irq_count,
     output wire [31:0] debug_dma_error_count,
-    output wire [31:0] debug_indices,
-    output wire [31:0] debug_used_head,
-    output wire [31:0] debug_last_avail_word_lo,
-    output wire [31:0] debug_last_avail_word_hi,
-    output wire [31:0] debug_last_ring_word_lo,
-    output wire [31:0] debug_last_ring_word_hi,
 
     // TX frame engine (ui_clk side of eth_tx_engine).  The backend DMAs the
     // outgoing L2 frame (descriptor payload past the 12-byte virtio_net_hdr)
@@ -42,10 +29,7 @@ module virtio_net #(
     output reg         tx_send,
     output reg  [10:0] tx_send_len,
     input  wire        tx_busy,
-    output wire [31:0] debug_tx_frame_count,
-    output wire [31:0] debug_tx_last_len,
-    output wire [31:0] debug_tx_desc_addr,  // guest addr of the desc payload
-    output wire [31:0] debug_tx_desc_len,   // descriptor length (= 12 + frame)
+    output wire [31:0] debug_tx_last_len,    // [31:11]: frames completed to the driver unsent
 
     // RX virtqueue (queue 0) + eth_rx_engine (ui side).  When the engine has a
     // received frame, the backend takes a free buffer from the RX avail ring,
@@ -61,7 +45,6 @@ module virtio_net #(
     output wire [10:0] rx_rd_addr,          // read frame bytes from the engine (registered read: leads by a cycle)
     input  wire [ 7:0] rx_rd_data,
     output reg         rx_frame_ack,        // release the engine buffer
-    output wire [31:0] debug_rx_deliver_count,
     output wire [31:0] debug_rx_nobuf_count,
 
     output wire [ 2:0] m_axi_awid,
@@ -159,15 +142,7 @@ module virtio_net #(
    reg        notify_pending;
    reg [ 7:0] empty_retry_count;
    reg [15:0] retry_delay;
-   reg [31:0] notify_count;
-   reg [31:0] read_avail_count;
-   reg [31:0] empty_avail_count;
-   reg [31:0] read_ring_count;
-   reg [31:0] complete_count;
-   reg [31:0] irq_count;
    reg [31:0] dma_error_count;
-   reg [63:0] last_avail_word;
-   reg [63:0] last_ring_word;
 
    // TX frame-fetch working state
    reg [63:0] desc_addr;       // guest address of descriptor payload (hdr+frame)
@@ -179,11 +154,7 @@ module virtio_net #(
    reg [ 2:0] start_off;       // byte offset of frame[0] within its aligned word
    reg        tx_busy_seen;    // saw eth_tx_engine accept the send
    reg [19:0] tx_timeout;      // guard: complete even if the link/TX never drains
-   reg [31:0] tx_frame_count;
    reg [20:0] tx_timeouts;     // frames completed to the driver unsent: the engine never freed
-   reg [10:0] tx_last_len;
-   reg [31:0] tx_dbg_desc_addr;
-   reg [31:0] tx_dbg_desc_len;
 
    // RX delivery working state
    reg [15:0] rx_last_avail_idx;
@@ -193,7 +164,6 @@ module virtio_net #(
    reg [63:0] rx_buf_addr;
    reg [10:0] rx_widx;          // bytes written into the guest buffer
    reg [10:0] rx_total;         // 12 + frame_len
-   reg [31:0] rx_deliver_count;
    reg [31:0] rx_nobuf_count;
 
    // VRING_AVAIL_F_NO_INTERRUPT (avail ring flags bit 0), captured on each
@@ -205,7 +175,6 @@ module virtio_net #(
    reg        tx_no_irq;
    reg        rx_no_irq;
 
-   assign debug_rx_deliver_count = rx_deliver_count;
    assign debug_rx_nobuf_count   = rx_nobuf_count;
 
 `include "dram_window.vh"
@@ -238,10 +207,7 @@ module virtio_net #(
    // following it. One outstanding read (the master's limit); rd_end is the last word.
    reg  [63:0] nxt_word;  reg nxt_valid, rd_ahead, rd_err;  reg [63:0] rd_end;
 
-   assign debug_tx_frame_count = tx_frame_count;
-   assign debug_tx_last_len    = {tx_timeouts, tx_last_len};
-   assign debug_tx_desc_addr   = tx_dbg_desc_addr;
-   assign debug_tx_desc_len    = tx_dbg_desc_len;
+   assign debug_tx_last_len    = {tx_timeouts, 11'd0};
 
    reg        dma_cmd_valid;
    wire       dma_cmd_ready;
@@ -319,21 +285,7 @@ module virtio_net #(
       rxq_dev_ok  <= dram_ok(rx_queue_device);
    end
 
-   assign debug_status = {device_status, 14'd0, rx_frame_valid, notify_pending,
-                          tx_queue_configured, driver_ok, state};
-   assign debug_notify_count = notify_count;
-   assign debug_read_avail_count = read_avail_count;
-   assign debug_empty_avail_count = empty_avail_count;
-   assign debug_read_ring_count = read_ring_count;
-   assign debug_complete_count = complete_count;
-   assign debug_irq_count = irq_count;
    assign debug_dma_error_count = dma_error_count;
-   assign debug_indices = {last_avail_idx, avail_idx};
-   assign debug_used_head = {used_idx, head_desc};
-   assign debug_last_avail_word_lo = last_avail_word[31:0];
-   assign debug_last_avail_word_hi = last_avail_word[63:32];
-   assign debug_last_ring_word_lo = last_ring_word[31:0];
-   assign debug_last_ring_word_hi = last_ring_word[63:32];
 
    // A buffer's words -- a TX frame's reads, an RX frame's writes -- stream through dma_master's line buffer.
    task start_read64;
@@ -415,18 +367,13 @@ module virtio_net #(
          tx_wr_data <= 8'd0;
          tx_send_len <= 11'd0;
          tx_busy_seen <= 1'b0;
-         tx_frame_count <= 32'd0;
          tx_timeouts <= 21'd0;
-         tx_last_len <= 11'd0;
-         tx_dbg_desc_addr <= 32'd0;
-         tx_dbg_desc_len <= 32'd0;
          rx_last_avail_idx <= 16'd0;
          rx_avail_idx <= 16'd0;
          rx_used_idx <= 16'd0;
          rx_head_desc <= 16'd0;
          rx_widx <= 11'd0;
          rx_total <= 11'd0;
-         rx_deliver_count <= 32'd0;
          rx_nobuf_count <= 32'd0;
          tx_no_irq <= 1'b0;
          rx_no_irq <= 1'b0;
@@ -437,19 +384,10 @@ module virtio_net #(
          notify_pending <= 1'b0;
          empty_retry_count <= 8'd0;
          retry_delay <= 16'd0;
-         notify_count <= 32'd0;
-         read_avail_count <= 32'd0;
-         empty_avail_count <= 32'd0;
-         read_ring_count <= 32'd0;
-         complete_count <= 32'd0;
-         irq_count <= 32'd0;
          dma_error_count <= 32'd0;
-         last_avail_word <= 64'd0;
-         last_ring_word <= 64'd0;
       end else begin
          if (tx_notify) begin
             notify_pending <= 1'b1;
-            notify_count <= notify_count + 32'd1;
          end
 
          case (state)
@@ -475,8 +413,6 @@ module virtio_net #(
            end
            S_WAIT_AVAIL: begin
               if (dma_rsp_valid) begin
-                 read_avail_count <= read_avail_count + 32'd1;
-                 last_avail_word <= dma_rsp_rdata;
                  if (dma_rsp_error)
                     dma_error_count <= dma_error_count + 32'd1;
                  tx_no_irq <= |(get16(dma_rsp_rdata, tx_queue_driver[2:0] & 3'h7) & 16'h0001);
@@ -484,7 +420,6 @@ module virtio_net #(
                  if (dma_rsp_error)
                     state <= S_IDLE;
                  else if (get16(dma_rsp_rdata, (tx_queue_driver[2:0] + 3'd2) & 3'h7) == last_avail_idx) begin
-                    empty_avail_count <= empty_avail_count + 32'd1;
                     if (empty_retry_count != 8'd0) begin
                        empty_retry_count <= empty_retry_count - 8'd1;
                        retry_delay <= EMPTY_RETRY_DELAY;
@@ -513,8 +448,6 @@ module virtio_net #(
            end
            S_WAIT_RING: begin
               if (dma_rsp_valid) begin
-                 read_ring_count <= read_ring_count + 32'd1;
-                 last_ring_word <= dma_rsp_rdata;
                  if (dma_rsp_error)
                     dma_error_count <= dma_error_count + 32'd1;
                  head_desc <= get16(dma_rsp_rdata,
@@ -542,7 +475,6 @@ module virtio_net #(
            S_WAIT_DESC_A: begin
               if (dma_rsp_valid) begin
                  desc_addr <= dma_rsp_rdata;
-                 tx_dbg_desc_addr <= dma_rsp_rdata[31:0];
                  state <= dma_rsp_error ? S_WRITE_USED_ID : S_DESC_B;
               end
            end
@@ -557,7 +489,6 @@ module virtio_net #(
                  // rdata = {next[63:48], flags[47:32], len[31:0]}
                  reg [31:0] dlen;
                  dlen = dma_rsp_rdata[31:0];
-                 tx_dbg_desc_len <= dlen;
                  if (dma_rsp_error || dlen <= 32'd12 || dlen > 32'd1548) begin
                     // nothing sensible to send; still complete the used ring
                     state <= S_WRITE_USED_ID;
@@ -640,9 +571,7 @@ module virtio_net #(
               if (tx_busy) tx_busy_seen <= 1'b1;
               tx_timeout <= tx_timeout - 20'd1;
               if ((tx_busy_seen && !tx_busy) || tx_timeout == 20'd0) begin
-                 tx_frame_count <= tx_frame_count + 32'd1;
                  if (!(tx_busy_seen && !tx_busy)) tx_timeouts <= tx_timeouts + 21'd1;
-                 tx_last_len    <= frame_total;
                  state <= S_WRITE_USED_ID;
               end
            end
@@ -718,8 +647,6 @@ module virtio_net #(
               used_idx <= used_idx + 16'd1;
               last_avail_idx <= next_avail_idx;
               used_buffer_interrupt <= ~tx_no_irq;
-              complete_count <= complete_count + 32'd1;
-              if (!tx_no_irq) irq_count <= irq_count + 32'd1;
               if (next_avail_idx != avail_idx)
                  state <= S_READ_RING;
               else if (notify_pending) begin
@@ -869,8 +796,6 @@ module virtio_net #(
               rx_used_idx       <= rx_used_idx + 16'd1;
               rx_last_avail_idx <= rx_next_avail_idx;
               used_buffer_interrupt <= ~rx_no_irq;
-              if (!rx_no_irq) irq_count <= irq_count + 32'd1;
-              rx_deliver_count  <= rx_deliver_count + 32'd1;
               rx_frame_ack      <= 1'b1;               // release engine buffer
               state <= S_IDLE;
            end
