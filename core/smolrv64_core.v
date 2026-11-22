@@ -4687,6 +4687,9 @@ module smolrv64_core
    // GOOD), 2026-08-20.
    reg inject_inflight, irq_inject_q;
    wire irq_taken;
+   // A pseudo-op fetch consumes in the cycle the frontend restarts (fe_red_q) dies in the bundle
+   // register with everything else of the old stream: it was never in flight.
+   wire irq_took = irq_taken & ~fe_red_q;
    initial begin inject_inflight = 1'b0; irq_inject_q = 1'b0; end
    assign irq_inject = irq_inject_q;
    always @(posedge clk) begin
@@ -4708,10 +4711,10 @@ module smolrv64_core
          // interrupt deliverable redirects for exactly this (csr_file's do_irqen).
          irq_inject_q <= ~fr_v &
                          (redirect_q   ? csr_irq_v
-                        : irq_inject_q ? ~irq_taken                     // hold until taken
+                        : irq_inject_q ? ~irq_took                      // hold until taken
                                        : csr_irq_v & ~inject_inflight); // schedule
 
-         if (irq_taken)                               inject_inflight <= 1'b1;
+         if (irq_took)                                inject_inflight <= 1'b1;
          else if (redirect_q | fr_v | ~csr_irq_v)     inject_inflight <= 1'b0;
       end
    end
@@ -4727,8 +4730,8 @@ module smolrv64_core
    reg irq_taken_q;
    initial irq_taken_q = 1'b0;
    always @(posedge clk) begin
-      irq_taken_q <= reset ? 1'b0 : irq_taken;
-      if (!reset && irq_taken && irq_taken_q)
+      irq_taken_q <= reset ? 1'b0 : irq_took;
+      if (!reset && irq_took && irq_taken_q)
         $fatal(1, "smolrv64_core: interrupt pseudo-op consumed twice for one interrupt");
    end
 
