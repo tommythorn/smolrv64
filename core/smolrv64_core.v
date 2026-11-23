@@ -611,7 +611,7 @@ module smolrv64_core
    initial lb_dk = {(NL*LBN){1'b0}};
    reg  [LBB-1:0]      lb_h [0:NL-1], lb_t [0:NL-1];
    reg  [LBB:0]        lb_n [0:NL-1];
-   reg                 lb_fe [0:NL*LBN-1];  // the entry is the FE stream's (the stall counters)
+   reg                 lb_fe [0:NL*LBN-1];  // the entry is the FE stream's (the bench's breakdown; not built)
 
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
@@ -2014,7 +2014,7 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] lq_l_rob;
    wire [PABITS-1:0]   lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;  wire lq_av_any, lq_uf_any;
-   wire [LQ_N*RN_PBITS-1:0] lq_e_dprd;   // the live loads' destinations (the stall counters)
+   wire [LQ_N*RN_PBITS-1:0] lq_e_dprd;   // the live loads' destinations (the bench's breakdown; not built)
    wire                lq_pk_v;  wire [LQ_IB-1:0] lq_pk_idx;  wire [SEQW-1:0] lq_pk_seq;   // M's pick
    wire                lq_x_devwait;        // counters: a device load waiting for the head
    wire d_ld_nb    = d_gq[GC_LD];  // plain load, rule C1
@@ -3374,54 +3374,55 @@ module smolrv64_core
       end
       rf_blk_vq <= rf_blk_v;  rf_blk_pq <= rf_blk_pr;
    end
-   // A register a load, AMO or CSR read will write, all in a lane's shard: a live LQ entry's
-   // destination, a landing waiting in a lane's buffer, M's AMO or the SYSQ's op. An FP load's is
-   // an f-register, counted under dep_fp below.
-   // the landing buffers' waiting destinations, 0 for an empty slot (a wire: the function below
-   // reads no array, rule F4)
-   wire [NL*LBN*RN_PBITS-1:0] lb_live, lb_live_fe;
+   // WHICH STREAM PRODUCES A PENDING INTEGER REGISTER: two bits a register, written by its producer's
+   // dispatch into its shard (slot k's integer destination is lane k's): the LD stream's (a load, an
+   // AMO, LR or SC, a SYSQ op's read) or the FE stream's (an FP op's integer result, a divide). A
+   // blocked operand is pending, so its register's bits are its producer's. An f-register is the FE
+   // stream's by its number.
+   localparam integer NBQ = NL + 1;                  // the reported operands: a lane's each, the FP scheduler's
+   wire [RN_PBITS-1:0] bq_p [0:NBQ-1];
+   wire [1:0]          bq_c [0:NBQ*NL-1];            // shard s's bits at operand q's index: [s*NBQ + q]
+   genvar gpc, gbq;
+   generate
+      for (gbq = 0; gbq < NL; gbq = gbq + 1) begin : g_bqp
+         assign bq_p[gbq] = l_blk_pq[gbq];
+      end
+      assign bq_p[NL] = rf_blk_pq;
+      for (gpc = 0; gpc < NL; gpc = gpc + 1) begin : pcl
+         (* ram_style = "distributed" *) reg [1:0] mem [0:(1 << RN_IDXB)-1];
+         integer i;
+         initial for (i = 0; i < (1 << RN_IDXB); i = i + 1) mem[i] = 2'b00;
+         wire [RN_PBITS-1:0] wp = rn_prdv[gpc*RN_PBITS +: RN_PBITS];
+         always @(posedge clk) if (s_takev[gpc] & s_rd_vv[gpc] & ~wp[RN_PBITS-1])
+            mem[wp[RN_IDXB-1:0]] <= {s_gc[gpc][GC_F] | s_gc[gpc][GC_M], s_gc[gpc][GC_LD] | s_gc[gpc][GC_L] | s_gc[gpc][GC_S]};
+         always @(posedge clk) if (!reset & s_takev[gpc] & s_rd_vv[gpc] & ~wp[RN_PBITS-1] & (wp[RN_IDXB +: 2] != gpc))
+            $fatal(1, "smolrv64_core: slot %0d's integer destination p%h is not of its lane's shard", gpc, wp);
+         for (gbq = 0; gbq < NBQ; gbq = gbq + 1) begin : r
+            assign bq_c[gpc*NBQ + gbq] = mem[bq_p[gbq][RN_IDXB-1:0]];
+         end
+      end
+   endgenerate
+   // the LD stream's landings waiting in the lanes' buffers, 0 for an empty slot: the lockstep bench's
+   // breakdown of a load-dependent wait reads it (with the LQ's e_dprd); nothing built does
+   wire [NL*LBN*RN_PBITS-1:0] lb_live;
    genvar glb;
    generate
       for (glb = 0; glb < NL*LBN; glb = glb + 1) begin : g_lb_live
          wire [LBB-1:0] dl = glb[LBB-1:0] - lb_h[glb / LBN];   // the entry's age in its lane's ring
          wire lv = {1'b0, dl} < lb_n[glb / LBN];
-         assign lb_live[glb*RN_PBITS +: RN_PBITS]    = (lv & ~lb_fe[glb]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
-         assign lb_live_fe[glb*RN_PBITS +: RN_PBITS] = (lv &  lb_fe[glb]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
+         assign lb_live[glb*RN_PBITS +: RN_PBITS] = (lv & ~lb_fe[glb]) ? lb_prd[glb] : {RN_PBITS{1'b0}};
       end
    endgenerate
-   function automatic ld_dst(input [RN_PBITS-1:0] p);
-      integer k;
-      begin
-         ld_dst = (m_valid & m_is_amo & m_rd_v & (m_prd == p)) | (sy_v & sy_rd_v & (sy_prd == p));
-         for (k = 0; k < LQ_N; k = k + 1)
-            if ((lq_e_dprd[k*RN_PBITS +: RN_PBITS] == p) & ~p[RN_PBITS-1]) ld_dst = 1'b1;
-         for (k = 0; k < NL*LBN; k = k + 1)
-            if ((lb_live[k*RN_PBITS +: RN_PBITS] == p) & (p != {RN_PBITS{1'b0}})) ld_dst = 1'b1;
-      end
-   endfunction
-   reg  dep_ld_l, dep_fp_l;                     // a lane's reported blocked operand waits on a load / FP
+   reg  [NBQ-1:0] bq_ld, bq_fp;                 // the operand waits on the LD stream / on FP
    integer dpk;
-   always @* begin
-      dep_ld_l = 1'b0;  dep_fp_l = 1'b0;
-      for (dpk = 0; dpk < NL; dpk = dpk + 1) begin
-         dep_ld_l = dep_ld_l | (l_blk_vq[dpk] & ld_dst(l_blk_pq[dpk]));
-         dep_fp_l = dep_fp_l | (l_blk_vq[dpk] & fe_dst(l_blk_pq[dpk]));
-      end
+   always @* for (dpk = 0; dpk < NBQ; dpk = dpk + 1) begin : bqc
+      reg [1:0] c;
+      c = bq_c[bq_p[dpk][RN_IDXB +: 2]*NBQ + dpk];
+      bq_ld[dpk] = ~bq_p[dpk][RN_PBITS-1] & c[0];
+      bq_fp[dpk] =  bq_p[dpk][RN_PBITS-1] | c[1];
    end
-   wire dep_ld    = no_issue & ((rf_blk_vq & ld_dst(rf_blk_pq)) | dep_ld_l);
-   // An f-register (an FP op's or an FP load's), or an FP op's or divide's integer
-   // result: in the F stage, in the F port's result register, in the MD stage, or waiting in a
-   // lane's landing buffer.
-   function automatic fe_dst(input [RN_PBITS-1:0] p);
-      integer k;
-      begin
-         fe_dst = p[RN_PBITS-1] | (f_valid & (f_prd == p)) | (icr_v & (icr_tag[RN_PBITS-1:0] == p))
-                | (md_v & md_rd_v & (md_prd == p));
-         for (k = 0; k < NL*LBN; k = k + 1)
-            if ((lb_live_fe[k*RN_PBITS +: RN_PBITS] == p) & (p != {RN_PBITS{1'b0}})) fe_dst = 1'b1;
-      end
-   endfunction
-   wire dep_fp    = no_issue & ((rf_blk_vq & fe_dst(rf_blk_pq)) | dep_fp_l);
+   wire dep_ld    = no_issue & (|(bq_ld & {rf_blk_vq, l_blk_vq}));
+   wire dep_fp    = no_issue & (|(bq_fp & {rf_blk_vq, l_blk_vq}));
    wire st_mem    = (st_m & m_mem_op) | dep_ld;     // ...on the LSU
    wire st_div    = md_v;                           // the MD stage holds a divide (occupancy, not a stall)
    reg  st_mul;                                     // a multiply in flight in a lane
@@ -4219,21 +4220,24 @@ module smolrv64_core
    // the entries' training payload: a lane's CTI at the queue's tail plus its rank, one bank per
    // rank, read at the head into res_*_q (a register, so no RAM output reaches the predictor's
    // address pins, rule I7)
-   localparam integer TQW = PCW + 1 + PCW + PDW + 4;
+   // (of the predict details, those below the snapshots: training reads neither the RAS nor the history
+   // snapshot, which a restart takes from the lane)
+   localparam integer TQW = PCW + 1 + PCW + PD_GHR + 4;
    wire [NL*TQB-1:0] tq_wp;
    wire [NL*TQW-1:0] tq_wd;
    wire [TQW-1:0]    tq_hd;
    generate for (tqg = 0; tqg < NL; tqg = tqg + 1) begin: tqw
       assign tq_wp[tqg*TQB +: TQB] = tq_t + {{(TQB-RKB){1'b0}}, rk[tqg]};
-      assign tq_wd[tqg*TQW +: TQW] = {lr_pc[tqg], lr_rvc[tqg], lr_ttgt[tqg], lr_pdet[tqg],
+      assign tq_wd[tqg*TQW +: TQW] = {lr_pc[tqg], lr_rvc[tqg], lr_ttgt[tqg], lr_pdet[tqg][PD_GHR-1:0],
                                       lr_br[tqg], l_call[tqg], l_ret[tqg], lr_taken[tqg]};
    end endgenerate
    smolrv64_bankq #(.W(TQW), .DEPTH(TQN), .NW(NL), .NR(1), .NB(1 << RKB), .WLATE(1)) u_tq
      (.clk(clk), .reset(reset), .wv(tq_w & {NL{~reset}}), .wp(tq_wp), .wd(tq_wd), .rp(tq_h), .ro({RKB{1'b0}}), .rd(tq_hd));
    wire [PCW-1:0] tq_hpc;
    wire           tq_hrvc;
-   wire [PDW-1:0] tr_pdet;
-   assign {tq_hpc, tq_hrvc, res_tgt, tr_pdet, res_cbr, res_call, res_ret, res_taken} = tq_hd;
+   wire [PD_GHR-1:0] tr_pdl;
+   assign {tq_hpc, tq_hrvc, res_tgt, tr_pdl, res_cbr, res_call, res_ret, res_taken} = tq_hd;
+   wire [PDW-1:0] tr_pdet = {{(PDW-PD_GHR){1'b0}}, tr_pdl};
    wire [PCW-1:0] tr_last = tq_hpc + (tq_hrvc ? {PCW{1'b0}} : {{(PCW-2){1'b0}}, 2'd2});   // its last halfword
    always @(posedge clk) if (!reset & !redirect) begin
       if (tq_n > TQN[TQB:0]) $fatal(1, "smolrv64_core: the training queue holds %0d of %0d", tq_n, TQN);

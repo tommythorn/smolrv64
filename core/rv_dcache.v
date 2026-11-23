@@ -260,7 +260,7 @@ module rv_dcache #(
    reg              wt_rdy  [0:NW-1];            // replay it
    reg              wt_any  [0:NW-1];            // it waits on any MSHR or write-back entry freeing, not on wt_m
    reg [MB-1:0]     wt_m    [0:NW-1];
-   reg [63:0]       wt_pa   [0:NW-1];
+   reg [PABITS-1:0] wt_pa   [0:NW-1];         // (the significant bits: a PA above them is asserted zero)
    reg              wt_nc   [0:NW-1];
    // the store queue: taken, not yet written, merged or complete. A RING of four slots holding at
    // most SD: entry k (k = 0, the head) is slot sq_hp + k. A store that completes moves sq_hp, so
@@ -270,7 +270,7 @@ module rv_dcache #(
    reg  [1:0]       sq_hp;                        // the head's slot
    reg              sf_iss  [0:3];               // issued: in a lookup, or (the head) parked as the store's waiter
    reg              sf_mn   [0:3];               // a plain store the store lookup missed: the main lookup's
-   reg  [63:0]      sf_pa   [0:3], sf_wd [0:3];
+   reg  [PABITS-1:0] sf_pa  [0:3];  reg [63:0] sf_wd [0:3];
    reg  [7:0]       sf_wm   [0:3];
    reg              sf_nc   [0:3], sf_cbo [0:3], sf_zero [0:3], sf_keep [0:3];
    reg              sf_ox   [0:3];                // an outside request, not the store port's
@@ -366,7 +366,7 @@ module rv_dcache #(
    wire           a_cap  = rp_v | st_go | new_go | f_ok;   // a_take on the state alone: the lookup's fields
    wire [TB-1:0]  a_tag = rp_v ? rp_t        : st_go ? ST    : f_ok ? wi(f_tag) : wi(rd_tag);
    wire           a_nc  = rp_v ? wt_nc[rp_t] : st_go ? (sf_nc[sq_ps] & ~sf_cbo[sq_ps]) : f_ok ? 1'b0 : rd_nc;
-   wire [63:0]    a_pa  = rp_v ? wt_pa[rp_t] : st_go ? sf_pa[sq_ps] : f_ok ? f_pa : rd_pa;
+   wire [63:0]    a_pa  = rp_v ? {{(64-PABITS){1'b0}}, wt_pa[rp_t]} : st_go ? {{(64-PABITS){1'b0}}, sf_pa[sq_ps]} : f_ok ? f_pa : rd_pa;
    wire [5:0]     n1_set = a_cap ? a_pa[11:6] : s1_pa[11:6];   // the lookup's set after this edge
    // taking a store: a CBO or NC store held for its completion is the one already queued
    reg            sq_cn;                          // a CBO or an NC store is queued
@@ -732,7 +732,7 @@ module rv_dcache #(
          st_age <= (st_go | ~(sq_i0 | sq_i1)) ? 3'd0 : (st_age == 3'd7) ? st_age : st_age + 3'd1;
          // the store lookup: the head writes or merges, misses to the main lookup, or goes back
          sb_v <= fp_go;
-         if (fp_go) begin sb_slot <= fp_ps;  sb_pa <= sf_pa[fp_ps];  sf_iss[fp_ps] <= 1'b1; end
+         if (fp_go) begin sb_slot <= fp_ps;  sb_pa <= {{(64-PABITS){1'b0}}, sf_pa[fp_ps]};  sf_iss[fp_ps] <= 1'b1; end
          if (fp_back) sf_iss[sb_slot] <= 1'b0;
          if (fp_miss) begin sf_iss[sb_slot] <= 1'b0;  sf_mn[sb_slot] <= 1'b1; end
          fp_age <= (sb_hd & bhit & sb_wait) ? ((fp_age == 3'd7) ? fp_age : fp_age + 3'd1) : 3'd0;
@@ -751,8 +751,12 @@ module rv_dcache #(
          else if (ox_rel) xb_v <= 1'b0;
          if (st_done) sq_hp <= sq_h1;
          if (st_go) sf_iss[sq_ps] <= 1'b1;
+         if (sq_take & (|(wr_take ? wr_pa[63:PABITS] : ox_pa[63:PABITS])))
+            $fatal(1, "rv_dcache: a store's PA %h is above bit %0d", wr_take ? wr_pa : ox_pa, PABITS - 1);
+         if (s1_live & ~sq_bk & (|s1_pa[63:PABITS]))
+            $fatal(1, "rv_dcache: a waiting read's PA %h is above bit %0d", s1_pa, PABITS - 1);
          if (sq_take) begin                        // a store-port op, else the outside request (a CBO by PA)
-            sf_iss[sq_pt] <= 1'b0;  sf_mn[sq_pt] <= 1'b0;  sf_pa[sq_pt] <= wr_take ? wr_pa : ox_pa;
+            sf_iss[sq_pt] <= 1'b0;  sf_mn[sq_pt] <= 1'b0;  sf_pa[sq_pt] <= wr_take ? wr_pa[PABITS-1:0] : ox_pa[PABITS-1:0];
             sf_wd[sq_pt] <= wr_data;  sf_wm[sq_pt] <= wr_mask;  sf_nc[sq_pt] <= wr_take & wr_nc;
             sf_cbo[sq_pt] <= ~wr_take | cbo_req;  sf_zero[sq_pt] <= wr_take & cbo_zero;
             sf_keep[sq_pt] <= wr_take ? cbo_keep : ox_keep;  sf_ox[sq_pt] <= ~wr_take;
@@ -782,7 +786,7 @@ module rv_dcache #(
          // dead: the request in the lookup owns its waiter entry (it left the table to get there,
          // or it is new), and the free MSHR is not live. Only the few bits that make an entry or
          // an MSHR live wait for the decision.
-         if (s1_live & ~sq_bk) begin wt_pa[s1_tag] <= s1_pa;  wt_nc[s1_tag] <= s1_nc; end
+         if (s1_live & ~sq_bk) begin wt_pa[s1_tag] <= s1_pa[PABITS-1:0];  wt_nc[s1_tag] <= s1_nc; end
          if (s1_v & ms_free_v) begin
             ms_pl[ms_free] <= s1_pl;  ms_set[ms_free] <= s1_set;  ms_way[ms_free] <= vic;
             ms_bt[ms_free] <= 2'd0;  ms_bl[ms_free] <= 1'b0;  ms_dty[ms_free] <= k_st | k_z;

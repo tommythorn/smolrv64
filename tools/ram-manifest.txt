@@ -58,6 +58,7 @@ rcc[*].m x{IW} : each ROB entry's {call, ret}, a column per lane: written at dis
 # F stage's FIFO, the LQ's and SQ's dispatch records (spl_ld, spl_st), the LQ's PC (pcm), and the SQ's
 # PC and seq (two copies of the seq, one per read).
 bank[*].mem x{36+2*IW} : the decoupling queue's records, the fetch ring's halfwords, the training queue's payload, the landing buffers' data, the F FIFO, spl_ld, spl_st, the SQ's seq
+pcl[*].mem x{IW} : which stream produces a pending integer register (the LD stream's, the FE stream's), two bits a register by shard: written at dispatch, read at the schedulers' reported operands
 hps[*].mem x{IW} : every op's {seq, PC} by ROB row, a column per lane: written at dispatch, read at the head's row (a faulting or replaying load or store is the head)
 # Multi-writer arrays (smolrv64_mwram), a bank per writer: the arrived addresses' (a bank per lane,
 # the LQ's 3 and the SQ's 3) and the load queue's PA (M's fill, the walker's answer: 2).

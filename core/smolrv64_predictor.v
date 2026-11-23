@@ -185,9 +185,23 @@ module smolrv64_predictor
    wire [RASB-1:0] en_rsp [0:IW-1];
    wire [GHL-1:0]  en_ghr [0:IW-1];
    genvar gj;
+   // IW consecutive positions from pq_rp are, in each bank, consecutive rows from the bank's first at or
+   // after pq_rp, and position j's row is the bank's row j/2: a read port for every two positions, its
+   // address pq_rp's alone, and the parity picks between the banks' outputs.
+   localparam integer PQR = (IW + 1) / 2;
+   wire [PQB:0]   pq_r0 = {1'b0, pq_rp} + 1'b1;                 // bank 0's first row is (pq_rp + 1) / 2, bank 1's pq_rp / 2
+   wire [QEW-1:0] b0r [0:PQR-1], b1r [0:PQR-1];
+   generate for (gj = 0; gj < PQR; gj = gj + 1) begin : row
+      wire [PQB-2:0] a0 = pq_r0[PQB-1:1] + gj[PQB-2:0];
+      wire [PQB-2:0] a1 = pq_rp[PQB-1:1] + gj[PQB-2:0];
+      assign b0r[gj] = pq0[a0];
+      assign b1r[gj] = pq1[a1];
+   end endgenerate
    generate for (gj = 0; gj < IW; gj = gj + 1) begin : ent
       wire [PQB-1:0] ps = pq_rp + gj[PQB-1:0];
-      wire [QEW-1:0] q  = ps[0] ? pq1[ps[PQB-1:1]] : pq0[ps[PQB-1:1]];
+      wire [QEW-1:0] q  = ps[0] ? b1r[gj / 2] : b0r[gj / 2];
+      always @(posedge clk) if (q != (ps[0] ? pq1[ps[PQB-1:1]] : pq0[ps[PQB-1:1]]))
+         $fatal(1, "smolrv64_predictor: queue position %0d (from %0d) is not its bank's row %0d", ps, pq_rp, gj / 2);
       wire           in = pq_n > gj;
       assign en_rsp[gj] = in ? q[QEW-1-1-PCW -: RASB] : ras_ptr;
       assign en_ghr[gj] = in ? q[QEW-1-1-PCW-RASB -: GHL] : ghr;

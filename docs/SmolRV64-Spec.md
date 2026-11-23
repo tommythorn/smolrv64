@@ -1206,8 +1206,8 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
   cannot wait, and without the gate the two streams fill the buffer by one in every cycle both
   land (Geekbench 5's N-Body epilogue, a run of column-0 loads under four compare results,
   wrapped it and lost a landing). The divide's result waits the same way (`md_room`). The
-  Top-Down `dep-fp` class finds the FE stream's destinations by the F stage's, the result
-  register's and the MD stage's registers and the buffers' FE entries (`lb_fe`).
+  Top-Down `dep-fp` class knows the FE stream's destinations from the class bits their dispatch
+  wrote (§11).
 - **The head ops run from the head-op register (5.2d-b step 3).** An AMO, LR/SC or CBO goes
   alone, so in slot A and lane A, whose adder generates its address and which reads its rs2 (an
   AMO's or SC's data). Both wait in the one-entry head-op register (`ho_*`), the op's record
@@ -1382,7 +1382,10 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
   queue's tail COUNTER, one bit wider than its index (`SQ_TB`), because a full queue's tail
   equals its head and an index-width seqno then counts zero older stores where there are
   NENT (rule B8; found by the Geekbench boot under the cosim on 2026-09-04, after Ubuntu
-  userspace had segfaulted on the board on the pointers it corrupted). The uncached bit
+  userspace had segfaulted on the board on the pointers it corrupted). A store is older than
+  the load when its own allocation counter (`{cw, index}`, the tail counter when it was taken) is 1
+  to NENT below the load's seqno: the top bit of their difference less one, a function of the load's
+  seqno and one stored bit a store, with no head in it. The uncached bit
   was missing until 2026-09-04 and the pre-translated port hardwired it to 0 for loads, so
   an NC load that went through the queue (rather than the early start) was cached: the
   board's virtio rings read stale (`id 0 is not a head!`), and no simulation could see it.
@@ -1976,7 +1979,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `u_iq_i` entry | `smolrv64_iq` | 10 | 2+2×9 = 20 | 200 | flops | integer, slot A's, `NSRC`=2 (§6.1) |
 | `u_iq_i2`, `u_iq_i3` entry | `smolrv64_iq` | 10 each | 2+2×10 = 22 | 220 each | flops | integer, slot B's and slot C's, `NSRC`=2 (§6.1) |
 | `ho_va`, `ho_dat`, `ho_rec`, `ho_v` | `smolrv64_core` | 1 | 64/64/282/1 | 411 | flops | the head-op register (§8) |
-| `u_tq` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 x 8 | 117 | 3 744 | LUTRAM | the training queue's payload (a CTI's PC, RVC bit, taken-target, predict details, kind and outcome), written a cycle late from registers (`WLATE`: the head's read bypasses them): one write a bank (a lane's CTI at the tail plus its rank), read at the head into `res_*_q` (§4.2) |
+| `u_tq` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 x 8 | 103 | 3 296 | LUTRAM | the training queue's payload (a CTI's PC, RVC bit, taken-target, the predict details below the RAS and history snapshots, kind and outcome), written a cycle late from registers (`WLATE`: the head's read bypasses them): one write a bank (a lane's CTI at the tail plus its rank), read at the head into `res_*_q` (§4.2) |
 | `tq_seq`, `tq_rob`, `tq_dk`, `tq_rt` | `smolrv64_core` | 32 | 9/9/1/1 | 640 | flops | the training queue's entries as every one is compared: the redirect's seq, the retire ports' row and column and the kill's ROB index; an entry's write is its bank's (index mod 4) one muxed tag |
 | `ffc[*].fr` | `smolrv64_core` | 64 a column | 5 | 1 280 | LUTRAM | an FP op's exception flags by ROB slot, a memory per column: 1W (a landing result in that column), 1R (the head's row; the retire ports rotate the columns into program order) |
 | `ffc[*].fa`, `ffc[*].fb` | `smolrv64_core` | 64 a column, each | 1 | 512 | LUTRAM | the slot's FP result landed is `fa ^ fb`: the allocation writes `fa` (= `fb`), the landing writes `fb` (= `~fa`); 1W each, read at the head's row and at the writer's own row |
@@ -1988,6 +1991,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `plmem` (payload) | `smolrv64_core` | 38 (10+10+10+8) | 274 | 10 412 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each; the immediate is stored as its low 32 bits, which it sign-extends (the queue's write asserts it), and a fetch fault's address as one bit, set for a straddler's pc+2 (`imm` and `fault_tval` are rebuilt from them) |
 | `ipend`, `fpend` | `smolrv64_pending` | 256, 128 | 1 | 384 | flops | readiness, a table per file indexed by {shard, index}: 23R, 16 that read both and let the number's file pick (the slots' rs1/rs2, 8; the lanes' operands, 8) and 7 of the FP table alone (the slots' rs3, 4; the F FIFO head's sources, 3), and each writeback its own register (the integrity check); 4 sets, 6 clears into the integer table (the lanes', the streams' integer landings) and 2 into the FP (the streams'), bulk-clear |
 | `u_pa` `wb[0..1].mem` | `smolrv64_mwram` (in `smolrv64_lq`) | 16 a bank | 33 (`PABITS`) | 1 056 | LUTRAM | the load queue's PA, a bank per writer (M's fill, the walker's answer), 3R (the start's entry, the landing's two candidates); `lvt` (a bit an entry, flops) names the writer |
+| `pcl[0..IW-1].mem` | `smolrv64_core` | 64 each | 2 | 512 | LUTRAM | which stream produces a pending integer register (§11): 1W each at dispatch, 5R (the schedulers' reported operands) |
 | `hps[0..IW-1].mem` | `smolrv64_core` | 64 each | 48 | 12 288 | LUTRAM | every op's {seq, PC} by ROB row and column: 1W each at dispatch (the tail's row), 1R the head's row; the queue-fault record's PC and seq (a faulting or replaying load or store is the ROB head). `pch` (`smolrv64_lq`, 16 × 8 flops) keeps a load's wait-table bits, which every entry reports |
 | `om` | `smolrv64_lq` | 16 | 16 | 256 | flops | the load queue's program order: an entry's row names the entries older than it, written at its allocation (the row the live entries, its column cleared); every "oldest of these" reads it |
 | `data` | `smolrv64_sq` | 32 | 64 | 2 048 | LUTRAM | the store queue's bytes: 1W (the landing, one entry a cycle), 2R (the handoff entry, a forward's store; the lockstep's record of the committing entry is a third, in simulation only) |
@@ -2019,7 +2023,7 @@ load or FP result.
 | `ras` | `smolrv64_predictor` | 8 | 40 | 320 | flops |
 | `bank[b].way[w].bc` | `smolrv64_predictor` | 8 x 2 x 128 | 2 | 4 096 | distributed RAM, read as the stream moves and by training |
 | `bank[b].way[w].nu` | `smolrv64_predictor` | 8 x 2 x 128 | 1 | 2 048 | distributed RAM, the recently-trained bit, read and written by training |
-| `pq0`, `pq1` | `smolrv64_predictor` | 2 x 4 | 72 | 576 | the prediction queue: even and odd positions, one write each |
+| `pq0`, `pq1` | `smolrv64_predictor` | 2 x 4 | 72 | 576 | the prediction queue: even and odd positions, one write each; three reads a bank, the bank's rows from `pq_rp` on (six consecutive positions are three rows of each) |
 | `u_rg` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_fring`) | 8 x 8 | 17 | 1 088 | LUTRAM (the halfword, its start bit): one write a bank (an answer's halfword landing there), the window's eight read |
 | `rmk` | `smolrv64_fring` | 64 | 1 | 64 | flops (the halfword ends a pair at a known CTI; fetch clears the head's) |
 
@@ -2242,7 +2246,12 @@ being waited on; the events OR their parts, so a consumer waiting on both a load
 result counts in both, and only `td_k` ranks them (dep-load before dep-fp). The schedulers'
 "blocked on" reports are registered before they are classified, so the dependent wait is the one
 the schedulers reported the cycle before; each scheduler reports its lowest-slot waiting entry
-(it compares no age).
+(it compares no age). The unit is read from two bits a physical integer register holds, written at
+its producer's dispatch (`pcl[*].mem`): the LD stream's (a load, an AMO, LR or SC, a SYSQ op with a
+destination) or the FE stream's (an FP op's integer result, a divide); an f-register is the FE
+stream's. A waiting operand is pending, so the bits are its producer's from the producer's dispatch
+to its writeback: a consumer of a divide not yet in the MD stage, or of an FP compare still in the
+FP scheduler, counts in `ST_FPU`.
 
 **Reading the report.** `tools/perf-smol-install.sh [dir]` installs `perf-smol`
 (`tools/perf-smol.sh`), `perf-cpi-stack.py`, `perf-smol-rec.py` and the event table together into
@@ -2391,7 +2400,7 @@ divide's; and its lane's alone while another lane has room), `ROT-SIM` (the inst
 dispatched, and the cycles a head op waited for lane A), `DEPLD-SIM` (the load the reported
 entry waits on: not issued, at M, a dTLB miss, faulting, ready, held behind an unknown or an
 overlapping store, a device load at the head, forwarding, a D$ waiter, in the D$, the slow path,
-in a landing buffer; a CSR read in the SYSQ; an AMO in M), `SER-SIM` (the serialising op, the CSR
+in a landing buffer; a CSR read in the SYSQ; an AMO in M; or in none of them, its producer not there yet or writing in that cycle), `SER-SIM` (the serialising op, the CSR
 op or the CBO the head waits behind), `MEM-SIM` (the D$'s misses), `DISP-SIM` (why slot k does not
 dispatch behind slot k-1: a group rule, or the credit it lacks), `FWD-SIM` (the loads the store
 queue holds, by whether they can forward; an older store at the same offset in another page,

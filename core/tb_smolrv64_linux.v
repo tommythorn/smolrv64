@@ -889,8 +889,8 @@ module tb;
 
    // ---- DEPLD-SIM: be:dep-load's cycles by where the load being waited on is --------------
    // The register is the first blocked operand the core's dep_ld names (lanes A.., then the FP
-   // scheduler: its registered reports l_blk_pq, rf_blk_pq), and its producer is the one the core's
-   // ld_dst finds: a load-queue entry, a lane's landing buffer, a CSR read in the SYSQ or an AMO in
+   // scheduler: its registered reports l_blk_pq, rf_blk_pq), and its producer is looked
+   // for where the LD stream's are: a load-queue entry, a lane's landing buffer, a CSR read in the SYSQ or an AMO in
    // M. A load-queue entry is, in this order:
    //    0 not issued (no address)            1 its address waiting for M's fill
    //    2 untranslated (the dTLB missed: walking, or waiting for the walker)
@@ -902,8 +902,9 @@ module tb;
    //   10 in flight at the D$ otherwise (the read door, the lookup, a replay)
    //   11 on the LSU's slow path (a device, uncached or chunk-crossing load)
    // and the rest are 12 landed, in its lane's landing buffer (waiting for the write port),
-   // 13 a CSR read in the SYSQ, 14 an AMO in M.
-   localparam integer DL_N = 15, DL_PB = RN_PBITS, DL_LQ = 1 << `SMOLRV64_LQB;
+   // 13 a CSR read in the SYSQ, 14 an AMO in M, and 15 in none of them: its producer is not there yet
+   // (an AMO before M, a SYSQ op before its turn) or wrote the register in this cycle.
+   localparam integer DL_N = 16, DL_PB = RN_PBITS, DL_LQ = 1 << `SMOLRV64_LQB;
    initial if (dut.core.LQ_N != DL_LQ)
       $fatal(1, "tb: DEPLD-SIM reads %0d load-queue entries, the core has %0d", DL_LQ, dut.core.LQ_N);
    reg [63:0] dl_c [0:DL_N-1];
@@ -930,8 +931,8 @@ module tb;
       if (!td_rf) begin
          dc = 4'd15;
          for (j = 0; j < IW; j = j + 1)
-            if (!pv && dut.core.l_blk_vq[j] && dut.core.ld_dst(dut.core.l_blk_pq[j])) begin pv = 1'b1;  p = dut.core.l_blk_pq[j]; end
-         if (!pv && dut.core.rf_blk_vq && dut.core.ld_dst(dut.core.rf_blk_pq)) begin pv = 1'b1;  p = dut.core.rf_blk_pq; end
+            if (!pv && dut.core.l_blk_vq[j] && dut.core.bq_ld[j]) begin pv = 1'b1;  p = dut.core.l_blk_pq[j]; end
+         if (!pv && dut.core.rf_blk_vq && dut.core.bq_ld[IW]) begin pv = 1'b1;  p = dut.core.rf_blk_pq; end
          for (j = 0; j < DL_LQ; j = j + 1)
             if (pv && (dc == 4'd15) && !p[DL_PB-1] && dut.core.u_lq.v[j] && (dut.core.lq_e_dprd[j*DL_PB +: DL_PB] == p)) dc = dl_lq(j);
          for (j = 0; j < IW*dut.core.LBN; j = j + 1)
@@ -940,10 +941,7 @@ module tb;
          if (pv && (dc == 4'd15) && dut.core.m_valid && dut.core.m_is_amo && dut.core.m_rd_v && (dut.core.m_prd == p)) dc = 4'd14;
          dl_kp <= dc;
       end
-      if (meas) begin
-         if (dc == 4'd15) $fatal(1, "tb: DEPLD-SIM finds no producer for a be:dep-load cycle's register p%0d (c=%0d)", p, c);
-         dl_c[dc] <= dl_c[dc] + 64'd1;
-      end
+      if (meas) dl_c[dc] <= dl_c[dc] + 64'd1;
    end
 
    // ---- TRAP-SIM: the traps csr_file takes, by cause and by the mode they go to (an interrupt's
@@ -1861,9 +1859,9 @@ module tb;
       $write("ROT-SIM instructions dispatched by lane:");
       for (iqi = 0; iqi < IW; iqi = iqi + 1) $write(" %s=%0d", 8'("A" + iqi), rot_n[iqi]);
       $display(" | cycles a head op waited for lane A=%0d", rot_ra);
-      $display("DEPLD-SIM be:dep-load cycles by the load waited on: not-issued=%0d at-M=%0d dtlb-miss=%0d faulting=%0d ready=%0d held-unknown=%0d held-overlap=%0d device-head=%0d forwarding=%0d dcache-waiter=%0d dcache=%0d slow-path=%0d | landing-buffer=%0d sysq-csr=%0d amo-in-M=%0d",
+      $display("DEPLD-SIM be:dep-load cycles by the load waited on: not-issued=%0d at-M=%0d dtlb-miss=%0d faulting=%0d ready=%0d held-unknown=%0d held-overlap=%0d device-head=%0d forwarding=%0d dcache-waiter=%0d dcache=%0d slow-path=%0d | landing-buffer=%0d sysq-csr=%0d amo-in-M=%0d elsewhere=%0d",
                dl_c[0], dl_c[1], dl_c[2], dl_c[3], dl_c[4], dl_c[5], dl_c[6], dl_c[7], dl_c[8], dl_c[9], dl_c[10],
-               dl_c[11], dl_c[12], dl_c[13], dl_c[14]);
+               dl_c[11], dl_c[12], dl_c[13], dl_c[14], dl_c[15]);
       $display("ICMISS-SIM misses=%0d unused=%0d (a missing line nothing retired from before 64 more misses)", im_n, im_waste);
       $display("TRAIN-SIM trainings=%0d dropped-CTIs=%0d", tr_n, tr_drops);
       $display("WALK-SIM squashes-at-the-head=%0d checked-after-the-walk=%0d rows-walked=%0d checked-after-the-kill=%0d releases=%0d", dut.core.wk_sq, dut.core.wk_chk, dut.core.wk_rows, dut.core.wk_kchk, dut.core.wk_rel);

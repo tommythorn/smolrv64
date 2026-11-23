@@ -251,6 +251,7 @@ module smolrv64_sq
    // the day the queue was wired in. The counters below carry the wrap bit, so the distance
    // is exact up to NENT; the index is their low bits, as before.
    reg [IDXB:0]          headc, tailc;
+   reg [NENT-1:0]        cw;              // an entry's allocation counter is {cw, its index} (tailc when it was taken)
    wire [IDXB-1:0]       head = headc[IDXB-1:0], tail = tailc[IDXB-1:0];
    reg [IDXB:0]          hoc;                // the next entry to hand off; head <= ho <= kc
    wire [IDXB-1:0]       ho = hoc[IDXB-1:0];
@@ -615,11 +616,19 @@ module smolrv64_sq
    wire [LQN-1:0] arr_acc;   // a store's address arriving against a load that has read (l_arr_q)
    generate
       for (gl = 0; gl < LQN; gl = gl + 1) begin : g_lblk
+         // A store is older than the load when its allocation counter is 1..NENT below the load's tag
+         // (the counter at the load's dispatch): the top bit of tag - counter - 1 is clear. That is a
+         // function of the load's tag and one stored bit, with no head in it; the head's form is the
+         // checks'.
          wire [IDXB:0]   l_dist = l_tag[gl*(IDXB+1) +: IDXB+1] - headc;
          wire [NENT-1:0] oldm;
          for (gs = 0; gs < NENT; gs = gs + 1) begin : g_om
+            wire [IDXB:0]   ce = l_tag[gl*(IDXB+1) +: IDXB+1] + ~{cw[gs], gs[IDXB-1:0]};
+            assign oldm[gs] = v[gs] & ~ce[IDXB];
             wire [IDXB-1:0] sd = gs[IDXB-1:0] - head;      // slot distance from the head
-            assign oldm[gs] = v[gs] & ({1'b0, sd} < l_dist);
+            always @(posedge clk) if (!reset & l_av[gl] & (oldm[gs] != (v[gs] & ({1'b0, sd} < l_dist))))
+               $fatal(1, "smolrv64_sq: load %0d (tag %0d) and store %0d (counter %0d, head %0d): older by the counter %b, by the head %b",
+                      gl, l_tag[gl*(IDXB+1) +: IDXB+1], gs, {cw[gs], gs[IDXB-1:0]}, headc, oldm[gs], ~oldm[gs]);
          end
          // THE ROW AS READ: conf with the narrowings due now applied (THE PAGE BITS)
          wire [NENT-1:0] onehot_nc = {{(NENT-1){1'b0}}, 1'b1} << nc_ix;
@@ -829,6 +838,7 @@ module smolrv64_sq
          for (aw = 0; aw < ANB; aw = aw + 1) if (ab_w[aw]) begin
             v[ab_e[aw]] <= 1'b1; av[ab_e[aw]] <= 1'b0; dv[ab_e[aw]] <= 1'b0; cmt[ab_e[aw]] <= 1'b0;
             rob[ab_e[aw]] <= ab_rob[aw];  dpr[ab_e[aw]] <= ab_dpr[aw];  rd[ab_e[aw]] <= ab_rd[aw];
+            cw[ab_e[aw]]  <= tailc[IDXB] ^ (ab_e[aw] < tail);      // its allocation counter's top bit
          end
          tailc <= tailc + n_alloc;
          cnt <= cnt + n_alloc - {{IDXB{1'b0}}, c_done};
