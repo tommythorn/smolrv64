@@ -73,9 +73,12 @@ module smolrv64_fring
    localparam integer RSB = $clog2(RS);
    localparam integer GW  = 3;                             // stream generation
    localparam integer AVW = $clog2(HW+2);
-   // the halfwords and their start bits: a banked distributed RAM (u_rg below), one bank per halfword
-   // of a pair; the marks are flops, since fetch clears the head's (drop) as answers land
-   reg  [RS-1:0]   rmk;                                    // the slot ends a pair at a known CTI
+   // the halfwords, their start bits and their marks (the slot ends a pair at a known CTI): a banked
+   // distributed RAM (u_rg below), one bank per halfword of a pair. Fetch clears the head's mark
+   // (drop) as answers land, so that one is a flop beside the RAM: the head's mark is void (rg_hvd)
+   // until the head moves. rmk is the marks as one vector, which the checks read; it is not built.
+   reg  [RS-1:0]   rmk;
+   reg             rg_hvd;
    reg             rg_cy;                                  // the last halfword appended began a 32-bit op
    reg  [RSB-1:0]  rg_head;
    reg  [RSB:0]    rg_cnt, rg_resv;                        // halfwords held; held + in flight
@@ -85,7 +88,7 @@ module smolrv64_fring
    reg  [2:0]      rg_infl, rg_drop;                       // requests in flight; of them, stale
    reg  [PQB:0]    rg_mfl;                                 // marks in flight (checked)
    initial begin rg_head = 0; rg_cnt = 0; rg_resv = 0; rg_gen = 0;
-                 rg_lvl = 2'd0; rg_infl = 0; rg_drop = 0; rg_mfl = 0; rmk = 0; rg_cy = 1'b0; end
+                 rg_lvl = 2'd0; rg_infl = 0; rg_drop = 0; rg_mfl = 0; rmk = 0; rg_cy = 1'b0; rg_hvd = 1'b0; end
    wire            flush  = restart | freeze;
 
    // the request: the stream's pair, inside the PC's enclosing page (a pair never crosses 4 KiB,
@@ -125,14 +128,18 @@ module smolrv64_fring
    wire [RSB:0]   adv_w = {{(RSB+1-AVW){1'b0}}, adv_hw};
 
    // the window: the ring from its head; a mark counts only on a halfword held
-   wire [HW*17-1:0] rg_rd;
+   wire [HW*18-1:0] rg_rd;
+   wire [HW-1:0]    mk_chk;                     // the marks by the vector
    genvar gw;
    generate for (gw = 0; gw < HW; gw = gw + 1) begin : wn
       wire [RSB-1:0] ix = rg_head + gw[RSB-1:0];
-      assign win[gw*16 +: 16] = rg_rd[gw*17 + 1 +: 16];
-      assign mk[gw]           = rmk[ix] & (rg_cnt > gw);
-      assign st[gw]           = rg_rd[gw*17];
+      assign win[gw*16 +: 16] = rg_rd[gw*18 + 1 +: 16];
+      assign mk[gw]           = rg_rd[gw*18 + 17] & ~((gw == 0) & rg_hvd) & (rg_cnt > gw);
+      assign mk_chk[gw]       = rmk[ix] & (rg_cnt > gw);
+      assign st[gw]           = rg_rd[gw*18];
    end endgenerate
+   always @(posedge clk) if (!reset && (mk != mk_chk))
+      $fatal(1, "smolrv64_fring: the window's marks read %b, the mark vector has %b", mk, mk_chk);
    assign avail = (rg_cnt >= HW[RSB:0]) ? HW[AVW-1:0] : rg_cnt[AVW-1:0];
    assign ok    = ~freeze & (rg_cnt != {(RSB+1){1'b0}});
    assign lvl   = rg_lvl;
@@ -159,7 +166,7 @@ module smolrv64_fring
                : flush ? rg_infl + {2'd0, rq_acc} - {2'd0, ic_valid}
                : rg_drop - {2'd0, ic_valid & (rg_drop != 3'd0)};
       if (reset | flush) begin
-         rg_cnt <= 0;  rg_resv <= 0;  rg_head <= 0;  rg_mfl <= 0;  rg_cy <= 1'b0;
+         rg_cnt <= 0;  rg_resv <= 0;  rg_head <= 0;  rg_mfl <= 0;  rg_cy <= 1'b0;  rg_hvd <= 1'b0;
          if (flush) rg_gen <= rg_gen + 1'b1;
       end else begin
          rg_head <= rg_head + adv_w[RSB-1:0];
@@ -168,6 +175,8 @@ module smolrv64_fring
          rg_mfl  <= rg_mfl + (rq_acc ? {{(PQB+1-4){1'b0}}, ones8(p_mk)} : {(PQB+1){1'b0}})
                            - (rp_ok ? {{(PQB+1-4){1'b0}}, ones8(rp_mk)} : {(PQB+1){1'b0}});
          if (rq_acc) rg_lvl <= pc_lvl;
+         // an empty ring has no head to void: the answer that lands there brings its own mark
+         rg_hvd <= (rg_hvd | (drop & (rg_cnt != 0))) & (adv_w == 0);
          if (drop) rmk[rg_head] <= 1'b0;
          if (rp_ok) rg_cy <= rp_cy;
          for (j = 0; j < 8; j = j + 1)
@@ -177,21 +186,22 @@ module smolrv64_fring
    // the answer's halfwords from the skip to the end, at the tail on: one per bank
    wire [7:0]     rp_wv;
    wire [8*RSB-1:0] rp_wp;
-   wire [8*17-1:0]  rp_wd;
+   wire [8*18-1:0]  rp_wd;
    genvar ga;
    generate for (ga = 0; ga < 8; ga = ga + 1) begin : an
       assign rp_wv[ga] = ~reset & ~flush & rp_ok & (ga >= rp_skip) & (ga <= rp_end);
       assign rp_wp[ga*RSB +: RSB] = tail + ga[RSB-1:0] - {{(RSB-3){1'b0}}, rp_skip};
-      assign rp_wd[ga*17 +: 17] = {ic_data[ga*16 +: 16], rp_st[ga]};
+      assign rp_wd[ga*18 +: 18] = {rp_mk[ga], ic_data[ga*16 +: 16], rp_st[ga]};
    end endgenerate
    wire [HW*3-1:0] rg_ro;                       // the window: HW consecutive halfwords
    generate for (ga = 0; ga < HW; ga = ga + 1) begin: ro
       assign rg_ro[ga*3 +: 3] = ga[2:0];
    end endgenerate
-   smolrv64_bankq #(.W(17), .DEPTH(RS), .NW(8), .NR(HW), .NB(8)) u_rg
+   smolrv64_bankq #(.W(18), .DEPTH(RS), .NW(8), .NR(HW), .NB(8)) u_rg
      (.clk(clk), .reset(reset), .wv(rp_wv), .wp(rp_wp), .wd(rp_wd), .rp(rg_head), .ro(rg_ro), .rd(rg_rd));
    // The ring's head is the PC, what it holds and has in flight fits, and every mark held or in
-   // flight has its prediction queued.
+   // flight has its prediction queued. The marks held are counted over the vector here, and by a
+   // counter (rg_mh, below) for the integrity log.
    integer k;
    reg [PQB+1:0] n_mk;
    always @* begin
@@ -219,7 +229,32 @@ module smolrv64_fring
    wire e_hold  = chk & (rg_cnt + rp_n > rg_resv);
    wire e_gen   = chk & rp_ok & (ic_rtag[GW-1:0] != rg_gen);
    wire e_orph  = chk & ic_valid & (rg_infl == 3'd0);
-   wire e_marks = chk & (n_mk + {1'b0, rg_mfl} != {1'b0, pq_cnt});
+   wire e_mvec  = chk & (n_mk + {1'b0, rg_mfl} != {1'b0, pq_cnt});
+   // THE MARKS HELD, COUNTED A CYCLE LATE, from registers like the head's check: the marks an answer
+   // appended, less those fetch consumed with its advance and the head's when fetch cleared it.
+   reg  [PQB+1:0]  rg_mh;
+   reg  [3:0]      mh_app;
+   reg  [HW-1:0]   mh_mk;
+   reg             mh_drp;
+   reg  [PQB:0]    mh_mfl, mh_pq;
+   reg  [7:0]      rp_in;                       // the answer's halfwords appended
+   reg  [3:0]      mh_pop;
+   integer mi;
+   always @* begin
+      for (mi = 0; mi < 8; mi = mi + 1) rp_in[mi] = (mi >= rp_skip) && (mi <= rp_end);
+      mh_pop = 4'd0;
+      for (mi = 0; mi < HW; mi = mi + 1) if (mi < hv_adv) mh_pop = mh_pop + {3'd0, mh_mk[mi]};
+   end
+   initial begin rg_mh = 0;  mh_app = 4'd0;  mh_mk = 0;  mh_drp = 1'b0;  mh_mfl = 0;  mh_pq = 0; end
+   always @(posedge clk) begin
+      mh_app <= rp_ok ? ones8(rp_mk & rp_in) : 4'd0;
+      mh_mk  <= mk;
+      mh_drp <= drop & mk[0];
+      mh_mfl <= rg_mfl;  mh_pq <= pq_cnt;
+      rg_mh  <= (reset | hv_rs) ? {(PQB+2){1'b0}}
+              : rg_mh + {{(PQB+2-4){1'b0}}, mh_app} - {{(PQB+2-4){1'b0}}, mh_pop} - {{(PQB+1){1'b0}}, mh_drp & (hv_adv == 0)};
+   end
+   wire e_marks = hv_ok & ~hv_rs & (rg_mh + {1'b0, mh_mfl} != {1'b0, mh_pq});
    reg  [5:0] err_q;
    always @(posedge clk) err_q <= reset ? 6'd0 : {e_marks, e_orph, e_gen, e_hold, e_over, e_head};
    assign err = err_q;
@@ -229,7 +264,8 @@ module smolrv64_fring
       if (e_hold)  $fatal(1, "smolrv64_fring: the ring holds more (%0d) than it reserved (%0d)", rg_cnt + rp_n, rg_resv);
       if (e_gen)   $fatal(1, "smolrv64_fring: a kept I$ answer is from generation %0d, the stream is %0d", ic_rtag[GW-1:0], rg_gen);
       if (e_orph)  $fatal(1, "smolrv64_fring: an I$ answer with no request in flight");
-      if (e_marks) $fatal(1, "smolrv64_fring: %0d marks held and %0d in flight, but %0d predictions queued", n_mk, rg_mfl, pq_cnt);
+      if (e_mvec)  $fatal(1, "smolrv64_fring: %0d marks held and %0d in flight, but %0d predictions queued", n_mk, rg_mfl, pq_cnt);
+      if (e_marks) $fatal(1, "smolrv64_fring: %0d marks counted held and %0d in flight, but %0d predictions queued", rg_mh, mh_mfl, mh_pq);
    end
 endmodule
 

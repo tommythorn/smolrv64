@@ -606,12 +606,12 @@ module smolrv64_core
    wire [NL-1:0]       lb_fe_room_n;
    initial lb_fe_room = {NL{1'b1}};
    reg  [RN_PBITS-1:0] lb_prd [0:NL*LBN-1];
-   reg  [ROB_IDXB-1:0] lb_rob [0:NL*LBN-1];   // (the entries' data, read at the head alone: u_lbd below)
+   reg  [ROB_IDXB-1:0] lb_rob [0:NL*LBN-1];   // (the entries' data, read at the head alone: g_lp's ml and mf below)
    reg  [NL*LBN-1:0]   lb_dk;               // the entry's op is dead (the kill): it drains as a bubble
    initial lb_dk = {(NL*LBN){1'b0}};
    reg  [LBB-1:0]      lb_h [0:NL-1], lb_t [0:NL-1];
    reg  [LBB:0]        lb_n [0:NL-1];
-   reg                 lb_fe [0:NL*LBN-1];  // the entry is the FE stream's (the bench's breakdown; not built)
+   reg                 lb_fe [0:NL*LBN-1];  // the entry is the FE stream's: its data is in that stream's bank
 
    // the ROB's completion ports: a lane's op at issue (a multiply in its reserved slot, a
    // mispredicting CTI at its squash; a load or store never), the FP and MD landings, the store
@@ -4426,11 +4426,17 @@ module smolrv64_core
          wire [LBB-1:0] hh = lb_h[glp];
          // an entry the kill marked drains as a bubble: no write, wake or completion
          wire lv_ = ~lb_dk[glp*LBN + hh];
-         // the entries' data: the LD stream's at the tail, the FE stream's after it, read at the head
-         wire [63:0] lb_hd;
-         smolrv64_bankq #(.W(64), .DEPTH(LBN), .NW(2), .NR(1), .NB(2)) u_lbd
-           (.clk(clk), .reset(reset), .wv({en2[glp], en0[glp]}), .wp({lb_t2[glp], lb_t[glp]}),
-            .wd({wb_fe, wb_ld}), .rp(hh), .ro(1'b0), .rd(lb_hd));
+         // the entries' data, a bank per stream so that each has its one writer and no write mux:
+         // an entry's is in its stream's bank at the entry's position (the LD stream's at the tail,
+         // the FE stream's after it), and the head's is its stream's by lb_fe
+         (* ram_style = "distributed" *) reg [63:0] ml [0:LBN-1];
+         (* ram_style = "distributed" *) reg [63:0] mf [0:LBN-1];
+         integer i;
+         initial for (i = 0; i < LBN; i = i + 1) begin ml[i] = 64'd0;  mf[i] = 64'd0; end
+         always @(posedge clk) if (en0[glp]) ml[lb_t[glp]] <= wb_ld;
+         always @(posedge clk) if (en2[glp]) mf[lb_t2[glp]] <= wb_fe;
+         wire [63:0] lb_hl = ml[hh], lb_hf = mf[hh];
+         wire [63:0] lb_hd = lb_fe[glp*LBN + hh] ? lb_hf : lb_hl;
          // the SYSQ's result drains in lane A alone (p1), so only lane A's slot carries it
          wire [2+RN_PBITS+64+ROB_IDXB-1:0] lpe = {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]};
          if (glp == 0) begin: g_sy

@@ -1964,7 +1964,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 |---|---|---|---|---|---|---|
 | `ish[0..IW-1].mem` | `smolrv64_prf` | 64 each | 64 | 16 384 | LUTRAM | lane k's integer shard: 1W (lane k's write register), 9R at IW=4 (2 per lane, the store queue's) |
 | `lb_prd`, `lb_rob`, `lb_fe`, `lb_dk` | `smolrv64_core` | 3×4 | 10/8/1/1 | 240 | flops | the lanes' landing buffers (§8): what the kill and the wakes read at every entry |
-| `g_lp[*].u_lbd` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_core`) | 4 × 2 × 2 | 64 | 1 024 | LUTRAM | the landing buffers' data: the LD stream's at the tail, the FE stream's after it, read at the head |
+| `g_lp[*].ml`, `g_lp[*].mf` | `smolrv64_core` | 4 × 2 × 4 | 64 | 2 048 | LUTRAM | the landing buffers' data, a bank per stream (its one writer, no write mux): an entry's is in its stream's bank at the entry's position, the head's is picked by `lb_fe` |
 | `fp[0].mem`, `fp[1].mem` | `smolrv64_prf` | 64 each | 64 | 8 192 | LUTRAM | 4R (the store queue's, the FP port's 3), 1W each: SH_FL (the load landing) and SH_FF (the F stage) |
 | `cp[0..IW-1].smap` | `smolrv64_rename` | 64 each, twice at IW=4 (`smap_d`) | 9 | 4 608 | LUTRAM | one copy per rename slot (1W each: the slot's rename, the walk's position, the sweep's lane; a mapping is the XOR of the copies' words), 5*IW reads (the sources and destinations, the commits' dirty tests) and `IW` more in `smap_d` (each writer's address, for the word it stores) |
 | `cp[0..IW-1].rmap` | `smolrv64_rename` | 64 each | 9 | 2 304 | LUTRAM | one copy per commit port (1W each; a mapping is the XOR of the copies' words), 2*IW reads (the commits' registers, for the word each stores; the sweep) |
@@ -2024,8 +2024,8 @@ load or FP result.
 | `bank[b].way[w].bc` | `smolrv64_predictor` | 8 x 2 x 128 | 2 | 4 096 | distributed RAM, read as the stream moves and by training |
 | `bank[b].way[w].nu` | `smolrv64_predictor` | 8 x 2 x 128 | 1 | 2 048 | distributed RAM, the recently-trained bit, read and written by training |
 | `pq0`, `pq1` | `smolrv64_predictor` | 2 x 4 | 72 | 576 | the prediction queue: even and odd positions, one write each; three reads a bank, the bank's rows from `pq_rp` on (six consecutive positions are three rows of each) |
-| `u_rg` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_fring`) | 8 x 8 | 17 | 1 088 | LUTRAM (the halfword, its start bit): one write a bank (an answer's halfword landing there), the window's eight read |
-| `rmk` | `smolrv64_fring` | 64 | 1 | 64 | flops (the halfword ends a pair at a known CTI; fetch clears the head's) |
+| `u_rg` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_fring`) | 8 x 8 | 18 | 1 152 | LUTRAM (the halfword, its start bit, its mark: it ends a pair at a known CTI): one write a bank (an answer's halfword landing there), the window's eight read |
+| `rg_hvd` | `smolrv64_fring` | 1 | 1 | 1 | flop (fetch cleared the head's mark: void until the head moves); `rg_mh` counts the marks held a cycle late for the integrity log |
 
 Neither BTB nor corrector bank has a valid bit — validity is the tag match (§4.2).
 
