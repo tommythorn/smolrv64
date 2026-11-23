@@ -193,9 +193,6 @@ module rv_soc_top #(
 
    // ---------------- MMIO device routing (CLINT + UART bypass the D$, non-cacheable) ----------------
    localparam [63:0] CLINT_BASE = 64'h0200_0000, UART_BASE = 64'h1000_0000, PLIC_BASE = 64'h0C00_0000;
-   // DDR latency HPM window (read-only counters; any write clears). NOT in the DTB -- read it
-   // from a bare-metal tool / the monitor; the kernel never touches it.
-   localparam [63:0] HPM_BASE   = 64'h1800_0000;
    // The board's ui_clk device pages, 24 KiB: virtio-blk 0x1000_2000, virtio-net 0x1000_3000,
    // virtio keyboard 0x1000_4000, VGA scanout 0x1000_5000 (pages 6 and 7 read 0). Everything
    // behind the probe_clk<->ui_clk bridge, so one window, one req/rsp path. The page number is
@@ -203,7 +200,7 @@ module rv_soc_top #(
    localparam [63:0] VIRTIO_BASE = 64'h1000_0000;
    localparam [63:0] BUILDID_BASE = 64'h1000_F000;                // build-id (SMOL/stamp/commit/dirty), probe-core-readable
    // Integrity log, 256 B read-only -- the design's own invariants, latched so software can
-   // read them (see the INTEGRITY LOG block below).  Like HPM_BASE it is deliberately NOT in
+   // read them (see the INTEGRITY LOG block below).  It is deliberately NOT in
    // the DTB: the kernel must never touch it.  Readers are the ROM monitor's banner
    // (R1000E008 = the sticky vector) and a /dev/mem read from Linux after a crash.  The
    // window and its name are inherited from the deleted fetch-buffer diagnostic.
@@ -233,18 +230,16 @@ module rv_soc_top #(
    wire is_clint_r = (dmem_raddr & ~64'hffff)     == CLINT_BASE;
    wire is_uart_r  = (dmem_raddr & ~64'hf)        == UART_BASE;
    wire is_plic_r  = (dmem_raddr & ~64'h3ff_ffff) == PLIC_BASE;   // 64 MiB region
-   wire is_hpm_r   = (dmem_raddr & ~64'hff)        == HPM_BASE;    // 256 B window
    wire is_virtio_r = (dmem_raddr & ~64'h7fff)    == VIRTIO_BASE && dmem_raddr[14:13] != 2'b00;
    wire is_buildid_r = (dmem_raddr & ~64'hff)     == BUILDID_BASE;  // 256 B window (read-only)
    wire is_fbdiag_r  = (dmem_raddr & ~64'hff)     == FBDIAG_BASE;   // 256 B window (read-only)
    wire [63:0] fbdiag_rdata;   // driven by the capture block down by the fetch buffer
-   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_hpm_r | is_virtio_r | is_buildid_r | is_fbdiag_r;
+   wire is_dev_r   = is_clint_r | is_uart_r | is_plic_r | is_virtio_r | is_buildid_r | is_fbdiag_r;
    wire is_clint_w = (dmem_wabase & ~64'hffff)     == CLINT_BASE;
    wire is_uart_w  = (dmem_wabase & ~64'hf)        == UART_BASE;
    wire is_plic_w  = (dmem_wabase & ~64'h3ff_ffff) == PLIC_BASE;
-   wire is_hpm_w   = (dmem_wabase & ~64'hff)        == HPM_BASE;
    wire is_virtio_w = (dmem_wabase & ~64'h7fff)    == VIRTIO_BASE && dmem_wabase[14:13] != 2'b00;
-   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_hpm_w | is_virtio_w;
+   wire is_dev_w   = is_clint_w | is_uart_w | is_plic_w | is_virtio_w;
    // virtio-mmio register access: 32-bit. The probe LSU bus is byte-addressed and
    // RIGHT-ALIGNED -- it presents/consumes "8 bytes @ mem_*addr" with the addressed
    // bytes in the LOW lane and the byte mask low-aligned (store drain: sb_data=raw,
@@ -473,7 +468,6 @@ module rv_soc_top #(
             : (off==3'd6) ? 8'hB0                                        // MSR: CTS+DSR+CD
             :               scr; end end                                 // SCR
    endfunction
-   wire [63:0] hpm_rdata;
    // build-id: 32b words @ 0x1000_F0{00,04,08,0c,10,14}, each read 32-bit at its own address, so
    // the addressed word is in lane 0, where an unshifted device load takes it. The identity is
    // the INIT value of kept flops (bid_q), not constants in this mux: a constant shapes the mux
@@ -496,8 +490,7 @@ module rv_soc_top #(
                          : is_plic_r   ? plic_rdata
                          : is_virtio_r ? {virtio_rdata, virtio_rdata}  // not delivered: virtio completes on vio_rack below
                          : is_buildid_r ? {build_id_word, build_id_word}
-                         : is_fbdiag_r ? fbdiag_rdata
-                         : is_hpm_r    ? hpm_rdata   : 64'd0;
+                         : is_fbdiag_r ? fbdiag_rdata : 64'd0;
 
    // Device read data is REGISTERED before it reaches the load return mux.  It used to be
    // combinational, which put the SLOWEST DEVICE'S read cone on the critical path of every
@@ -1098,16 +1091,6 @@ module rv_soc_top #(
    assign m_w_valid = l2_w_valid | l_w_go;
    assign m_w_id    = l2_w_valid ? l2_w_id : l_id;
 
-   // DDR latency HPM: per request id, the cycles from the request's acceptance to its read's last
-   // beat or its write done (core cycles), into read/write log2 histograms, read-only at
-   // HPM_BASE (any write clears). Observation-only; off the core critical path.
-   ddr_hpm #(.IDW(MIDW)) u_ddr_hpm
-     (.clk(clk), .reset(reset),
-      .q_fire(ddr_q_valid & ddr_q_ready), .q_id(ddr_q_id),
-      .r_done(ddr_r_valid & ddr_r_ready & ddr_r_last), .r_id(ddr_r_id),
-      .w_done(ddr_w_valid & ddr_w_ready), .w_id(ddr_w_id),
-      .raddr(dmem_raddr[7:0]), .rdata(hpm_rdata),
-      .clr(dmem_wfsm & is_hpm_w & ~dev_wack));
 endmodule
 
 `default_nettype wire

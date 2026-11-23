@@ -1,7 +1,7 @@
 CC = riscv64-linux-gnu-gcc
 
 # static + rv64gc: coffee's gcc defaults to an RVA23 baseline (emitted OP-V
-# once and SIGILL'd on the board -- see ddrhpm); pin the arch.
+# once and SIGILL'd on the board); pin the arch.
 all: ipcstat
 
 ipcstat: ipcstat.c

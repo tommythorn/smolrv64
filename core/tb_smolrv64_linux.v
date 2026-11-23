@@ -114,6 +114,15 @@ module tb;
 `endif
    reg tb_dma_wr = 1'b0;           // a device wrote memory this cycle (the virtio-blk slave, the DMA agent)
    wire        sn_p_valid, sn_p_keep, sn_p_ack, sn_p_rel;  wire [25:0] sn_p_line;   // the tb's DMA snoops (below)
+   // the memory port's latencies: per request id, the cycles from acceptance to the read's last beat
+   // or the write's done, into log2 histograms (the run's last print)
+   wire [63:0] hpm_rdata;
+   ddr_hpm #(.IDW(5)) u_ddr_hpm
+     (.clk(clk), .reset(reset),
+      .q_fire(ddr_q_valid & ddr_q_ready), .q_id(ddr_q_id),
+      .r_done(ddr_r_valid & ddr_r_ready & ddr_r_last), .r_id(ddr_r_id),
+      .w_done(ddr_w_valid & ddr_w_ready), .w_id(ddr_w_id),
+      .raddr(8'd0), .rdata(hpm_rdata), .clr(1'b0));
    rv_soc_top #(.RESET_PC(`TB_RESET_PC), .DC_KB(`TB_DC_KB), .SIZE_KB(`TB_IC_KB)) dut
      (.clk(clk), .reset(reset), .retire(retire),
       .dmem_wen(dmem_wen), .dmem_waddr(dmem_waddr), .dmem_wdata(dmem_wdata),
@@ -137,7 +146,7 @@ module tb;
    // board, and two six-day-old ordering defects lived through every gate.
    //
    // MEASURED on the board at 166.67 MHz on 2026-10-22 (our DDR4 controller behind the synchronous
-   // crossing, the 2 GiB board; rv_soc_top's ddr_hpm read with workloads/ddrhpm around each of five
+   // crossing, the 2 GiB board; ddr_hpm at the memory port, read around each of five
    // kernels -- a dependent chase over 256 KiB, and over 4 MiB arrays a read stream, a copy, a daxpy
    // and a fill):
    //     read  (fill):       mean 20.9-22.5 cycles -- 93-97% in 16-31, 0.6-3.4% in 32-63, 2.7-3.3% in 64+
@@ -1801,14 +1810,14 @@ module tb;
       else
          $display("INO-LINUX TIMEOUT after %0d cycles (retires=%0d pc~%h)", ncyc, nret,
                   dut.imem_addr);
-      // rv_soc_top's ddr_hpm over the whole run, as workloads/ddrhpm reads it on the board: lines,
-      // latency sums (core cycles from acceptance) and the log2 bins [1] [2-3] ... [64+]
+      // the memory port's latencies over the whole run (u_ddr_hpm, below): lines, latency sums (core
+      // cycles from acceptance) and the log2 bins [1] [2-3] ... [64+]
       $display("[ddr-hpm: rd %0d sum %0d bins %0d %0d %0d %0d %0d %0d %0d  wr %0d sum %0d bins %0d %0d %0d %0d %0d %0d %0d]",
-               dut.u_ddr_hpm.rd_cnt, dut.u_ddr_hpm.rd_sum, dut.u_ddr_hpm.rdb[1], dut.u_ddr_hpm.rdb[2],
-               dut.u_ddr_hpm.rdb[3], dut.u_ddr_hpm.rdb[4], dut.u_ddr_hpm.rdb[5], dut.u_ddr_hpm.rdb[6],
-               dut.u_ddr_hpm.rdb[7], dut.u_ddr_hpm.wr_cnt, dut.u_ddr_hpm.wr_sum, dut.u_ddr_hpm.wrb[1],
-               dut.u_ddr_hpm.wrb[2], dut.u_ddr_hpm.wrb[3], dut.u_ddr_hpm.wrb[4], dut.u_ddr_hpm.wrb[5],
-               dut.u_ddr_hpm.wrb[6], dut.u_ddr_hpm.wrb[7]);
+               u_ddr_hpm.rd_cnt, u_ddr_hpm.rd_sum, u_ddr_hpm.rdb[1], u_ddr_hpm.rdb[2],
+               u_ddr_hpm.rdb[3], u_ddr_hpm.rdb[4], u_ddr_hpm.rdb[5], u_ddr_hpm.rdb[6],
+               u_ddr_hpm.rdb[7], u_ddr_hpm.wr_cnt, u_ddr_hpm.wr_sum, u_ddr_hpm.wrb[1],
+               u_ddr_hpm.wrb[2], u_ddr_hpm.wrb[3], u_ddr_hpm.wrb[4], u_ddr_hpm.wrb[5],
+               u_ddr_hpm.wrb[6], u_ddr_hpm.wrb[7]);
 `ifdef TB_DDR4
       u_ddr_phy.report();
 `endif

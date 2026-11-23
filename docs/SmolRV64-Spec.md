@@ -2507,7 +2507,7 @@ MEM_LG2/VDEFS builds `obj_dir_smolrv64_clinux.<hash>` and runs in parallel with 
 small guest: it never lined up the store-queue age defect of 2026-09-04 in 60 M cycles,
 the Geekbench boot did at 447 M, so the long-guest run is a standing per-batch gate. The
 DDR model is the board's measured shape by default (`+ddr_lat=N` for a flat sweep, `+ddr_cut=N` for a
-faster memory path): `rv_soc_top`'s `ddr_hpm` read with `workloads/ddrhpm` on 414eda07, 2026-10-21,
+faster memory path): `ddr_hpm` at the memory port, read on the board on 414eda07, 2026-10-21 (it is the lockstep bench's now, not built),
 reads 35.2 and writes 21.3 cycles mean from acceptance at the line port. Bare-metal kernels in the
 lockstep against the same code on the board (user mode, 512 KiB arrays): a dependent chase 45.89 vs
 45.87 cycles a load, a read stream 3.27 vs ~3.2 cycles an element, a daxpy 7.32 vs 7.4, a fill 2.04
