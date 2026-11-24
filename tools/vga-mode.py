@@ -35,6 +35,8 @@ MODES = {
     '1600x1200@60': (162.0,  (1600, 1664, 1856, 2160), (1200, 1201, 1204, 1250), True, True),
     # at the fastest clock, 52.0 Hz: the BenQ Q24W5 on the TinyVGA adapter takes it (Tommy, 2026-10-25)
     '1920x1200@52': (166.67, (1920, 2032, 2232, 2560), (1200, 1203, 1213, 1252), False, True),
+    # at 125 MHz (/8), 24.0 Hz: the HDMI board's OLED takes it, and it is that board's mode (boards.sh VMODE)
+    '2560x1440@24': (125.0,  (2560, 2752, 2796, 3430), (1440, 1443, 1448, 1518), True,  True),
 }
 
 

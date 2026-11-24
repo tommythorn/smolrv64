@@ -4,6 +4,7 @@
 #   SCREEN  the screen session on the board's console, CON its log, TTYDEV and BPS the console
 #   JTAG    the board's cable (make program / flash), DTB the device tree it boots, DTBA where
 #   BMAC    the MAC its FPGA's DNA gives it, which its boot must show
+#   VMODE   the screen mode it boots in (tools/vga-mode.py), when its monitor needs one
 # It returns 1 for a board it does not know.
 case "${BOARD:-}" in
    ""|2g|4g) PLAT=platforms/rk-xcku5p-f-v1.2; PROJ=rk_xcku5p; DTBA=fefff000; BPS=3000000 ;;&
@@ -12,6 +13,8 @@ case "${BOARD:-}" in
    4g)   SCREEN=b4g;   JTAG=0ABC01A;      DTB=ubuntu-nfs-4g.dtb;   BMAC=02:53:64:12:43:42 ;;
    hdmi) PLAT=platforms/hdmi-xcku5p; PROJ=hdmi_xcku5p; DTBA=befff000; BPS=2000000
          SCREEN=bhdmi; JTAG=210251A08870; DTB=ubuntu-nfs-hdmi.dtb; BMAC=02:53:4c:38:41:00
+         # a mode is fixed once Linux has the framebuffer, so the monitor sets it before every boot
+         VMODE=2560x1440@24
          # its console is a CP2105's interface 0, beside the JTAG on the one USB-C connector
          TTYDEV=/dev/serial/by-id/usb-Silicon_Labs_CP2105_Dual_USB_to_UART_Bridge_Controller_0066394E-if00-port0 ;;
    *)    return 1 ;;

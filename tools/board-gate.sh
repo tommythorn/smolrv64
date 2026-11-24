@@ -63,8 +63,16 @@ RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
 # make program runs in the platform directory: a given BIT= is read from the caller's.
 [ -n "${BIT:-}" ] && BIT=$(realpath "$BIT")
 # The board boots with the graphics console scanning out (ubuntu-boot.sh VGA): its memory
-# traffic is part of the machine every bitstream is judged on.
+# traffic is part of the machine every bitstream is judged on. VGA=1 boots a board that names a
+# mode (boards.sh VMODE) in that mode; VGA=<mode> boots any board in that one.
 export VGA=${VGA:-1}
+[ "$VGA" = 1 ] && [ -n "${VMODE:-}" ] && VGA=$VMODE
+# a line to the monitor a character at a time: a bitstream older than the UART's receive FIFO
+# drops a burst, and the monitor rejects a line with a leading space
+type_line() {
+   local i; for ((i = 0; i < ${#1}; i++)); do screen -S "$SCREEN" -X stuff "${1:$i:1}"; sleep 0.02; done
+   screen -S "$SCREEN" -X stuff $'\r'
+}
 BAD='Kernel panic|Oops \[#|Unable to handle kernel paging|unhandled signal|segfault|SIGSEGV|status=11/SEGV|core dumped|is not a head|NETDEV WATCHDOG|nfs: server .* not responding'
 MARK='riscv: base ISA extensions'
 
@@ -221,10 +229,16 @@ if [ -n "${BOARD:-}" ]; then
      [ "$VGA" = 0 ] && echo "WW10005000 0"
      echo "X80000000 0 $DTBA"; } > "$T/boot.txt"
    cp "$T/boot.txt" "$RES/boot.txt"
-   # a character at a time: a bitstream older than the UART's receive FIFO drops a burst
+   # the mode first: the monitor answers a V line with "locked" once the pixel clock runs
+   if [ "$VGA" != 0 ] && [ "$VGA" != 1 ]; then
+      VL=$(tools/vga-mode.py "$VGA" | grep '^V ') || { echo "BOARD: FAIL (no mode $VGA)"; exit 1; }
+      VO=$(wc -c < "$CON"); type_line "$VL"
+      for i in $(seq 20); do tail -c +$((VO+1)) "$CON" | tr -d '\0' | grep -aq 'locked' && break; sleep 0.5; done
+      tail -c +$((VO+1)) "$CON" | tr -d '\0' | grep -aq 'locked' || { echo "BOARD: FAIL (mode $VGA: no lock)"; exit 1; }
+      echo "mode: $VGA"
+   fi
    GO=$(wc -c < "$CON")
-   go="go $BOARD"; for ((i = 0; i < ${#go}; i++)); do screen -S "$SCREEN" -X stuff "${go:$i:1}"; sleep 0.02; done
-   screen -S "$SCREEN" -X stuff $'\r'
+   type_line "go $BOARD"
    # The router's DHCP pool runs dry now and then and the monitor says so ("no DHCP lease"); the
    # board then boots the same payload and device tree over XMODEM, as an unnamed board does.
    for i in $(seq 60); do
