@@ -136,27 +136,17 @@ module ddr4_ctl #(
    // eight-bit compare behind a bank mux (asserted equal to the counters every cycle)
    reg          z_rcd [0:7], z_pre [0:7], z_act [0:7], z_actg [0:1], z_casg [0:1], z_rdg [0:1], z_wr;
 
-   // ---- each bank's owner: the oldest queued request for it, registered from the queue, so a
-   // cycle behind it. That is safe: an owner leaves only after its column command, which needs its
-   // row open, so a stale owner never closes a row a request still wants nor opens a wrong one.
-   reg          own_v  [0:7];
-   reg [16:0]   own_row[0:7];
-   reg          n_own_v  [0:7];
-   reg [16:0]   n_own_row[0:7];
-   integer      i, b;
-   reg [2:0]    bo;
-   always @* begin
-      bo = 3'd0;
-      for (b = 0; b < 8; b = b + 1) begin n_own_v[b] = 1'b0; n_own_row[b] = 17'd0; end
-      for (i = QN - 1; i >= 0; i = i - 1)
-         if (q_v[i]) begin bo = bank_of(q_line[i]); n_own_v[bo] = 1'b1; n_own_row[bo] = row_of(q_line[i]); end
-   end
-   // ...and whether the bank's open row is another than its owner's, from the same scan: after an
-   // ACT it is a cycle stale, while tRAS forbids the PRE anyway
-   reg          own_miss [0:7];
-   always @(posedge clk) for (b = 0; b < 8; b = b + 1) begin
-      own_v[b] <= n_own_v[b] && !reset && cal_done;  own_row[b] <= n_own_row[b];
-      own_miss[b] <= (b_row[b] != n_own_row[b]);
+   // ---- each entry's bank, kept from its entry, and whether it is its bank's OWNER: no older entry
+   // is for the same bank. The flag is registered from the queue, so a cycle behind it. That is
+   // safe: entries enter behind every owner and an owner leaves only as the head, after its column
+   // command, so a stale flag only misses an entry that has just become its bank's owner.
+   reg [2:0]    q_bk  [0:QN-1];
+   reg          q_own [0:QN-1];
+   reg          n_own [0:QN-1];
+   integer      i, j, b;
+   always @* for (i = 0; i < QN; i = i + 1) begin
+      n_own[i] = q_v[i];
+      for (j = 0; j < i; j = j + 1) if (q_v[j] && q_bk[j] == q_bk[i]) n_own[i] = 1'b0;
    end
 
    // ---- refresh, ZQCS and VT tracking state ----
@@ -172,41 +162,39 @@ module ddr4_ctl #(
    wire         ref_hold = (r_st != R_RUN) || ref_want;              // no new line, no row command
    wire         vt_block = (vt_cnt >= VT_GAP) && !vt_gapd;          // no read CAS: the gap is owed
 
-   wire [2:0]   h_b    = bank_of(q_line[0]);   // the head's bank and group
+   wire [2:0]   h_b    = q_bk[0];   // the head's bank and group
    wire         h_g    = h_b[2];
 
    // ---- the row stage: a PRE and an ACT chosen a cycle ahead of their slots (a later command never
-   // breaks a minimum spacing), the head's bank first, then the lowest bank that wants one; no new
+   // breaks a minimum spacing), for the oldest owner that wants one -- the head's bank first; no new
    // choice of a kind while one of it is pending (two ACTs are tRRD apart anyway), none while a
-   // refresh holds ----
+   // refresh holds. An owner wants a PRE when its bank holds another row (open, its row not), an ACT
+   // when its bank is closed ----
    wire         faw_ok = faw[3] >= T_FAW - 1'b1;
    reg          pre_d, act_d;                // this cycle's choices
    reg  [2:0]   pre_db, act_db;
+   reg  [QB-1:0] act_dq;                     // ...and the ACT's entry, whose row it opens
    reg          pre_go, act_go;              // last cycle's choices, issued in this cycle's slots
    reg  [2:0]   pre_b, act_b;
    reg  [16:0]  act_row;
-   reg          pre_c [0:7];
-   reg          act_c [0:7];
-   reg [2:0]    br;
+   reg          pre_c [0:QN-1];
+   reg          act_c [0:QN-1];
    always @* begin
-      for (b = 0; b < 8; b = b + 1) begin
-         br = b[2:0];
-         pre_c[b] = b_open[b] && own_v[b] && own_miss[b] && z_pre[b];
-         act_c[b] = !b_open[b] && own_v[b] && z_act[b] && z_actg[br[2]] && faw_ok;
+      for (i = 0; i < QN; i = i + 1) begin
+         pre_c[i] = q_own[i] && b_open[q_bk[i]] && !q_hit[i] && z_pre[q_bk[i]];
+         act_c[i] = q_own[i] && !b_open[q_bk[i]] && z_act[q_bk[i]] && z_actg[q_bk[i][2]] && faw_ok;
       end
-      pre_d = 1'b0; pre_db = 3'd0; act_d = 1'b0; act_db = 3'd0;
-      for (b = 7; b >= 0; b = b - 1) begin
-         if (pre_c[b]) begin pre_d = 1'b1; pre_db = b[2:0]; end
-         if (act_c[b]) begin act_d = 1'b1; act_db = b[2:0]; end
+      pre_d = 1'b0; pre_db = 3'd0; act_d = 1'b0; act_db = 3'd0; act_dq = {QB{1'b0}};
+      for (i = QN - 1; i >= 0; i = i - 1) begin
+         if (pre_c[i]) begin pre_d = 1'b1; pre_db = q_bk[i]; end
+         if (act_c[i]) begin act_d = 1'b1; act_db = q_bk[i]; act_dq = i[QB-1:0]; end
       end
-      if (pre_c[h_b]) pre_db = h_b;
-      if (act_c[h_b]) act_db = h_b;
       if (ref_hold || pre_go) pre_d = 1'b0;
       if (ref_hold || act_go) act_d = 1'b0;
    end
    always @(posedge clk) begin
       pre_go  <= pre_d && !reset && cal_done;  pre_b <= pre_db;
-      act_go  <= act_d && !reset && cal_done;  act_b <= act_db;  act_row <= own_row[act_db];
+      act_go  <= act_d && !reset && cal_done;  act_b <= act_db;  act_row <= row_of(q_line[act_dq]);
    end
 
    // ---- the column stage: the head's next burst, or an injected read of the head's line first ----
@@ -250,8 +238,8 @@ module ddr4_ctl #(
    always @* begin
       for (i = 0; i < QN; i = i + 1) begin
          n_hit[i] = q_hit[i];
-         if (act_go && bank_of(q_line[i]) == act_b && row_of(q_line[i]) == act_row) n_hit[i] = 1'b1;
-         if (prea_go || (pre_go && bank_of(q_line[i]) == pre_b)) n_hit[i] = 1'b0;
+         if (act_go && q_bk[i] == act_b && row_of(q_line[i]) == act_row) n_hit[i] = 1'b1;
+         if (prea_go || (pre_go && q_bk[i] == pre_b)) n_hit[i] = 1'b0;
       end
       // the requester's line and the injected line, side by side; inj_enq picks last
       e_b = bank_of(rq_line);  e_r = row_of(rq_line);
@@ -316,7 +304,7 @@ module ddr4_ctl #(
       if (reset || !cal_done) begin
          mc_CS_n <= 8'hFF;  mc_ACT_n <= 8'hFF;  mc_ODT <= 8'h00;
          mcRdCAS <= 1'b0;  mcWrCAS <= 1'b0;  winInjTxn <= 1'b0;  wr_prev <= 1'b0;
-         for (k = 0; k < QN; k = k + 1) q_v[k] <= 1'b0;
+         for (k = 0; k < QN; k = k + 1) begin q_v[k] <= 1'b0; q_own[k] <= 1'b0; end
          q_n <= {(QB+1){1'b0}};  h_half <= 1'b0;
          for (k = 0; k < 8; k = k + 1) begin b_open[k] <= 1'b0; t_rcd[k] <= {TW{1'b0}}; t_pre[k] <= {TW{1'b0}}; t_rp[k] <= T_RP; end
          for (k = 0; k < 2; k = k + 1) begin t_actg[k] <= {TW{1'b0}}; t_casg[k] <= {TW{1'b0}}; t_rdg[k] <= {TW{1'b0}}; end
@@ -327,18 +315,21 @@ module ddr4_ctl #(
          vt_owed <= 1'b0;  vt_quiet <= 2'd0;  gt_data_ready <= 1'b0;
       end else begin
          // the queue: the head leaves after its second burst; a new request enters at the tail
-         for (k = 0; k < QN; k = k + 1) q_hit[k] <= n_hit[k];
+         for (k = 0; k < QN; k = k + 1) begin q_hit[k] <= n_hit[k]; q_own[k] <= n_own[k]; end
          if (h_done) begin
             for (k = 0; k < QN - 1; k = k + 1) begin
                q_v[k] <= q_v[k+1];  q_we[k] <= q_we[k+1];  q_inj[k] <= q_inj[k+1];
                q_line[k] <= q_line[k+1];  q_buf[k] <= q_buf[k+1];  q_hit[k] <= n_hit[k+1];
+               q_bk[k] <= q_bk[k+1];  q_own[k] <= n_own[k+1];
             end
-            q_v[QN-1] <= 1'b0;
+            q_v[QN-1] <= 1'b0;  q_own[QN-1] <= 1'b0;
          end
+         // an entering request is never an owner yet: n_own counts it from the next cycle
          if (enq) begin
             q_v[tail] <= 1'b1;  q_we[tail] <= inj_enq ? 1'b0 : rq_we;  q_inj[tail] <= inj_enq;
             q_line[tail] <= inj_enq ? inj_line : rq_line;  q_buf[tail] <= inj_enq ? 4'd0 : rq_buf;
-            q_hit[tail] <= e_hit;
+            q_bk[tail] <= bank_of(inj_enq ? inj_line : rq_line);
+            q_hit[tail] <= e_hit;  q_own[tail] <= 1'b0;
          end
          q_n <= tail_n + {{QB{1'b0}}, enq};
          if (cas_go) h_half <= ~h_half;
@@ -441,6 +432,12 @@ module ddr4_ctl #(
       if ({1'b0, pre_go || prea_go} + {1'b0, ref_go} + {1'b0, zq_go} > 2'd1)
          $fatal(1, "ddr4_ctl: two slot-3 commands at once");
       if (r_owed > 4'd8)                       $fatal(1, "ddr4_ctl: %0d refreshes owed (JEDEC allows 8)", r_owed);
+      for (k = 0; k < QN; k = k + 1) begin
+         if (q_v[k] && q_bk[k] != bank_of(q_line[k]))
+            $fatal(1, "ddr4_ctl: entry %0d's kept bank %0d is not its line's %0d", k, q_bk[k], bank_of(q_line[k]));
+         if (q_own[k] && !n_own[k])
+            $fatal(1, "ddr4_ctl: entry %0d is flagged its bank's owner behind an older request for bank %0d", k, q_bk[k]);
+      end
       for (k = 0; k < 8; k = k + 1)
          if (z_rcd[k] != (t_rcd[k] == 0) || z_pre[k] != (t_pre[k] == 0) || z_act[k] != (t_rp[k] == 0 && t_rf == 8'd0))
             $fatal(1, "ddr4_ctl: bank %0d's zero flags (rcd %0d pre %0d act %0d) disagree with its counters (%0d %0d %0d/%0d)",
