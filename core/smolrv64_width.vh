@@ -5,7 +5,7 @@
  `define SMOLRV64_IW 4
 `endif
 `ifndef SMOLRV64_FW
- `define SMOLRV64_FW 6                 // fetch width: instructions into the decoupling queue per cycle (IW..8)
+ `define SMOLRV64_FW 4                 // fetch width: instructions into the decoupling queue per cycle (IW..8)
 `endif
 `ifndef SMOLRV64_DRAM_LG2                // DRAM: 2^this bytes from 0x8000_0000 (the instance's; PABITS follows)
  `ifdef COSIM_MEM_SIZE_LG2

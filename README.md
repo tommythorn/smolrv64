@@ -43,11 +43,11 @@ is read off the RTL or measured with the workload named):
 
 - **Four-wide dispatch and retire behind a decoupled fetch stream.** The fetch stream
   reads one 16-byte pair per cycle from the instruction cache into a 64-halfword fetch ring,
-  ahead of decode, whose instruction boundaries are found as the bytes arrive; up to six RVC or
+  ahead of decode, whose instruction boundaries are found as the bytes arrive; up to four RVC or
   32-bit instructions a cycle go from it into a 16-entry decoupling queue; up to four are
   renamed and dispatched a cycle, consecutive instructions to consecutive lanes (the lanes
   rotate, so each takes every fourth with no steering), and up to four retire.
-- **A status-only reorder buffer.** 64 rows of four, of which 228 entries are live at once
+- **A status-only reorder buffer.** 64 rows of four, of which 232 entries are live at once
   (the 9-bit sequence number that orders restarts bounds the window), 25 bits each: the
   destination and its new and previous mappings -- no values, no PCs, no operands. A second,
   *irrevocable* pointer walks ahead of the head over completed entries and commits stores

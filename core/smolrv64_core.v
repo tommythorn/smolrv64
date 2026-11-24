@@ -171,8 +171,8 @@ module smolrv64_core
    // while no two live ones are 2^(SEQW-1) or more apart. An op is live from the bundle register
    // to its retirement: the bundle (FW), the decoupling queue (QD), the IR's group (IW) and the
    // ROB (ROB_CAP rows of IW). SEQW is fixed (9) and the ROB fills the rows it allows: all 64 at
-   // IW=3, 57 at IW=4 -- the 28 entries cost GB5 0.04% of its cycles, a 10-bit seqno costs every
-   // age compare a bit (measured 2026-10-24).
+   // IW=3, 58 at IW=4 with FW 4 -- the rows it leaves cost GB5 about 0.04% of its cycles (28
+   // entries, measured 2026-10-24), a 10-bit seqno costs every age compare a bit.
    localparam integer ROB_ROWS = `SMOLRV64_ROB_ROWS;
    localparam integer SEQW     = `SMOLRV64_SEQW;
    localparam integer ROB_FIT  = ((1 << (SEQW - 1)) - `SMOLRV64_FW - `SMOLRV64_QD - IW) / IW;

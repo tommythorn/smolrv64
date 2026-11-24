@@ -114,8 +114,9 @@ frontend-bound (§14) and only ALU ops reorder; the buckets it targets are `ST_M
 
 `accept` (X←F) is registered off M-stage state. The queue decouples fetch from the backend so
 a fetch bubble and a backend stall do not serialise. Fetch pushes a bundle of up to FW
-instructions a cycle (`SMOLRV64_FW`, 6, up to 8; at IW=4 a width of 8 took 0.09% more cycles
-over GB5's 77 SimPoints) and dispatch pops a group of up to IW, so the queue refills faster than dispatch drains it. Depth `SMOLRV64_QD` (16),
+instructions a cycle (`SMOLRV64_FW`, 4, up to 8; at IW=4, over GB5's 77 SimPoints, a width of 6
+took 0.17% fewer cycles (geomean; SQLite 1.46%, Navigation 0.74%; Dhrystone 1.10%, CoreMark
+0.65%) for 5.5K more core LUTs, and 8 took 0.09% more than 6) and dispatch pops a group of up to IW, so the queue refills faster than dispatch drains it. Depth `SMOLRV64_QD` (16),
 at least 2 x FW: a bundle is pushed only with room for a whole one.
 
 ---
@@ -201,7 +202,7 @@ held a group until its room appeared and dispatched it in that cycle.
 | cause | meaning |
 |---|---|
 | *(operands)* | **no longer a dispatch stall.** Waiting for operands happens in the scheduler now (§2.1); dispatch is blocked by structural resources only. |
-| `~cr_rob` | no free ROB row within the 57 the ROB fills at IW=4 (`ROB_CAP`, §6) beyond the IR group's (`st_rob`) |
+| `~cr_rob` | no free ROB row within the 58 the ROB fills at IW=4 (`ROB_CAP`, §6) beyond the IR group's (`st_rob`) |
 | `~cr_i/l/f` | the member's scheduler (its lane's, rotated by `lc`) has no entry beyond its dispatch-stage register and the IR's op — integer 10 each; the head-op register holds one (`cr_l`: none in flight, none in the IR); for FP (`cr_f`), the F FIFO (8) and the FP scheduler (8, §6.1) have no room beyond the FIFO's ops and the IR's; `~cr_ld`/`~cr_st`, no LQ or SQ entry beyond the IR's (`st_iq`, `st_lq`, `st_sq`) |
 | `rn_stall` | any rename shard below its low-water mark (4 free registers for a lane's, 2 x `IW` for an FP shard), or the map's sweep after a squash (`st_rn`) |
 | `cr_ser`, `cr_csr` | a serializing op -- a fence, `fence.i`, an AMO, an xret, `ecall`/`ebreak`/`wfi`/`sfence.vma`, a trap from dispatch -- is **alone in flight**: it pops only when the ROB AND the store queue have drained (`drained`, rule C5) and the IR is empty, and nothing pops behind it until it commits. A CSR op does not drain: it waits only for the CSR op before it (`csr_infl`, or one in the IR) (`st_srz`) |
@@ -620,7 +621,7 @@ the allocation of the group in the IR (smolrv64_rename `low_n`).
 
 ## 6. Reorder buffer
 
-- **64 rows of a group** (256 entries at IW=4, 228 of them live at once: `ROB_CAP`, below), status only — no result values, no PC, no operands. A dispatch
+- **64 rows of a group** (256 entries at IW=4, 232 of them live at once: `ROB_CAP`, below), status only — no result values, no PC, no operands. A dispatch
   group takes a row, its instruction in lane k in column k. The lanes rotate (§3.2), so a
   row's instructions start at its **first column** `fc[row]` and run on cyclically: position p
   is column `(fc + p) % IW`. An op's **tag** is `{row, wrap, column}`, the wrap bit set when its
@@ -634,7 +635,7 @@ the allocation of the group in the IR (smolrv64_rename `low_n`).
   of a difference) is `SEQW` = 9 bits (`SMOLRV64_SEQW`), so it orders a window of 2^(SEQW−1) = 256
   ops, and `SEQ_LIVE` = FW + QD + IW + `ROB_CAP` × IW, every op from the bundle register to the ROB
   head, must fit it. The ROB holds `ROB_CAP` = min(`ROB_ROWS`, ⌊(256 − FW − QD − IW) / IW⌋) rows
-  at once -- all 64 at IW=3 (`SEQ_LIVE` 217), 57 at IW=4 (254) -- and its `ready` and dispatch's
+  at once -- all 64 at IW=3 (`SEQ_LIVE` 215), 58 at IW=4 (256) -- and its `ready` and dispatch's
   ROB credit both take the cap. Measured at IW=4 (2026-10-24): the 28 entries the cap leaves out
   cost GB5's 77 SimPoints 0.04% of their cycles (SQLite +0.61% the most) and the 60 M boot
   0.004%, where a 10-bit seqno costs every age compare a bit. An always-on check fatals when the
