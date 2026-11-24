@@ -74,19 +74,22 @@ module ddr4_ctl #(
    input  wire          per_rd_done
 );
    // ---- timings: cycles between the edges that latch the two commands ----
-   localparam [7:0] T_RCD   = 8'd5;     // ACT (slot 1) -> CAS (slot 0): 4*5 - 1 = 19 >= tRCD 19
-   localparam [7:0] T_RAS   = 8'd11;    // ACT (slot 1) -> PRE (slot 3): 4*11 + 2 = 46 >= tRAS 43
-   localparam [7:0] T_RP    = 8'd6;     // PRE (slot 3) -> ACT (slot 1): 4*6 - 2 = 22 >= tRP 19
-   localparam [7:0] T_RTP   = 8'd2;     // RD -> PRE: 4*2 + 3 = 11 >= tRTP 10
-   localparam [7:0] T_WRP   = 8'd9;     // WR -> PRE: 4*9 + 3 = 39 >= CWL + BL/2 + tWR = 38
-   localparam [7:0] T_RRD_S = 8'd2;     // ACT -> ACT, the other group: 8 >= tRRD_S 8
-   localparam [7:0] T_RRD_L = 8'd3;     // ACT -> ACT, the same group: 12 >= tRRD_L 9
-   localparam [7:0] T_FAW   = 8'd10;    // an ACT -> the fourth after it: 40 >= tFAW 40
-   localparam [7:0] T_CCD_L = 8'd2;     // CAS -> CAS, the same group: 8 >= tCCD_L 7 (tCCD_S 4: 1)
-   localparam [7:0] T_WTR_L = 8'd7;     // WR -> RD, the same group: 28 >= CWL + BL/2 + tWTR_L 28
-   localparam [7:0] T_WTR_S = 8'd6;     // WR -> RD, the other group: 24 >= CWL + BL/2 + tWTR_S 22
-   localparam [7:0] T_RTW   = 8'd4;     // RD -> WR: 16 >= RL + BL/2 - WL + 4 = 13 (PG150's spacing)
-   localparam [7:0] T_RPREF = 8'd5;     // PRE (slot 3) -> REF (slot 3): 20 >= tRP 19
+   // Every per-bank and per-group spacing fits TW bits; tRFC and tZQCS, which load all eight banks
+   // alike, are one shared counter (t_rf)
+   localparam integer TW = 4;
+   localparam [TW-1:0] T_RCD   = 4'd5;     // ACT (slot 1) -> CAS (slot 0): 4*5 - 1 = 19 >= tRCD 19
+   localparam [TW-1:0] T_RAS   = 4'd11;    // ACT (slot 1) -> PRE (slot 3): 4*11 + 2 = 46 >= tRAS 43
+   localparam [TW-1:0] T_RP    = 4'd6;     // PRE (slot 3) -> ACT (slot 1): 4*6 - 2 = 22 >= tRP 19
+   localparam [TW-1:0] T_RTP   = 4'd2;     // RD -> PRE: 4*2 + 3 = 11 >= tRTP 10
+   localparam [TW-1:0] T_WRP   = 4'd9;     // WR -> PRE: 4*9 + 3 = 39 >= CWL + BL/2 + tWR = 38
+   localparam [TW-1:0] T_RRD_S = 4'd2;     // ACT -> ACT, the other group: 8 >= tRRD_S 8
+   localparam [TW-1:0] T_RRD_L = 4'd3;     // ACT -> ACT, the same group: 12 >= tRRD_L 9
+   localparam [TW-1:0] T_FAW   = 4'd10;    // an ACT -> the fourth after it: 40 >= tFAW 40
+   localparam [TW-1:0] T_CCD_L = 4'd2;     // CAS -> CAS, the same group: 8 >= tCCD_L 7 (tCCD_S 4: 1)
+   localparam [TW-1:0] T_WTR_L = 4'd7;     // WR -> RD, the same group: 28 >= CWL + BL/2 + tWTR_L 28
+   localparam [TW-1:0] T_WTR_S = 4'd6;     // WR -> RD, the other group: 24 >= CWL + BL/2 + tWTR_S 22
+   localparam [TW-1:0] T_RTW   = 4'd4;     // RD -> WR: 16 >= RL + BL/2 - WL + 4 = 13 (PG150's spacing)
+   localparam [TW-1:0] T_RPREF = 4'd5;     // PRE (slot 3) -> REF (slot 3): 20 >= tRP 19
    localparam [7:0] T_RFC   = 8'd184;   // REF (slot 3) -> ACT (slot 1): 4*184 - 2 = 734 >= tRFC 734
    localparam [7:0] T_ZQCS  = 8'd33;    // ZQCS (slot 3) -> ACT (slot 1): 4*33 - 2 = 130 >= tZQCS 128
    localparam [11:0] T_REFI = 12'd2600; // tREFI 7.8 us = 10400 DRAM clocks
@@ -103,8 +106,8 @@ module ddr4_ctl #(
 
    function [2:0]  bank_of(input [25:0] l); bank_of = {l[0], l[8:7] ^ l[10:9] ^ l[12:11]}; endfunction   // {group, bank}
    function [16:0] row_of (input [25:0] l); row_of  = l[25:9]; endfunction
-   function [7:0]  dn(input [7:0] t); dn = (t == 8'd0) ? 8'd0 : t - 8'd1; endfunction
-   function [7:0]  mx(input [7:0] x, input [7:0] y); mx = (x > y) ? x : y; endfunction
+   function [TW-1:0] dn(input [TW-1:0] t); dn = (t == {TW{1'b0}}) ? {TW{1'b0}} : t - 1'b1; endfunction
+   function [TW-1:0] mx(input [TW-1:0] x, input [TW-1:0] y); mx = (x > y) ? x : y; endfunction
 
    // ---- the queue: entry 0 is the oldest; it shifts down as the head completes ----
    reg          q_v   [0:QN-1];
@@ -119,15 +122,16 @@ module ddr4_ctl #(
    // ---- the banks and their counters ----
    reg          b_open [0:7];
    reg [16:0]   b_row  [0:7];
-   reg [7:0]    t_rcd  [0:7];                // until a CAS (tRCD)
-   reg [7:0]    t_pre  [0:7];                // until a PRE (tRAS, tRTP, write recovery)
-   reg [7:0]    t_act  [0:7];                // until an ACT (tRP, tRFC, tZQCS)
-   reg [7:0]    t_actg [0:1];                // until an ACT in this group (tRRD)
-   reg [7:0]    t_casg [0:1];                // until a CAS in this group (tCCD_L)
-   reg [7:0]    t_rdg  [0:1];                // until a read CAS in this group (tWTR)
-   reg [7:0]    t_wr;                        // until a write CAS (read to write)
-   reg [7:0]    faw    [0:3];                // cycles since each of the last four ACTs, to T_FAW
-   reg [7:0]    lp;                          // cycles since the last PRE, to T_RPREF
+   reg [TW-1:0] t_rcd  [0:7];                // until a CAS (tRCD)
+   reg [TW-1:0] t_pre  [0:7];                // until a PRE (tRAS, tRTP, write recovery)
+   reg [TW-1:0] t_rp   [0:7];                // until an ACT (tRP); and until t_rf is zero
+   reg [7:0]    t_rf;                        // until an ACT in any bank (tRFC, tZQCS); the ZQCS waits for it
+   reg [TW-1:0] t_actg [0:1];                // until an ACT in this group (tRRD)
+   reg [TW-1:0] t_casg [0:1];                // until a CAS in this group (tCCD_L)
+   reg [TW-1:0] t_rdg  [0:1];                // until a read CAS in this group (tWTR)
+   reg [TW-1:0] t_wr;                        // until a write CAS (read to write)
+   reg [TW-1:0] faw    [0:3];                // cycles since each of the last four ACTs, to T_FAW
+   reg [TW-1:0] lp;                          // cycles since the last PRE, to T_RPREF
    // each counter's "is zero", registered from its next value: the decisions read a flag, not an
    // eight-bit compare behind a bank mux (asserted equal to the counters every cycle)
    reg          z_rcd [0:7], z_pre [0:7], z_act [0:7], z_actg [0:1], z_casg [0:1], z_rdg [0:1], z_wr;
@@ -160,7 +164,6 @@ module ddr4_ctl #(
    reg  [1:0]   r_st;
    reg  [11:0]  r_cnt;                       // to the next refresh
    reg  [3:0]   r_owed;                      // refreshes due and not yet issued
-   reg  [7:0]   r_wait;                      // tRFC before a ZQCS
    reg  [15:0]  zq_cnt;                      // refreshes to the next ZQCS
    reg  [8:0]   vt_cnt;
    reg          vt_rd, vt_gapd, vt_data, vt_gt, vt_owed;
@@ -176,7 +179,7 @@ module ddr4_ctl #(
    // breaks a minimum spacing), the head's bank first, then the lowest bank that wants one; no new
    // choice of a kind while one of it is pending (two ACTs are tRRD apart anyway), none while a
    // refresh holds ----
-   wire         faw_ok = faw[3] >= T_FAW - 8'd1;
+   wire         faw_ok = faw[3] >= T_FAW - 1'b1;
    reg          pre_d, act_d;                // this cycle's choices
    reg  [2:0]   pre_db, act_db;
    reg          pre_go, act_go;              // last cycle's choices, issued in this cycle's slots
@@ -224,7 +227,7 @@ module ddr4_ctl #(
    wire         row_busy = pre_go || act_go;    // a row-stage command in this cycle's slots
    wire         prea_go = (r_st == R_CLOSE) && !h_half && !row_busy && any_open && all_pre_ok;
    wire         ref_go  = (r_st == R_CLOSE) && !h_half && !row_busy && !any_open && (lp >= T_RPREF);
-   wire         zq_go   = (r_st == R_ZQW) && !row_busy && (r_wait == 8'd0);
+   wire         zq_go   = (r_st == R_ZQW) && !row_busy && (t_rf == 8'd0);
 
    // ---- entry: an injected read when the queue is empty -- of an open bank's row (the lowest open
    // bank's, its first line), else of line 0 -- else the requester ----
@@ -315,11 +318,11 @@ module ddr4_ctl #(
          mcRdCAS <= 1'b0;  mcWrCAS <= 1'b0;  winInjTxn <= 1'b0;  wr_prev <= 1'b0;
          for (k = 0; k < QN; k = k + 1) q_v[k] <= 1'b0;
          q_n <= {(QB+1){1'b0}};  h_half <= 1'b0;
-         for (k = 0; k < 8; k = k + 1) begin b_open[k] <= 1'b0; t_rcd[k] <= 8'd0; t_pre[k] <= 8'd0; t_act[k] <= T_RP; end
-         for (k = 0; k < 2; k = k + 1) begin t_actg[k] <= 8'd0; t_casg[k] <= 8'd0; t_rdg[k] <= 8'd0; end
+         for (k = 0; k < 8; k = k + 1) begin b_open[k] <= 1'b0; t_rcd[k] <= {TW{1'b0}}; t_pre[k] <= {TW{1'b0}}; t_rp[k] <= T_RP; end
+         for (k = 0; k < 2; k = k + 1) begin t_actg[k] <= {TW{1'b0}}; t_casg[k] <= {TW{1'b0}}; t_rdg[k] <= {TW{1'b0}}; end
          for (k = 0; k < 4; k = k + 1) faw[k] <= T_FAW;
-         t_wr <= 8'd0;  lp <= T_RPREF;
-         r_st <= R_RUN;  r_cnt <= 12'd0;  r_owed <= 4'd1;  r_wait <= 8'd0;  zq_cnt <= 16'hFFFF;
+         t_wr <= {TW{1'b0}};  lp <= T_RPREF;  t_rf <= 8'd0;
+         r_st <= R_RUN;  r_cnt <= 12'd0;  r_owed <= 4'd1;  zq_cnt <= 16'hFFFF;
          vt_cnt <= 9'd0;  vt_rd <= 1'b0;  vt_gapd <= 1'b0;  vt_data <= 1'b0;  vt_gt <= 1'b0;
          vt_owed <= 1'b0;  vt_quiet <= 2'd0;  gt_data_ready <= 1'b0;
       end else begin
@@ -341,37 +344,38 @@ module ddr4_ctl #(
          if (cas_go) h_half <= ~h_half;
 
          // counters count down; a command sets its own
-         for (k = 0; k < 8; k = k + 1) begin t_rcd[k] <= dn(t_rcd[k]); t_pre[k] <= dn(t_pre[k]); t_act[k] <= dn(t_act[k]); end
+         for (k = 0; k < 8; k = k + 1) begin t_rcd[k] <= dn(t_rcd[k]); t_pre[k] <= dn(t_pre[k]); t_rp[k] <= dn(t_rp[k]); end
+         t_rf <= (t_rf == 8'd0) ? 8'd0 : t_rf - 8'd1;
          for (k = 0; k < 2; k = k + 1) begin t_actg[k] <= dn(t_actg[k]); t_casg[k] <= dn(t_casg[k]); t_rdg[k] <= dn(t_rdg[k]); end
          t_wr <= dn(t_wr);
-         for (k = 0; k < 4; k = k + 1) if (faw[k] != T_FAW) faw[k] <= faw[k] + 8'd1;
-         if (lp != T_RPREF) lp <= lp + 8'd1;
+         for (k = 0; k < 4; k = k + 1) if (faw[k] != T_FAW) faw[k] <= faw[k] + 1'b1;
+         if (lp != T_RPREF) lp <= lp + 1'b1;
 
          if (act_go) begin
             b_open[act_b] <= 1'b1;  b_row[act_b] <= act_row;
-            t_rcd[act_b]  <= T_RCD - 8'd1;
-            t_pre[act_b]  <= T_RAS - 8'd1;
-            t_actg[act_b[2]]  <= T_RRD_L - 8'd1;
-            t_actg[~act_b[2]] <= mx(dn(t_actg[~act_b[2]]), T_RRD_S - 8'd1);
-            faw[0] <= 8'd0;
-            for (k = 1; k < 4; k = k + 1) faw[k] <= (faw[k-1] == T_FAW) ? T_FAW : faw[k-1] + 8'd1;
+            t_rcd[act_b]  <= T_RCD - 1'b1;
+            t_pre[act_b]  <= T_RAS - 1'b1;
+            t_actg[act_b[2]]  <= T_RRD_L - 1'b1;
+            t_actg[~act_b[2]] <= mx(dn(t_actg[~act_b[2]]), T_RRD_S - 1'b1);
+            faw[0] <= {TW{1'b0}};
+            for (k = 1; k < 4; k = k + 1) faw[k] <= (faw[k-1] == T_FAW) ? T_FAW : faw[k-1] + 1'b1;
          end
-         if (pre_go) begin b_open[pre_b] <= 1'b0; t_act[pre_b] <= mx(dn(t_act[pre_b]), T_RP - 8'd1); lp <= 8'd0; end
+         if (pre_go) begin b_open[pre_b] <= 1'b0; t_rp[pre_b] <= mx(dn(t_rp[pre_b]), T_RP - 1'b1); lp <= {TW{1'b0}}; end
          if (prea_go) begin
-            for (k = 0; k < 8; k = k + 1) begin b_open[k] <= 1'b0; t_act[k] <= mx(dn(t_act[k]), T_RP - 8'd1); end
-            lp <= 8'd0;
+            for (k = 0; k < 8; k = k + 1) begin b_open[k] <= 1'b0; t_rp[k] <= mx(dn(t_rp[k]), T_RP - 1'b1); end
+            lp <= {TW{1'b0}};
          end
-         if (ref_go) for (k = 0; k < 8; k = k + 1) t_act[k] <= T_RFC - 8'd1;
-         if (zq_go)  for (k = 0; k < 8; k = k + 1) t_act[k] <= T_ZQCS - 8'd1;
-         if (rd_cas || wr_cas) t_casg[h_g] <= T_CCD_L - 8'd1;
+         if (ref_go) t_rf <= T_RFC - 8'd1;
+         if (zq_go)  t_rf <= T_ZQCS - 8'd1;
+         if (rd_cas || wr_cas) t_casg[h_g] <= T_CCD_L - 1'b1;
          if (rd_cas) begin
-            t_pre[h_b] <= mx(dn(t_pre[h_b]), T_RTP - 8'd1);
-            t_wr       <= T_RTW - 8'd1;
+            t_pre[h_b] <= mx(dn(t_pre[h_b]), T_RTP - 1'b1);
+            t_wr       <= T_RTW - 1'b1;
          end
          if (wr_cas) begin
-            t_pre[h_b]  <= mx(dn(t_pre[h_b]), T_WRP - 8'd1);
-            t_rdg[h_g]  <= T_WTR_L - 8'd1;
-            t_rdg[~h_g] <= mx(dn(t_rdg[~h_g]), T_WTR_S - 8'd1);
+            t_pre[h_b]  <= mx(dn(t_pre[h_b]), T_WRP - 1'b1);
+            t_rdg[h_g]  <= T_WTR_L - 1'b1;
+            t_rdg[~h_g] <= mx(dn(t_rdg[~h_g]), T_WTR_S - 1'b1);
          end
 
          // refresh: one owed every tREFI; the head finishes its line, the banks close (PREA once
@@ -383,10 +387,9 @@ module ddr4_ctl #(
             R_RUN:   if (ref_want && !h_half) r_st <= R_CLOSE;
             R_CLOSE: if (ref_go) begin
                         r_st <= (zq_cnt == 16'd0) ? R_ZQW : R_RUN;
-                        r_wait <= T_RFC - 8'd1;
                         zq_cnt <= zq_cnt - 16'd1;
                      end
-            R_ZQW:   if (zq_go) r_st <= R_RUN; else r_wait <= dn(r_wait);
+            R_ZQW:   if (zq_go) r_st <= R_RUN;
             default: r_st <= R_RUN;
          endcase
 
@@ -408,12 +411,13 @@ module ddr4_ctl #(
    end
 
    // the zero flags: a counter is zero next cycle when no command sets it and it is at most 1 now
-   function lo(input [7:0] t); lo = (t[7:1] == 7'd0); endfunction
+   function lo(input [TW-1:0] t); lo = (t[TW-1:1] == {(TW-1){1'b0}}); endfunction
+   wire rf_lo = (t_rf[7:1] == 7'd0);
    always @(posedge clk) begin
       for (k = 0; k < 8; k = k + 1) begin
          z_rcd[k] <= lo(t_rcd[k]) && !(act_go && act_b == k[2:0]);
          z_pre[k] <= lo(t_pre[k]) && !(act_go && act_b == k[2:0]) && !((rd_cas || wr_cas) && h_b == k[2:0]);
-         z_act[k] <= lo(t_act[k]) && !(pre_go && pre_b == k[2:0]) && !prea_go && !ref_go && !zq_go;
+         z_act[k] <= lo(t_rp[k]) && rf_lo && !(pre_go && pre_b == k[2:0]) && !prea_go && !ref_go && !zq_go;
       end
       for (k = 0; k < 2; k = k + 1) begin
          z_actg[k] <= lo(t_actg[k]) && !act_go;
@@ -438,13 +442,13 @@ module ddr4_ctl #(
          $fatal(1, "ddr4_ctl: two slot-3 commands at once");
       if (r_owed > 4'd8)                       $fatal(1, "ddr4_ctl: %0d refreshes owed (JEDEC allows 8)", r_owed);
       for (k = 0; k < 8; k = k + 1)
-         if (z_rcd[k] != (t_rcd[k] == 8'd0) || z_pre[k] != (t_pre[k] == 8'd0) || z_act[k] != (t_act[k] == 8'd0))
-            $fatal(1, "ddr4_ctl: bank %0d's zero flags (rcd %0d pre %0d act %0d) disagree with its counters (%0d %0d %0d)",
-                   k, z_rcd[k], z_pre[k], z_act[k], t_rcd[k], t_pre[k], t_act[k]);
+         if (z_rcd[k] != (t_rcd[k] == 0) || z_pre[k] != (t_pre[k] == 0) || z_act[k] != (t_rp[k] == 0 && t_rf == 8'd0))
+            $fatal(1, "ddr4_ctl: bank %0d's zero flags (rcd %0d pre %0d act %0d) disagree with its counters (%0d %0d %0d/%0d)",
+                   k, z_rcd[k], z_pre[k], z_act[k], t_rcd[k], t_pre[k], t_rp[k], t_rf);
       for (k = 0; k < 2; k = k + 1)
-         if (z_actg[k] != (t_actg[k] == 8'd0) || z_casg[k] != (t_casg[k] == 8'd0) || z_rdg[k] != (t_rdg[k] == 8'd0))
+         if (z_actg[k] != (t_actg[k] == 0) || z_casg[k] != (t_casg[k] == 0) || z_rdg[k] != (t_rdg[k] == 0))
             $fatal(1, "ddr4_ctl: group %0d's zero flags disagree with its counters", k);
-      if (z_wr != (t_wr == 8'd0)) $fatal(1, "ddr4_ctl: z_wr %0d against t_wr %0d", z_wr, t_wr);
+      if (z_wr != (t_wr == 0)) $fatal(1, "ddr4_ctl: z_wr %0d against t_wr %0d", z_wr, t_wr);
       if (vt_cnt == PER_INTVL - 9'd1 && !vt_gt)
          $fatal(1, "ddr4_ctl: a VT-tracking interval ended without its gt_data_ready (read %0d gap %0d data %0d)",
                 vt_rd, vt_gapd, vt_data);

@@ -44,9 +44,9 @@ module ddr4_port_line #(
    input  wire [255:0]    rdData,
    input  wire            wrDataEn,
    input  wire [4:0]      wrDataAddr,
-   output reg             wd_mine,              // the cycle after wrDataEn: wd_* are this port's
-   output reg  [255:0]    wd_data,
-   output reg  [31:0]     wd_mask               // 1: the byte is not written
+   output wire            wd_mine,              // the PHY asks this port for write data: wd_* are the half it names
+   output wire [255:0]    wd_data,
+   output wire [31:0]     wd_mask               // 1: the byte is not written
 );
    localparam integer NR = 8, RB = 3;            // read buffers 0..7: tags {0, buffer, half}
    localparam integer NW = 4, WB = 2;            // write buffers 8..11: tags {2'b10, buffer, half}
@@ -58,8 +58,8 @@ module ddr4_port_line #(
    reg  [IDW-1:0]  r_ids [0:NR-1];
    reg  [NW-1:0]   w_busy, w_done;              // allocated; its data has gone, the done is owed
    reg  [IDW-1:0]  w_ids [0:NW-1];
-   reg  [255:0]    rlo [0:NR-1];                // the read lines' halves, written by the PHY
-   reg  [255:0]    rhi [0:NR-1];
+   reg  [127:0]    rev [0:2*NR-1];              // the read lines' even and odd beats at {buffer, half},
+   reg  [127:0]    rod [0:2*NR-1];              // written by the PHY
    reg  [287:0]    wlo [0:NW-1];                // the write lines' halves, {mask_n, data}
    reg  [287:0]    whi [0:NW-1];
 
@@ -93,11 +93,14 @@ module ddr4_port_line #(
    reg  [1:0]      s_beat;
    wire            s_load = s_on && (!r_valid || r_ready);
    wire            s_end  = s_load && (s_beat == 2'd3);
-   wire [255:0]    s_half = s_beat[1] ? rhi[s_j] : rlo[s_j];
+   wire [127:0]    s_ev   = rev[{s_j, s_beat[1]}],  s_od = rod[{s_j, s_beat[1]}];
 
    // ---- writes: the data a half at a time, the next cycle; dones in buffer order ----
    wire            wr_mine = wrDataEn && (wrDataAddr[4:3] == 2'b10);
    wire [WB-1:0]   wr_j    = wrDataAddr[WB:1];
+   // the half the PHY asks for, read as it asks; ddr4_mem registers it for the PHY, which takes it a cycle later
+   assign wd_mine = wr_mine;
+   assign {wd_mask, wd_data} = wrDataAddr[0] ? whi[wr_j] : wlo[wr_j];
    reg             w_any_done;  reg [WB-1:0] w_dj;
    always @* begin
       w_any_done = 1'b0; w_dj = {WB{1'b0}};
@@ -116,16 +119,13 @@ module ddr4_port_line #(
          wlo[w_free] <= {~q_wmask[31:0],  q_wdata[255:0]};
          whi[w_free] <= {~q_wmask[63:32], q_wdata[511:256]};
       end
-      if (rd_mine && !rdDataAddr[0]) rlo[rd_j] <= rdData;
-      if (rd_mine &&  rdDataAddr[0]) rhi[rd_j] <= rdData;
-      // the PHY takes a write half the cycle after it asks
-      wd_mine <= wr_mine;
-      {wd_mask, wd_data} <= wrDataAddr[0] ? whi[wr_j] : wlo[wr_j];
+      if (rd_mine) rev[{rd_j, rdDataAddr[0]}] <= rdData[127:0];
+      if (rd_mine) rod[{rd_j, rdDataAddr[0]}] <= rdData[255:128];
       w_last_q <= wr_mine && wrDataAddr[0];  w_last_j <= wr_j;
       // the stream's output register
       if (s_load) begin
          r_valid <= 1'b1;  r_id <= r_ids[s_j];  r_beat <= s_beat;  r_last <= (s_beat == 2'd3);
-         r_data  <= s_beat[0] ? s_half[255:128] : s_half[127:0];
+         r_data  <= s_beat[0] ? s_od : s_ev;
       end else if (r_ready) r_valid <= 1'b0;
 
       if (q_valid && q_ready) begin

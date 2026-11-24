@@ -71,9 +71,9 @@ module ddr4_port_axi (
    input  wire [255:0]  rdData,
    input  wire          wrDataEn,
    input  wire [4:0]    wrDataAddr,
-   output reg           wd_mine,
-   output reg  [255:0]  wd_data,
-   output reg  [31:0]   wd_mask                 // 1: the byte is not written
+   output wire          wd_mine,                // the PHY asks this port for write data: wd_* are the half it names
+   output wire [255:0]  wd_data,
+   output wire [31:0]   wd_mask                 // 1: the byte is not written
 );
    localparam [3:0] WBUF = 4'd14;
    assign s_axi_bresp = 2'b00;
@@ -87,7 +87,9 @@ module ddr4_port_axi (
    reg  [1:0]    s_got [0:NR-1];                 // ...the line's halves in
    reg  [25:0]   s_line [0:NR-1];
    reg  [2:0]    s_k0 [0:NR-1], s_n [0:NR-1], s_id [0:NR-1];   // first beat, beats after it, id
-   reg  [511:0]  s_buf [0:NR-1];
+   // the slots' lines: a memory per beat position k in a half, at {slot, half}, each written by one
+   // statement, so each is distributed RAM
+   wire [255:0]  sb_q;                           // the four beats at {rs_p, l_k[2]}
    reg  [1:0]    a_p, sn_p, rq_p, rs_p;          // the slot an AR takes, snoops, asks, answers next
    reg           rs_on;                          // rs_p's beats have begun: r_k, r_left are its
    reg  [2:0]    r_k, r_left;                    // the beat the register takes next, the beats after it
@@ -144,16 +146,21 @@ module ddr4_port_axi (
 
    wire       rd_mine = rdDataEn && (rdDataAddr[4:3] == 2'b11) && (rdDataAddr[2:1] != 2'b10);   // 12, 13, 15
    wire [1:0] rd_s    = (rdDataAddr[2:1] == 2'b11) ? 2'd2 : {1'b0, rdDataAddr[1]};          // its slot
+   genvar gk;
+   generate for (gk = 0; gk < 4; gk = gk + 1) begin : g_sb
+      (* ram_style = "distributed" *) reg [63:0] mem [0:2*NR-1];
+      always @(posedge clk) if (rd_mine) mem[{rd_s, rdDataAddr[0]}] <= rdData[gk*64 +: 64];
+      assign sb_q[gk*64 +: 64] = mem[{rs_p, l_k[2]}];
+   end endgenerate
    wire wr_mine = wrDataEn && (wrDataAddr[4:1] == WBUF);
+   assign wd_mine = wr_mine;
+   assign wd_data = w_buf[wrDataAddr[0]*256 +: 256];
+   assign wd_mask = ~w_strb[wrDataAddr[0]*32 +: 32];
    reg  w_sent;                                 // the PHY asked for the second half last cycle
    integer b;
 
    always @(posedge clk) begin
-      if (rd_mine) s_buf[rd_s][rdDataAddr[0]*256 +: 256] <= rdData;
-      if (r_load) begin r_dq <= s_buf[rs_p][l_k*64 +: 64];  r_lq <= (l_left == 3'd0);  s_axi_rid <= s_id[rs_p]; end
-      wd_mine <= wr_mine;
-      wd_data <= w_buf[wrDataAddr[0]*256 +: 256];
-      wd_mask <= ~w_strb[wrDataAddr[0]*32 +: 32];
+      if (r_load) begin r_dq <= sb_q[l_k[1:0]*64 +: 64];  r_lq <= (l_left == 3'd0);  s_axi_rid <= s_id[rs_p]; end
       w_sent  <= wr_mine && wrDataAddr[0];
       if (reset) begin
          q_v <= 1'b0;  s_v <= {NR{1'b0}};  s_sn <= {NR{1'b0}};  s_rq <= {NR{1'b0}};  a_p <= 2'd0;  sn_p <= 2'd0;  rq_p <= 2'd0;  rs_p <= 2'd0;  rs_on <= 1'b0;  r_vq <= 1'b0;

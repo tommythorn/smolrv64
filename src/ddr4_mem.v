@@ -96,8 +96,12 @@ module ddr4_mem #(
 
    assign a_rq_ready = rq_ready;
    assign l_rq_ready = rq_ready && !a_rq_valid;
-   assign wrData     = a_wd_mine ? a_wd_data : l_wd_data;
-   assign wrDataMask = a_wd_mine ? a_wd_mask : l_wd_mask;
+   // the half the PHY asked for, from the requester it named, registered once: the PHY takes it a cycle
+   // after it asks
+   reg  [255:0] wd_q;  reg [31:0] wm_q;
+   always @(posedge clk) {wm_q, wd_q} <= a_wd_mine ? {a_wd_mask, a_wd_data} : {l_wd_mask, l_wd_data};
+   assign wrData     = wd_q;
+   assign wrDataMask = wm_q;
 
    ddr4_ctl u_ctl (
       .clk(clk), .reset(reset), .cal_done(cal_done),

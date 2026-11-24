@@ -100,3 +100,8 @@ mbd_e   : D$ merge buffers, even chunks (as flops they were 4.6k registers and t
 mbd_o   : D$ merge buffers, odd chunks
 fva_l : a load entry's full VA, a trap's tval
 fva_s : a store entry's full VA, a trap's tval
+
+# ---- the DDR4 controller's ports: the lines the PHY writes, a memory per beat position -----
+rev : the line port's read buffers, even beats at {buffer, half}
+rod : the line port's read buffers, odd beats
+g_sb[*].mem x4 : the DMA port's read slots, a memory per beat position in a half at {slot, half}
