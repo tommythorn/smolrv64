@@ -11,7 +11,7 @@ module tb;
    reg  [63:0] wdata;
    reg  [7:0]  wmask;
    wire [63:0] rdata;
-   reg  [63:0] src;
+   reg  [15:0] src;
    wire        meip, seip;
 
    plic dut (.clk(clk), .reset(reset), .we(we), .re(re), .addr(addr),
@@ -32,7 +32,7 @@ module tb;
 
    reg [63:0] v;
    initial begin
-      we=0; re=0; addr=0; wdata=0; wmask=8'hff; src=0;
+      we=0; re=0; addr=0; wdata=0; wmask=8'hff; src=16'd0;
       reset=1; @(negedge clk); @(negedge clk); reset=0; @(negedge clk);
 
       // program: priority[10]=7, threshold=0, enable bit 10
@@ -46,7 +46,7 @@ module tb;
       rd(24'h201004, v); chk(v, 64'd0, "claim idle");
 
       // assert source 10 -> becomes pending+enabled -> meip
-      @(negedge clk); src = 64'd1 << 10;
+      @(negedge clk); src = 16'd1 << 10;
       repeat (4) @(negedge clk);
       chk({63'd0,meip}, 64'd1, "meip asserted");
       chk({63'd0,seip}, 64'd1, "seip asserted");
@@ -58,16 +58,25 @@ module tb;
       chk({63'd0,meip}, 64'd0, "meip after claim");
 
       // drop the source, then complete (write source id back) -> rearm; no re-pend
-      @(negedge clk); src = 64'd0;
+      @(negedge clk); src = 16'd0;
       wr(24'h201004, 64'd10, 8'h0f);                // complete source 10
       repeat (4) @(negedge clk);
       chk({63'd0,meip}, 64'd0, "meip after complete");
 
       // re-assert -> pending again (gateway rearmed)
-      @(negedge clk); src = 64'd1 << 10;
+      @(negedge clk); src = 16'd1 << 10;
       repeat (4) @(negedge clk);
       chk({63'd0,meip}, 64'd1, "meip re-asserted");
       rd(24'h201004, v); chk(v, 64'd10, "re-claim=10");
+
+      // sources 16 and up are not implemented: their priority and enable read zero
+      wr(24'h000050, 64'd7, 8'h0f);                 // priority[20]
+      rd(24'h000050, v); chk(v, 64'd0, "priority[20] hardwired 0");
+      rd(24'h000028, v); chk(v, 64'd7, "priority[10] kept");
+      wr(24'h002080, {64{1'b1}}, 8'hff);            // enable all, an 8-byte write
+      rd(24'h002080, v); chk(v, 64'hFFFF, "enable: 16 sources");
+      wr(24'h002084, 64'hFFFF_FFFF, 8'h0f);         // the high word alone
+      rd(24'h002080, v); chk(v, 64'hFFFF, "enable high word hardwired 0");
 
       if (errs==0) $display("ALL TESTS PASSED");
       else         $display("plic: %0d FAILURES", errs);

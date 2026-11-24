@@ -294,7 +294,8 @@ module rv_soc_top #(
       .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(clint_rdata),
       .mtip(clint_mtip), .msip(clint_msip), .o_mtime(clint_mtime));
    // PLIC (SiFive layout @ 0x0C00_0000): external-interrupt controller.
-   // Sources: 10 = UART (DTS interrupts=<10>), 11 = virtio_blk.
+   // Sources (the device trees' interrupts): 4 = virtio keyboard, 10 = UART, 11 = virtio_blk,
+   // 12 = virtio_net, 13 = virtio_snd; the PLIC implements 16.
    wire [63:0] plic_rdata;  wire plic_meip, plic_seip;  wire [11:0] plic_dbg;
    wire [63:0] plic_addr = dev_addr;
    wire        uart_irq;
@@ -302,7 +303,7 @@ module rv_soc_top #(
      (.clk(clk), .reset(reset),
       .we(dmem_wfsm & is_plic_w & ~dev_wack), .re(dmem_ren & is_plic_r),
       .addr(plic_addr[23:0]), .wdata(dmem_wdata), .wmask(dmem_wmask), .rdata(plic_rdata),
-      .src({50'd0, virtio_snd_irq, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
+      .src({2'd0, virtio_snd_irq, virtio_net_irq, virtio_irq, uart_irq, 5'd0, virtio_kbd_irq, 4'd0}), .meip(plic_meip), .seip(plic_seip),
       .dbg(plic_dbg));
    // interrupt-path debug bus out to the wrapper's ILA: {plic src-11 lifecycle (12), a plic MMIO
    // access strobe + its low addr nibble to time claim(0x004)/complete}.

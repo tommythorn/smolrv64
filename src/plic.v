@@ -1,7 +1,8 @@
 `default_nettype none
 
-// PLIC (SiFive layout, base 0x0C00_0000) for the probe SoC -- a standalone extraction of
-// the model embedded in smolrv64.v, reusing smolrv64_plic_arbiter.v for the priority scan.
+// PLIC (SiFive layout, base 0x0C00_0000) for the probe SoC; smolrv64_plic_arbiter.v is its
+// priority scan. NSRC sources are implemented: a source at or above NSRC has its priority and
+// enable hardwired to zero, as the PLIC specification allows, so it never pends.
 // Only the S-mode context (context 1) is implemented (Linux runs external IRQs through it),
 // and meip/seip are both driven by that single context's decision -- matching smolrv64.
 //
@@ -19,7 +20,7 @@
 //
 // Gateway: a source becomes pending while its level is asserted and it is not in service;
 // claim clears its pending bit and marks it in service; complete rearms it. Source 0 unused.
-module plic #(parameter NSRC = 64)
+module plic #(parameter NSRC = 16)    // a multiple of 16, at most 64
   (input  wire             clk,
    input  wire             reset,
    input  wire             we,            // write accept (1-cycle)
@@ -36,7 +37,8 @@ module plic #(parameter NSRC = 64)
    output wire [11:0]      dbg);
 
    reg [2:0]  prio [0:NSRC-1];
-   reg [63:0] pending, enabled, in_service;
+   reg [NSRC-1:0] pending, enabled, in_service;
+   wire [5:0]     pidx = addr[7:2];                 // the priority register a write or read names
    reg [2:0]  threshold;
    integer i;
    initial begin
@@ -56,13 +58,13 @@ module plic #(parameter NSRC = 64)
    // SIM-ONLY (see rv_soc_top's SMOLRV64_IRQ_STIM): source 10 counts as enabled at priority >= 1
    // whatever the kernel wrote (it masks a source by writing priority 0 and never requests the
    // UART line before the tty opens), so the spurious level becomes a stream of interrupts.
-   wire [63:0]       en_eff   = enabled   | 64'h400;
+   wire [NSRC-1:0]   en_eff   = enabled   | {{(NSRC-11){1'b0}}, 11'h400};
    wire [3*NSRC-1:0] prio_eff = prio_flat | ({{(3*NSRC-1){1'b0}}, 1'b1} << (10*3));
 `else
-   wire [63:0]       en_eff   = enabled;
+   wire [NSRC-1:0]   en_eff   = enabled;
    wire [3*NSRC-1:0] prio_eff = prio_flat;
 `endif
-   smolrv64_plic_arbiter arb
+   smolrv64_plic_arbiter #(.NSRC(NSRC)) arb
      (.clock(clk), .pending(pending), .enabled(en_eff),
       .priority_flat(prio_eff), .threshold(threshold),
       .best_irq(best_irq), .has_irq(has_irq));
@@ -70,40 +72,40 @@ module plic #(parameter NSRC = 64)
    assign meip = has_irq;
    assign seip = has_irq;
 
-   wire [63:0] source_level = {{(64-NSRC){1'b0}}, src} & ~64'd1;   // source 0 unused
+   wire [NSRC-1:0] source_level = src & ~{{(NSRC-1){1'b0}}, 1'b1};   // source 0 unused
    wire        is_claim = (addr >= 24'h201004) && (addr <= 24'h201007);
    wire        do_claim = re & is_claim & has_irq;
    // a COMPLETE write (rearm gateway) for a nonzero source -- src-11's completes clear in_service[11]
-   wire        complete_evt = we & is_claim & (wdata[5:0] != 6'd0);
+   wire        complete_evt = we & is_claim & (wdata[5:0] != 6'd0) & (wdata[5:0] < NSRC);
    // dbg source index: 10 = UART THRE/RDA (the /init console-write wedge under
    // investigation); was 11 (virtio-blk) during the root-mount-hang hunt.
    assign      dbg = {complete_evt, do_claim, seip, in_service[10], pending[10], source_level[10], best_irq};
 
    // next pending = gateway set, minus the just-claimed source
-   reg [63:0] n_pending;
+   reg [NSRC-1:0] n_pending;
    always @* begin
       n_pending = pending | (source_level & ~in_service);
-      if (do_claim) n_pending[best_irq] = 1'b0;
+      if (do_claim) n_pending[best_irq[$clog2(NSRC)-1:0]] = 1'b0;
    end
 
+   // the enable bitmap after a write: 8 bytes, or the 32-bit word addr[2] names
+   wire [63:0] en_64 = {{(64-NSRC){1'b0}}, enabled};
+   wire [63:0] en_w  = wmask[4] ? wdata : addr[2] ? {wdata[31:0], en_64[31:0]} : {en_64[63:32], wdata[31:0]};
    always @(posedge clk) begin
       if (reset) begin
          pending<=0; enabled<=0; in_service<=0; threshold<=0;
       end else begin
          pending <= n_pending;
-         if (do_claim) in_service[best_irq] <= 1'b1;
+         if (do_claim) in_service[best_irq[$clog2(NSRC)-1:0]] <= 1'b1;
          if (we) begin
-            if (addr <= 24'h0000FF)
-               prio[addr[7:2]] <= wdata[2:0];
-            else if (addr >= 24'h002080 && addr <= 24'h002087) begin
-               if (wmask[4])      enabled        <= wdata;          // 8-byte write
-               else if (addr[2])  enabled[63:32] <= wdata[31:0];
-               else               enabled[31:0]  <= wdata[31:0];
-            end else if (addr >= 24'h201000 && addr <= 24'h201003)
+            if (addr <= 24'h0000FF) begin
+               if (pidx < NSRC) prio[pidx[$clog2(NSRC)-1:0]] <= wdata[2:0];
+            end else if (addr >= 24'h002080 && addr <= 24'h002087)
+               enabled <= en_w[NSRC-1:0];
+            else if (addr >= 24'h201000 && addr <= 24'h201003)
                threshold <= wdata[2:0];
-            else if (is_claim) begin                                // complete: rearm gateway
-               if (wdata[5:0] != 0) in_service[wdata[5:0]] <= 1'b0;
-            end
+            else if (complete_evt)                                  // complete: rearm gateway
+               in_service[wdata[$clog2(NSRC)-1:0]] <= 1'b0;
          end
       end
    end
@@ -127,10 +129,10 @@ module plic #(parameter NSRC = 64)
    end
 
    integer si;
-   reg [31:0] stuck [0:63];
-   initial for (si = 0; si < 64; si = si + 1) stuck[si] = 0;
+   reg [31:0] stuck [0:NSRC-1];
+   initial for (si = 0; si < NSRC; si = si + 1) stuck[si] = 0;
    always @(posedge clk) if (!reset)
-      for (si = 1; si < 64; si = si + 1)
+      for (si = 1; si < NSRC; si = si + 1)
          if (in_service[si] & source_level[si]) begin
             stuck[si] <= stuck[si] + 1;
             if (stuck[si] == 32'd2000000)
@@ -139,12 +141,16 @@ module plic #(parameter NSRC = 64)
          end else stuck[si] <= 0;
 `endif
 
+   // the arbiter names only implemented sources
+   always @(posedge clk) if (!reset && has_irq && best_irq >= NSRC)
+      $fatal(1, "plic: the arbiter picked source %0d of %0d", best_irq, NSRC);
+
    // registered read (valid the cycle after `re`); claim returns best_irq
    always @(posedge clk) begin
       if (re) begin
-         if (addr <= 24'h0000FF)                            rdata <= {61'd0, prio[addr[7:2]]};
-         else if (addr >= 24'h001000 && addr <= 24'h00107F) rdata <= pending >> ({addr[6:0]} * 8);
-         else if (addr >= 24'h002080 && addr <= 24'h002087) rdata <= enabled;
+         if (addr <= 24'h0000FF)                            rdata <= (pidx < NSRC) ? {61'd0, prio[pidx[$clog2(NSRC)-1:0]]} : 64'd0;
+         else if (addr >= 24'h001000 && addr <= 24'h00107F) rdata <= {{(64-NSRC){1'b0}}, pending} >> ({addr[6:0]} * 8);
+         else if (addr >= 24'h002080 && addr <= 24'h002087) rdata <= en_64;
          else if (addr >= 24'h201000 && addr <= 24'h201003) rdata <= {61'd0, threshold};
          else if (is_claim)                                 rdata <= {58'd0, best_irq};
          else                                               rdata <= 64'd0;
