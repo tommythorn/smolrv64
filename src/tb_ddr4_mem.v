@@ -142,7 +142,7 @@ module tb_ddr4_mem;
       r_ready <= ($urandom % 10) != 0;
       w_ready <= ($urandom % 10) != 0;
       // a new request now and then, on a free id
-      if ((!q_valid || q_ready) && !draining && phase != 3 && ($urandom % 3) == 0) begin
+      if ((!q_valid || q_ready) && !draining && phase != 3 && phase != 5 && ($urandom % 3) == 0) begin
          automatic int id = $urandom % 32;
          if (!l_busy[id]) begin
             automatic bit we = (phase == 2) ? 1 : (phase == 1) ? 0 : ($urandom % 5) < 2;

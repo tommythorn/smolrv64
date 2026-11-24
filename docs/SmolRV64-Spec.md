@@ -1854,8 +1854,8 @@ The L2's misses and write-backs go out on the `ddr_*` port: the testbench's mode
   request to the controller leaves from a register, a read's before the write's; register
   slices on AW/W and R before it; each line snooped in the D$ before it goes, a read's cleaned, a
   write's flushed and released as the controller takes it) goes first. `tb_ddr4_mem` streams line
-  reads with a fixed snoop wait: 48.0 `ui_clk` cycles a line at 30 (134 one at a time), 41.7 at
-  15, 68.3 at 60; past ~40 the snoop channel, one snoop at a time, is the bound.
+  reads alone with a fixed snoop wait: 35.5 `ui_clk` cycles a line at 30 (134 one at a time), 19.5
+  at 15, 64.8 at 60; the snoop channel, one snoop at a time, is the bound (the wait plus ~5).
 
 The testbench model keeps 8 transactions in flight. Each draws the measured latency at
 acceptance, and they are answered in request order; `+ddr_reorder` answers in any order.
