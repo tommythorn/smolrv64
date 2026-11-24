@@ -15,10 +15,14 @@ IP=${1:?board ip}
 # The window is read with 64-BIT LOADS. That is the contract rv_soc_top's windows serve: a
 # byte load through the device path returns lane 0 replicated ('LLLLLLLL' for the magic,
 # 2026-09-21), and python's struct/mmap read is byte loads on this strict-align userland. So
-# the reader is a 20-line C program (/var/tmp/errlog/rdwin.c on the NFS root, built on the
-# board on first use) that does `volatile uint64_t` loads: `rdwin <phys> <nwords>`.
-W=$(timeout 60 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no "tommy@$IP" \
-      'cd /var/tmp/errlog && { [ -x rdwin ] || gcc -O1 -o rdwin rdwin.c; } && sudo ./rdwin 0x1000e000 3' 2>/dev/null
+# the reader is a 20-line C program, tools/rdwin.c, that does `volatile uint64_t` loads:
+# `rdwin <phys> <nwords>`. Every read sends the source; the board rebuilds the binary in
+# ~/.cache/rdwin (the shared home, which nothing ages out) when the source differs from the
+# one it was built from.
+W=$(timeout 120 ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=no "tommy@$IP" \
+      'd=~/.cache/rdwin; mkdir -p $d && cd $d && cat > new.c &&
+       { { cmp -s new.c rdwin.c && [ -x rdwin ]; } || { mv new.c rdwin.c && gcc -O1 -o rdwin rdwin.c; }; } &&
+       sudo ./rdwin 0x1000e000 3' < "$(dirname "$0")/rdwin.c" 2>/dev/null
 ) || { echo "errlog: unreadable (no ssh/gcc//dev/mem on $IP)"; exit 2; }
 [ -n "$W" ] || { echo "errlog: unreadable (empty read from $IP)"; exit 2; }
 set -- $W

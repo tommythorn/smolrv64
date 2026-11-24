@@ -116,7 +116,7 @@ stress() {
 # over. A nonzero vector is a FAIL whatever the console says: a run can look clean and still
 # have broken a rule the core relies on -- and this is the only gate that sees a violation
 # whose consequence would have surfaced hours later. Only a read that says clean passes: a log
-# that could not be read (a root without /var/tmp/errlog, no ssh) or a bitstream without one
+# that could not be read (no ssh, no gcc on the board) or a bitstream without one
 # is a gate that saw nothing.
 errlog() {
    local out; out=$("$REPO/tools/errlog-read.sh" "$ip" 2>&1); echo "$out"
