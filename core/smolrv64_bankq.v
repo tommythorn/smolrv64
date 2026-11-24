@@ -22,7 +22,9 @@
 // Bank b is read once, at the entry at or after rp in it, so any offset below NB names an entry
 // some bank holds, and a read port is an NB:1 pick of the banks by (rp + ro[k]) % NB. rp must be
 // a register's value or close to it: it is every bank's read address (rule I6); the offsets select
-// only among the banks' outputs. PICK=1 is the array read at any one position (NR = 1, no offset):
+// only among the banks' outputs. A port whose bit is set in RABS names its bank in ro instead of an
+// offset, so a user that holds the bank in a register picks by that register alone, not by an adder
+// on rp. PICK=1 is the array read at any one position (NR = 1, no offset):
 // every bank reads rp's row, and rp's bank is the one taken.
 module smolrv64_bankq
   #(parameter W     = 16,                 // entry width
@@ -33,6 +35,7 @@ module smolrv64_bankq
     parameter BYBANK = 0,                 // 1: writer j is bank j's (NW = NB)
     parameter PICK  = 0,                  // 1: one read at any position (NR = 1)
     parameter WLATE = 0,                  // 1: the writes land a cycle late, from registers (NR = 1)
+    parameter [NR-1:0] RABS = {NR{1'b0}}, // port k's ro is its bank, not an offset from rp
     parameter AB    = $clog2(DEPTH))
    (input  wire               clk,
     input  wire               reset,      // only the invariant checks: the array has no reset
@@ -48,7 +51,7 @@ module smolrv64_bankq
    localparam integer IB = (BD > 1) ? $clog2(BD) : 1;
    localparam integer JB = (NW > 1) ? $clog2(NW) : 1;
    initial if ((1 << BB) != NB || NB < NW || DEPTH % NB != 0 || BD < 1 || (1 << AB) != DEPTH
-               || (BYBANK && NW != NB) || (PICK && NR != 1) || (WLATE && NR != 1))
+               || (BYBANK && NW != NB) || (PICK && NR != 1) || (WLATE && NR != 1) || (WLATE && RABS != 0))
       $fatal(1, "smolrv64_bankq: DEPTH=%0d NB=%0d NW=%0d AB=%0d BYBANK=%0d: NB is a power of two >= NW, dividing DEPTH = 2**AB (= NW when BYBANK)",
              DEPTH, NB, NW, AB, BYBANK);
 
@@ -109,7 +112,7 @@ module smolrv64_bankq
       assign brd[gb] = mem[ridx];
    end endgenerate
    generate for (gk = 0; gk < NR; gk = gk + 1) begin: rk
-      wire [BB-1:0] b = rp[BB-1:0] + ro[gk*BB +: BB];
+      wire [BB-1:0] b = RABS[gk] ? ro[gk*BB +: BB] : rp[BB-1:0] + ro[gk*BB +: BB];
       if (WLATE) begin: byp
          // the position read, against the writes still in the registers (distinct positions)
          wire [AB-1:0] q = PICK ? rp : rp + {{(AB-BB){1'b0}}, ro[gk*BB +: BB]};

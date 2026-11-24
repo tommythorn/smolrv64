@@ -397,14 +397,25 @@ module smolrv64_frontend
    endfunction
    reg  [LB-1:0]     lc;
    initial lc = {LB{1'b0}};
+   // When the queue has IW banks, the rotation and the banks share a modulus: q_rp and lc step by
+   // the same pops, so lane k's bank, (q_rp + k - lc) % IW, is lb + k with lb = (q_rp - lc) % IW
+   // a register that moves only when lc is set to 0. The lane ports then name their bank (RABS)
+   // and each record bit is one pick by two flops. With more banks than lanes the ports take
+   // their offset from q_rp, (k - lc) % IW.
+   localparam         LBQ  = (QNB == IW);
+   localparam [2*IW-1:0] Q_RABS = LBQ ? {{IW{1'b1}}, {IW{1'b0}}} : {2*IW{1'b0}};
+   reg  [QLB-1:0]     lb;
+   initial lb = {QLB{1'b0}};
    wire [2*IW*QLB-1:0] q_ro;
    wire [2*IW*QRW-1:0] q_rd2;
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: ro
-      localparam [LB-1:0] K = gk;
+      localparam [LB-1:0]  K  = gk;
+      localparam [QLB-1:0] KQ = gk;
       assign q_ro[gk*QLB +: QLB]        = gk[QLB-1:0];                                // program order
-      assign q_ro[(IW + gk)*QLB +: QLB] = {{(QLB-LB){1'b0}}, rsub(K, lc)};            // lane k's
+      assign q_ro[(IW + gk)*QLB +: QLB] = LBQ ? lb + KQ                               // lane k's
+                                              : {{(QLB-LB){1'b0}}, rsub(K, lc)};
    end endgenerate
-   smolrv64_bankq #(.W(QRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_q
+   smolrv64_bankq #(.W(QRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1), .RABS(Q_RABS)) u_q
      (.clk(clk), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_wd), .rp(q_rp), .ro(q_ro), .rd(q_rd2));
    // the heads' dispatch classes in program order (the queued record's last field), and lane k's
    // record, decoded from what the queue holds of it into the record dispatch takes
@@ -423,7 +434,7 @@ module smolrv64_frontend
    // THE QUEUE'S SHADOW: each record whole, as its slot decoded it before the queue, read only by
    // the check below that the head rebuilds it bit for bit (synthesis removes it)
    wire [2*IW*IRW-1:0] q_frd;
-   smolrv64_bankq #(.W(IRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1)) u_qsh
+   smolrv64_bankq #(.W(IRW), .DEPTH(QDEPTH), .NW(QNB), .NR(2*IW), .NB(QNB), .BYBANK(1), .RABS(Q_RABS)) u_qsh
      (.clk(clk), .reset(reset), .wv(q_bv), .wp(q_wpos), .wd(q_fwd), .rp(q_rp), .ro(q_ro), .rd(q_frd));
    // the head's record by name, for the bench's stall accounting (nothing here reads it)
    `QR_DECL(hq_)
@@ -505,7 +516,13 @@ module smolrv64_frontend
    always @(posedge clk) begin
       if (reset | redirect | realign) lc <= {LB{1'b0}};
       else                            lc <= radd(lc, q_pop);
+      if (reset | redirect) lb <= {QLB{1'b0}};
+      else if (realign)     lb <= q_rp[QLB-1:0] + q_pop[QLB-1:0];
    end
+   wire [QLB-1:0] lb_want = q_rp[QLB-1:0] - {{(QLB-LB){1'b0}}, lc};
+   always @(posedge clk)
+      if (LBQ & ~reset & (lb != lb_want))
+         $fatal(1, "smolrv64_frontend: the lane base %0d is not the queue head's bank less lc (%0d)", lb, lb_want);
    // a group dispatches whole: all of the IR's lanes
    wire e_order = ~reset & (|consume) & (consume != d_valid);
    always @(posedge clk)

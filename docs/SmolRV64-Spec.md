@@ -157,7 +157,9 @@ the SYSQ's and the head-op register's: it waits for `lc` = 0, setting it in a cy
 nothing (`realign`, `ROT-SIM` counts them), and lane B takes the next instruction. The queue
 reads its heads twice: in program order for the group rules (their classes alone), and at
 `q_rp + (k - lc) % IW` for lane k's record, so the rotation selects among the queue banks'
-outputs by flops and the record goes straight into the IR. A member's lane credit is its lane's
+outputs by flops and the record goes straight into the IR. With as many banks as lanes (FW = IW
+= 4), `q_rp` and `lc` step by the same pops, so lane k's bank is `lb + k` for a register
+`lb = (q_rp - lc) % IW` that moves only at `realign`: each record bit is a 4:1 pick by two flops. A member's lane credit is its lane's
 (`ia`, `crd`'s lane bits rotated by `lc`). On the 60 M boot the lanes dispatch 20.45 / 20.14 / 19.87 M
 instructions, a head op waits for lane A in 238,526 cycles, the cycles the head's lane is full
 while another lane has room fall from 3,427,455 (slot k as lane k) to 1,551,254 (`IQFULL-SIM`),
