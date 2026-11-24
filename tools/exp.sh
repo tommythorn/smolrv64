@@ -51,16 +51,47 @@ base=${BASE:-main-$(git -C "$here" rev-parse --short=8 origin/main)}
 mkdir -p "$R/$tag"
 echo "exp $tag: $tree at $(git -C "$tree" rev-parse --short=8 HEAD)$( [ -n "$(git -C "$tree" status --porcelain -- core src | grep -v '^??')" ] && echo ' with edits')"
 
-# the tree, to every host, with the rvbench binaries built here (the hosts have no RISC-V toolchain)
+# the rvbench binaries are built here (the hosts have no RISC-V toolchain)
+make -s -C "$tree/workloads/rvbench" dhrystone.bin coremark.bin > /dev/null || exit 1
+tohost() { riscv64-linux-gnu-nm "$tree/workloads/rvbench/$1.elf" | awk '$3 == "tohost" {print $1}'; }
+m5_runs="boot60m:boot:60000000 dhry:rvb:dhrystone,$(tohost dhrystone) coremark:rvb:coremark,$(tohost coremark) pi450:pi:450000000 pi700:pi:700000000 pi950:pi:950000000 pi1150:pi:1150000000"
+fm_runs="nav:gb5:140000000000 html5:gb5:154500000000 sqlite:gb5:161000000000 pdf:gb5:171000000000 camera:gb5:202000000000"
+mc_runs="";  cf_runs=""
+if [ "${SET:-}" = sp ]; then   # a point's checkpoint is sp/<instret>.ckpt; the points alternate between the two
+   # the points host $1 takes: of every seven fastmac three, M5 two, mercury two, or with coffee
+   # free of builds, of every nine two more on coffee
+   pts() { awk -F'\t' -v h="$1" -v cf=$cf_ok '$1 == "point" { k = n++ % (cf ? 9 : 7)
+              w = (k < 3) ? "fm" : (k < 5) ? "m5" : (cf && k < 7) ? "cf" : "mc"
+              if (h == "all" || h == w) printf " sp%s:gb5:sp/%s", $5, $5 }' "$here/workloads/gb5/simpoints.txt"; }
+   m5_runs="";  fm_runs=""
+   case ${SP_HOSTS:-} in
+      mercury) mc_runs=$(pts all) ;;
+      fastmac) fm_runs=$(pts all) ;;
+      m5)      m5_runs=$(pts all) ;;
+      coffee)  [ $cf_ok = 1 ] || { echo "exp $tag: a build runs on coffee (or no checkpoints there): no sims"; exit 1; }
+               cf_runs=$(pts all) ;;
+      *)       fm_runs=$(pts fm);  m5_runs=$(pts m5);  mc_runs=$(pts mc);  cf_runs=$(pts cf) ;;
+   esac
+fi
+if [ -n "${RUNS:-}" ]; then   # only the runs named
+   keep() { local r o=""; for r in $1; do [[ " $RUNS " == *" ${r%%:*} "* ]] && o="$o $r"; done; echo "$o"; }
+   m5_runs=$(keep "$m5_runs");  fm_runs=$(keep "$fm_runs");  mc_runs=$(keep "$mc_runs");  cf_runs=$(keep "$cf_runs")
+fi
+
+# the hosts that have runs: a host with none gets no tree, no runner and no wait, so an unreachable
+# one does not stop an experiment it has no part in (SP_HOSTS=m5 with fastmac down)
+declare -A H_OPT=([M5]="$M5_OPT" [fastmac]="$FM_OPT" [mercury]="$MC_OPT") H_IP=([M5]="$M5_IP" [fastmac]="$FM_IP" [mercury]="$MC_IP")
+declare -A H_ROOT=([M5]="$M5_ROOT" [fastmac]="$FM_ROOT" [mercury]="$MC_ROOT") H_CK=([M5]="$M5_CK" [fastmac]="$FM_CK" [mercury]="$MC_CK")
+declare -A H_J=([M5]=9 [fastmac]=12 [mercury]=12) H_RUNS=([M5]="$m5_runs" [fastmac]="$fm_runs" [mercury]="$mc_runs")
+hosts=""; for h in M5 fastmac mercury; do [ -n "${H_RUNS[$h]// /}" ] && hosts="$hosts $h"; done
+h_root() { case ${H_ROOT[$1]} in /*) echo "${H_ROOT[$1]}" ;; *) echo "\$HOME/${H_ROOT[$1]}" ;; esac; }   # M5's is under its $HOME
+
+# the tree and the rvbench binaries, to each host that has runs
 list=$(mktemp)
 (cd "$tree" && git ls-files -co --exclude-standard | grep -v '^platforms/') > "$list"
-make -s -C "$tree/workloads/rvbench" dhrystone.bin coremark.bin > /dev/null || exit 1
 echo workloads/rvbench/dhrystone.bin >> "$list";  echo workloads/rvbench/coremark.bin >> "$list"
-tohost() { riscv64-linux-gnu-nm "$tree/workloads/rvbench/$1.elf" | awk '$3 == "tohost" {print $1}'; }
-rsync -a --files-from="$list" -e "ssh $M5_OPT" "$tree/" "$M5_IP:$M5_ROOT/$tag/" || exit 1
-rsync -a --files-from="$list" -e "ssh $FM_OPT" "$tree/" "$FM_IP:$FM_ROOT/$tag/" || exit 1
-rsync -a --files-from="$list" -e "ssh $MC_OPT" "$tree/" "$MC_IP:$MC_ROOT/$tag/" || exit 1
-[ $cf_ok = 1 ] && { mkdir -p "$CF_ROOT/$tag" && rsync -a --files-from="$list" "$tree/" "$CF_ROOT/$tag/" || exit 1; }
+for h in $hosts; do rsync -a --files-from="$list" -e "ssh ${H_OPT[$h]}" "$tree/" "${H_IP[$h]}:${H_ROOT[$h]}/$tag/" || exit 1; done
+[ -n "$cf_runs" ] && { mkdir -p "$CF_ROOT/$tag" && rsync -a --files-from="$list" "$tree/" "$CF_ROOT/$tag/" || exit 1; }
 rm -f "$list"
 
 runner() {   # <tree> <out> <ckpt dir> <parallel runs> <runs: name:kind:arg ...>
@@ -97,51 +128,25 @@ HEAD
    echo 'wait'
    echo 'echo EXP-DONE > $O/done'
 }
-m5_runs="boot60m:boot:60000000 dhry:rvb:dhrystone,$(tohost dhrystone) coremark:rvb:coremark,$(tohost coremark) pi450:pi:450000000 pi700:pi:700000000 pi950:pi:950000000 pi1150:pi:1150000000"
-fm_runs="nav:gb5:140000000000 html5:gb5:154500000000 sqlite:gb5:161000000000 pdf:gb5:171000000000 camera:gb5:202000000000"
-mc_runs="";  cf_runs=""
-if [ "${SET:-}" = sp ]; then   # a point's checkpoint is sp/<instret>.ckpt; the points alternate between the two
-   # the points host $1 takes: of every seven fastmac three, M5 two, mercury two, or with coffee
-   # free of builds, of every nine two more on coffee
-   pts() { awk -F'\t' -v h="$1" -v cf=$cf_ok '$1 == "point" { k = n++ % (cf ? 9 : 7)
-              w = (k < 3) ? "fm" : (k < 5) ? "m5" : (cf && k < 7) ? "cf" : "mc"
-              if (h == "all" || h == w) printf " sp%s:gb5:sp/%s", $5, $5 }' "$here/workloads/gb5/simpoints.txt"; }
-   m5_runs="";  fm_runs=""
-   case ${SP_HOSTS:-} in
-      mercury) mc_runs=$(pts all) ;;
-      fastmac) fm_runs=$(pts all) ;;
-      m5)      m5_runs=$(pts all) ;;
-      coffee)  [ $cf_ok = 1 ] || { echo "exp $tag: a build runs on coffee (or no checkpoints there): no sims"; exit 1; }
-               cf_runs=$(pts all) ;;
-      *)       fm_runs=$(pts fm);  m5_runs=$(pts m5);  mc_runs=$(pts mc);  cf_runs=$(pts cf) ;;
-   esac
-fi
-if [ -n "${RUNS:-}" ]; then   # only the runs named
-   keep() { local r o=""; for r in $1; do [[ " $RUNS " == *" ${r%%:*} "* ]] && o="$o $r"; done; echo "$o"; }
-   m5_runs=$(keep "$m5_runs");  fm_runs=$(keep "$fm_runs");  mc_runs=$(keep "$mc_runs");  cf_runs=$(keep "$cf_runs")
-fi
-runner "\$HOME/$M5_ROOT/$tag" "\$HOME/$M5_ROOT/$tag.out" "$M5_CK" 9 $m5_runs |
-   ssh $M5_OPT $M5_IP "rm -rf $M5_ROOT/$tag.out; cat > $M5_ROOT/$tag.sh; chmod +x $M5_ROOT/$tag.sh; (nohup $M5_ROOT/$tag.sh > /dev/null 2>&1 < /dev/null &)" || exit 1
-runner "$FM_ROOT/$tag" "$FM_ROOT/$tag.out" "$FM_CK" 12 $fm_runs |
-   ssh $FM_OPT $FM_IP "rm -rf $FM_ROOT/$tag.out; cat > $FM_ROOT/$tag.sh; chmod +x $FM_ROOT/$tag.sh; (nohup $FM_ROOT/$tag.sh > /dev/null 2>&1 < /dev/null &)" || exit 1
-runner "$MC_ROOT/$tag" "$MC_ROOT/$tag.out" "$MC_CK" 12 $mc_runs |
-   ssh $MC_OPT $MC_IP "rm -rf $MC_ROOT/$tag.out; cat > $MC_ROOT/$tag.sh; chmod +x $MC_ROOT/$tag.sh; (nohup $MC_ROOT/$tag.sh > /dev/null 2>&1 < /dev/null &)" || exit 1
+for h in $hosts; do
+   r=${H_ROOT[$h]}
+   runner "$(h_root $h)/$tag" "$(h_root $h)/$tag.out" "${H_CK[$h]}" ${H_J[$h]} ${H_RUNS[$h]} |
+      ssh ${H_OPT[$h]} ${H_IP[$h]} "rm -rf $r/$tag.out; cat > $r/$tag.sh; chmod +x $r/$tag.sh; (nohup $r/$tag.sh > /dev/null 2>&1 < /dev/null &)" || exit 1
+done
 if [ -n "$cf_runs" ]; then
    runner "$CF_ROOT/$tag" "$CF_ROOT/$tag.out" "$CF_CK" 10 $cf_runs > "$CF_ROOT/$tag.sh" || exit 1
    rm -rf "$CF_ROOT/$tag.out"; chmod +x "$CF_ROOT/$tag.sh"; (nohup "$CF_ROOT/$tag.sh" > /dev/null 2>&1 < /dev/null &)
 fi
-echo "exp $tag: running on M5, fastmac and mercury$([ -n "$cf_runs" ] && echo ' and coffee') ($(date +%H:%M))"
+echo "exp $tag: running on${hosts}$([ -n "$cf_runs" ] && echo ' coffee') ($(date +%H:%M))"
 
 # wait for all, never silently (tools/watch-remote.sh), then fetch the logs and print the table. A
 # host gives up after 3 hours in which none of its runs finished: the probes print the count of
 # finished runs, and several experiments sharing the hosts take far longer than one alone.
 done_or_count() { echo "test -f $1/done && echo DONE || grep -l '^rc=' $1/*.log 2>/dev/null | wc -l"; }
-"$here/tools/watch-remote.sh" M5 "$(done_or_count $M5_ROOT/$tag.out)" 10800 60 > /dev/null ||
-   { echo "exp $tag: M5 did not finish"; exit 1; }
-"$here/tools/watch-remote.sh" fastmac "$(done_or_count $FM_ROOT/$tag.out)" 10800 60 > /dev/null ||
-   { echo "exp $tag: fastmac did not finish"; exit 1; }
-"$here/tools/watch-remote.sh" mercury "$(done_or_count $MC_ROOT/$tag.out)" 10800 60 > /dev/null ||
-   { echo "exp $tag: mercury did not finish"; exit 1; }
+for h in $hosts; do
+   "$here/tools/watch-remote.sh" $h "$(done_or_count ${H_ROOT[$h]}/$tag.out)" 10800 60 > /dev/null ||
+      { echo "exp $tag: $h did not finish"; exit 1; }
+done
 if [ -n "$cf_runs" ]; then   # coffee's own, by its done file, on the same terms
    end=$(( $(date +%s) + 10800 )); last=""
    until [ -f "$CF_ROOT/$tag.out/done" ]; do
@@ -152,17 +157,13 @@ if [ -n "$cf_runs" ]; then   # coffee's own, by its done file, on the same terms
    done
 fi
 got=1
-rsync -a -e "ssh $M5_OPT" "$M5_IP:$M5_ROOT/$tag.out/" "$R/$tag/" || got=0
-rsync -a -e "ssh $FM_OPT" "$FM_IP:$FM_ROOT/$tag.out/" "$R/$tag/" || got=0
-rsync -a -e "ssh $MC_OPT" "$MC_IP:$MC_ROOT/$tag.out/" "$R/$tag/" || got=0
+for h in $hosts; do rsync -a -e "ssh ${H_OPT[$h]}" "${H_IP[$h]}:${H_ROOT[$h]}/$tag.out/" "$R/$tag/" || got=0; done
 if [ -n "$cf_runs" ]; then rsync -a "$CF_ROOT/$tag.out/" "$R/$tag/" || got=0; fi
 [ -d "$R/$base" ] && [ "$base" != "$tag" ] || base=""
 table "$tag" "$base" | tee "$R/$tag/table.txt"
 # The hosts keep nothing of an experiment whose logs are all here: its tree (with the model built
 # in it), its logs and its runner go. One that failed or did not finish keeps them, to look at.
 if [ $got = 1 ]; then
-   ssh $M5_OPT $M5_IP "rm -rf $M5_ROOT/$tag $M5_ROOT/$tag.out $M5_ROOT/$tag.sh"
-   ssh $FM_OPT $FM_IP "rm -rf $FM_ROOT/$tag $FM_ROOT/$tag.out $FM_ROOT/$tag.sh"
-   ssh $MC_OPT $MC_IP "rm -rf $MC_ROOT/$tag $MC_ROOT/$tag.out $MC_ROOT/$tag.sh"
+   for h in $hosts; do r=${H_ROOT[$h]}; ssh ${H_OPT[$h]} ${H_IP[$h]} "rm -rf $r/$tag $r/$tag.out $r/$tag.sh"; done
    rm -rf "$CF_ROOT/$tag" "$CF_ROOT/$tag.out" "$CF_ROOT/$tag.sh"
 fi
