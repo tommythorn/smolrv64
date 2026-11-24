@@ -89,6 +89,8 @@ l2.tlb2 : the second level (mmu L2N) on the first level's miss path, block RAM: 
 # ---- the I$'s tags: {virtual tag, epoch} per way, block RAM read with the data banks --------
 tg0     : I$ way 0 tags, read at the lookup's set (port B) and by the fill (port A)
 tg1     : I$ way 1 tags
+tp0m    : I$ way 0 physical tags, the reconcile's at the lookup's set, read with the banks
+tp1m    : I$ way 1 physical tags
 
 # ---- the D$'s state: per way, 64 rows (the set), LUTRAM -----------------------------------
 way[*].ta x32 : D$ tags, the main lookup's copy, read at its set

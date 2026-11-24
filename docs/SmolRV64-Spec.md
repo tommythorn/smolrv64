@@ -2060,9 +2060,11 @@ The I$ (`rv_icache`, 128 KiB): data 4 banks of `4096 × 64` (1 048 576 bits, BRA
 banking per way, so any read at any byte offset is served by one access (§9.1). Each way's
 `{virtual tag, epoch}` (`tg0`, `tg1`: `1024 × 31`) is one block RAM read with the banks, at the
 same set, so a lookup's tags arrive in s1 beside its data; its second port is the fill's (the
-write, and the other way's read for the duplicate-stamp check). The physical tags and validity
-(`pst[*]`: 32 × 64 rows of 27 + 2 bits) are LUTRAM, read at the lookup's, the fill's and the
-probe's rows in one cycle.
+write, and the other way's read for the duplicate-stamp check). The reconcile's physical tags
+(`tp0m`, `tp1m`: `1024 × 21`, `PABITS - 12`) are a block RAM a way beside them, written at an
+install and read at the lookup's set with the banks. The physical tags and validity again by
+(way, colour) (`pst[*]`: 32 × 64 rows of 21 + 2 bits) are LUTRAM, the tags read at the probe's
+row, the validity at the lookup's, the fill's and the probe's rows in one cycle.
 
 **The bank is never wider than 64 bits, whatever the port width.** The I$ at `HW=8` reads
 128 bits: the even/odd chunk pair at a 16-byte-aligned address, which is the 2*BANKW window

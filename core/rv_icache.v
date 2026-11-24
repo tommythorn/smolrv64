@@ -190,8 +190,9 @@ module rv_icache #(
    wire [57:0]       m_pl   = s1_pa[63:OFFB];
    // the reconcile probe: the missing line's set, both ways, by physical tag
    wire [IB-1:0]     m_set  = m_line[IB-1:0];
-   wire              rc0    = vl0_s & (pt_s[{1'b0, s1_col}*PTB +: PTB] == ptg);   // (m_set is s1_set)
-   wire              rc1    = vl1_s & (pt_s[{1'b1, s1_col}*PTB +: PTB] == ptg);
+   wire [PTB-1:0]    tp0, tp1;                     // each way's physical tag at s1_set (the tag block)
+   wire              rc0    = vl0_s & (tp0 == ptg);   // (m_set is s1_set)
+   wire              rc1    = vl1_s & (tp1 == ptg);
    // counted once per request, never per replay: an access is a request taken, a miss its first lookup's
    assign perf_access = rd_ack;
    assign perf_miss   = miss & ~s1_rp;
@@ -257,6 +258,18 @@ module rv_icache #(
    wire [TGW-1:0] t_wd  = {f_line[IB +: VTB], f_ep};
    reg  [TGW-1:0] tq0_r, tq1_r, td0, td1;
    always @(posedge clk) begin tq0_r <= tg0[a_set]; tq1_r <= tg1[a_set]; end
+   // the lookup's physical tags, a block RAM a way beside the virtual tags: written at an install with
+   // pt_k (a re-stamp keeps the physical tag it reconciled on), read at a_set with the banks
+   (* ram_style = "block" *) reg [PTB-1:0] tp0m [0:SETS-1], tp1m [0:SETS-1];
+   reg  [PTB-1:0] tp0_r, tp1_r;
+   always @(posedge clk) begin tp0_r <= tp0m[a_set]; if (t_inst & ~f_way) tp0m[t_set] <= f_pline[12-OFFB +: PTB]; end
+   always @(posedge clk) begin tp1_r <= tp1m[a_set]; if (t_inst &  f_way) tp1m[t_set] <= f_pline[12-OFFB +: PTB]; end
+   assign tp0 = tp0_r;
+   assign tp1 = tp1_r;
+   // the tag block agrees with pt_k at the lookup's row; that read feeds only this check, which synthesis drops
+   always @(posedge clk) if (!reset & s1_v & ((vl0_s & (tp0 != pt_s[{1'b0, s1_col}*PTB +: PTB])) |
+                                             (vl1_s & (tp1 != pt_s[{1'b1, s1_col}*PTB +: PTB]))))
+      $fatal(1, "rv_icache: the tag block's physical tags (%h %h) disagree with pt_k (set %h)", tp0, tp1, s1_set);
    always @(posedge clk) begin if (t_vt & ~f_way) tg0[t_set] <= t_wd; td0 <= tg0[t_set]; end
    always @(posedge clk) begin if (t_vt &  f_way) tg1[t_set] <= t_wd; td1 <= tg1[t_set]; end
    assign tq0 = tq0_r;
