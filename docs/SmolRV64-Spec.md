@@ -1052,8 +1052,12 @@ store has no destination register so a scoreboard slot buys it nothing.
   `DivSqrtSel = THMULTI`.
 - **Up to four operations in flight**, one accepted per cycle. Results return by tag, not
   necessarily in issue order (fpnew's op groups have different latencies).
-- **NONCOMP (min/max, sign-inject, compare, classify) and parts of CONV return
-  combinationally** — `out_valid` in the same cycle as `in_valid`, `PipeRegs` notwithstanding.
+- **Every op group has its `PIPE_REGS` stages.** From the edge that accepts an op to `res_valid`:
+  FMA, add and multiply 8 cycles; conversions and NONCOMP (min/max) 6; `fdiv.d` 13 at the least
+  (the C910's iteration count follows the operands). `PipeRegs` is a pattern per op group: a
+  group's entry is a packed array of formats, and one outer `'{default: N}` assigns N to the packed
+  value whole, which Verilator does, so the simulated FPU had no pipeline registers (FMA 3 cycles,
+  conversions and NONCOMP 1) until 2026-11-25, while Vivado gave every element N.
 - `iss_ready` is **registers-only**: `~req_v_q & (in flight != NFLIGHT) & ~out_blk`. fpnew's
   `in_ready_o` is combinational in `in_valid_i`, and the issue decision reads `iss_ready`, so
   exposing it would close a loop through the scheduler. The request register holds an op only in

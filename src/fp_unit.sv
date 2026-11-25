@@ -64,7 +64,11 @@ module fp_unit #(parameter TAGW = 24,
 
    localparam fpnew_pkg::fpu_features_t Features = fpnew_pkg::RV64D;
    localparam fpnew_pkg::fpu_implementation_t Implementation = '{
-      PipeRegs:   '{default: PIPE_REGS},
+      // Every format of every op group: a pattern per group, because a group's entry is a PACKED
+      // array of formats and '{default: N} at the outer level assigns N to that packed value whole
+      // (only its last element). Verilator does exactly that and simulated every group without its
+      // pipeline registers, 5 cycles short of the board's FMA; Vivado gave every element N.
+      PipeRegs:   '{'{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}},
       UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
                     '{default: fpnew_pkg::MERGED},   // DIVSQRT
                     '{default: fpnew_pkg::PARALLEL}, // NONCOMP
@@ -160,14 +164,9 @@ module fp_unit #(parameter TAGW = 24,
          if (out_valid_q & res_ready) begin out_valid_q <= 1'b0; out_fp_q <= 1'b0; out_int_q <= 1'b0; end
          if (fpn_take) req_v_q <= 1'b0;
          if (fire & ~fpn_in_ready) req_v_q <= 1'b1;   // fpnew declined: hold it here
-         // NOT ALL OPS ARE PIPELINED. NONCOMP (MINMAX/SGNJ/CMP/CLASSIFY) and parts of CONV
-         // come back COMBINATIONALLY -- fpnew asserts out_valid in the very cycle it accepts
-         // the op, PipeRegs notwithstanding. The old FSM had an explicit branch for this in
-         // FPU_ISSUE; dropping it failed exactly the 16 fcvt/fmin/recoding tests and nothing
-         // else. `else if` is the whole fix: a same-cycle result never sets inflight_q.
-         // Counter, not a flag. Both same-cycle cases net to zero and need no special
-         // arm: one op returning while another is accepted, and a NONCOMP/CONV op that
-         // returns in the very cycle it is accepted (the `else if` this replaces).
+         // Ops in flight: a counter, not a flag. One op returning while another is accepted nets
+         // to zero, and so would a result in the very cycle its op is accepted (a group with no
+         // pipeline registers); the `else if` keeps both cases out of the count.
          if (fpn_out_valid & ~fpn_take)      nflight_q <= nflight_q - 1'b1;
          else if (fpn_take & ~fpn_out_valid) nflight_q <= nflight_q + 1'b1;
          if (fpn_out_valid) begin
