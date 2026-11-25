@@ -39,9 +39,9 @@ foreach d [list [file join $root core] [file join $root src]] {
 }
 set incdirs [list [file join $root core] [file join $root src] [file join $root src generated]]
 read_verilog -quiet $files
-# The SystemVerilog side: the vendored cvfpu its manifest lists (packages first), then fp_unit.
+# The FPU's units its manifest lists (fp_fma, fp_divsqrt), then fp_unit.
 set svfiles {}
-set fh [open [file join $root src cvfpu_sources.f] r]
+set fh [open [file join $root src fpu_sources.f] r]
 while {[gets $fh line] >= 0} {
     set line [string trim $line]
     if {$line eq "" || [string match "#*" $line]} continue

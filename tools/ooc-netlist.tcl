@@ -8,6 +8,7 @@ set vfiles {}; set svfiles {}
 foreach {m p} [regexp -all -inline {File Path="\$PPRDIR/\.\./\.\./([^"]+)"} $txt] {
    set f [file normalize [file join $root $p]]
    if {![file exists $f]} continue          ;# the .xpr outlives its sources; read what is there
+   if {![string match "[file normalize $root]/*" $f]} continue   ;# and never another tree's
    if {[info exists seen($f)]} continue
    set seen($f) 1
    if {[string match *.sv $f]} { lappend svfiles $f } elseif {[string match *.v $f]} { lappend vfiles $f }
@@ -24,8 +25,8 @@ foreach f [lsort [glob -nocomplain [file join $root core *.v]]] {
 puts "sources: [llength $vfiles] .v, [llength $svfiles] .sv from $xpr and core/"
 set incdirs {}
 foreach d [list [file join $root core] [file join $root src] [file join $root src generated]] { if {[file isdirectory $d]} { lappend incdirs $d } }
-set mf [open [file join $root src cvfpu_sources.f] r]
-# The manifest's files too, as build.tcl's configure_cvfpu_sources reads them: the .xpr has the
+set mf [open [file join $root src fpu_sources.f] r]
+# The manifest's files too, as build.tcl's configure_fpu_sources reads them: the .xpr has the
 # same staleness for the FPU as for core/ (vendor/cvw/fma/fmalza.sv was missing from it).
 while {[gets $mf line] >= 0} { set line [string trim $line]
    if {$line eq "" || [string match "#*" $line]} continue

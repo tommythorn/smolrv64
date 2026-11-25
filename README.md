@@ -86,8 +86,9 @@ is read off the RTL or measured with the workload named):
   when they reach the ROB head, from registers, so none of them sits in the memory stage's
   completion path; the memory stage holds only loads, stores, AMOs and cache operations.
   Each lane multiplies in three cycles; divides run in their own stage and land by tag.
-- **A tagged, four-deep FPU.** CVFPU (fpnew) with four operations in flight, results
-  returned by tag and out of order, and its own scheduler and execute stage, so FP
+- **A tagged, four-deep FPU of its own.** `fp_fma` (the FMA group and every conversion, one
+  datapath, 6 cycles) and `fp_divsqrt` (a shared digit recurrence) with four operations in
+  flight, results returned by tag and out of order, and its own scheduler and execute stage, so FP
   arithmetic never enters the memory stage and cannot block it; FP operations issue out of
   order among themselves.
 - **Prediction at the fetch stream.** A 2048-entry BTB (eight halfword banks of two skewed
@@ -469,15 +470,8 @@ functions lose the cycles and to what; `perf-smol` alone prints its help, and
 | `workloads/` | The Linux images and device trees (tiny128, Ubuntu over NFS, Geekbench), the glibc and systemd cosim harnesses, the ROM monitor, the bare-metal microbenchmarks |
 | `tests/` | riscv-tests binaries |
 | `docs/` | The specification (`SmolRV64-Spec.md`, normative), `rtl-rules.md`, the current plans, and `history/`, the dated design records |
-| `third_party/cvfpu` | CVFPU (fpnew): the subset the build uses, vendored by `tools/cvfpu-import.sh` (`UPSTREAM` names the commit) |
 
 ## Licensing
 
 SmolRV64 is released under the **Apache License, Version 2.0**. See [LICENSE](LICENSE)
 for the full text and [NOTICE](NOTICE) for copyright and third-party attribution.
-
-The floating-point unit in [`third_party/cvfpu`](third_party/cvfpu) (CVFPU / FPnew, ETH
-Zurich and University of Bologna) is released under the *SolderPad Hardware License,
-version 0.51*, a permissive license based on Apache 2.0 that expressly permits the licensee
-to treat the work as licensed under Apache 2.0. The T-Head E906 and C910 DivSqrt units
-vendored within CVFPU are released under Apache 2.0 directly.

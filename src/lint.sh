@@ -39,7 +39,7 @@ lint_top() {                      # <label> <top-module> <sources...>
    local log=/tmp/smolrv64-lint-$label.log
    verilator --lint-only --timing -sv -Wall $OFF $ERRS ${VDEFS:-} \
       -I. -I../core --top-module "$top" \
-      "$@" -f ./cvfpu_sources.f fp_unit.sv \
+      "$@" -f ./fpu_sources.f fp_unit.sv \
       ./verilator.vlt > "$log" 2>&1 || {
          echo "---- LINT FAILED ($label: top=$top) ----"
          grep -E '%Error' "$log" | head -40
@@ -61,7 +61,7 @@ for tb in ../core/tb_smolrv64_linux.v ../core/tb_smolrv64_riscv.v; do
    log=/tmp/smolrv64-lint-$(basename "$tb" .v).log
    verilator --lint-only --timing -sv -Wno-fatal -Wno-lint -Wno-style ${VDEFS:-} \
       -I. -I../core --top-module tb "$tb" $(smolrv64_sources) \
-      -f ./cvfpu_sources.f fp_unit.sv ./verilator.vlt > "$log" 2>&1 || {
+      -f ./fpu_sources.f fp_unit.sv ./verilator.vlt > "$log" 2>&1 || {
          echo "---- BENCH ELABORATION FAILED ($tb) ----"
          grep -E '%Error' "$log" | head -20
          fail=1

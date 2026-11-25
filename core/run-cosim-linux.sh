@@ -116,7 +116,7 @@ STAMP="$OBJ/.config-stamp"
 # name from the -I paths and a list of the top-level files missed smolrv64_lq.v on the first
 # try (the hash did not move when the queue changed, 2026-09-04, the same afternoon).
 # Any edit forces the rebuild; BUILD=1 is only for a wiped or foreign tree.
-srchash=$(cat *.v *.vh ../src/*.v ../src/*.sv ../src/*.vh ../src/probe_cosim.cpp ../src/sd_dpi.cpp ../src/ckpt_dpi.cpp $(grep -v '^+\|^$' ../src/cvfpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
+srchash=$(cat *.v *.vh ../src/*.v ../src/*.sv ../src/*.vh ../src/probe_cosim.cpp ../src/sd_dpi.cpp ../src/ckpt_dpi.cpp $(grep -v '^+\|^$' ../src/fpu_sources.f) 2>/dev/null | sha1sum | cut -c1-16)
 want="MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-} SRC=$srchash"
 echo "cosim config: MEM_LG2=$MEM_LG2 VDEFS=${VDEFS:-<none>} CYC=${CYC:-<default>} model-src=$srchash"
 need_build=0
@@ -154,7 +154,7 @@ if [ "$need_build" = 1 ]; then
       -I. -I../src --top-module tb --Mdir "$OBJ" -o tb_smolrv64_clinux \
       rv_soc_top.v smolrv64_core.v smolrv64_pending.v smolrv64_bankq.v smolrv64_mwram.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
       $PROBE_SRCS ../src/alu.v ../src/smolrv64_sdpram.v ../src/smolrv64_plic_arbiter.v \
-      -f ../src/cvfpu_sources.f \
+      -f ../src/fpu_sources.f \
       ../src/virtio_blk.v ../src/virtio_mmio.v ../src/sd_spi_host.v ../src/dma_master.v ../src/sd_dpi.cpp \
       ../src/ckpt_dpi.cpp tb_smolrv64_linux.v ../src/probe_cosim.cpp > "$OBJ/build.log" 2>&1
    if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' "$OBJ/build.log" | head -20; exit 1; fi

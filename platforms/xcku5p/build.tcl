@@ -19,10 +19,13 @@ puts "Opening project: $xpr"
 open_project $xpr
 # The .xpr is tracked and records every source ever added; a source deleted from the tree
 # would otherwise stay in the fileset and stop synthesis ("No HDL sources found" at the
-# 2026-09 release, when the retired cores left). Drop what no longer exists, loudly.
+# 2026-09 release, when the retired cores left). Drop what no longer exists, loudly -- and what
+# lies outside this tree: Vivado resolves a missing relative path through the absolute one it
+# last saved, so a worktree's project found the shared checkout's deleted CVFPU (2026-11-25).
 foreach f [get_files -quiet -of_objects [get_filesets sources_1]] {
-    if {![file exists $f]} {
-        puts "  dropping missing source from the fileset: $f"
+    set nf [file normalize $f]
+    if {![file exists $nf] || ![string match "$repo_root/*" $nf]} {
+        puts "  dropping a source missing from this tree: $f"
         remove_files -fileset sources_1 $f
     }
 }
@@ -48,48 +51,21 @@ proc add_unique_property_value {object property value} {
     }
 }
 
-proc configure_cvfpu_sources {repo_root src_dir} {
+proc configure_fpu_sources {repo_root src_dir} {
     set fileset [current_fileset]
-    set cvfpu_manifest [file join $src_dir cvfpu_sources.f]
-    set cvfpu_include [file join $repo_root third_party cvfpu src common_cells include]
-    if {![file isdirectory $cvfpu_include]} {
-        error "the vendored CVFPU subset is missing or incomplete: $cvfpu_include\nRegenerate it: tools/cvfpu-import.sh <commit> (third_party/cvfpu/UPSTREAM names the commit)"
+    # the FPU's units, as src/fpu_sources.f lists them (paths from src/; every flow reads it)
+    set manifest [file join $src_dir fpu_sources.f]
+    if {![file exists $manifest]} {
+        error "FPU source manifest missing: $manifest"
     }
-    if {![file exists $cvfpu_manifest]} {
-        error "CVFPU source manifest missing: $cvfpu_manifest"
-    }
-
-    puts "Enabling CVFPU sources from: $cvfpu_manifest"
-    set cvfpu_files {}
-    set fh [open $cvfpu_manifest r]
+    set fh [open $manifest r]
     while {[gets $fh line] >= 0} {
         set line [string trim $line]
-        if {$line eq "" || [string match "#*" $line]} {
-            continue
-        }
-        if {[string match "+incdir+*" $line]} {
-            set incdir [file normalize [file join $src_dir [string range $line 8 end]]]
-            if {![file isdirectory $incdir]} {
-                error "CVFPU include directory missing: $incdir"
-            }
-            add_unique_property_value $fileset include_dirs $incdir
-            continue
-        }
-        if {[string match "+*" $line]} {
-            error "Unsupported CVFPU manifest option: $line"
-        }
-        lappend cvfpu_files [file normalize [file join $src_dir $line]]
+        if {$line eq "" || [string match "#*" $line]} continue
+        if {[string match "+*" $line]} { error "Unsupported FPU manifest option: $line" }
+        add_source_if_missing $fileset [file normalize [file join $src_dir $line]] Verilog
     }
     close $fh
-
-    foreach file $cvfpu_files {
-        set ext [string tolower [file extension $file]]
-        set file_type ""
-        if {$ext eq ".sv"} {
-            set file_type SystemVerilog
-        }
-        add_source_if_missing $fileset $file $file_type
-    }
     add_source_if_missing $fileset [file join $src_dir axi_two_master_arbiter.v] Verilog
     add_source_if_missing $fileset [file join $src_dir ddr_port_sync.v] Verilog
     add_source_if_missing $fileset [file join $src_dir ddr4_mem.v] Verilog
@@ -478,7 +454,7 @@ if {[info exists env(ILA_MEM)] && $env(ILA_MEM) ne "" && $env(ILA_MEM) ne "0"} {
 }
 lappend vdefines "SMOLRV64_USE_XPM"
 set_property verilog_define $vdefines [current_fileset]
-configure_cvfpu_sources $repo_root $src_dir
+configure_fpu_sources $repo_root $src_dir
 
 # Synthesis — enable retiming to help close timing on long combinatorial paths
 if {$step in {synth impl bit}} {

@@ -11,20 +11,3 @@
 
 `verilator_config
 
-// ---- imported third-party RTL (CVFPU + pulp common_cells) ----
-lint_off -rule WIDTH          -file "*third_party*"
-lint_off -rule WIDTHEXPAND    -file "*third_party*"
-lint_off -rule WIDTHTRUNC     -file "*third_party*"
-lint_off -rule CASEINCOMPLETE -file "*third_party*"
-lint_off -rule LATCH          -file "*third_party*"
-lint_off -rule UNOPTFLAT      -file "*third_party*"
-lint_off -rule UNDRIVEN       -file "*third_party*"
-lint_off -rule PINMISSING     -file "*third_party*"
-lint_off -rule SYNCASYNCNET   -file "*third_party*"
-lint_off -rule VARHIDDEN      -file "*third_party*"
-
-// smolrv64_cvfpu.sv / fp_unit.sv are our thin wrappers over CVFPU: they inherit its
-// width conventions at the boundary.
-lint_off -rule WIDTH          -file "*smolrv64_cvfpu.sv"
-lint_off -rule WIDTHEXPAND    -file "*smolrv64_cvfpu.sv"
-lint_off -rule WIDTHTRUNC     -file "*smolrv64_cvfpu.sv"

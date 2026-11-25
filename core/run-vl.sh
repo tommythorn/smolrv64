@@ -1,9 +1,9 @@
 #!/bin/bash
-# Verilated regression for the core, with the REAL CVFPU.
+# Verilated regression for the core, with the real FPU.
 #   ./run-vl.sh [class-glob ...]      e.g. rv64uf-p rv64ud-p
 # Default: every standard class, F/D included.
 #
-# The one riscv-tests flow: Verilator with the real CVFPU. (The iverilog flow with the FP
+# The one riscv-tests flow: Verilator with the real FPU. (The iverilog flow with the FP
 # stub was dropped in the 2026-09 release: iverilog cannot elaborate the frontend.) Builds
 # one binary, then runs tests JOBS at a time.
 set -u
@@ -31,7 +31,7 @@ verilator --binary --timing -j 0 -sv -Wall \
    -Wno-ASCRANGE -Wno-UNSIGNED -Wno-WIDTH -Wno-UNOPTFLAT ${VDEFS:-} \
    -I. -I../src --top-module tb --Mdir obj_dir_core -o tb_core \
    smolrv64_core.v smolrv64_pending.v smolrv64_bankq.v smolrv64_mwram.v smolrv64_frontend.v smolrv64_fring.v smolrv64_predictor.v smolrv64_exec.v smolrv64_lsu.v \
-   $PROBE_SRCS ../src/alu.v -f ../src/cvfpu_sources.f \
+   $PROBE_SRCS ../src/alu.v -f ../src/fpu_sources.f \
    tb_smolrv64_riscv.v > /tmp/corevlbuild.log 2>&1
 if [ $? -ne 0 ]; then echo "BUILD FAILED:"; grep -E '%Error' /tmp/corevlbuild.log | head -20; exit 1; fi
 # An input of the core this bench leaves unconnected reads as 0 and hangs the core quietly;
