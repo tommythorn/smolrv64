@@ -2,9 +2,9 @@
 //   verilator --cc --exe --build -Mdir obj_dir_blk \
 //     -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNUSEDSIGNAL \
 //     -GSD_SLOW_HALF=3 -GSD_FAST_HALF=4 -GSD_INIT_TICKS=20   (halves >=3: miso_sync margin) \
-//     --top-module virtio_blk src/virtio_blk.v src/sd_spi_host.v \
+//     --top-module virtio_blk_dma_top src/virtio_blk_dma_top.v src/virtio_blk.v src/sd_spi_host.v \
 //     src/dma_master.v src/virtio_blk_tb.cpp
-//   ./obj_dir_blk/Vvirtio_blk
+//   ./obj_dir_blk/Vvirtio_blk_dma_top
 //
 // Drives virtio_blk with a behavioral AXI slave (sparse 64-bit word DDR, bursts) for
 // the vring + guest buffers, and the behavioral SD card (sd_card_model.h) on
@@ -13,7 +13,7 @@
 //   2. T_OUT (write): guest DATA buffer -> block buffer -> SD sector
 //   3. round trip: write a sector, then read it back, bytes match
 // and first, with the slot empty: the card's init fails, and requests are answered, not held.
-#include "Vvirtio_blk.h"
+#include "Vvirtio_blk_dma_top.h"
 #include "verilated.h"
 #include "sd_spi_card_model.h"
 #include <cstdio>
@@ -46,7 +46,7 @@ static void mem_wr16(uint32_t a, uint16_t v){ uint8_t b[2]={(uint8_t)v,(uint8_t)
 static uint16_t mem_rd16(uint32_t a){ return mem_rd_byte(a) | (mem_rd_byte(a+1)<<8); }
 static uint32_t mem_rd32(uint32_t a){ uint32_t v=0; for(int i=0;i<4;i++) v|=mem_rd_byte(a+i)<<(8*i); return v;}
 
-static Vvirtio_blk* dut;
+static Vvirtio_blk_dma_top* dut;
 static void check(bool ok, const char* m);
 static SpiSdCard card;
 static bool card_in = false;    // the slot is empty until Test 0 is done
@@ -148,7 +148,7 @@ static void start() {
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
-    dut = new Vvirtio_blk;
+    dut = new Vvirtio_blk_dma_top;
 
     // ---- Test 0: no card. Nothing answers ACMD41, the init gives up, and the device answers
     //      every request: the capacity is 0, so GET_ID (udev's serial read) and a read are IOERR.

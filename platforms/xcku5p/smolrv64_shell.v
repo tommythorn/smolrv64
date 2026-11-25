@@ -370,124 +370,52 @@ module smolrv64_shell #(
    wire [ 7:0] virtio_blk_device_status;
 
    wire [31:0] virtio_net_debug_dma_error_count;
-   wire [ 2:0] virtio_net_axi_awid;
-   wire [31:0] virtio_net_axi_awaddr;
-   wire [ 7:0] virtio_net_axi_awlen;
-   wire [ 2:0] virtio_net_axi_awsize;
-   wire [ 1:0] virtio_net_axi_awburst;
-   wire        virtio_net_axi_awlock;
-   wire [ 3:0] virtio_net_axi_awcache;
-   wire [ 2:0] virtio_net_axi_awprot;
-   wire [ 3:0] virtio_net_axi_awqos;
-   wire        virtio_net_axi_awvalid;
-   wire        virtio_net_axi_awready;
-   wire [63:0] virtio_net_axi_wdata;
-   wire [ 7:0] virtio_net_axi_wstrb;
-   wire        virtio_net_axi_wlast;
-   wire        virtio_net_axi_wvalid;
-   wire        virtio_net_axi_wready;
-   wire [ 2:0] virtio_net_axi_bid;
-   wire [ 1:0] virtio_net_axi_bresp;
-   wire        virtio_net_axi_bvalid;
-   wire        virtio_net_axi_bready;
-   wire [ 2:0] virtio_net_axi_arid;
-   wire [31:0] virtio_net_axi_araddr;
-   wire [ 7:0] virtio_net_axi_arlen;
-   wire [ 2:0] virtio_net_axi_arsize;
-   wire [ 1:0] virtio_net_axi_arburst;
-   wire        virtio_net_axi_arlock;
-   wire [ 3:0] virtio_net_axi_arcache;
-   wire [ 2:0] virtio_net_axi_arprot;
-   wire [ 3:0] virtio_net_axi_arqos;
-   wire        virtio_net_axi_arvalid;
-   wire        virtio_net_axi_arready;
-   wire [ 2:0] virtio_net_axi_rid;
-   wire [63:0] virtio_net_axi_rdata;
-   wire [ 1:0] virtio_net_axi_rresp;
-   wire        virtio_net_axi_rlast;
-   wire        virtio_net_axi_rvalid;
-   wire        virtio_net_axi_rready;
+   // the devices' DMA commands, port k's field of each: 0 virtio-blk, 1 virtio-net, 2 sound,
+   // 3 the keyboard; one dma_master serves them (u_dma), an answer's data to all
+   wire [3:0]   dv_valid, dv_ready, dv_write, dv_stream, dv_rsp;
+   wire [127:0] dv_addr;  wire [255:0] dv_wdata;  wire [31:0] dv_wstrb;
+   wire [63:0]  dv_rdata;  wire dv_error;
+   // ...and its AXI master
+   wire [ 2:0] dma_axi_awid;
+   wire [31:0] dma_axi_awaddr;
+   wire [ 7:0] dma_axi_awlen;
+   wire [ 2:0] dma_axi_awsize;
+   wire [ 1:0] dma_axi_awburst;
+   wire        dma_axi_awlock;
+   wire [ 3:0] dma_axi_awcache;
+   wire [ 2:0] dma_axi_awprot;
+   wire [ 3:0] dma_axi_awqos;
+   wire        dma_axi_awvalid;
+   wire        dma_axi_awready;
+   wire [63:0] dma_axi_wdata;
+   wire [ 7:0] dma_axi_wstrb;
+   wire        dma_axi_wlast;
+   wire        dma_axi_wvalid;
+   wire        dma_axi_wready;
+   wire [ 2:0] dma_axi_bid;
+   wire [ 1:0] dma_axi_bresp;
+   wire        dma_axi_bvalid;
+   wire        dma_axi_bready;
+   wire [ 2:0] dma_axi_arid;
+   wire [31:0] dma_axi_araddr;
+   wire [ 7:0] dma_axi_arlen;
+   wire [ 2:0] dma_axi_arsize;
+   wire [ 1:0] dma_axi_arburst;
+   wire        dma_axi_arlock;
+   wire [ 3:0] dma_axi_arcache;
+   wire [ 2:0] dma_axi_arprot;
+   wire [ 3:0] dma_axi_arqos;
+   wire        dma_axi_arvalid;
+   wire        dma_axi_arready;
+   wire [ 2:0] dma_axi_rid;
+   wire [63:0] dma_axi_rdata;
+   wire [ 1:0] dma_axi_rresp;
+   wire        dma_axi_rlast;
+   wire        dma_axi_rvalid;
+   wire        dma_axi_rready;
    // Net debug-overlay word (0x10003f00+); declared out here so it stays visible when
    // NO_VIRTIO_NET compiles the net block below out.
    reg  [31:0] virtio_net_debug_word;
-
-   // virtio-blk backend DMA master + the device-side arbiter output that merges
-   // net + blk into one master before the existing core-vs-device arbiter.
-   wire [ 2:0] virtio_blk_axi_awid;
-   wire [31:0] virtio_blk_axi_awaddr;
-   wire [ 7:0] virtio_blk_axi_awlen;
-   wire [ 2:0] virtio_blk_axi_awsize;
-   wire [ 1:0] virtio_blk_axi_awburst;
-   wire        virtio_blk_axi_awlock;
-   wire [ 3:0] virtio_blk_axi_awcache;
-   wire [ 2:0] virtio_blk_axi_awprot;
-   wire [ 3:0] virtio_blk_axi_awqos;
-   wire        virtio_blk_axi_awvalid;
-   wire        virtio_blk_axi_awready;
-   wire [63:0] virtio_blk_axi_wdata;
-   wire [ 7:0] virtio_blk_axi_wstrb;
-   wire        virtio_blk_axi_wlast;
-   wire        virtio_blk_axi_wvalid;
-   wire        virtio_blk_axi_wready;
-   wire [ 2:0] virtio_blk_axi_bid;
-   wire [ 1:0] virtio_blk_axi_bresp;
-   wire        virtio_blk_axi_bvalid;
-   wire        virtio_blk_axi_bready;
-   wire [ 2:0] virtio_blk_axi_arid;
-   wire [31:0] virtio_blk_axi_araddr;
-   wire [ 7:0] virtio_blk_axi_arlen;
-   wire [ 2:0] virtio_blk_axi_arsize;
-   wire [ 1:0] virtio_blk_axi_arburst;
-   wire        virtio_blk_axi_arlock;
-   wire [ 3:0] virtio_blk_axi_arcache;
-   wire [ 2:0] virtio_blk_axi_arprot;
-   wire [ 3:0] virtio_blk_axi_arqos;
-   wire        virtio_blk_axi_arvalid;
-   wire        virtio_blk_axi_arready;
-   wire [ 2:0] virtio_blk_axi_rid;
-   wire [63:0] virtio_blk_axi_rdata;
-   wire [ 1:0] virtio_blk_axi_rresp;
-   wire        virtio_blk_axi_rlast;
-   wire        virtio_blk_axi_rvalid;
-   wire        virtio_blk_axi_rready;
-
-   wire [ 2:0] devab_axi_awid;
-   wire [31:0] devab_axi_awaddr;
-   wire [ 7:0] devab_axi_awlen;
-   wire [ 2:0] devab_axi_awsize;
-   wire [ 1:0] devab_axi_awburst;
-   wire        devab_axi_awlock;
-   wire [ 3:0] devab_axi_awcache;
-   wire [ 2:0] devab_axi_awprot;
-   wire [ 3:0] devab_axi_awqos;
-   wire        devab_axi_awvalid;
-   wire        devab_axi_awready;
-   wire [63:0] devab_axi_wdata;
-   wire [ 7:0] devab_axi_wstrb;
-   wire        devab_axi_wlast;
-   wire        devab_axi_wvalid;
-   wire        devab_axi_wready;
-   wire [ 2:0] devab_axi_bid;
-   wire [ 1:0] devab_axi_bresp;
-   wire        devab_axi_bvalid;
-   wire        devab_axi_bready;
-   wire [ 2:0] devab_axi_arid;
-   wire [31:0] devab_axi_araddr;
-   wire [ 7:0] devab_axi_arlen;
-   wire [ 2:0] devab_axi_arsize;
-   wire [ 1:0] devab_axi_arburst;
-   wire        devab_axi_arlock;
-   wire [ 3:0] devab_axi_arcache;
-   wire [ 2:0] devab_axi_arprot;
-   wire [ 3:0] devab_axi_arqos;
-   wire        devab_axi_arvalid;
-   wire        devab_axi_arready;
-   wire [ 2:0] devab_axi_rid;
-   wire [63:0] devab_axi_rdata;
-   wire [ 1:0] devab_axi_rresp;
-   wire        devab_axi_rlast;
-   wire        devab_axi_rvalid;
-   wire        devab_axi_rready;
 
    wire [ 2:0] vga_axi_awid;
    wire [31:0] vga_axi_awaddr;
@@ -526,157 +454,6 @@ module smolrv64_shell #(
    wire        vga_axi_rlast;
    wire        vga_axi_rvalid;
    wire        vga_axi_rready;
-
-   wire [ 2:0] kbd_axi_awid;
-   wire [31:0] kbd_axi_awaddr;
-   wire [ 7:0] kbd_axi_awlen;
-   wire [ 2:0] kbd_axi_awsize;
-   wire [ 1:0] kbd_axi_awburst;
-   wire        kbd_axi_awlock;
-   wire [ 3:0] kbd_axi_awcache;
-   wire [ 2:0] kbd_axi_awprot;
-   wire [ 3:0] kbd_axi_awqos;
-   wire        kbd_axi_awvalid;
-   wire        kbd_axi_awready;
-   wire [63:0] kbd_axi_wdata;
-   wire [ 7:0] kbd_axi_wstrb;
-   wire        kbd_axi_wlast;
-   wire        kbd_axi_wvalid;
-   wire        kbd_axi_wready;
-   wire [ 2:0] kbd_axi_bid;
-   wire [ 1:0] kbd_axi_bresp;
-   wire        kbd_axi_bvalid;
-   wire        kbd_axi_bready;
-   wire [ 2:0] kbd_axi_arid;
-   wire [31:0] kbd_axi_araddr;
-   wire [ 7:0] kbd_axi_arlen;
-   wire [ 2:0] kbd_axi_arsize;
-   wire [ 1:0] kbd_axi_arburst;
-   wire        kbd_axi_arlock;
-   wire [ 3:0] kbd_axi_arcache;
-   wire [ 2:0] kbd_axi_arprot;
-   wire [ 3:0] kbd_axi_arqos;
-   wire        kbd_axi_arvalid;
-   wire        kbd_axi_arready;
-   wire [ 2:0] kbd_axi_rid;
-   wire [63:0] kbd_axi_rdata;
-   wire [ 1:0] kbd_axi_rresp;
-   wire        kbd_axi_rlast;
-   wire        kbd_axi_rvalid;
-   wire        kbd_axi_rready;
-   // the sound device's DMA port, and the keyboard's and its merged (ks_arbiter_inst)
-   wire [ 2:0] snd_axi_awid;
-   wire [31:0] snd_axi_awaddr;
-   wire [ 7:0] snd_axi_awlen;
-   wire [ 2:0] snd_axi_awsize;
-   wire [ 1:0] snd_axi_awburst;
-   wire        snd_axi_awlock;
-   wire [ 3:0] snd_axi_awcache;
-   wire [ 2:0] snd_axi_awprot;
-   wire [ 3:0] snd_axi_awqos;
-   wire        snd_axi_awvalid;
-   wire        snd_axi_awready;
-   wire [63:0] snd_axi_wdata;
-   wire [ 7:0] snd_axi_wstrb;
-   wire        snd_axi_wlast;
-   wire        snd_axi_wvalid;
-   wire        snd_axi_wready;
-   wire [ 2:0] snd_axi_bid;
-   wire [ 1:0] snd_axi_bresp;
-   wire        snd_axi_bvalid;
-   wire        snd_axi_bready;
-   wire [ 2:0] snd_axi_arid;
-   wire [31:0] snd_axi_araddr;
-   wire [ 7:0] snd_axi_arlen;
-   wire [ 2:0] snd_axi_arsize;
-   wire [ 1:0] snd_axi_arburst;
-   wire        snd_axi_arlock;
-   wire [ 3:0] snd_axi_arcache;
-   wire [ 2:0] snd_axi_arprot;
-   wire [ 3:0] snd_axi_arqos;
-   wire        snd_axi_arvalid;
-   wire        snd_axi_arready;
-   wire [ 2:0] snd_axi_rid;
-   wire [63:0] snd_axi_rdata;
-   wire [ 1:0] snd_axi_rresp;
-   wire        snd_axi_rlast;
-   wire        snd_axi_rvalid;
-   wire        snd_axi_rready;
-   wire [ 2:0] ks_axi_awid;
-   wire [31:0] ks_axi_awaddr;
-   wire [ 7:0] ks_axi_awlen;
-   wire [ 2:0] ks_axi_awsize;
-   wire [ 1:0] ks_axi_awburst;
-   wire        ks_axi_awlock;
-   wire [ 3:0] ks_axi_awcache;
-   wire [ 2:0] ks_axi_awprot;
-   wire [ 3:0] ks_axi_awqos;
-   wire        ks_axi_awvalid;
-   wire        ks_axi_awready;
-   wire [63:0] ks_axi_wdata;
-   wire [ 7:0] ks_axi_wstrb;
-   wire        ks_axi_wlast;
-   wire        ks_axi_wvalid;
-   wire        ks_axi_wready;
-   wire [ 2:0] ks_axi_bid;
-   wire [ 1:0] ks_axi_bresp;
-   wire        ks_axi_bvalid;
-   wire        ks_axi_bready;
-   wire [ 2:0] ks_axi_arid;
-   wire [31:0] ks_axi_araddr;
-   wire [ 7:0] ks_axi_arlen;
-   wire [ 2:0] ks_axi_arsize;
-   wire [ 1:0] ks_axi_arburst;
-   wire        ks_axi_arlock;
-   wire [ 3:0] ks_axi_arcache;
-   wire [ 2:0] ks_axi_arprot;
-   wire [ 3:0] ks_axi_arqos;
-   wire        ks_axi_arvalid;
-   wire        ks_axi_arready;
-   wire [ 2:0] ks_axi_rid;
-   wire [63:0] ks_axi_rdata;
-   wire [ 1:0] ks_axi_rresp;
-   wire        ks_axi_rlast;
-   wire        ks_axi_rvalid;
-   wire        ks_axi_rready;
-
-   wire [ 2:0] periph_axi_awid;
-   wire [31:0] periph_axi_awaddr;
-   wire [ 7:0] periph_axi_awlen;
-   wire [ 2:0] periph_axi_awsize;
-   wire [ 1:0] periph_axi_awburst;
-   wire        periph_axi_awlock;
-   wire [ 3:0] periph_axi_awcache;
-   wire [ 2:0] periph_axi_awprot;
-   wire [ 3:0] periph_axi_awqos;
-   wire        periph_axi_awvalid;
-   wire        periph_axi_awready;
-   wire [63:0] periph_axi_wdata;
-   wire [ 7:0] periph_axi_wstrb;
-   wire        periph_axi_wlast;
-   wire        periph_axi_wvalid;
-   wire        periph_axi_wready;
-   wire [ 2:0] periph_axi_bid;
-   wire [ 1:0] periph_axi_bresp;
-   wire        periph_axi_bvalid;
-   wire        periph_axi_bready;
-   wire [ 2:0] periph_axi_arid;
-   wire [31:0] periph_axi_araddr;
-   wire [ 7:0] periph_axi_arlen;
-   wire [ 2:0] periph_axi_arsize;
-   wire [ 1:0] periph_axi_arburst;
-   wire        periph_axi_arlock;
-   wire [ 3:0] periph_axi_arcache;
-   wire [ 2:0] periph_axi_arprot;
-   wire [ 3:0] periph_axi_arqos;
-   wire        periph_axi_arvalid;
-   wire        periph_axi_arready;
-   wire [ 2:0] periph_axi_rid;
-   wire [63:0] periph_axi_rdata;
-   wire [ 1:0] periph_axi_rresp;
-   wire        periph_axi_rlast;
-   wire        periph_axi_rvalid;
-   wire        periph_axi_rready;
 
    wire [ 2:0] device_axi_awid;
    wire [31:0] device_axi_awaddr;
@@ -912,44 +689,9 @@ module smolrv64_shell #(
       .sd_mosi                 (blk_mosi),
       .sd_miso                 (blk_miso),
       .sd_cs_n                 (blk_cs_n),
-
-      .m_axi_awid              (virtio_blk_axi_awid),
-      .m_axi_awaddr            (virtio_blk_axi_awaddr),
-      .m_axi_awlen             (virtio_blk_axi_awlen),
-      .m_axi_awsize            (virtio_blk_axi_awsize),
-      .m_axi_awburst           (virtio_blk_axi_awburst),
-      .m_axi_awlock            (virtio_blk_axi_awlock),
-      .m_axi_awcache           (virtio_blk_axi_awcache),
-      .m_axi_awprot            (virtio_blk_axi_awprot),
-      .m_axi_awqos             (virtio_blk_axi_awqos),
-      .m_axi_awvalid           (virtio_blk_axi_awvalid),
-      .m_axi_awready           (virtio_blk_axi_awready),
-      .m_axi_wdata             (virtio_blk_axi_wdata),
-      .m_axi_wstrb             (virtio_blk_axi_wstrb),
-      .m_axi_wlast             (virtio_blk_axi_wlast),
-      .m_axi_wvalid            (virtio_blk_axi_wvalid),
-      .m_axi_wready            (virtio_blk_axi_wready),
-      .m_axi_bid               (virtio_blk_axi_bid),
-      .m_axi_bresp             (virtio_blk_axi_bresp),
-      .m_axi_bvalid            (virtio_blk_axi_bvalid),
-      .m_axi_bready            (virtio_blk_axi_bready),
-      .m_axi_arid              (virtio_blk_axi_arid),
-      .m_axi_araddr            (virtio_blk_axi_araddr),
-      .m_axi_arlen             (virtio_blk_axi_arlen),
-      .m_axi_arsize            (virtio_blk_axi_arsize),
-      .m_axi_arburst           (virtio_blk_axi_arburst),
-      .m_axi_arlock            (virtio_blk_axi_arlock),
-      .m_axi_arcache           (virtio_blk_axi_arcache),
-      .m_axi_arprot            (virtio_blk_axi_arprot),
-      .m_axi_arqos             (virtio_blk_axi_arqos),
-      .m_axi_arvalid           (virtio_blk_axi_arvalid),
-      .m_axi_arready           (virtio_blk_axi_arready),
-      .m_axi_rid               (virtio_blk_axi_rid),
-      .m_axi_rdata             (virtio_blk_axi_rdata),
-      .m_axi_rresp             (virtio_blk_axi_rresp),
-      .m_axi_rlast             (virtio_blk_axi_rlast),
-      .m_axi_rvalid            (virtio_blk_axi_rvalid),
-      .m_axi_rready            (virtio_blk_axi_rready)
+      .dma_cmd_valid(dv_valid[0]), .dma_cmd_ready(dv_ready[0]), .dma_cmd_write(dv_write[0]), .dma_cmd_stream(dv_stream[0]),
+      .dma_cmd_addr(dv_addr[0*32 +: 32]), .dma_cmd_wdata(dv_wdata[0*64 +: 64]), .dma_cmd_wstrb(dv_wstrb[0*8 +: 8]),
+      .dma_rsp_valid(dv_rsp[0]), .dma_rsp_rdata(dv_rdata), .dma_rsp_error(dv_error)
    );
 
 `ifdef ILA_PARITY
@@ -979,10 +721,10 @@ module smolrv64_shell #(
    ila_dev u_ila_dev (
       .clk    (ui_clk),
       .probe0 (virtio_blk_dbg),
-      .probe1 ({virtio_blk_axi_awvalid, virtio_blk_axi_awready, virtio_blk_axi_wvalid,
-                virtio_blk_axi_wready, virtio_blk_axi_wlast, virtio_blk_axi_bvalid,
-                virtio_blk_axi_bready, virtio_blk_axi_arvalid, virtio_blk_axi_arready,
-                virtio_blk_axi_rvalid, virtio_blk_axi_rready, virtio_blk_axi_rlast}),
+      .probe1 ({dma_axi_awvalid, dma_axi_awready, dma_axi_wvalid,
+                dma_axi_wready, dma_axi_wlast, dma_axi_bvalid,
+                dma_axi_bready, dma_axi_arvalid, dma_axi_arready,
+                dma_axi_rvalid, dma_axi_rready, dma_axi_rlast}),
       .probe2 ({blk_sck, blk_cs_n, blk_mosi, blk_miso})
    );
 `endif
@@ -1070,44 +812,9 @@ module smolrv64_shell #(
       .rx_rd_data              (eth_rx_rd_data),
       .rx_frame_ack            (eth_rx_frame_ack),
       .debug_rx_nobuf_count    (virtio_net_debug_rx_nobuf_count),
-
-      .m_axi_awid              (virtio_net_axi_awid),
-      .m_axi_awaddr            (virtio_net_axi_awaddr),
-      .m_axi_awlen             (virtio_net_axi_awlen),
-      .m_axi_awsize            (virtio_net_axi_awsize),
-      .m_axi_awburst           (virtio_net_axi_awburst),
-      .m_axi_awlock            (virtio_net_axi_awlock),
-      .m_axi_awcache           (virtio_net_axi_awcache),
-      .m_axi_awprot            (virtio_net_axi_awprot),
-      .m_axi_awqos             (virtio_net_axi_awqos),
-      .m_axi_awvalid           (virtio_net_axi_awvalid),
-      .m_axi_awready           (virtio_net_axi_awready),
-      .m_axi_wdata             (virtio_net_axi_wdata),
-      .m_axi_wstrb             (virtio_net_axi_wstrb),
-      .m_axi_wlast             (virtio_net_axi_wlast),
-      .m_axi_wvalid            (virtio_net_axi_wvalid),
-      .m_axi_wready            (virtio_net_axi_wready),
-      .m_axi_bid               (virtio_net_axi_bid),
-      .m_axi_bresp             (virtio_net_axi_bresp),
-      .m_axi_bvalid            (virtio_net_axi_bvalid),
-      .m_axi_bready            (virtio_net_axi_bready),
-      .m_axi_arid              (virtio_net_axi_arid),
-      .m_axi_araddr            (virtio_net_axi_araddr),
-      .m_axi_arlen             (virtio_net_axi_arlen),
-      .m_axi_arsize            (virtio_net_axi_arsize),
-      .m_axi_arburst           (virtio_net_axi_arburst),
-      .m_axi_arlock            (virtio_net_axi_arlock),
-      .m_axi_arcache           (virtio_net_axi_arcache),
-      .m_axi_arprot            (virtio_net_axi_arprot),
-      .m_axi_arqos             (virtio_net_axi_arqos),
-      .m_axi_arvalid           (virtio_net_axi_arvalid),
-      .m_axi_arready           (virtio_net_axi_arready),
-      .m_axi_rid               (virtio_net_axi_rid),
-      .m_axi_rdata             (virtio_net_axi_rdata),
-      .m_axi_rresp             (virtio_net_axi_rresp),
-      .m_axi_rlast             (virtio_net_axi_rlast),
-      .m_axi_rvalid            (virtio_net_axi_rvalid),
-      .m_axi_rready            (virtio_net_axi_rready)
+      .dma_cmd_valid(dv_valid[1]), .dma_cmd_ready(dv_ready[1]), .dma_cmd_write(dv_write[1]), .dma_cmd_stream(dv_stream[1]),
+      .dma_cmd_addr(dv_addr[1*32 +: 32]), .dma_cmd_wdata(dv_wdata[1*64 +: 64]), .dma_cmd_wstrb(dv_wstrb[1*8 +: 8]),
+      .dma_rsp_valid(dv_rsp[1]), .dma_rsp_rdata(dv_rdata), .dma_rsp_error(dv_error)
    );
 
    // ===== Ethernet MAC: virtio_net (ui_clk) <-> eth_tx_engine <-> GMII =====
@@ -1209,27 +916,14 @@ module smolrv64_shell #(
    // ================= NO_VIRTIO_NET =================
    // virtio-net + the eth MAC are compiled out to relieve ui_clk routing
    // congestion (the -0.57ns device-DMA cone + the router collapse sit in the
-   // net-adjacent logic). Blk-only device DMA: hold the device arbiter's net s0
-   // idle so it passes virtio-blk straight through; the net MMIO window reads 0 and
+   // net-adjacent logic). Its DMA port never asks; the net MMIO window reads 0 and
    // the net IRQ never fires, so Linux finds no net device (same as the sim TBs).
    assign virtio_net_readdata = 32'd0;
    assign virtio_net_irq      = 1'b0;
    always @(*) virtio_net_debug_word = 32'd0;
    assign gmii_tx_en = 1'b0;  assign gmii_txd = 8'd0;
-   assign virtio_net_axi_awid    = 3'd0;   assign virtio_net_axi_awaddr  = 32'd0;
-   assign virtio_net_axi_awlen   = 8'd0;   assign virtio_net_axi_awsize  = 3'd0;
-   assign virtio_net_axi_awburst = 2'd0;   assign virtio_net_axi_awlock  = 1'b0;
-   assign virtio_net_axi_awcache = 4'd0;   assign virtio_net_axi_awprot  = 3'd0;
-   assign virtio_net_axi_awqos   = 4'd0;   assign virtio_net_axi_awvalid = 1'b0;
-   assign virtio_net_axi_wdata   = 64'd0;  assign virtio_net_axi_wstrb   = 8'd0;
-   assign virtio_net_axi_wlast   = 1'b0;   assign virtio_net_axi_wvalid  = 1'b0;
-   assign virtio_net_axi_bready  = 1'b1;
-   assign virtio_net_axi_arid    = 3'd0;   assign virtio_net_axi_araddr  = 32'd0;
-   assign virtio_net_axi_arlen   = 8'd0;   assign virtio_net_axi_arsize  = 3'd0;
-   assign virtio_net_axi_arburst = 2'd0;   assign virtio_net_axi_arlock  = 1'b0;
-   assign virtio_net_axi_arcache = 4'd0;   assign virtio_net_axi_arprot  = 3'd0;
-   assign virtio_net_axi_arqos   = 4'd0;   assign virtio_net_axi_arvalid = 1'b0;
-   assign virtio_net_axi_rready  = 1'b1;
+   assign dv_valid[1] = 1'b0;  assign dv_write[1] = 1'b0;  assign dv_stream[1] = 1'b0;
+   assign dv_addr[32 +: 32] = 32'd0;  assign dv_wdata[64 +: 64] = 64'd0;  assign dv_wstrb[8 +: 8] = 8'd0;
 `endif
 
    // ===== VGA scanout (simmerv's --graphics framebuffer on a TinyVGA adapter) =====
@@ -1349,20 +1043,10 @@ module smolrv64_shell #(
       .address(ui_mmio_address[11:0]), .read(ui_mmio_read && kbd_sel), .read_data(kbd_mmio_rdata),
       .write(ui_mmio_write && kbd_sel), .write_data(ui_mmio_writedata), .byteenable(ui_mmio_byteenable),
       .irq(kbd_irq), .key_valid(kbd_byte_valid), .key_byte(kbd_byte), .hid_rxd(hid_rxd),
-      .m_axi_awid(kbd_axi_awid), .m_axi_awaddr(kbd_axi_awaddr), .m_axi_awlen(kbd_axi_awlen),
-      .m_axi_awsize(kbd_axi_awsize), .m_axi_awburst(kbd_axi_awburst), .m_axi_awlock(kbd_axi_awlock),
-      .m_axi_awcache(kbd_axi_awcache), .m_axi_awprot(kbd_axi_awprot), .m_axi_awqos(kbd_axi_awqos),
-      .m_axi_awvalid(kbd_axi_awvalid), .m_axi_awready(kbd_axi_awready),
-      .m_axi_wdata(kbd_axi_wdata), .m_axi_wstrb(kbd_axi_wstrb), .m_axi_wlast(kbd_axi_wlast),
-      .m_axi_wvalid(kbd_axi_wvalid), .m_axi_wready(kbd_axi_wready),
-      .m_axi_bid(kbd_axi_bid), .m_axi_bresp(kbd_axi_bresp), .m_axi_bvalid(kbd_axi_bvalid),
-      .m_axi_bready(kbd_axi_bready),
-      .m_axi_arid(kbd_axi_arid), .m_axi_araddr(kbd_axi_araddr), .m_axi_arlen(kbd_axi_arlen),
-      .m_axi_arsize(kbd_axi_arsize), .m_axi_arburst(kbd_axi_arburst), .m_axi_arlock(kbd_axi_arlock),
-      .m_axi_arcache(kbd_axi_arcache), .m_axi_arprot(kbd_axi_arprot), .m_axi_arqos(kbd_axi_arqos),
-      .m_axi_arvalid(kbd_axi_arvalid), .m_axi_arready(kbd_axi_arready),
-      .m_axi_rid(kbd_axi_rid), .m_axi_rdata(kbd_axi_rdata), .m_axi_rresp(kbd_axi_rresp),
-      .m_axi_rlast(kbd_axi_rlast), .m_axi_rvalid(kbd_axi_rvalid), .m_axi_rready(kbd_axi_rready));
+      .dma_cmd_valid(dv_valid[3]), .dma_cmd_ready(dv_ready[3]), .dma_cmd_write(dv_write[3]), .dma_cmd_stream(dv_stream[3]),
+      .dma_cmd_addr(dv_addr[3*32 +: 32]), .dma_cmd_wdata(dv_wdata[3*64 +: 64]), .dma_cmd_wstrb(dv_wstrb[3*8 +: 8]),
+      .dma_rsp_valid(dv_rsp[3]), .dma_rsp_rdata(dv_rdata), .dma_rsp_error(dv_error)
+   );
 
    // The sound device (virtio_snd, page 0x07, PLIC source 13): its frames leave as aud_*.
    wire        snd_irq;
@@ -1371,449 +1055,111 @@ module smolrv64_shell #(
       .address(ui_mmio_address[11:0]), .read(ui_mmio_read && snd_sel), .read_data(snd_mmio_rdata),
       .write(ui_mmio_write && snd_sel), .write_data(ui_mmio_writedata), .byteenable(ui_mmio_byteenable),
       .irq(snd_irq), .frame_valid(aud_valid), .frame(aud_frame),
-      .m_axi_awid(snd_axi_awid), .m_axi_awaddr(snd_axi_awaddr), .m_axi_awlen(snd_axi_awlen), .m_axi_awsize(snd_axi_awsize), .m_axi_awburst(snd_axi_awburst), .m_axi_awlock(snd_axi_awlock), .m_axi_awcache(snd_axi_awcache), .m_axi_awprot(snd_axi_awprot), .m_axi_awqos(snd_axi_awqos), .m_axi_awvalid(snd_axi_awvalid), .m_axi_awready(snd_axi_awready), .m_axi_wdata(snd_axi_wdata), .m_axi_wstrb(snd_axi_wstrb), .m_axi_wlast(snd_axi_wlast), .m_axi_wvalid(snd_axi_wvalid), .m_axi_wready(snd_axi_wready), .m_axi_bid(snd_axi_bid), .m_axi_bresp(snd_axi_bresp), .m_axi_bvalid(snd_axi_bvalid), .m_axi_bready(snd_axi_bready), .m_axi_arid(snd_axi_arid), .m_axi_araddr(snd_axi_araddr), .m_axi_arlen(snd_axi_arlen), .m_axi_arsize(snd_axi_arsize), .m_axi_arburst(snd_axi_arburst), .m_axi_arlock(snd_axi_arlock), .m_axi_arcache(snd_axi_arcache), .m_axi_arprot(snd_axi_arprot), .m_axi_arqos(snd_axi_arqos), .m_axi_arvalid(snd_axi_arvalid), .m_axi_arready(snd_axi_arready), .m_axi_rid(snd_axi_rid), .m_axi_rdata(snd_axi_rdata), .m_axi_rresp(snd_axi_rresp), .m_axi_rlast(snd_axi_rlast), .m_axi_rvalid(snd_axi_rvalid), .m_axi_rready(snd_axi_rready));
-   // the keyboard (s0) and the sound device (s1) share the VGA arbiter's second port; ID bit 2 names
-   // which (the other arbiters stamp bits 0 and 1)
-   axi_two_master_arbiter #(.STAMP(2)) ks_arbiter_inst(
-      .clock           (ui_clk),
-      .reset           (ui_cpu_reset),
-      .s0_axi_awid      (kbd_axi_awid),
-      .s0_axi_awaddr    (kbd_axi_awaddr),
-      .s0_axi_awlen     (kbd_axi_awlen),
-      .s0_axi_awsize    (kbd_axi_awsize),
-      .s0_axi_awburst   (kbd_axi_awburst),
-      .s0_axi_awlock    (kbd_axi_awlock),
-      .s0_axi_awcache   (kbd_axi_awcache),
-      .s0_axi_awprot    (kbd_axi_awprot),
-      .s0_axi_awqos     (kbd_axi_awqos),
-      .s0_axi_awvalid   (kbd_axi_awvalid),
-      .s0_axi_awready   (kbd_axi_awready),
-      .s0_axi_wdata     (kbd_axi_wdata),
-      .s0_axi_wstrb     (kbd_axi_wstrb),
-      .s0_axi_wlast     (kbd_axi_wlast),
-      .s0_axi_wvalid    (kbd_axi_wvalid),
-      .s0_axi_wready    (kbd_axi_wready),
-      .s0_axi_bid       (kbd_axi_bid),
-      .s0_axi_bresp     (kbd_axi_bresp),
-      .s0_axi_bvalid    (kbd_axi_bvalid),
-      .s0_axi_bready    (kbd_axi_bready),
-      .s0_axi_arid      (kbd_axi_arid),
-      .s0_axi_araddr    (kbd_axi_araddr),
-      .s0_axi_arlen     (kbd_axi_arlen),
-      .s0_axi_arsize    (kbd_axi_arsize),
-      .s0_axi_arburst   (kbd_axi_arburst),
-      .s0_axi_arlock    (kbd_axi_arlock),
-      .s0_axi_arcache   (kbd_axi_arcache),
-      .s0_axi_arprot    (kbd_axi_arprot),
-      .s0_axi_arqos     (kbd_axi_arqos),
-      .s0_axi_arvalid   (kbd_axi_arvalid),
-      .s0_axi_arready   (kbd_axi_arready),
-      .s0_axi_rid       (kbd_axi_rid),
-      .s0_axi_rdata     (kbd_axi_rdata),
-      .s0_axi_rresp     (kbd_axi_rresp),
-      .s0_axi_rlast     (kbd_axi_rlast),
-      .s0_axi_rvalid    (kbd_axi_rvalid),
-      .s0_axi_rready    (kbd_axi_rready),
-      .s1_axi_awid      (snd_axi_awid),
-      .s1_axi_awaddr    (snd_axi_awaddr),
-      .s1_axi_awlen     (snd_axi_awlen),
-      .s1_axi_awsize    (snd_axi_awsize),
-      .s1_axi_awburst   (snd_axi_awburst),
-      .s1_axi_awlock    (snd_axi_awlock),
-      .s1_axi_awcache   (snd_axi_awcache),
-      .s1_axi_awprot    (snd_axi_awprot),
-      .s1_axi_awqos     (snd_axi_awqos),
-      .s1_axi_awvalid   (snd_axi_awvalid),
-      .s1_axi_awready   (snd_axi_awready),
-      .s1_axi_wdata     (snd_axi_wdata),
-      .s1_axi_wstrb     (snd_axi_wstrb),
-      .s1_axi_wlast     (snd_axi_wlast),
-      .s1_axi_wvalid    (snd_axi_wvalid),
-      .s1_axi_wready    (snd_axi_wready),
-      .s1_axi_bid       (snd_axi_bid),
-      .s1_axi_bresp     (snd_axi_bresp),
-      .s1_axi_bvalid    (snd_axi_bvalid),
-      .s1_axi_bready    (snd_axi_bready),
-      .s1_axi_arid      (snd_axi_arid),
-      .s1_axi_araddr    (snd_axi_araddr),
-      .s1_axi_arlen     (snd_axi_arlen),
-      .s1_axi_arsize    (snd_axi_arsize),
-      .s1_axi_arburst   (snd_axi_arburst),
-      .s1_axi_arlock    (snd_axi_arlock),
-      .s1_axi_arcache   (snd_axi_arcache),
-      .s1_axi_arprot    (snd_axi_arprot),
-      .s1_axi_arqos     (snd_axi_arqos),
-      .s1_axi_arvalid   (snd_axi_arvalid),
-      .s1_axi_arready   (snd_axi_arready),
-      .s1_axi_rid       (snd_axi_rid),
-      .s1_axi_rdata     (snd_axi_rdata),
-      .s1_axi_rresp     (snd_axi_rresp),
-      .s1_axi_rlast     (snd_axi_rlast),
-      .s1_axi_rvalid    (snd_axi_rvalid),
-      .s1_axi_rready    (snd_axi_rready),
-      .m_axi_awid       (ks_axi_awid),
-      .m_axi_awaddr     (ks_axi_awaddr),
-      .m_axi_awlen      (ks_axi_awlen),
-      .m_axi_awsize     (ks_axi_awsize),
-      .m_axi_awburst    (ks_axi_awburst),
-      .m_axi_awlock     (ks_axi_awlock),
-      .m_axi_awcache    (ks_axi_awcache),
-      .m_axi_awprot     (ks_axi_awprot),
-      .m_axi_awqos      (ks_axi_awqos),
-      .m_axi_awvalid    (ks_axi_awvalid),
-      .m_axi_awready    (ks_axi_awready),
-      .m_axi_wdata      (ks_axi_wdata),
-      .m_axi_wstrb      (ks_axi_wstrb),
-      .m_axi_wlast      (ks_axi_wlast),
-      .m_axi_wvalid     (ks_axi_wvalid),
-      .m_axi_wready     (ks_axi_wready),
-      .m_axi_bid        (ks_axi_bid),
-      .m_axi_bresp      (ks_axi_bresp),
-      .m_axi_bvalid     (ks_axi_bvalid),
-      .m_axi_bready     (ks_axi_bready),
-      .m_axi_arid       (ks_axi_arid),
-      .m_axi_araddr     (ks_axi_araddr),
-      .m_axi_arlen      (ks_axi_arlen),
-      .m_axi_arsize     (ks_axi_arsize),
-      .m_axi_arburst    (ks_axi_arburst),
-      .m_axi_arlock     (ks_axi_arlock),
-      .m_axi_arcache    (ks_axi_arcache),
-      .m_axi_arprot     (ks_axi_arprot),
-      .m_axi_arqos      (ks_axi_arqos),
-      .m_axi_arvalid    (ks_axi_arvalid),
-      .m_axi_arready    (ks_axi_arready),
-      .m_axi_rid        (ks_axi_rid),
-      .m_axi_rdata      (ks_axi_rdata),
-      .m_axi_rresp      (ks_axi_rresp),
-      .m_axi_rlast      (ks_axi_rlast),
-      .m_axi_rvalid     (ks_axi_rvalid),
-      .m_axi_rready     (ks_axi_rready));
-
-   // The DMA masters' arbiters, a balanced tree into ddr4_mem's AXI port:
-   //    device_arbiter_inst  virtio-net (s0) + virtio-blk (s1)      stamps ID bit 0
-   //    periph_arbiter_inst  VGA scanout (s0) + virtio keyboard (s1)  stamps ID bit 0
-   //    device_top_inst      the two above                          stamps ID bit 1
-   // Every device master therefore uses ID 0. Reusing the proven 2-master arbiter keeps each one
-   // 2-input (timing-friendly).
-   axi_two_master_arbiter #(.STAMP(0)) device_arbiter_inst(
-      .clock          (ui_clk),
-      .reset          (ui_cpu_reset),
-
-      .s0_axi_awid    (virtio_net_axi_awid),
-      .s0_axi_awaddr  (virtio_net_axi_awaddr),
-      .s0_axi_awlen   (virtio_net_axi_awlen),
-      .s0_axi_awsize  (virtio_net_axi_awsize),
-      .s0_axi_awburst (virtio_net_axi_awburst),
-      .s0_axi_awlock  (virtio_net_axi_awlock),
-      .s0_axi_awcache (virtio_net_axi_awcache),
-      .s0_axi_awprot  (virtio_net_axi_awprot),
-      .s0_axi_awqos   (virtio_net_axi_awqos),
-      .s0_axi_awvalid (virtio_net_axi_awvalid),
-      .s0_axi_awready (virtio_net_axi_awready),
-      .s0_axi_wdata   (virtio_net_axi_wdata),
-      .s0_axi_wstrb   (virtio_net_axi_wstrb),
-      .s0_axi_wlast   (virtio_net_axi_wlast),
-      .s0_axi_wvalid  (virtio_net_axi_wvalid),
-      .s0_axi_wready  (virtio_net_axi_wready),
-      .s0_axi_bid     (virtio_net_axi_bid),
-      .s0_axi_bresp   (virtio_net_axi_bresp),
-      .s0_axi_bvalid  (virtio_net_axi_bvalid),
-      .s0_axi_bready  (virtio_net_axi_bready),
-      .s0_axi_arid    (virtio_net_axi_arid),
-      .s0_axi_araddr  (virtio_net_axi_araddr),
-      .s0_axi_arlen   (virtio_net_axi_arlen),
-      .s0_axi_arsize  (virtio_net_axi_arsize),
-      .s0_axi_arburst (virtio_net_axi_arburst),
-      .s0_axi_arlock  (virtio_net_axi_arlock),
-      .s0_axi_arcache (virtio_net_axi_arcache),
-      .s0_axi_arprot  (virtio_net_axi_arprot),
-      .s0_axi_arqos   (virtio_net_axi_arqos),
-      .s0_axi_arvalid (virtio_net_axi_arvalid),
-      .s0_axi_arready (virtio_net_axi_arready),
-      .s0_axi_rid     (virtio_net_axi_rid),
-      .s0_axi_rdata   (virtio_net_axi_rdata),
-      .s0_axi_rresp   (virtio_net_axi_rresp),
-      .s0_axi_rlast   (virtio_net_axi_rlast),
-      .s0_axi_rvalid  (virtio_net_axi_rvalid),
-      .s0_axi_rready  (virtio_net_axi_rready),
-
-      .s1_axi_awid    (virtio_blk_axi_awid),
-      .s1_axi_awaddr  (virtio_blk_axi_awaddr),
-      .s1_axi_awlen   (virtio_blk_axi_awlen),
-      .s1_axi_awsize  (virtio_blk_axi_awsize),
-      .s1_axi_awburst (virtio_blk_axi_awburst),
-      .s1_axi_awlock  (virtio_blk_axi_awlock),
-      .s1_axi_awcache (virtio_blk_axi_awcache),
-      .s1_axi_awprot  (virtio_blk_axi_awprot),
-      .s1_axi_awqos   (virtio_blk_axi_awqos),
-      .s1_axi_awvalid (virtio_blk_axi_awvalid),
-      .s1_axi_awready (virtio_blk_axi_awready),
-      .s1_axi_wdata   (virtio_blk_axi_wdata),
-      .s1_axi_wstrb   (virtio_blk_axi_wstrb),
-      .s1_axi_wlast   (virtio_blk_axi_wlast),
-      .s1_axi_wvalid  (virtio_blk_axi_wvalid),
-      .s1_axi_wready  (virtio_blk_axi_wready),
-      .s1_axi_bid     (virtio_blk_axi_bid),
-      .s1_axi_bresp   (virtio_blk_axi_bresp),
-      .s1_axi_bvalid  (virtio_blk_axi_bvalid),
-      .s1_axi_bready  (virtio_blk_axi_bready),
-      .s1_axi_arid    (virtio_blk_axi_arid),
-      .s1_axi_araddr  (virtio_blk_axi_araddr),
-      .s1_axi_arlen   (virtio_blk_axi_arlen),
-      .s1_axi_arsize  (virtio_blk_axi_arsize),
-      .s1_axi_arburst (virtio_blk_axi_arburst),
-      .s1_axi_arlock  (virtio_blk_axi_arlock),
-      .s1_axi_arcache (virtio_blk_axi_arcache),
-      .s1_axi_arprot  (virtio_blk_axi_arprot),
-      .s1_axi_arqos   (virtio_blk_axi_arqos),
-      .s1_axi_arvalid (virtio_blk_axi_arvalid),
-      .s1_axi_arready (virtio_blk_axi_arready),
-      .s1_axi_rid     (virtio_blk_axi_rid),
-      .s1_axi_rdata   (virtio_blk_axi_rdata),
-      .s1_axi_rresp   (virtio_blk_axi_rresp),
-      .s1_axi_rlast   (virtio_blk_axi_rlast),
-      .s1_axi_rvalid  (virtio_blk_axi_rvalid),
-      .s1_axi_rready  (virtio_blk_axi_rready),
-
-      .m_axi_awid     (devab_axi_awid),
-      .m_axi_awaddr   (devab_axi_awaddr),
-      .m_axi_awlen    (devab_axi_awlen),
-      .m_axi_awsize   (devab_axi_awsize),
-      .m_axi_awburst  (devab_axi_awburst),
-      .m_axi_awlock   (devab_axi_awlock),
-      .m_axi_awcache  (devab_axi_awcache),
-      .m_axi_awprot   (devab_axi_awprot),
-      .m_axi_awqos    (devab_axi_awqos),
-      .m_axi_awvalid  (devab_axi_awvalid),
-      .m_axi_awready  (devab_axi_awready),
-      .m_axi_wdata    (devab_axi_wdata),
-      .m_axi_wstrb    (devab_axi_wstrb),
-      .m_axi_wlast    (devab_axi_wlast),
-      .m_axi_wvalid   (devab_axi_wvalid),
-      .m_axi_wready   (devab_axi_wready),
-      .m_axi_bid      (devab_axi_bid),
-      .m_axi_bresp    (devab_axi_bresp),
-      .m_axi_bvalid   (devab_axi_bvalid),
-      .m_axi_bready   (devab_axi_bready),
-      .m_axi_arid     (devab_axi_arid),
-      .m_axi_araddr   (devab_axi_araddr),
-      .m_axi_arlen    (devab_axi_arlen),
-      .m_axi_arsize   (devab_axi_arsize),
-      .m_axi_arburst  (devab_axi_arburst),
-      .m_axi_arlock   (devab_axi_arlock),
-      .m_axi_arcache  (devab_axi_arcache),
-      .m_axi_arprot   (devab_axi_arprot),
-      .m_axi_arqos    (devab_axi_arqos),
-      .m_axi_arvalid  (devab_axi_arvalid),
-      .m_axi_arready  (devab_axi_arready),
-      .m_axi_rid      (devab_axi_rid),
-      .m_axi_rdata    (devab_axi_rdata),
-      .m_axi_rresp    (devab_axi_rresp),
-      .m_axi_rlast    (devab_axi_rlast),
-      .m_axi_rvalid   (devab_axi_rvalid),
-      .m_axi_rready   (devab_axi_rready)
+      .dma_cmd_valid(dv_valid[2]), .dma_cmd_ready(dv_ready[2]), .dma_cmd_write(dv_write[2]), .dma_cmd_stream(dv_stream[2]),
+      .dma_cmd_addr(dv_addr[2*32 +: 32]), .dma_cmd_wdata(dv_wdata[2*64 +: 64]), .dma_cmd_wstrb(dv_wstrb[2*8 +: 8]),
+      .dma_rsp_valid(dv_rsp[2]), .dma_rsp_rdata(dv_rdata), .dma_rsp_error(dv_error)
    );
 
-
-   axi_two_master_arbiter #(.STAMP(0)) periph_arbiter_inst(
-      .clock          (ui_clk),
-      .reset          (ui_cpu_reset),
-
-      .s0_axi_awid     (vga_axi_awid),
-      .s0_axi_awaddr   (vga_axi_awaddr),
-      .s0_axi_awlen    (vga_axi_awlen),
-      .s0_axi_awsize   (vga_axi_awsize),
-      .s0_axi_awburst  (vga_axi_awburst),
-      .s0_axi_awlock   (vga_axi_awlock),
-      .s0_axi_awcache  (vga_axi_awcache),
-      .s0_axi_awprot   (vga_axi_awprot),
-      .s0_axi_awqos    (vga_axi_awqos),
-      .s0_axi_awvalid  (vga_axi_awvalid),
-      .s0_axi_awready  (vga_axi_awready),
-      .s0_axi_wdata    (vga_axi_wdata),
-      .s0_axi_wstrb    (vga_axi_wstrb),
-      .s0_axi_wlast    (vga_axi_wlast),
-      .s0_axi_wvalid   (vga_axi_wvalid),
-      .s0_axi_wready   (vga_axi_wready),
-      .s0_axi_bid      (vga_axi_bid),
-      .s0_axi_bresp    (vga_axi_bresp),
-      .s0_axi_bvalid   (vga_axi_bvalid),
-      .s0_axi_bready   (vga_axi_bready),
-      .s0_axi_arid     (vga_axi_arid),
-      .s0_axi_araddr   (vga_axi_araddr),
-      .s0_axi_arlen    (vga_axi_arlen),
-      .s0_axi_arsize   (vga_axi_arsize),
-      .s0_axi_arburst  (vga_axi_arburst),
-      .s0_axi_arlock   (vga_axi_arlock),
-      .s0_axi_arcache  (vga_axi_arcache),
-      .s0_axi_arprot   (vga_axi_arprot),
-      .s0_axi_arqos    (vga_axi_arqos),
-      .s0_axi_arvalid  (vga_axi_arvalid),
-      .s0_axi_arready  (vga_axi_arready),
-      .s0_axi_rid      (vga_axi_rid),
-      .s0_axi_rdata    (vga_axi_rdata),
-      .s0_axi_rresp    (vga_axi_rresp),
-      .s0_axi_rlast    (vga_axi_rlast),
-      .s0_axi_rvalid   (vga_axi_rvalid),
-      .s0_axi_rready   (vga_axi_rready),
-
-      .s1_axi_awid     (ks_axi_awid),
-      .s1_axi_awaddr   (ks_axi_awaddr),
-      .s1_axi_awlen    (ks_axi_awlen),
-      .s1_axi_awsize   (ks_axi_awsize),
-      .s1_axi_awburst  (ks_axi_awburst),
-      .s1_axi_awlock   (ks_axi_awlock),
-      .s1_axi_awcache  (ks_axi_awcache),
-      .s1_axi_awprot   (ks_axi_awprot),
-      .s1_axi_awqos    (ks_axi_awqos),
-      .s1_axi_awvalid  (ks_axi_awvalid),
-      .s1_axi_awready  (ks_axi_awready),
-      .s1_axi_wdata    (ks_axi_wdata),
-      .s1_axi_wstrb    (ks_axi_wstrb),
-      .s1_axi_wlast    (ks_axi_wlast),
-      .s1_axi_wvalid   (ks_axi_wvalid),
-      .s1_axi_wready   (ks_axi_wready),
-      .s1_axi_bid      (ks_axi_bid),
-      .s1_axi_bresp    (ks_axi_bresp),
-      .s1_axi_bvalid   (ks_axi_bvalid),
-      .s1_axi_bready   (ks_axi_bready),
-      .s1_axi_arid     (ks_axi_arid),
-      .s1_axi_araddr   (ks_axi_araddr),
-      .s1_axi_arlen    (ks_axi_arlen),
-      .s1_axi_arsize   (ks_axi_arsize),
-      .s1_axi_arburst  (ks_axi_arburst),
-      .s1_axi_arlock   (ks_axi_arlock),
-      .s1_axi_arcache  (ks_axi_arcache),
-      .s1_axi_arprot   (ks_axi_arprot),
-      .s1_axi_arqos    (ks_axi_arqos),
-      .s1_axi_arvalid  (ks_axi_arvalid),
-      .s1_axi_arready  (ks_axi_arready),
-      .s1_axi_rid      (ks_axi_rid),
-      .s1_axi_rdata    (ks_axi_rdata),
-      .s1_axi_rresp    (ks_axi_rresp),
-      .s1_axi_rlast    (ks_axi_rlast),
-      .s1_axi_rvalid   (ks_axi_rvalid),
-      .s1_axi_rready   (ks_axi_rready),
-
-      .m_axi_awid     (periph_axi_awid),
-      .m_axi_awaddr   (periph_axi_awaddr),
-      .m_axi_awlen    (periph_axi_awlen),
-      .m_axi_awsize   (periph_axi_awsize),
-      .m_axi_awburst  (periph_axi_awburst),
-      .m_axi_awlock   (periph_axi_awlock),
-      .m_axi_awcache  (periph_axi_awcache),
-      .m_axi_awprot   (periph_axi_awprot),
-      .m_axi_awqos    (periph_axi_awqos),
-      .m_axi_awvalid  (periph_axi_awvalid),
-      .m_axi_awready  (periph_axi_awready),
-      .m_axi_wdata    (periph_axi_wdata),
-      .m_axi_wstrb    (periph_axi_wstrb),
-      .m_axi_wlast    (periph_axi_wlast),
-      .m_axi_wvalid   (periph_axi_wvalid),
-      .m_axi_wready   (periph_axi_wready),
-      .m_axi_bid      (periph_axi_bid),
-      .m_axi_bresp    (periph_axi_bresp),
-      .m_axi_bvalid   (periph_axi_bvalid),
-      .m_axi_bready   (periph_axi_bready),
-      .m_axi_arid     (periph_axi_arid),
-      .m_axi_araddr   (periph_axi_araddr),
-      .m_axi_arlen    (periph_axi_arlen),
-      .m_axi_arsize   (periph_axi_arsize),
-      .m_axi_arburst  (periph_axi_arburst),
-      .m_axi_arlock   (periph_axi_arlock),
-      .m_axi_arcache  (periph_axi_arcache),
-      .m_axi_arprot   (periph_axi_arprot),
-      .m_axi_arqos    (periph_axi_arqos),
-      .m_axi_arvalid  (periph_axi_arvalid),
-      .m_axi_arready  (periph_axi_arready),
-      .m_axi_rid      (periph_axi_rid),
-      .m_axi_rdata    (periph_axi_rdata),
-      .m_axi_rresp    (periph_axi_rresp),
-      .m_axi_rlast    (periph_axi_rlast),
-      .m_axi_rvalid   (periph_axi_rvalid),
-      .m_axi_rready   (periph_axi_rready)
-   );
-
+   // The devices' DMA: one engine, a port each (dv_*), and the top arbiter joins it with the VGA
+   // scanout into ddr4_mem's AXI port, stamping ID bit 1; every master below uses ID 0.
+   dma_master #(.N(4)) u_dma (
+      .clock(ui_clk), .reset(ui_cpu_reset),
+      .cmd_valid(dv_valid), .cmd_ready(dv_ready), .cmd_write(dv_write), .cmd_stream(dv_stream),
+      .cmd_addr(dv_addr), .cmd_wdata(dv_wdata), .cmd_wstrb(dv_wstrb),
+      .rsp_valid(dv_rsp), .rsp_rdata(dv_rdata), .rsp_error(dv_error),
+      .m_axi_awid(dma_axi_awid), .m_axi_awaddr(dma_axi_awaddr), .m_axi_awlen(dma_axi_awlen),
+      .m_axi_awsize(dma_axi_awsize), .m_axi_awburst(dma_axi_awburst), .m_axi_awlock(dma_axi_awlock),
+      .m_axi_awcache(dma_axi_awcache), .m_axi_awprot(dma_axi_awprot), .m_axi_awqos(dma_axi_awqos),
+      .m_axi_awvalid(dma_axi_awvalid), .m_axi_awready(dma_axi_awready), .m_axi_wdata(dma_axi_wdata),
+      .m_axi_wstrb(dma_axi_wstrb), .m_axi_wlast(dma_axi_wlast), .m_axi_wvalid(dma_axi_wvalid),
+      .m_axi_wready(dma_axi_wready), .m_axi_bid(dma_axi_bid), .m_axi_bresp(dma_axi_bresp),
+      .m_axi_bvalid(dma_axi_bvalid), .m_axi_bready(dma_axi_bready), .m_axi_arid(dma_axi_arid),
+      .m_axi_araddr(dma_axi_araddr), .m_axi_arlen(dma_axi_arlen), .m_axi_arsize(dma_axi_arsize),
+      .m_axi_arburst(dma_axi_arburst), .m_axi_arlock(dma_axi_arlock),
+      .m_axi_arcache(dma_axi_arcache), .m_axi_arprot(dma_axi_arprot), .m_axi_arqos(dma_axi_arqos),
+      .m_axi_arvalid(dma_axi_arvalid), .m_axi_arready(dma_axi_arready), .m_axi_rid(dma_axi_rid),
+      .m_axi_rdata(dma_axi_rdata), .m_axi_rresp(dma_axi_rresp), .m_axi_rlast(dma_axi_rlast),
+      .m_axi_rvalid(dma_axi_rvalid), .m_axi_rready(dma_axi_rready));
 
    axi_two_master_arbiter #(.STAMP(1)) device_top_inst(
       .clock          (ui_clk),
       .reset          (ui_cpu_reset),
 
-      .s0_axi_awid     (devab_axi_awid),
-      .s0_axi_awaddr   (devab_axi_awaddr),
-      .s0_axi_awlen    (devab_axi_awlen),
-      .s0_axi_awsize   (devab_axi_awsize),
-      .s0_axi_awburst  (devab_axi_awburst),
-      .s0_axi_awlock   (devab_axi_awlock),
-      .s0_axi_awcache  (devab_axi_awcache),
-      .s0_axi_awprot   (devab_axi_awprot),
-      .s0_axi_awqos    (devab_axi_awqos),
-      .s0_axi_awvalid  (devab_axi_awvalid),
-      .s0_axi_awready  (devab_axi_awready),
-      .s0_axi_wdata    (devab_axi_wdata),
-      .s0_axi_wstrb    (devab_axi_wstrb),
-      .s0_axi_wlast    (devab_axi_wlast),
-      .s0_axi_wvalid   (devab_axi_wvalid),
-      .s0_axi_wready   (devab_axi_wready),
-      .s0_axi_bid      (devab_axi_bid),
-      .s0_axi_bresp    (devab_axi_bresp),
-      .s0_axi_bvalid   (devab_axi_bvalid),
-      .s0_axi_bready   (devab_axi_bready),
-      .s0_axi_arid     (devab_axi_arid),
-      .s0_axi_araddr   (devab_axi_araddr),
-      .s0_axi_arlen    (devab_axi_arlen),
-      .s0_axi_arsize   (devab_axi_arsize),
-      .s0_axi_arburst  (devab_axi_arburst),
-      .s0_axi_arlock   (devab_axi_arlock),
-      .s0_axi_arcache  (devab_axi_arcache),
-      .s0_axi_arprot   (devab_axi_arprot),
-      .s0_axi_arqos    (devab_axi_arqos),
-      .s0_axi_arvalid  (devab_axi_arvalid),
-      .s0_axi_arready  (devab_axi_arready),
-      .s0_axi_rid      (devab_axi_rid),
-      .s0_axi_rdata    (devab_axi_rdata),
-      .s0_axi_rresp    (devab_axi_rresp),
-      .s0_axi_rlast    (devab_axi_rlast),
-      .s0_axi_rvalid   (devab_axi_rvalid),
-      .s0_axi_rready   (devab_axi_rready),
+      .s0_axi_awid     (dma_axi_awid),
+      .s0_axi_awaddr   (dma_axi_awaddr),
+      .s0_axi_awlen    (dma_axi_awlen),
+      .s0_axi_awsize   (dma_axi_awsize),
+      .s0_axi_awburst  (dma_axi_awburst),
+      .s0_axi_awlock   (dma_axi_awlock),
+      .s0_axi_awcache  (dma_axi_awcache),
+      .s0_axi_awprot   (dma_axi_awprot),
+      .s0_axi_awqos    (dma_axi_awqos),
+      .s0_axi_awvalid  (dma_axi_awvalid),
+      .s0_axi_awready  (dma_axi_awready),
+      .s0_axi_wdata    (dma_axi_wdata),
+      .s0_axi_wstrb    (dma_axi_wstrb),
+      .s0_axi_wlast    (dma_axi_wlast),
+      .s0_axi_wvalid   (dma_axi_wvalid),
+      .s0_axi_wready   (dma_axi_wready),
+      .s0_axi_bid      (dma_axi_bid),
+      .s0_axi_bresp    (dma_axi_bresp),
+      .s0_axi_bvalid   (dma_axi_bvalid),
+      .s0_axi_bready   (dma_axi_bready),
+      .s0_axi_arid     (dma_axi_arid),
+      .s0_axi_araddr   (dma_axi_araddr),
+      .s0_axi_arlen    (dma_axi_arlen),
+      .s0_axi_arsize   (dma_axi_arsize),
+      .s0_axi_arburst  (dma_axi_arburst),
+      .s0_axi_arlock   (dma_axi_arlock),
+      .s0_axi_arcache  (dma_axi_arcache),
+      .s0_axi_arprot   (dma_axi_arprot),
+      .s0_axi_arqos    (dma_axi_arqos),
+      .s0_axi_arvalid  (dma_axi_arvalid),
+      .s0_axi_arready  (dma_axi_arready),
+      .s0_axi_rid      (dma_axi_rid),
+      .s0_axi_rdata    (dma_axi_rdata),
+      .s0_axi_rresp    (dma_axi_rresp),
+      .s0_axi_rlast    (dma_axi_rlast),
+      .s0_axi_rvalid   (dma_axi_rvalid),
+      .s0_axi_rready   (dma_axi_rready),
 
-      .s1_axi_awid     (periph_axi_awid),
-      .s1_axi_awaddr   (periph_axi_awaddr),
-      .s1_axi_awlen    (periph_axi_awlen),
-      .s1_axi_awsize   (periph_axi_awsize),
-      .s1_axi_awburst  (periph_axi_awburst),
-      .s1_axi_awlock   (periph_axi_awlock),
-      .s1_axi_awcache  (periph_axi_awcache),
-      .s1_axi_awprot   (periph_axi_awprot),
-      .s1_axi_awqos    (periph_axi_awqos),
-      .s1_axi_awvalid  (periph_axi_awvalid),
-      .s1_axi_awready  (periph_axi_awready),
-      .s1_axi_wdata    (periph_axi_wdata),
-      .s1_axi_wstrb    (periph_axi_wstrb),
-      .s1_axi_wlast    (periph_axi_wlast),
-      .s1_axi_wvalid   (periph_axi_wvalid),
-      .s1_axi_wready   (periph_axi_wready),
-      .s1_axi_bid      (periph_axi_bid),
-      .s1_axi_bresp    (periph_axi_bresp),
-      .s1_axi_bvalid   (periph_axi_bvalid),
-      .s1_axi_bready   (periph_axi_bready),
-      .s1_axi_arid     (periph_axi_arid),
-      .s1_axi_araddr   (periph_axi_araddr),
-      .s1_axi_arlen    (periph_axi_arlen),
-      .s1_axi_arsize   (periph_axi_arsize),
-      .s1_axi_arburst  (periph_axi_arburst),
-      .s1_axi_arlock   (periph_axi_arlock),
-      .s1_axi_arcache  (periph_axi_arcache),
-      .s1_axi_arprot   (periph_axi_arprot),
-      .s1_axi_arqos    (periph_axi_arqos),
-      .s1_axi_arvalid  (periph_axi_arvalid),
-      .s1_axi_arready  (periph_axi_arready),
-      .s1_axi_rid      (periph_axi_rid),
-      .s1_axi_rdata    (periph_axi_rdata),
-      .s1_axi_rresp    (periph_axi_rresp),
-      .s1_axi_rlast    (periph_axi_rlast),
-      .s1_axi_rvalid   (periph_axi_rvalid),
-      .s1_axi_rready   (periph_axi_rready),
+      .s1_axi_awid     (vga_axi_awid),
+      .s1_axi_awaddr   (vga_axi_awaddr),
+      .s1_axi_awlen    (vga_axi_awlen),
+      .s1_axi_awsize   (vga_axi_awsize),
+      .s1_axi_awburst  (vga_axi_awburst),
+      .s1_axi_awlock   (vga_axi_awlock),
+      .s1_axi_awcache  (vga_axi_awcache),
+      .s1_axi_awprot   (vga_axi_awprot),
+      .s1_axi_awqos    (vga_axi_awqos),
+      .s1_axi_awvalid  (vga_axi_awvalid),
+      .s1_axi_awready  (vga_axi_awready),
+      .s1_axi_wdata    (vga_axi_wdata),
+      .s1_axi_wstrb    (vga_axi_wstrb),
+      .s1_axi_wlast    (vga_axi_wlast),
+      .s1_axi_wvalid   (vga_axi_wvalid),
+      .s1_axi_wready   (vga_axi_wready),
+      .s1_axi_bid      (vga_axi_bid),
+      .s1_axi_bresp    (vga_axi_bresp),
+      .s1_axi_bvalid   (vga_axi_bvalid),
+      .s1_axi_bready   (vga_axi_bready),
+      .s1_axi_arid     (vga_axi_arid),
+      .s1_axi_araddr   (vga_axi_araddr),
+      .s1_axi_arlen    (vga_axi_arlen),
+      .s1_axi_arsize   (vga_axi_arsize),
+      .s1_axi_arburst  (vga_axi_arburst),
+      .s1_axi_arlock   (vga_axi_arlock),
+      .s1_axi_arcache  (vga_axi_arcache),
+      .s1_axi_arprot   (vga_axi_arprot),
+      .s1_axi_arqos    (vga_axi_arqos),
+      .s1_axi_arvalid  (vga_axi_arvalid),
+      .s1_axi_arready  (vga_axi_arready),
+      .s1_axi_rid      (vga_axi_rid),
+      .s1_axi_rdata    (vga_axi_rdata),
+      .s1_axi_rresp    (vga_axi_rresp),
+      .s1_axi_rlast    (vga_axi_rlast),
+      .s1_axi_rvalid   (vga_axi_rvalid),
+      .s1_axi_rready   (vga_axi_rready),
 
       .m_axi_awid     (device_axi_awid),
       .m_axi_awaddr   (device_axi_awaddr),

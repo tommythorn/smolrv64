@@ -53,43 +53,18 @@ module virtio_input #(
     input  wire [ 7:0] key_byte,
     input  wire        hid_rxd,        // the Pico's UART TX
 
-    output wire [ 2:0] m_axi_awid,
-    output wire [31:0] m_axi_awaddr,
-    output wire [ 7:0] m_axi_awlen,
-    output wire [ 2:0] m_axi_awsize,
-    output wire [ 1:0] m_axi_awburst,
-    output wire        m_axi_awlock,
-    output wire [ 3:0] m_axi_awcache,
-    output wire [ 2:0] m_axi_awprot,
-    output wire [ 3:0] m_axi_awqos,
-    output wire        m_axi_awvalid,
-    input  wire        m_axi_awready,
-    output wire [63:0] m_axi_wdata,
-    output wire [ 7:0] m_axi_wstrb,
-    output wire        m_axi_wlast,
-    output wire        m_axi_wvalid,
-    input  wire        m_axi_wready,
-    input  wire [ 2:0] m_axi_bid,
-    input  wire [ 1:0] m_axi_bresp,
-    input  wire        m_axi_bvalid,
-    output wire        m_axi_bready,
-    output wire [ 2:0] m_axi_arid,
-    output wire [31:0] m_axi_araddr,
-    output wire [ 7:0] m_axi_arlen,
-    output wire [ 2:0] m_axi_arsize,
-    output wire [ 1:0] m_axi_arburst,
-    output wire        m_axi_arlock,
-    output wire [ 3:0] m_axi_arcache,
-    output wire [ 2:0] m_axi_arprot,
-    output wire [ 3:0] m_axi_arqos,
-    output wire        m_axi_arvalid,
-    input  wire        m_axi_arready,
-    input  wire [ 2:0] m_axi_rid,
-    input  wire [63:0] m_axi_rdata,
-    input  wire [ 1:0] m_axi_rresp,
-    input  wire        m_axi_rlast,
-    input  wire        m_axi_rvalid,
-    output wire        m_axi_rready
+    // the DMA port: a command to dma_master (one at a time, a one-cycle cmd_valid while
+    // cmd_ready, the fields held until the answer), its answer a one-cycle rsp_valid
+    output reg         dma_cmd_valid,
+    input  wire        dma_cmd_ready,
+    output reg         dma_cmd_write,
+    output wire        dma_cmd_stream,
+    output reg  [31:0] dma_cmd_addr,
+    output reg  [63:0] dma_cmd_wdata,
+    output reg  [ 7:0] dma_cmd_wstrb,
+    input  wire        dma_rsp_valid,
+    input  wire [63:0] dma_rsp_rdata,
+    input  wire        dma_rsp_error
 );
    localparam [15:0] EV_SYN = 16'h00, EV_KEY = 16'h01;
    localparam [6:0]  K_ESC = 7'd1, K_TAB = 7'd15, K_LCTRL = 7'd29, K_LSHIFT = 7'd42, K_LALT = 7'd56;
@@ -398,31 +373,6 @@ module virtio_input #(
    wire        ev_v    = st_v || hq_v;
 
    // ================================ the DMA engine ================================
-   wire        dma_cmd_ready, dma_rsp_valid, dma_rsp_error;
-   wire [63:0] dma_rsp_rdata;
-   reg         dma_cmd_valid, dma_cmd_write;
-   reg  [31:0] dma_cmd_addr;
-   reg  [63:0] dma_cmd_wdata;
-   reg  [ 7:0] dma_cmd_wstrb;
-   dma_master u_dma (
-      .clock(clock), .reset(reset),
-      .cmd_valid(dma_cmd_valid), .cmd_ready(dma_cmd_ready), .cmd_write(dma_cmd_write), .cmd_stream(1'b0),
-      .cmd_addr(dma_cmd_addr), .cmd_wdata(dma_cmd_wdata), .cmd_wstrb(dma_cmd_wstrb),
-      .rsp_valid(dma_rsp_valid), .rsp_rdata(dma_rsp_rdata), .rsp_error(dma_rsp_error),
-      .m_axi_awid(m_axi_awid), .m_axi_awaddr(m_axi_awaddr), .m_axi_awlen(m_axi_awlen),
-      .m_axi_awsize(m_axi_awsize), .m_axi_awburst(m_axi_awburst), .m_axi_awlock(m_axi_awlock),
-      .m_axi_awcache(m_axi_awcache), .m_axi_awprot(m_axi_awprot), .m_axi_awqos(m_axi_awqos),
-      .m_axi_awvalid(m_axi_awvalid), .m_axi_awready(m_axi_awready),
-      .m_axi_wdata(m_axi_wdata), .m_axi_wstrb(m_axi_wstrb), .m_axi_wlast(m_axi_wlast),
-      .m_axi_wvalid(m_axi_wvalid), .m_axi_wready(m_axi_wready),
-      .m_axi_bid(m_axi_bid), .m_axi_bresp(m_axi_bresp), .m_axi_bvalid(m_axi_bvalid),
-      .m_axi_bready(m_axi_bready),
-      .m_axi_arid(m_axi_arid), .m_axi_araddr(m_axi_araddr), .m_axi_arlen(m_axi_arlen),
-      .m_axi_arsize(m_axi_arsize), .m_axi_arburst(m_axi_arburst), .m_axi_arlock(m_axi_arlock),
-      .m_axi_arcache(m_axi_arcache), .m_axi_arprot(m_axi_arprot), .m_axi_arqos(m_axi_arqos),
-      .m_axi_arvalid(m_axi_arvalid), .m_axi_arready(m_axi_arready),
-      .m_axi_rid(m_axi_rid), .m_axi_rdata(m_axi_rdata), .m_axi_rresp(m_axi_rresp),
-      .m_axi_rlast(m_axi_rlast), .m_axi_rvalid(m_axi_rvalid), .m_axi_rready(m_axi_rready));
 
 `include "dram_window.vh"
    function q_ok(input ready, input [31:0] num, input [63:0] d, input [63:0] a, input [63:0] u);
@@ -471,6 +421,7 @@ module virtio_input #(
          q_mask   <= (which ? q1_num[15:0] : q0_num[15:0]) - 16'd1;
       end
    endtask
+   assign dma_cmd_stream = 1'b0;      // no payload streams: events are single beats
    wire ev_pop = es == E_EVENT && issued && dma_rsp_valid;
    assign hid_pop  = ev_pop &&  ev_from_hid;
    assign term_pop = ev_pop && !ev_from_hid;

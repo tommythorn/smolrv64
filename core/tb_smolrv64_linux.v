@@ -417,6 +417,7 @@ module tb;
    wire [3:0]  ax_arqos;  wire ax_arvalid;  wire ax_arready;
    wire [2:0]  ax_rid;    wire [63:0] ax_rdata; wire [1:0] ax_rresp; wire ax_rlast; wire ax_rvalid; wire ax_rready;
    wire        blk_sck, blk_mosi, blk_cs_n;  reg blk_miso = 1'b1;
+   wire u_vblk_d_cv, u_vblk_d_cr, u_vblk_d_cw, u_vblk_d_cs, u_vblk_d_rv, u_vblk_d_re;  wire [31:0] u_vblk_d_ca;  wire [63:0] u_vblk_d_cd, u_vblk_d_rd;  wire [7:0] u_vblk_d_cm;
 
    virtio_blk #(.QUEUE_SIZE(32'd64), .SD_SLOW_HALF(16'd4), .SD_FAST_HALF(16'd2), .SD_INIT_TICKS(16'd10)) u_vblk
      (.clock(clk), .reset(reset),
@@ -427,16 +428,23 @@ module tb;
       .capacity_sectors(v_capacity), .sd_fast_half(16'd4),  // >=3: miso_sync sampling margin
       .debug_sel(2'd0), .debug_word(),
       .sd_sck(blk_sck), .sd_mosi(blk_mosi), .sd_miso(blk_miso), .sd_cs_n(blk_cs_n),
+      .dma_cmd_valid(u_vblk_d_cv), .dma_cmd_ready(u_vblk_d_cr), .dma_cmd_write(u_vblk_d_cw), .dma_cmd_stream(u_vblk_d_cs),
+      .dma_cmd_addr(u_vblk_d_ca), .dma_cmd_wdata(u_vblk_d_cd), .dma_cmd_wstrb(u_vblk_d_cm),
+      .dma_rsp_valid(u_vblk_d_rv), .dma_rsp_rdata(u_vblk_d_rd), .dma_rsp_error(u_vblk_d_re));
+   dma_master u_vblk_dma (.clock(clk), .reset(reset),
+      .cmd_valid(u_vblk_d_cv), .cmd_ready(u_vblk_d_cr), .cmd_write(u_vblk_d_cw), .cmd_stream(u_vblk_d_cs),
+      .cmd_addr(u_vblk_d_ca), .cmd_wdata(u_vblk_d_cd), .cmd_wstrb(u_vblk_d_cm),
+      .rsp_valid(u_vblk_d_rv), .rsp_rdata(u_vblk_d_rd), .rsp_error(u_vblk_d_re),
       .m_axi_awid(ax_awid), .m_axi_awaddr(ax_awaddr), .m_axi_awlen(ax_awlen), .m_axi_awsize(ax_awsize),
-      .m_axi_awburst(ax_awburst), .m_axi_awlock(ax_awlock), .m_axi_awcache(ax_awcache),
-      .m_axi_awprot(ax_awprot), .m_axi_awqos(ax_awqos), .m_axi_awvalid(ax_awvalid), .m_axi_awready(ax_awready),
-      .m_axi_wdata(ax_wdata), .m_axi_wstrb(ax_wstrb), .m_axi_wlast(ax_wlast), .m_axi_wvalid(ax_wvalid), .m_axi_wready(ax_wready),
+      .m_axi_awburst(ax_awburst), .m_axi_awlock(ax_awlock), .m_axi_awcache(ax_awcache), .m_axi_awprot(ax_awprot),
+      .m_axi_awqos(ax_awqos), .m_axi_awvalid(ax_awvalid), .m_axi_awready(ax_awready), .m_axi_wdata(ax_wdata),
+      .m_axi_wstrb(ax_wstrb), .m_axi_wlast(ax_wlast), .m_axi_wvalid(ax_wvalid), .m_axi_wready(ax_wready),
       .m_axi_bid(ax_bid), .m_axi_bresp(ax_bresp), .m_axi_bvalid(ax_bvalid), .m_axi_bready(ax_bready),
       .m_axi_arid(ax_arid), .m_axi_araddr(ax_araddr), .m_axi_arlen(ax_arlen), .m_axi_arsize(ax_arsize),
-      .m_axi_arburst(ax_arburst), .m_axi_arlock(ax_arlock), .m_axi_arcache(ax_arcache),
-      .m_axi_arprot(ax_arprot), .m_axi_arqos(ax_arqos), .m_axi_arvalid(ax_arvalid), .m_axi_arready(ax_arready),
-      .m_axi_rid(ax_rid), .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast),
-      .m_axi_rvalid(ax_rvalid), .m_axi_rready(ax_rready));
+      .m_axi_arburst(ax_arburst), .m_axi_arlock(ax_arlock), .m_axi_arcache(ax_arcache), .m_axi_arprot(ax_arprot),
+      .m_axi_arqos(ax_arqos), .m_axi_arvalid(ax_arvalid), .m_axi_arready(ax_arready), .m_axi_rid(ax_rid),
+      .m_axi_rdata(ax_rdata), .m_axi_rresp(ax_rresp), .m_axi_rlast(ax_rlast), .m_axi_rvalid(ax_rvalid),
+      .m_axi_rready(ax_rready));
 
    // behavioral AXI slave into lram[], a burst within one line at a time, COHERENT: before the
    // burst moves, its line is snooped through rv_soc_top's DMA port (the D$ cleans it for a read,

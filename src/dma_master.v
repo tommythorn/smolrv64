@@ -1,12 +1,18 @@
 `timescale 1ns / 1ps
 `default_nettype none
 
-// dma_master -- a device's DMA port: one command at a time, an 8-byte access (the address's low three
-// bits dropped, the bytes placed by the strobes), answered by a one-cycle rsp_valid.
+// dma_master -- the devices' DMA port: N command ports, one command at a time, an 8-byte access (the
+// address's low three bits dropped, the bytes placed by the strobes), answered by a one-cycle
+// rsp_valid to the port that gave it. A port is ready while it has no command here, as a device's own
+// engine would be idle; its command is a one-cycle cmd_valid, its fields held by the device until the
+// answer (checked), so a port keeps only a pending bit. A device holds one command at a time, so its
+// commands are done in its order; between devices the next is taken round robin from the port after
+// the last one taken, so a device waits for at most one command of each other device.
 //
 // A command is a STREAM access or not (cmd_stream). A stream is a device's payload -- a sector's or a
 // frame's sequential words, which nothing else touches while the device moves them -- and it moves
-// through the line buffer a line at a time:
+// through the line buffer a line at a time. The buffer belongs to the port whose line it holds: another
+// port's command finds it a different line.
 //   - a stream read is answered from the buffer when it holds the word's line as read; otherwise the
 //     line is read into it whole, one 8-beat burst;
 //   - a stream write is merged into the buffer under its strobes and answered at once; the buffer's
@@ -19,20 +25,22 @@
 //
 // Below (ddr4_port_axi) every transaction is a D$ snoop and a DRAM access: a stream costs one a line
 // where single beats cost eight.
-module dma_master(
+module dma_master #(
+    parameter N = 1                               // command ports
+)(
     input  wire        clock,
     input  wire        reset,
 
-    input  wire        cmd_valid,
-    output wire        cmd_ready,
-    input  wire        cmd_write,
-    input  wire        cmd_stream,
-    input  wire [31:0] cmd_addr,
-    input  wire [63:0] cmd_wdata,
-    input  wire [ 7:0] cmd_wstrb,
-    output reg         rsp_valid,
-    output reg  [63:0] rsp_rdata,
-    output reg         rsp_error,
+    input  wire [N-1:0]    cmd_valid,             // port k's command, k's field of each
+    output wire [N-1:0]    cmd_ready,
+    input  wire [N-1:0]    cmd_write,
+    input  wire [N-1:0]    cmd_stream,
+    input  wire [N*32-1:0] cmd_addr,
+    input  wire [N*64-1:0] cmd_wdata,
+    input  wire [N*8-1:0]  cmd_wstrb,
+    output wire [N-1:0]    rsp_valid,             // to the port that gave the command
+    output reg  [63:0]     rsp_rdata,
+    output reg             rsp_error,
 
     output wire [ 2:0] m_axi_awid,
     output wire [31:0] m_axi_awaddr,
@@ -81,8 +89,12 @@ module dma_master(
       for (b = 0; b < 8; b = b + 1) bytes[b*8 +: 8] = {8{m[b]}};
    endfunction
 
+   localparam PB = (N > 1) ? $clog2(N) : 1;
+
    reg [1:0]  state;
    reg        q_write, q_stream;                  // the command
+   reg [PB-1:0] q_p;                              // ...and its port
+   reg        rsp_v;
    reg [28:0] q_wa;                               // its word address
    reg [63:0] q_wdata;
    reg [ 7:0] q_wstrb;
@@ -92,13 +104,14 @@ module dma_master(
    reg [ 7:0] lm [0:7];                           // the bytes to write; all zero unless lb_w
    reg        lb_r, lb_w;                         // it holds line lb_ln as read / bytes of it to write
    reg [25:0] lb_ln;
+   reg [PB-1:0] lb_p;                             // the port whose line it is
    reg        one;                                // the burst is the command's one beat, not a line
    reg        a_pend;                             // the burst's address is not yet taken
    reg        w_done;                             // the burst's last beat is sent
    reg [2:0]  bt;                                 // the beat
    integer    i;
 
-   wire same   = lb_ln == q_ln;
+   wire same   = (lb_ln == q_ln) & (lb_p == q_p);
    wire go_wr  = (state == S_GO) & q_write & ~(lb_w & ~(q_stream & same));
    wire [2:0] la = (state == S_GO) ? q_bt : bt;   // the buffer's one address
    wire [63:0] lb_q = lb[la];
@@ -109,19 +122,38 @@ module dma_master(
    always @(posedge clock)
       if (r_beat | go_wr) lb[la] <= r_beat ? m_axi_rdata : (lb_q & ~bytes(q_wstrb)) | (q_wdata & bytes(q_wstrb));
 
-   assign cmd_ready = state == S_IDLE;
+   // the pick: the first port with a command after the last one taken
+   reg [N-1:0]  pend;                             // a port's command is here, not yet taken
+   reg [PB-1:0] last;
+   reg [PB-1:0] pk;
+   reg          pk_v;
+   integer      j;
+   always @* begin
+      pk = last;  pk_v = 1'b0;
+      for (j = N; j >= 1; j = j - 1)
+         if (pend[(last + j) % N]) begin pk = (last + j) % N;  pk_v = 1'b1; end
+   end
+   wire take = (state == S_IDLE) & pk_v;
+   wire [N-1:0] mine = (state == S_IDLE) ? {N{1'b0}} : ({{(N-1){1'b0}}, 1'b1} << q_p);
+   assign cmd_ready = ~pend & ~mine;
+   assign rsp_valid = rsp_v ? ({{(N-1){1'b0}}, 1'b1} << q_p) : {N{1'b0}};
+
+   always @(posedge clock)
+      if (reset) pend <= {N{1'b0}};
+      else pend <= (pend & ~(take ? ({{(N-1){1'b0}}, 1'b1} << pk) : {N{1'b0}})) | cmd_valid;
 
    always @(posedge clock) begin
-      rsp_valid <= 1'b0;
+      rsp_v <= 1'b0;
       if (reset) begin
-         state <= S_IDLE;  lb_r <= 1'b0;  lb_w <= 1'b0;  a_pend <= 1'b0;  w_done <= 1'b0;
+         state <= S_IDLE;  lb_r <= 1'b0;  lb_w <= 1'b0;  a_pend <= 1'b0;  w_done <= 1'b0;  last <= {PB{1'b0}};
          rsp_rdata <= 64'd0;  rsp_error <= 1'b0;
          for (i = 0; i < 8; i = i + 1) lm[i] <= 8'd0;
       end else begin
          case (state)
-            S_IDLE: if (cmd_valid) begin
-               q_write <= cmd_write;  q_stream <= cmd_stream;  q_wa <= cmd_addr[31:3];
-               q_wdata <= cmd_wdata;  q_wstrb <= cmd_wstrb;  rsp_error <= 1'b0;  state <= S_GO;
+            S_IDLE: if (take) begin
+               q_p <= pk;  last <= pk;
+               q_write <= cmd_write[pk];  q_stream <= cmd_stream[pk];  q_wa <= cmd_addr[pk*32 + 3 +: 29];
+               q_wdata <= cmd_wdata[pk*64 +: 64];  q_wstrb <= cmd_wstrb[pk*8 +: 8];  rsp_error <= 1'b0;  state <= S_GO;
             end
             S_GO:
                if (lb_w & ~(q_stream & q_write & same)) begin
@@ -129,14 +161,14 @@ module dma_master(
                   one <= 1'b0;  bt <= 3'd0;  a_pend <= 1'b1;  w_done <= 1'b0;  state <= S_WR;
                end else if (q_write) begin
                   // into the buffer: a stream write is answered now, anything else goes out alone
-                  lm[q_bt] <= lm[q_bt] | q_wstrb;  lb_w <= 1'b1;  lb_r <= 1'b0;  lb_ln <= q_ln;
-                  if (q_stream) begin rsp_valid <= 1'b1;  rsp_rdata <= 64'd0;  state <= S_IDLE; end
+                  lm[q_bt] <= lm[q_bt] | q_wstrb;  lb_w <= 1'b1;  lb_r <= 1'b0;  lb_ln <= q_ln;  lb_p <= q_p;
+                  if (q_stream) begin rsp_v <= 1'b1;  rsp_rdata <= 64'd0;  state <= S_IDLE; end
                   else begin one <= 1'b1;  bt <= q_bt;  a_pend <= 1'b1;  w_done <= 1'b0;  state <= S_WR; end
                end else if (q_stream & lb_r & same) begin
-                  rsp_valid <= 1'b1;  rsp_rdata <= lb_q;  state <= S_IDLE;
+                  rsp_v <= 1'b1;  rsp_rdata <= lb_q;  state <= S_IDLE;
                end else begin
                   // a stream's line, or anything else's one beat
-                  lb_r <= 1'b0;  lb_ln <= q_ln;  one <= ~q_stream;  bt <= q_stream ? 3'd0 : q_bt;
+                  lb_r <= 1'b0;  lb_ln <= q_ln;  lb_p <= q_p;  one <= ~q_stream;  bt <= q_stream ? 3'd0 : q_bt;
                   a_pend <= 1'b1;  state <= S_RD;
                end
             S_RD: begin
@@ -147,7 +179,7 @@ module dma_master(
                   if (m_axi_rresp != 2'b00) rsp_error <= 1'b1;
                   if (m_axi_rlast) begin
                      lb_r <= ~one & ~rsp_error & (m_axi_rresp == 2'b00);
-                     rsp_valid <= 1'b1;  state <= S_IDLE;
+                     rsp_v <= 1'b1;  state <= S_IDLE;
                   end
                end
             end
@@ -157,7 +189,7 @@ module dma_master(
                if (m_axi_bvalid) begin
                   lb_w <= 1'b0;
                   for (i = 0; i < 8; i = i + 1) lm[i] <= 8'd0;
-                  if (one) begin rsp_valid <= 1'b1;  rsp_rdata <= 64'd0;  rsp_error <= m_axi_bresp != 2'b00;  state <= S_IDLE; end
+                  if (one) begin rsp_v <= 1'b1;  rsp_rdata <= 64'd0;  rsp_error <= m_axi_bresp != 2'b00;  state <= S_IDLE; end
                   else state <= S_GO;
                end
             end
@@ -167,8 +199,10 @@ module dma_master(
    end
 
    always @(posedge clock) if (!reset) begin
-      if (state == S_IDLE && cmd_valid && cmd_write && cmd_wstrb == 8'd0)
-         $fatal(1, "dma_master: a write of no bytes at %h", cmd_addr);
+      if ((cmd_valid & ~cmd_ready) != {N{1'b0}})
+         $fatal(1, "dma_master: a command on ports %b, which hold one", cmd_valid & ~cmd_ready);
+      if (take && cmd_write[pk] && cmd_wstrb[pk*8 +: 8] == 8'd0)
+         $fatal(1, "dma_master: port %0d's write of no bytes at %h", pk, cmd_addr[pk*32 +: 32]);
       if (r_beat && m_axi_rlast != (one | bt == 3'd7))
          $fatal(1, "dma_master: a read burst's last beat at beat %0d (one %b)", bt, one);
       if (state == S_WR && m_axi_bvalid && !w_done)
@@ -177,6 +211,18 @@ module dma_master(
          $fatal(1, "dma_master: the buffer's bytes for line %h came back bresp=%b: answered writes are lost",
                 {lb_ln, 6'd0}, m_axi_bresp);
    end
+
+   // A port's fields are read when its command is taken, so they hold from its cmd_valid until then.
+   genvar gp;
+   generate for (gp = 0; gp < N; gp = gp + 1) begin: hold
+      reg [105:0] f;
+      wire [105:0] now = {cmd_write[gp], cmd_stream[gp], cmd_addr[gp*32 +: 32], cmd_wdata[gp*64 +: 64], cmd_wstrb[gp*8 +: 8]};
+      always @(posedge clock) begin
+         if (cmd_valid[gp]) f <= now;
+         if (!reset && pend[gp] && now != f)
+            $fatal(1, "dma_master: port %0d changed its command before it was taken", gp);
+      end
+   end endgenerate
 
    // a burst's address: the line's, or the command's word; a write's beats go with it
    wire [31:0] ax_addr = {lb_ln, one ? q_bt : 3'b000, 3'b000};
@@ -208,7 +254,7 @@ module dma_master(
    assign m_axi_wlast   = one | bt == 3'd7;
    assign m_axi_bready  = state == S_WR;
 
-   wire unused_axi_inputs = &{1'b0, m_axi_bid, m_axi_rid, cmd_addr[2:0]};
+   wire unused_axi_inputs = &{1'b0, m_axi_bid, m_axi_rid, cmd_addr};
 endmodule
 
 `default_nettype wire

@@ -38,6 +38,7 @@ module tb;
    wire [1:0] awburst, arburst; wire awlock, arlock; wire [3:0] awcache, arcache, awqos, arqos; wire [2:0] awprot, arprot;
    wire awvalid, wvalid, bready, arvalid, rready, wlast; wire [63:0] wdata; wire [7:0] wstrb;
    reg  awready = 0, wready = 0, bvalid = 0, arready = 0, rvalid = 0; reg [63:0] rdata = 0;
+   wire dut_d_cv, dut_d_cr, dut_d_cw, dut_d_cs, dut_d_rv, dut_d_re;  wire [31:0] dut_d_ca;  wire [63:0] dut_d_cd, dut_d_rd;  wire [7:0] dut_d_cm;
 
    virtio_net #(.QUEUE_SIZE(QS)) dut (
       .clock(clk), .reset(reset),
@@ -49,15 +50,23 @@ module tb;
       .rx_queue_num(QS), .rx_queue_ready(qready), .rx_queue_desc(rxd), .rx_queue_driver(rxa), .rx_queue_device(rxu),
       .rx_frame_valid(rx_frame_valid), .rx_frame_len(rx_frame_len), .rx_rd_addr(rx_rd_addr), .rx_rd_data(rx_rd_data),
       .rx_frame_ack(rx_frame_ack), .debug_rx_nobuf_count(),
-      .m_axi_awid(awid), .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize), .m_axi_awburst(awburst),
-      .m_axi_awlock(awlock), .m_axi_awcache(awcache), .m_axi_awprot(awprot), .m_axi_awqos(awqos),
-      .m_axi_awvalid(awvalid), .m_axi_awready(awready),
-      .m_axi_wdata(wdata), .m_axi_wstrb(wstrb), .m_axi_wlast(wlast), .m_axi_wvalid(wvalid), .m_axi_wready(wready),
+      .dma_cmd_valid(dut_d_cv), .dma_cmd_ready(dut_d_cr), .dma_cmd_write(dut_d_cw), .dma_cmd_stream(dut_d_cs),
+      .dma_cmd_addr(dut_d_ca), .dma_cmd_wdata(dut_d_cd), .dma_cmd_wstrb(dut_d_cm),
+      .dma_rsp_valid(dut_d_rv), .dma_rsp_rdata(dut_d_rd), .dma_rsp_error(dut_d_re));
+   dma_master dut_dma (.clock(clk), .reset(reset),
+      .cmd_valid(dut_d_cv), .cmd_ready(dut_d_cr), .cmd_write(dut_d_cw), .cmd_stream(dut_d_cs),
+      .cmd_addr(dut_d_ca), .cmd_wdata(dut_d_cd), .cmd_wstrb(dut_d_cm),
+      .rsp_valid(dut_d_rv), .rsp_rdata(dut_d_rd), .rsp_error(dut_d_re),
+      .m_axi_awid(awid), .m_axi_awaddr(awaddr), .m_axi_awlen(awlen), .m_axi_awsize(awsize),
+      .m_axi_awburst(awburst), .m_axi_awlock(awlock), .m_axi_awcache(awcache), .m_axi_awprot(awprot),
+      .m_axi_awqos(awqos), .m_axi_awvalid(awvalid), .m_axi_awready(awready), .m_axi_wdata(wdata),
+      .m_axi_wstrb(wstrb), .m_axi_wlast(wlast), .m_axi_wvalid(wvalid), .m_axi_wready(wready),
       .m_axi_bid(3'd0), .m_axi_bresp(2'b00), .m_axi_bvalid(bvalid), .m_axi_bready(bready),
-      .m_axi_arid(arid), .m_axi_araddr(araddr), .m_axi_arlen(arlen), .m_axi_arsize(arsize), .m_axi_arburst(arburst),
-      .m_axi_arlock(arlock), .m_axi_arcache(arcache), .m_axi_arprot(arprot), .m_axi_arqos(arqos),
-      .m_axi_arvalid(arvalid), .m_axi_arready(arready),
-      .m_axi_rid(3'd0), .m_axi_rdata(rdata), .m_axi_rresp(2'b00), .m_axi_rlast(rlast), .m_axi_rvalid(rvalid), .m_axi_rready(rready));
+      .m_axi_arid(arid), .m_axi_araddr(araddr), .m_axi_arlen(arlen), .m_axi_arsize(arsize),
+      .m_axi_arburst(arburst), .m_axi_arlock(arlock), .m_axi_arcache(arcache), .m_axi_arprot(arprot),
+      .m_axi_arqos(arqos), .m_axi_arvalid(arvalid), .m_axi_arready(arready), .m_axi_rid(3'd0),
+      .m_axi_rdata(rdata), .m_axi_rresp(2'b00), .m_axi_rlast(rlast), .m_axi_rvalid(rvalid),
+      .m_axi_rready(rready));
 
    // ---- AXI memory: 2 MiB of 64-bit words, one read and one write burst at a time, DDR-like latency ----
    reg [63:0] mem [0:(1<<18)-1];

@@ -47,43 +47,18 @@ module virtio_net #(
     output reg         rx_frame_ack,        // release the engine buffer
     output wire [31:0] debug_rx_nobuf_count,
 
-    output wire [ 2:0] m_axi_awid,
-    output wire [31:0] m_axi_awaddr,
-    output wire [ 7:0] m_axi_awlen,
-    output wire [ 2:0] m_axi_awsize,
-    output wire [ 1:0] m_axi_awburst,
-    output wire        m_axi_awlock,
-    output wire [ 3:0] m_axi_awcache,
-    output wire [ 2:0] m_axi_awprot,
-    output wire [ 3:0] m_axi_awqos,
-    output wire        m_axi_awvalid,
-    input  wire        m_axi_awready,
-    output wire [63:0] m_axi_wdata,
-    output wire [ 7:0] m_axi_wstrb,
-    output wire        m_axi_wlast,
-    output wire        m_axi_wvalid,
-    input  wire        m_axi_wready,
-    input  wire [ 2:0] m_axi_bid,
-    input  wire [ 1:0] m_axi_bresp,
-    input  wire        m_axi_bvalid,
-    output wire        m_axi_bready,
-    output wire [ 2:0] m_axi_arid,
-    output wire [31:0] m_axi_araddr,
-    output wire [ 7:0] m_axi_arlen,
-    output wire [ 2:0] m_axi_arsize,
-    output wire [ 1:0] m_axi_arburst,
-    output wire        m_axi_arlock,
-    output wire [ 3:0] m_axi_arcache,
-    output wire [ 2:0] m_axi_arprot,
-    output wire [ 3:0] m_axi_arqos,
-    output wire        m_axi_arvalid,
-    input  wire        m_axi_arready,
-    input  wire [ 2:0] m_axi_rid,
-    input  wire [63:0] m_axi_rdata,
-    input  wire [ 1:0] m_axi_rresp,
-    input  wire        m_axi_rlast,
-    input  wire        m_axi_rvalid,
-    output wire        m_axi_rready
+    // the DMA port: a command to dma_master (one at a time, a one-cycle cmd_valid while
+    // cmd_ready, the fields held until the answer), its answer a one-cycle rsp_valid
+    output reg         dma_cmd_valid,
+    input  wire        dma_cmd_ready,
+    output reg         dma_cmd_write,
+    output reg         dma_cmd_stream,
+    output reg  [31:0] dma_cmd_addr,
+    output reg  [63:0] dma_cmd_wdata,
+    output reg  [ 7:0] dma_cmd_wstrb,
+    input  wire        dma_rsp_valid,
+    input  wire [63:0] dma_rsp_rdata,
+    input  wire        dma_rsp_error
 );
    localparam [4:0] S_IDLE           = 5'd0;
    localparam [4:0] S_READ_AVAIL     = 5'd1;
@@ -208,17 +183,6 @@ module virtio_net #(
    reg  [63:0] nxt_word;  reg nxt_valid, rd_ahead, rd_err;  reg [63:0] rd_end;
 
    assign debug_tx_last_len    = {tx_timeouts, 11'd0};
-
-   reg        dma_cmd_valid;
-   wire       dma_cmd_ready;
-   reg        dma_cmd_write;
-   reg        dma_cmd_stream;      // a frame's words: dma_master's line buffer
-   reg [31:0] dma_cmd_addr;
-   reg [63:0] dma_cmd_wdata;
-   reg [ 7:0] dma_cmd_wstrb;
-   wire       dma_rsp_valid;
-   wire [63:0] dma_rsp_rdata;
-   wire       dma_rsp_error;
 
    function [15:0] get16;
       input [63:0] word;
@@ -810,58 +774,6 @@ module virtio_net #(
       end
    end
 
-   dma_master u_dma(
-      .clock          (clock),
-      .reset          (reset),
-      .cmd_valid      (dma_cmd_valid),
-      .cmd_ready      (dma_cmd_ready),
-      .cmd_write      (dma_cmd_write),
-      .cmd_stream     (dma_cmd_stream),
-      .cmd_addr       (dma_cmd_addr),
-      .cmd_wdata      (dma_cmd_wdata),
-      .cmd_wstrb      (dma_cmd_wstrb),
-      .rsp_valid      (dma_rsp_valid),
-      .rsp_rdata      (dma_rsp_rdata),
-      .rsp_error      (dma_rsp_error),
-
-      .m_axi_awid     (m_axi_awid),
-      .m_axi_awaddr   (m_axi_awaddr),
-      .m_axi_awlen    (m_axi_awlen),
-      .m_axi_awsize   (m_axi_awsize),
-      .m_axi_awburst  (m_axi_awburst),
-      .m_axi_awlock   (m_axi_awlock),
-      .m_axi_awcache  (m_axi_awcache),
-      .m_axi_awprot   (m_axi_awprot),
-      .m_axi_awqos    (m_axi_awqos),
-      .m_axi_awvalid  (m_axi_awvalid),
-      .m_axi_awready  (m_axi_awready),
-      .m_axi_wdata    (m_axi_wdata),
-      .m_axi_wstrb    (m_axi_wstrb),
-      .m_axi_wlast    (m_axi_wlast),
-      .m_axi_wvalid   (m_axi_wvalid),
-      .m_axi_wready   (m_axi_wready),
-      .m_axi_bid      (m_axi_bid),
-      .m_axi_bresp    (m_axi_bresp),
-      .m_axi_bvalid   (m_axi_bvalid),
-      .m_axi_bready   (m_axi_bready),
-      .m_axi_arid     (m_axi_arid),
-      .m_axi_araddr   (m_axi_araddr),
-      .m_axi_arlen    (m_axi_arlen),
-      .m_axi_arsize   (m_axi_arsize),
-      .m_axi_arburst  (m_axi_arburst),
-      .m_axi_arlock   (m_axi_arlock),
-      .m_axi_arcache  (m_axi_arcache),
-      .m_axi_arprot   (m_axi_arprot),
-      .m_axi_arqos    (m_axi_arqos),
-      .m_axi_arvalid  (m_axi_arvalid),
-      .m_axi_arready  (m_axi_arready),
-      .m_axi_rid      (m_axi_rid),
-      .m_axi_rdata    (m_axi_rdata),
-      .m_axi_rresp    (m_axi_rresp),
-      .m_axi_rlast    (m_axi_rlast),
-      .m_axi_rvalid   (m_axi_rvalid),
-      .m_axi_rready   (m_axi_rready)
-   );
 
    wire unused_inputs = &{1'b0, tx_queue_desc[31:0]};
 endmodule
