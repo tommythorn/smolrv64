@@ -58,9 +58,11 @@ m5_runs="boot60m:boot:60000000 dhry:rvb:dhrystone,$(tohost dhrystone) coremark:r
 fm_runs="nav:gb5:140000000000 html5:gb5:154500000000 sqlite:gb5:161000000000 pdf:gb5:171000000000 camera:gb5:202000000000"
 mc_runs="";  cf_runs=""
 if [ "${SET:-}" = sp ]; then   # a point's checkpoint is sp/<instret>.ckpt; the points alternate between the two
-   # the points host $1 takes: of every seven fastmac three, M5 two, mercury two, or with coffee
-   # free of builds, of every nine two more on coffee
-   pts() { awk -F'\t' -v h="$1" -v cf=$cf_ok '$1 == "point" { k = n++ % (cf ? 9 : 7)
+   # the points host $1 takes: of every five fastmac three and M5 two, two more for coffee when it
+   # is free of builds and two more for mercury when it answers
+   mc_ok=0; ssh $MC_OPT -o ConnectTimeout=5 $MC_IP true 2>/dev/null && mc_ok=1
+   [ $mc_ok = 1 ] || echo "exp $tag: mercury does not answer: its points go to the others"
+   pts() { awk -F'\t' -v h="$1" -v cf=$cf_ok -v mc=$mc_ok '$1 == "point" { k = n++ % (5 + 2*cf + 2*mc)
               w = (k < 3) ? "fm" : (k < 5) ? "m5" : (cf && k < 7) ? "cf" : "mc"
               if (h == "all" || h == w) printf " sp%s:gb5:sp/%s", $5, $5 }' "$here/workloads/gb5/simpoints.txt"; }
    m5_runs="";  fm_runs=""
