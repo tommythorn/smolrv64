@@ -1046,15 +1046,21 @@ store has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
 
-`fp_unit` drives `fpnew_top` directly (`u_fpu`: `NFLIGHT=4`, `PIPE_REGS=5`).
+`fp_unit` drives `fpnew_top` directly (`u_fpu`: `NFLIGHT=4`, `PIPE_REGS=5`) and `fp_divsqrt`
+beside it.
 
-- `PIPE_REGS`=5, `DISTRIBUTED`, ADDMUL/DIVSQRT/CONV `MERGED`, NONCOMP `PARALLEL`,
-  `DivSqrtSel = THMULTI`.
+- fpnew: `PIPE_REGS`=5, `DISTRIBUTED`, ADDMUL/CONV `MERGED`, NONCOMP `PARALLEL`, DIVSQRT off.
+- **Division and square root are `fp_divsqrt`**: one restoring digit recurrence for both
+  (`b = (2r >= T)`, `r <- 2r - b*T`, T the divisor or `2Q + 2^-(j+1)`), 3 result bits a cycle, both
+  formats in one internal form, one op at a time. From accept to `res_valid`, normal operands:
+  `fdiv.d` 23 cycles, `fsqrt.d` 22, `fdiv.s` 13, `fsqrt.s` 12 (the C910 it replaced: 19, 20, 16
+  and 16 on average over the bench's operands); a subnormal operand or result adds a cycle per bit
+  it is shifted (up to ~130 for `fdiv.d`). fpnew's results take the result register
+  first; `fp_divsqrt` holds its answer meanwhile.
 - **Up to four operations in flight**, one accepted per cycle. Results return by tag, not
   necessarily in issue order (fpnew's op groups have different latencies).
 - **Every op group has its `PIPE_REGS` stages.** From the edge that accepts an op to `res_valid`:
-  FMA, add and multiply 8 cycles; conversions and NONCOMP (min/max) 6; `fdiv.d` 13 at the least
-  (the C910's iteration count follows the operands). `PipeRegs` is a pattern per op group: a
+  FMA, add and multiply 8 cycles; conversions and NONCOMP (min/max) 6. `PipeRegs` is a pattern per op group: a
   group's entry is a packed array of formats, and one outer `'{default: N}` assigns N to the packed
   value whole, which Verilator does, so the simulated FPU had no pipeline registers (FMA 3 cycles,
   conversions and NONCOMP 1) until 2026-11-25, while Vivado gave every element N.

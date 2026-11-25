@@ -42,3 +42,5 @@
 ../third_party/cvfpu/src/fpnew_opgroup_multifmt_slice.sv
 ../third_party/cvfpu/src/fpnew_rounding.sv
 ../third_party/cvfpu/src/fpnew_top.sv
+
+../src/fp_divsqrt.v

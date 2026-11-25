@@ -1,7 +1,8 @@
 `default_nettype none
 
-// Shared FP execution unit: a thin wrapper around CVFPU (fpnew RV64D). One op in flight,
-// result carries its writeback routing in the tag.
+// Shared FP execution unit: CVFPU (fpnew RV64D) for every op but division and square root, which
+// fp_divsqrt does. Results carry their writeback routing in the tag; fpnew's take the result
+// register first, and fp_divsqrt holds its answer while one does.
 //
 // WHY THIS TALKS TO fpnew_top DIRECTLY. It used to go through smolrv64_cvfpu, which is a
 // TWO-CLOCK-DOMAIN wrapper: a toggle request/response protocol with an ASYNC_REG two-flop
@@ -70,7 +71,7 @@ module fp_unit #(parameter TAGW = 24,
       // pipeline registers, 5 cycles short of the board's FMA; Vivado gave every element N.
       PipeRegs:   '{'{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}},
       UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
-                    '{default: fpnew_pkg::MERGED},   // DIVSQRT
+                    '{default: fpnew_pkg::DISABLED}, // DIVSQRT: fp_divsqrt
                     '{default: fpnew_pkg::PARALLEL}, // NONCOMP
                     '{default: fpnew_pkg::MERGED}},  // CONV
       PipeConfig: fpnew_pkg::DISTRIBUTED
@@ -93,6 +94,13 @@ module fp_unit #(parameter TAGW = 24,
    assign ops[2] = sel_ops[191:128];
 
    logic                 fpn_in_ready, fpn_out_valid, fpn_busy, fpn_early;
+   // division and square root go to fp_divsqrt
+   wire                  sel_ds = (sel_op == 4'(fpnew_pkg::DIV)) | (sel_op == 4'(fpnew_pkg::SQRT));
+   wire                  ds_in_ready, ds_out_valid, ds_busy;
+   wire [63:0]           ds_result;
+   wire [4:0]            ds_flags;
+   wire [TAGW-1:0]       ds_tag;
+   wire                  ds_take_out = ds_out_valid & ~fpn_out_valid;   // fpnew's result goes first
    logic [63:0]          fpn_result;
    fpnew_pkg::status_t   fpn_status;
    logic [TAGW-1:0]      fpn_tag;
@@ -124,6 +132,7 @@ module fp_unit #(parameter TAGW = 24,
    logic [63:0]          result_q;
    logic [4:0]           fflags_q;
    logic [TAGW-1:0]      tag_q;
+   wire  [TAGW-1:0]      r_tag = fpn_out_valid ? fpn_tag : ds_tag;   // the arriving result's
    initial begin nflight_q = '0; out_valid_q = 1'b0; out_fp_q = 1'b0; out_int_q = 1'b0; req_v_q = 1'b0; end
 
    // Still REGISTERS ONLY. fpnew's in_ready_o is combinational in in_valid_i and
@@ -140,8 +149,11 @@ module fp_unit #(parameter TAGW = 24,
    // on all of them to cover a case that needs one op held. iss_ready stays registers-only,
    // so the loop through exec_shard's issue decision stays broken; fpn_valid may depend on
    // iss_valid without closing anything, because fpn_take feeds only registers.
-   wire   fpn_valid  = req_v_q | fire;
-   wire   fpn_take   = fpn_valid & fpn_in_ready;
+   wire   any_valid  = req_v_q | fire;
+   wire   fpn_valid  = any_valid & ~sel_ds;
+   wire   ds_valid   = any_valid & sel_ds;
+   wire   fpn_take   = (fpn_valid & fpn_in_ready) | (ds_valid & ds_in_ready);   // either unit took it
+   wire   res_in     = fpn_out_valid | ds_take_out;                            // a result arrives
    assign res_valid  = out_valid_q;
    assign res_fp     = out_fp_q;
    assign res_int    = out_int_q;
@@ -163,20 +175,20 @@ module fp_unit #(parameter TAGW = 24,
       end else begin
          if (out_valid_q & res_ready) begin out_valid_q <= 1'b0; out_fp_q <= 1'b0; out_int_q <= 1'b0; end
          if (fpn_take) req_v_q <= 1'b0;
-         if (fire & ~fpn_in_ready) req_v_q <= 1'b1;   // fpnew declined: hold it here
+         if (fire & ~fpn_take) req_v_q <= 1'b1;       // the unit declined: hold it here
          // Ops in flight: a counter, not a flag. One op returning while another is accepted nets
          // to zero, and so would a result in the very cycle its op is accepted (a group with no
          // pipeline registers); the `else if` keeps both cases out of the count.
-         if (fpn_out_valid & ~fpn_take)      nflight_q <= nflight_q - 1'b1;
-         else if (fpn_take & ~fpn_out_valid) nflight_q <= nflight_q + 1'b1;
-         if (fpn_out_valid) begin
+         if (res_in & ~fpn_take)      nflight_q <= nflight_q - 1'b1;
+         else if (fpn_take & ~res_in) nflight_q <= nflight_q + 1'b1;
+         if (res_in) begin
             out_valid_q <= 1'b1;
-            out_int_q   <= fpn_tag[RDV_BIT] & ~fpn_tag[FSHARD_BIT];
-            out_fp_q    <= ~(fpn_tag[RDV_BIT] & ~fpn_tag[FSHARD_BIT]);
-            result_q    <= fpn_result;
-            fflags_q    <= {fpn_status.NV, fpn_status.DZ, fpn_status.OF,
-                            fpn_status.UF, fpn_status.NX};
-            tag_q       <= fpn_tag;
+            out_int_q   <= r_tag[RDV_BIT] & ~r_tag[FSHARD_BIT];
+            out_fp_q    <= ~(r_tag[RDV_BIT] & ~r_tag[FSHARD_BIT]);
+            result_q    <= fpn_out_valid ? fpn_result : ds_result;
+            fflags_q    <= fpn_out_valid ? {fpn_status.NV, fpn_status.DZ, fpn_status.OF,
+                                            fpn_status.UF, fpn_status.NX} : ds_flags;
+            tag_q       <= r_tag;
          end
       end
    end
@@ -187,15 +199,24 @@ module fp_unit #(parameter TAGW = 24,
    //  ops in flight, the held request's op}
    assign dbg = {req_v_q, out_valid_q, fpn_in_ready, fpn_busy, fpn_out_valid, fpn_early, iss_ready,
                  1'b0, 4'(nflight_q), req_op_q};
-   wire e_orphan = fpn_out_valid & (nflight_q == '0) & ~fpn_take;
-   wire e_over   = fpn_out_valid & out_valid_q & ~res_ready;
+   wire e_orphan = res_in & (nflight_q == '0) & ~fpn_take;
+   wire e_over   = res_in & out_valid_q & ~res_ready;
    always_ff @(posedge clk) err <= ~reset & (e_orphan | e_over);
    always_ff @(posedge clk) if (!reset) begin
-      if (fpn_out_valid & (nflight_q == '0) & ~fpn_take)
-         $fatal(1, "fp_unit: fpnew produced a result with no op in flight");
-      if (fpn_out_valid & out_valid_q & ~res_ready)
+      if (e_orphan)
+         $fatal(1, "fp_unit: a result (%s) with no op in flight", fpn_out_valid ? "fpnew" : "fp_divsqrt");
+      if (e_over)
          $fatal(1, "fp_unit: result arrived while the previous one was unconsumed");
+      if (fpn_valid & (sel_op == 4'(fpnew_pkg::DIV) | sel_op == 4'(fpnew_pkg::SQRT)))
+         $fatal(1, "fp_unit: a division or square root offered to fpnew");
    end
+
+   fp_divsqrt #(.TAGW(TAGW)) u_ds (
+      .clk(clk), .reset(reset), .flush(flush),
+      .in_valid(ds_valid), .in_ready(ds_in_ready), .in_sqrt(sel_op == 4'(fpnew_pkg::SQRT)),
+      .in_f64(sel_df == 3'(fpnew_pkg::FP64)), .in_rm(sel_rnd), .in_a(ops[0]), .in_b(ops[1]), .in_tag(sel_tag),
+      .out_valid(ds_out_valid), .out_ready(~fpn_out_valid), .out_result(ds_result), .out_flags(ds_flags),
+      .out_tag(ds_tag), .busy(ds_busy));
 
    fpnew_top #(
       .Features       ( Features       ),
