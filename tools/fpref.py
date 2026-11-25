@@ -5,6 +5,8 @@
         "<fmt> <rm> <a> <b> <result> <flags>": fmt 0 = binary32, 1 = binary64; rm 0..4 = RNE RTZ RDN
         RUP RMM; a, b, result 16 hex digits (a binary32 value NaN-boxed: its upper 32 bits ones);
         flags = {NV, DZ, OF, UF, NX} as 2 hex digits.
+    tools/fpref.py vectors fma <n> [seed]      n vectors for the FMA unit, "v sf df rm x a b c result flags":
+                                               the FMA group (ffma) and the conversions (f2f, i2f, f2i)
 
 Every value is decoded to an exact rational, the operation is done exactly (a square root by an
 integer square root of the scaled radicand, its remainder the sticky bit), and the one rounding
@@ -155,6 +157,162 @@ def fsqrt(fmt, rm, a, _b=0):
     return box(fmt, r), fl
 
 
+# FMA variants, fpnew's ADDMUL group: v = 0 FMADD (a*b+c), 1 FMSUB (a*b-c), 2 FNMSUB (-a*b+c),
+# 3 FNMADD (-a*b-c), 4 ADD (a+c), 5 SUB (a-c), 6 MUL (a*b). ADD/SUB take a times an exact 1; MUL has
+# no addend, so an exact zero product keeps its own sign.
+FMA_NAMES = ['fmadd', 'fmsub', 'fnmsub', 'fnmadd', 'add', 'sub', 'mul']
+
+
+def ffma(fmt, rm, v, a, b, c):
+    e, f, *_ = params(fmt)
+    one = box(fmt, (((1 << (e - 1)) - 1) << f))
+    if v in (4, 5):
+        b = one                                       # a + c: a times an exact 1
+    used = [a, b] + ([] if v == 6 else [c])
+    dec = []
+    for x in used:
+        ux = unbox(fmt, x)
+        dec.append(decode(fmt, ux) if ux is not None else ('nan', False))
+    da, db = dec[0], dec[1]
+    dc = dec[2] if v != 6 else ('num', 0, Fraction(0))
+    negp = v in (2, 3)
+    negc = v in (1, 3, 5)
+    snan = any(d[0] == 'nan' and d[1] for d in dec)
+    zero = lambda d: d[0] == 'num' and d[2] == 0
+    inf0 = (da[0] == 'inf' and zero(db)) or (db[0] == 'inf' and zero(da))
+    if any(d[0] == 'nan' for d in dec) or inf0:
+        return box(fmt, canon_nan(fmt)), NV if (snan or inf0) else 0
+    sp = da[1] ^ db[1] ^ negp
+    sc = dc[1] ^ negc
+    pinf = da[0] == 'inf' or db[0] == 'inf'
+    if pinf and dc[0] == 'inf' and sp != sc:
+        return box(fmt, canon_nan(fmt)), NV
+    if pinf:
+        return box(fmt, sp << (e + f) | ((1 << e) - 1) << f), 0
+    if dc[0] == 'inf':
+        return box(fmt, sc << (e + f) | ((1 << e) - 1) << f), 0
+    pv = da[2] * db[2] * (-1 if sp else 1)
+    cv = dc[2] * (-1 if sc else 1)
+    r = pv + cv
+    if r == 0:
+        if v == 6:
+            s = sp
+        elif pv == 0 and cv == 0:
+            s = (sp | sc) if rm == 2 else (sp & sc)
+        else:
+            s = 1 if rm == 2 else 0
+        return box(fmt, s << (e + f)), 0
+    bits, fl = round_to(fmt, rm, 1 if r < 0 else 0, abs(r), False)
+    return box(fmt, bits), fl
+
+
+# The conversions, fpnew's CONV group: F2F (fcvt.s.d / fcvt.d.s), I2F (fcvt.{s,d}.{w,wu,l,lu}), F2I
+# (fcvt.{w,wu,l,lu}.{s,d}). il: a 64-bit integer (l/lu), iu: unsigned (wu/lu). A 32-bit integer
+# result is sign-extended to 64 bits; an integer source reads its low 32 bits for w/wu.
+def f2f(sf, df, rm, a):
+    ua = unbox(sf, a)
+    da = decode(sf, ua) if ua is not None else ('nan', False)
+    e, f, *_ = params(df)
+    if da[0] == 'nan':
+        return box(df, canon_nan(df)), NV if da[1] else 0
+    if da[0] == 'inf':
+        return box(df, da[1] << (e + f) | ((1 << e) - 1) << f), 0
+    if da[2] == 0:
+        return box(df, da[1] << (e + f)), 0
+    r, fl = round_to(df, rm, da[1], da[2], False)
+    return box(df, r), fl
+
+
+def i2f(df, rm, x, il, iu):
+    v = x & (2**64 - 1) if il else x & (2**32 - 1)
+    w = 64 if il else 32
+    if not iu and v >> (w - 1):
+        v -= 1 << w
+    if v == 0:
+        return box(df, 0), 0
+    r, fl = round_to(df, rm, 1 if v < 0 else 0, Fraction(abs(v)), False)
+    return box(df, r), fl
+
+
+def round_int(v, rm):
+    """v (a Fraction) rounded to an integer under rm."""
+    n = v.numerator // v.denominator                 # floor
+    rem = v - n
+    if rem == 0:
+        return n
+    half = Fraction(1, 2)
+    if rm == 0:   up = rem > half or (rem == half and n & 1)
+    elif rm == 1: up = v < 0                         # toward zero: floor of a negative goes up
+    elif rm == 2: up = False
+    elif rm == 3: up = True
+    else:         up = rem >= half if v >= 0 else rem > half
+    return n + up
+
+
+def f2i(sf, rm, a, il, iu):
+    w = 64 if il else 32
+    lo, hi = (0, 2**w - 1) if iu else (-(2**(w - 1)), 2**(w - 1) - 1)
+    ext = lambda n: (n & (2**w - 1)) if il else ((n & 0xFFFFFFFF) | (0xFFFFFFFF00000000 if (n >> 31) & 1 else 0))
+    ua = unbox(sf, a)
+    da = decode(sf, ua) if ua is not None else ('nan', False)
+    if da[0] == 'nan':
+        return ext(hi), NV
+    if da[0] == 'inf':
+        return ext(lo if da[1] else hi), NV
+    v = -da[2] if da[1] else da[2]
+    n = round_int(v, rm)
+    if n < lo:
+        return ext(lo), NV
+    if n > hi:
+        return ext(hi), NV
+    return ext(n), NX if n != v else 0
+
+
+def fma_vectors(n, seed):
+    """Lines "v sf df rm x a b c result flags" (sf, df: the source and destination formats; x: {il, iu});
+    a quarter are conversions (v 7 F2F, 8 I2F, 9 F2I), a quarter of the rest cancel: c is about -(a*b)."""
+    rng = random.Random(seed)
+    out = sys.stdout
+    for i in range(n):
+        fmt = rng.getrandbits(1); rm = rng.randrange(5); v = rng.randrange(7)
+        a, b, c = operand(rng, fmt), operand(rng, fmt), operand(rng, fmt)
+        if i % 4 == 0:
+            # near-cancellation: c = the product rounded, nudged by a few ulps, signed to cancel
+            pa, pb = decode(fmt, unbox(fmt, a) or 0), decode(fmt, unbox(fmt, b) or 0)
+            if pa[0] == 'num' and pb[0] == 'num' and pa[2] * pb[2] != 0:
+                bits, _ = round_to(fmt, rng.randrange(5), 0, pa[2] * pb[2], False)
+                e, f, *_ = params(fmt)
+                bits = max(0, min(bits + rng.randrange(-3, 4), ((1 << e) - 1) << f - 1))
+                sp = pa[1] ^ pb[1] ^ (v in (2, 3))
+                want_neg = sp ^ 1 ^ (v in (1, 3))           # c's sign that cancels after negc
+                c = box(fmt, want_neg << (e + f) | bits)
+                if v in (4, 5):
+                    c = box(fmt, (pa[1] ^ 1 ^ (v == 5)) << (e + f) | (unbox(fmt, a) & ((1 << (e + f)) - 1)) ^ rng.getrandbits(3))
+        sf = df = fmt; x = 0
+        if rng.randrange(4) == 0:                    # a conversion
+            v = 7 + rng.randrange(3); x = rng.randrange(4); sf = rng.getrandbits(1); df = sf ^ 1 if v == 7 else rng.getrandbits(1)
+            if v == 7:
+                a = operand(rng, sf)
+                r, fl = f2f(sf, df, rm, a)
+            elif v == 8:
+                k = rng.randrange(6)
+                a = [rng.getrandbits(64), rng.getrandbits(rng.randrange(1, 65)), -rng.getrandbits(rng.randrange(1, 64)) & (2**64 - 1),
+                     rng.choice([0, 1, 2**31, 2**31 - 1, 2**32 - 1, 2**63, 2**63 - 1, 2**64 - 1]), (1 << rng.randrange(64)) | rng.getrandbits(3),
+                     rng.getrandbits(64) & ~((1 << rng.randrange(64)) - 1)][k]
+                r, fl = i2f(df, rm, a, x >> 1, x & 1)
+            else:
+                a = operand(rng, sf)
+                if rng.randrange(2):                 # near the integer range and its halves
+                    e, f, bias, *_ = params(sf)
+                    ex = bias + rng.choice([-1, 0, 1, 30, 31, 32, 62, 63, 64]) + rng.randrange(-1, 2)
+                    a = box(sf, rng.getrandbits(1) << (e + f) | (ex & ((1 << e) - 1)) << f | rng.getrandbits(f))
+                r, fl = f2i(sf, rm, a, x >> 1, x & 1)
+            b = c = 0
+        else:
+            r, fl = ffma(fmt, rm, v, a, b, c)
+        out.write(f"{v} {sf} {df} {rm} {x} {a:016x} {b:016x} {c:016x} {r:016x} {fl:02x}\n")
+
+
 def fminmax(fmt, a, b, is_max):
     ua, ub = unbox(fmt, a), unbox(fmt, b)
     da = decode(fmt, ua) if ua is not None else ('nan', False)
@@ -227,6 +385,9 @@ def exact_pair(rng, fmt, op):
 
 
 def main():
+    if len(sys.argv) >= 4 and sys.argv[1] == 'vectors' and sys.argv[2] == 'fma':
+        fma_vectors(int(sys.argv[3]), int(sys.argv[4]) if len(sys.argv) > 4 else 1)
+        return
     if len(sys.argv) < 4 or sys.argv[1] != 'vectors' or sys.argv[2] not in OPS:
         sys.exit(__doc__)
     op, n = sys.argv[2], int(sys.argv[3])

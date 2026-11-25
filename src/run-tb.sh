@@ -17,7 +17,7 @@ one() {
    top=$(grep -m1 -oE '^module +[A-Za-z_0-9]+' "$tb" | awk '{print $2}')
    mkdir -p "$d"
    if ! timeout 600 verilator --binary --timing -j 4 -sv -Wno-fatal -Wno-lint -Wno-style -I. \
-          --top-module "$top" --Mdir "$d" -o "$name" $SRCS "$tb" fp_unit_stub.sv > "$d/build.log" 2>&1; then
+          --top-module "$top" --Mdir "$d" -o "$name" $SRCS "$tb" fp_unit.sv > "$d/build.log" 2>&1; then
       printf "%-22s BUILD-FAIL (%s/build.log)\n" "$tb" "$d"; return
    fi
    timeout 300 "./$d/$name" > "$d/run.log" 2>&1

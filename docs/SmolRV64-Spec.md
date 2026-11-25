@@ -743,7 +743,7 @@ without waiting for the branch to reach the head:
   tested by the op it takes, not the one it held (the FP queue fills from the F stage then, rule
   D19). The load and store queues drop their dead
   entries, their youngest, and step their tails back; the LSU drops a dead load's response by
-  tag. fpnew has no per-op kill: a table of its ops in flight (by ROB index) holds the release
+  tag. The FPU has no per-op kill: a table of its ops in flight (by ROB index) holds the release
   until no dead one is left.
 - **The release** (`fr_rel`): once the walk has reached the branch, the kill has held for
   `KREL` = 6 cycles (an op in transit dies at its next register) and the FPU holds no dead op,
@@ -1037,7 +1037,7 @@ runs inside every 240-test and cosim run.
 | branch, `jal`/`jalr` (its slot's lane) | 1 cycle (at issue) | — | no | the lane's shard (the link) |
 | CSR | 1 cycle at the ROB head; younger work runs meanwhile | 1 | yes | lane A's shard, through its landing slot |
 | div (`divider`) | 3 + ceil(q/2) cycles, q the quotient's significant bits (3-35): radix 4, iterations limited to q | 2 (the MD stage and its queue register) | **never enters M** (MD stage, §7.x) | its destination's lane's shard, through the lane's landing buffer |
-| FPU (CVFPU) | 6 cycles (§7.1) | **4** | **never enters M** (stage F) | SH_FF; an integer result through its lane's landing buffer |
+| FPU (`fp_unit`) | 6 cycles; divide/sqrt 12-23 (§7.1) | **4** | **never enters M** (stage F) | SH_FF; an integer result through its lane's landing buffer |
 | LSU load | see §8 | 16 fast (by load-queue tag) + 1 slow | **no** | its destination's lane's shard (straight through or by the landing buffer); SH_FL for an FP load |
 | LSU store / AMO | see §8 | 1 | yes | — |
 
@@ -1046,33 +1046,37 @@ store has no destination register so a scoreboard slot buys it nothing.
 
 ### 7.1 FPU
 
-`fp_unit` drives `fpnew_top` directly (`u_fpu`: `NFLIGHT=4`, `PIPE_REGS=5`) and `fp_divsqrt`
-beside it.
+`fp_unit` (`u_fpu`: `NFLIGHT=4`) is two units of its own, `fp_fma` and `fp_divsqrt`; sign
+injection, the compares, FMIN/FMAX, the moves and FCLASS are the core's (stage F, `icr_*`). FMIN/FMAX
+take `fcmp`'s FLE/FLT answer for the instruction's own funct3 and `fminmax_d`/`_s` apply the NaN and
+signed-zero rules.
 
-- fpnew: `PIPE_REGS`=5, `DISTRIBUTED`, ADDMUL/CONV `MERGED`, DIVSQRT and NONCOMP off. FMIN/FMAX run
-  in the core beside the compares: `fcmp`'s FLE/FLT answer for the instruction's own funct3 picks
-  the operand, and `fminmax_d`/`_s` apply the NaN and signed-zero rules.
-- **Division and square root are `fp_divsqrt`**: one restoring digit recurrence for both
+- **`fp_fma`: the FMA group and the conversions, one op a cycle, 6 cycles** from the edge that takes
+  an op to `res_valid` (f[n]madd/f[n]msub, fadd/fsub, fmul, every fcvt). One binary64-wide datapath
+  for both formats: unpack, then the 53x53 product on DSPs over two stages while the addend aligns
+  into a 164-bit window (the product at bits [107:2], the addend from LSB 110, shifted right by
+  `56 + ea + eb - ec`), the sum's magnitude, a leading-zero count and normalization, then a right
+  shift back into range for a tiny result and the one rounding at the destination's precision.
+  fcvt between the formats is a product with an exact 1; an integer source replaces the product
+  (bit 0 at window bit 2); a conversion to an integer aligns its operand as the addend so window
+  bit 2 weighs 1, and rounds, negates and saturates the bits [65:2].
+- **`fp_divsqrt`: division and square root**, one restoring digit recurrence for both
   (`b = (2r >= T)`, `r <- 2r - b*T`, T the divisor or `2Q + 2^-(j+1)`), 3 result bits a cycle, both
   formats in one internal form, one op at a time. From accept to `res_valid`, normal operands:
-  `fdiv.d` 23 cycles, `fsqrt.d` 22, `fdiv.s` 13, `fsqrt.s` 12 (the C910 it replaced: 19, 20, 16
-  and 16 on average over the bench's operands); a subnormal operand or result adds a cycle per bit
-  it is shifted (up to ~130 for `fdiv.d`). fpnew's results take the result register
-  first; `fp_divsqrt` holds its answer meanwhile.
-- **Up to four operations in flight**, one accepted per cycle. Results return by tag, not
-  necessarily in issue order (fpnew's op groups have different latencies).
-- **Every op group has its `PIPE_REGS` stages.** From the edge that accepts an op to `res_valid`:
-  FMA, add and multiply 8 cycles; conversions 6. `PipeRegs` is a pattern per op group: a
-  group's entry is a packed array of formats, and one outer `'{default: N}` assigns N to the packed
-  value whole, which Verilator does, so the simulated FPU had no pipeline registers (FMA 3 cycles,
-  conversions and NONCOMP 1) until 2026-11-25, while Vivado gave every element N.
-- `iss_ready` is **registers-only**: `~req_v_q & (in flight != NFLIGHT) & ~out_blk`. fpnew's
-  `in_ready_o` is combinational in `in_valid_i`, and the issue decision reads `iss_ready`, so
-  exposing it would close a loop through the scheduler. The request register holds an op only in
-  the cycle fpnew declines it.
+  `fdiv.d` 23 cycles, `fsqrt.d` 22, `fdiv.s` 13, `fsqrt.s` 12; a subnormal operand or result adds a
+  cycle per bit it is shifted (up to ~130 for `fdiv.d`).
+- **Up to four operations in flight**, one taken per cycle. Results return by tag, not necessarily
+  in issue order: `fp_fma`'s take the result register first (its pipeline never waits),
+  `fp_divsqrt` holds its answer meanwhile.
+- `iss_ready` is **registers-only**: `~req_v_q & (in flight != NFLIGHT) & ~out_blk`; the issue
+  decision reads it, so a combinational ready would close a loop through the scheduler. The
+  request register holds an op only while `fp_divsqrt` is busy.
+- **Every unit is correctly rounded in all five rounding modes with all five flags** (tininess
+  after rounding), checked against `tools/fpref.py`, the specification computed in rationals:
+  `core/run-fma-tb.sh`, `core/run-fdiv-tb.sh`.
 - **Dependent latency is the pipe depth plus the hand-over:** each op of a dependent chain waits
-  `PIPE_REGS` stages plus the issue and result hand-over. That bounds a reduction such as GB5
-  Machine Learning's SGEMM inner loop, whose `fadd.s` into one accumulator carries the loop.
+  `fp_fma`'s 6 cycles. That bounds a reduction such as GB5 Machine Learning's SGEMM inner loop,
+  whose `fadd.s` into one accumulator carries the loop.
 
 ### 7.2 FP scoreboard
 

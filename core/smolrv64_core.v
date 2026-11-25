@@ -54,7 +54,7 @@
 //   rename   : the maps and per-shard free lists (a physical register names its shard)
 //   lanes    : IW uniform lanes, each a scheduler, its integer register-file shard, an ALU,
 //              a multiplier, branch resolution and address generation; landing buffers
-//   F        : the FP FIFO and scheduler in front of the CVFPU; the MD stage divides
+//   F        : the FP FIFO and scheduler in front of the FPU (fp_unit); the MD stage divides
 //   memory   : M fills the load and store queues; the queues' port reaches the D$; head ops
 //              (AMO, LR/SC, CBO) run at the ROB head; the SYSQ runs system and CSR ops there
 //   ROB      : rows of IW, commit in order, the restart walk on a mispredict or a trap
@@ -2776,7 +2776,7 @@ module smolrv64_core
       if (md_wr & fp_wb)                 $fatal(1, "smolrv64_core: the MD stage and the FPU wrote in one cycle");
    end
 
-   // ---- FP unit (CVFPU) + the in-core FP ops ----
+   // ---- FP unit (fp_unit) + the in-core FP ops ----
    // Everything the OoO core needs for squash recovery -- the zombie/drain latch, the
    // abort-by-seqno, the FS-dirty commit gate -- is absent here: M is the commit point,
    // so an FP op in flight can never be squashed, and its decode/operands are stable for
@@ -2960,11 +2960,9 @@ module smolrv64_core
 
    // THE TAG CARRIES THE DESTINATION. rule: a response is matched by a tag the requester
    // allocated. 21 bits inside the wrapper's 24: with results returning out of issue order
-   // (fpnew's op groups have different latencies), a result must say where it goes rather
+   // (fp_fma's pipeline and fp_divsqrt's iterations), a result must say where it goes rather
    // than be matched against "the one in flight".
-   // PIPE_REGS 5 (fp_unit's default is 4): fpnew's own datapath was a 25-level, -0.51 ns
-   // family at IW=3. One more cycle of FP latency; the integer side does not pay.
-   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .PIPE_REGS(5), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
+   fp_unit #(.TAGW(FTAGW), .NFLIGHT(4), .RDV_BIT(FTAGW-2), .FSHARD_BIT(RN_PBITS-1)) u_fpu
      (.clk(clk), .reset(reset),
       .iss_valid(fp_want), .iss_ready(fp_iss_ready),
       .iss_op(ff_op), .iss_op_mod(ff_mod), .iss_src_fmt(ff_src), .iss_dst_fmt(ff_dst),
@@ -2974,7 +2972,7 @@ module smolrv64_core
       .iss_tag({ff_dst32, f_rd_v, f_rd, f_rob, f_prd}),
       .res_valid(fp_res_valid), .res_ready(1'b1), .res_data(fp_res_data),
       // FLUSH ON REDIRECT. With results landing asynchronously by tag, an op still in
-      // fpnew's pipeline when a squash happens would write back after rename had rolled
+      // the FPU's pipeline when a squash happens would write back after rename had rolled
       // its physreg away -- the zombie writeback, caught by smolrv64_pending as "writeback to
       // pN, which was not pending" on rv64ud-p-structural. It only became reachable once
       // FP could reorder and run several deep.
@@ -2986,7 +2984,7 @@ module smolrv64_core
       .res_fflags(fp_res_fflags), .res_tag(fp_res_tag), .res_fp(fp_res_fp), .res_int(fp_res_int),
       .flush(redirect), .busy(fpu_busy), .err(fpu_err), .dbg(fpu_dbg));
 
-   // THE FPU'S OPS IN FLIGHT, by ROB index: fpnew has no per-op kill, so a dead op in it holds the
+   // THE FPU'S OPS IN FLIGHT, by ROB index: the FPU has no per-op kill, so a dead op in it holds the
    // release until its result has landed (in its own register, before the walk's registers are
    // handed out again). Added as the unit accepts an op, removed as its result lands.
    localparam integer NFQ = 8;
@@ -3081,7 +3079,7 @@ module smolrv64_core
    wire        f_ic     = f_valid & ~ff_use_fpu;
    wire        f_int    = f_rd_v & ~ff_wrfp;                  // the op writes an integer register
    // The unit sees the request without the redirect: an op it takes in a redirect's cycle dies in
-   // its flush (fp_unit's valids, and fpnew's input registers, clear over a load), so the redirect
+   // its flush (fp_unit's valids and its units' pipeline valids clear), so the redirect
    // stays off the enables of its request and input registers. The stage's own books keep it.
    wire        fp_want  = f_valid & ff_use_fpu & ~(f_int & (icr_v | fpu_int_inflight));
    wire        fp_start = fp_want & ~redirect;
@@ -3433,7 +3431,7 @@ module smolrv64_core
    integer smk;
    always @* begin st_mul = 1'b0; for (smk = 0; smk < NL; smk = smk + 1) st_mul = st_mul | l_m1[smk] | l_m2[smk]; end
    // ST_FPU watches stage F: `f_valid & ~f_advance` is stage F holding an op it cannot advance
-   // (the CVFPU will not take it yet, or an in-core op's result register is full).
+   // (the FPU will not take it yet, or an in-core op's result register is full).
    wire st_fpu    = (f_valid & ~f_advance) | dep_fp;  // ...on the FPU
    // ~st_rob: the two are now disjoint, so the stack does not count a ROB-full cycle
    // twice under two different names.
@@ -3746,15 +3744,14 @@ module smolrv64_core
    // unit it is architecturally guaranteed to complete, and nothing older than it can trap
    // either -- everything that CAN trap is head-gated and would not have left X.
    //
-   // ONE DIFFERENCE, forced by the unit. `res_valid` is a one-cycle pulse and two of the
-   // three fp_unit variants (fp_unit_synth.sv, fp_unit_stub.sv) ignore `res_ready`
-   // entirely, so the result cannot be parked in the FPU. It is captured HERE and written
+   // ONE DIFFERENCE, forced by the unit. `res_valid` is held until `res_ready`, but the FPU's
+   // pipeline never waits behind it, so the result cannot be parked in the FPU. It is captured HERE and written
    // when the PRF's single port is free. The load wins that arbitration because
    // `lsu_rd_val` is transient while this register is not.
    // The scoreboard that stood here (fb_busy/fb_preg/fb_rob/fb_val/fb_got, plus a held
    // result for the cycle a load stole the ROB port) is GONE. Every field it carried now
    // rides in the tag and comes back with the result, which is what lets more than one op
-   // be in flight at all -- fpnew returns them out of issue order across op groups.
+   // be in flight at all -- fp_unit returns them out of issue order (fp_fma's and fp_divsqrt's).
    wire        ft_dst32 = fl_tag[FTAGW-1];
    wire        ft_rd_v  = fl_tag[FTAGW-2];
    wire [5:0]  ft_rd    = fl_tag[FTAGW-3 -: 6];
