@@ -6,8 +6,9 @@
 // is preserved and the bit-manipulation extensions are layered on with maximal
 // unit sharing:
 //
-//   - one adder         : ADD/SUB, the SLT/SLTU compares, MIN/MAX, and the Zba
-//                         shift-add family (sh{1,2,3}add[.uw], add.uw)
+//   - one adder         : ADD/SUB and the compares (SLT/SLTU, MIN/MAX, a branch's,
+//                         which the decoder gives ALU_SUB): op1 + (op2 ^ sub) + sub
+//   - one shift-adder   : the Zba family, sh{1,2,3}add[.uw] and add.uw (a shift of 0)
 //   - one funnel shifter: SLL/SRL/SRA, ROL/ROR (Zbb), BEXT (Zbs), slli.uw
 //   - one logic unit    : AND/OR/XOR, ANDN/ORN/XNOR (Zbb), BCLR/BSET/BINV (Zbs)
 //   - a count unit      : CLZ/CTZ/CPOP (Zbb)
@@ -54,57 +55,53 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
    endfunction
 
    // -------- shared adder / comparator --------
-   assign      sum = op1 + op2;
-   wire [XLEN:0] dif = {1'b0, op1} - {1'b0, op2};
+   // One adder adds, or subtracts for SUB and every compare: the inversion of op2 folds into the
+   // carry chain's own LUTs. lt and ltu hold only while it subtracts; eq always.
+   wire        is_cmp;
+   wire        sub = (op == `ALU_SUB) | is_cmp;
+   wire [XLEN:0] as = {1'b0, op1} + {1'b0, op2 ^ {XLEN{sub}}} + {{XLEN{1'b0}}, sub};
+   assign      sum = as[MSB:0];
    assign      eq  = op1 == op2;
-   assign      ltu = dif[XLEN];
-   assign      lt  = (op1[MSB] == op2[MSB]) ? dif[MSB] : op1[MSB];
+   assign      ltu = ~as[XLEN];
+   assign      lt  = (op1[MSB] == op2[MSB]) ? as[MSB] : op1[MSB];
 
    // -------- arithmetic --------
-   // Plain ADD/SUB feed op1/op2 straight into the (shared) sum/dif adders, so
-   // the common path has no pre-adder mux. Zba shift-add and add.uw use their
-   // own adders and are merged in at a shallow final-mux level.
+   // ADD/SUB feed op1/op2 straight into the shared adder, so the common path has no pre-adder
+   // mux. The Zba shift-adds and add.uw use the shift-adder, merged in at a shallow final-mux level.
    wire [1:0]    zsh    = (op == `ALU_SH1ADD) ? 2'd1 :
                           (op == `ALU_SH2ADD) ? 2'd2 :
                           (op == `ALU_SH3ADD) ? 2'd3 : 2'd0;
    wire [MSB:0]  op1_uw  = {{(XLEN-32){1'b0}}, op1[31:0]};
-   wire [MSB:0]  addsub  = (op == `ALU_SUB) ? dif[MSB:0] : sum;  // ADD / SUB
-   wire [MSB:0]  zba_sum = ((uw ? op1_uw : op1) << zsh) + op2;   // sh{1,2,3}add[.uw]
-   wire [MSB:0]  adduw   = op1_uw + op2;                         // add.uw
+   wire [MSB:0]  zba_sum = ((uw ? op1_uw : op1) << zsh) + op2;   // sh{1,2,3}add[.uw], add.uw
 
-   // -------- one funnel shifter: SLL/SRL/SRA/ROL/ROR/BEXT/slli.uw --------
-   // Right funnel ({hi,lo} >> shamt); left shifts use the bit-reverse identity
-   //   x << s == rev(rev(x) >> s),   rol(x,s) == rev(ror(rev(x),s)).
-   // The *W word ops share this funnel: their result is result[31:0], and with
-   // shamt<=31 those bits come only from the low operand, so we pack the 32-bit
-   // operand+fill into the low half and ignore the high half for word.
+   // -------- one rotator: SLL/SRL/SRA/ROL/ROR/BEXT/slli.uw --------
+   // Every shift is a right rotation and a mask: x >> s keeps the rotation's bits i < N - s, x << s
+   // (a rotation right by -s) its bits i >= s, a rotation keeps all; the others are the fill, the
+   // sign for SRA and 0 otherwise. A word op rotates its 32 bits duplicated into both halves, so the
+   // low half is the 32-bit rotation for any s < 32, and N is 32; the result's sign extension is
+   // the final *W step below.
    wire is_left = (op == `ALU_SLL) || (op == `ALU_ROL);
    wire is_rot  = (op == `ALU_ROL) || (op == `ALU_ROR);
    wire is_sra  = (op == `ALU_SRA);
 
-   wire [SHW-1:0] sh64 = op2[SHW-1:0];
-   wire [4:0]     sh32 = op2[4:0];
-   wire [31:0]    o32  = op1[31:0];
-
-   // 64-bit operand (uw zero-extends op1 for slli.uw only).
-   wire [XLEN-1:0] sh_in  = (uw && op == `ALU_SLL) ? {{(XLEN-32){1'b0}}, o32} : op1;
-   wire [XLEN-1:0] base64 = is_left ? brevx(sh_in) : sh_in;
-   wire [XLEN-1:0] hi64   = is_rot ? base64 : (is_sra ? {XLEN{base64[MSB]}} : {XLEN{1'b0}});
-
-   // Word operand packed into 64 bits: low = base, high = fill (0 / sign / wrap).
-   wire [31:0] base32 = is_left ? brev32(o32) : o32;
-   wire [31:0] hi32   = is_rot ? base32 : (is_sra ? {32{base32[31]}} : 32'b0);
-
-   // Single shared funnel.
-   wire [XLEN-1:0]   lo  = w ? {hi32, base32} : base64;
-   wire [SHW-1:0]    sh  = w ? {{(SHW-5){1'b0}}, sh32} : sh64;
-   wire [2*XLEN-1:0] fun = {hi64, lo} >> sh;
-   wire [XLEN-1:0]   fr  = fun[XLEN-1:0];
-
-   wire [XLEN-1:0] shift_raw =
-        is_left ? (w ? {{(XLEN-32){1'b0}}, brev32(fr[31:0])} : brevx(fr)) : fr;
-   wire [XLEN-1:0] shift_res =
-        w ? {{(XLEN-32){shift_raw[31]}}, shift_raw[31:0]} : shift_raw;
+   wire [31:0]     o32   = op1[31:0];
+   wire [SHW-1:0]  s     = w ? {1'b0, op2[4:0]} : op2[SHW-1:0];
+   wire [SHW-1:0]  rs    = is_left ? -s : s;                       // the right rotation
+   // the operand: slli.uw's zero-extended word, a word op's duplicated word, or op1
+   wire [XLEN-1:0] r_in  = w ? {o32, o32} : (uw && op == `ALU_SLL) ? {{(XLEN-32){1'b0}}, o32} : op1;
+   reg  [XLEN-1:0] rot;                                            // r_in rotated right by rs
+   integer         rk;
+   always @(*) begin
+      rot = r_in;
+      for (rk = 0; rk < SHW; rk = rk + 1)
+         if (rs[rk]) rot = (rot >> (1 << rk)) | (rot << (XLEN - (1 << rk)));
+   end
+   wire            fill  = is_sra & (w ? o32[31] : op1[MSB]);
+   reg  [XLEN-1:0] shift_res;
+   integer         bi;
+   always @(*)
+      for (bi = 0; bi < XLEN; bi = bi + 1)
+         shift_res[bi] = (is_rot | (is_left ? (bi >= s) : (bi + s < (w ? 32 : XLEN)))) ? rot[bi] : fill;
 
    // -------- count unit: CLZ/CTZ/CPOP (and *W variants via `w`) --------
    function [6:0] count_lz;          // leading zeros of the low `n` bits
@@ -117,9 +114,9 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
       begin n = word ? 32 : XLEN; count_pop = 0;
             for (i = 0; i < XLEN; i = i + 1) if (i < n) count_pop = count_pop + x[i]; end
    endfunction
+   // one leading-zero count: trailing zeros are the leading zeros of the reverse
    wire [XLEN-1:0] op1_rev = w ? {{(XLEN-32){1'b0}}, brev32(o32)} : brevx(op1);
-   wire [6:0] clz_n = count_lz(op1, w);
-   wire [6:0] ctz_n = count_lz(op1_rev, w);   // trailing zeros == leading zeros of reverse
+   wire [6:0] lz_n = count_lz((op == `ALU_CTZ) ? op1_rev : op1, w);
    wire [6:0] pop_n = count_pop(op1, w);
 
    // -------- byte / permute unit (Zbb) — XLEN=64 layout --------
@@ -162,8 +159,8 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
 
    reg [MSB:0] r_ext;     // count / permute / extend / single-bit / Zicond
    always @(*) case (op)
-        `ALU_CLZ:   r_ext = {{(XLEN-7){1'b0}}, clz_n};
-        `ALU_CTZ:   r_ext = {{(XLEN-7){1'b0}}, ctz_n};
+        `ALU_CLZ,
+        `ALU_CTZ:   r_ext = {{(XLEN-7){1'b0}}, lz_n};
         `ALU_CPOP:  r_ext = {{(XLEN-7){1'b0}}, pop_n};
         `ALU_REV8:  r_ext = rev8;
         `ALU_ORCB:  r_ext = orcb;
@@ -175,20 +172,15 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
         default:    r_ext = {{MSB{1'b0}}, shift_res[0]};   // BEXT
    endcase
 
-   reg [MSB:0] r_arith;   // Zba shift-add / add.uw (ADD/SUB handled separately)
-   always @(*) case (op)
-        `ALU_SH1ADD, `ALU_SH2ADD, `ALU_SH3ADD: r_arith = zba_sum;
-        default:                               r_arith = adduw;   // add.uw
-   endcase
 
    // -------- balanced final select --------
    // The two slowest data sources — the carry-chain adder (ADD/SUB) and the
    // funnel shifter — get the shallowest mux paths (one 2:1 each); the faster
    // logic/compare/extend/Zba groups sit deeper in the tree.
-   wire is_addsub = (op == `ALU_ADD && !uw) || (op == `ALU_SUB);  // add.uw -> r_arith
+   wire is_addsub = (op == `ALU_ADD && !uw) || (op == `ALU_SUB);  // add.uw -> the shift-adder
    wire is_shift  = (op == `ALU_SLL) || (op == `ALU_SRL) || (op == `ALU_SRA) ||
                     (op == `ALU_ROL) || (op == `ALU_ROR);
-   wire is_cmp    = (op == `ALU_SLT)|| (op == `ALU_SLTU)||
+   assign is_cmp  = (op == `ALU_SLT)|| (op == `ALU_SLTU)||
                     (op == `ALU_MIN)|| (op == `ALU_MINU)||
                     (op == `ALU_MAX)|| (op == `ALU_MAXU);
    wire is_bit    = (op == `ALU_AND)|| (op == `ALU_OR) || (op == `ALU_XOR) ||
@@ -199,9 +191,9 @@ module alu #(parameter XLEN = 64, parameter MSB = XLEN - 1)
 
    wire [MSB:0] r_g0 = is_cmp  ? r_cmp   : r_ext;     // fast groups, deepest
    wire [MSB:0] r_g1 = is_bit  ? r_bit   : r_g0;
-   wire [MSB:0] r_g2 = is_zba  ? r_arith : r_g1;
+   wire [MSB:0] r_g2 = is_zba  ? zba_sum : r_g1;
    wire [MSB:0] r_g3 = is_shift ? shift_res : r_g2;   // shifter: one 2:1
-   wire [MSB:0] r_pre = is_addsub ? addsub : r_g3;    // adder: one 2:1
+   wire [MSB:0] r_pre = is_addsub ? sum : r_g3;       // adder: one 2:1
 
    always @(*) begin
       result = r_pre;

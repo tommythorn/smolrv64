@@ -155,7 +155,7 @@ module decode_exec
                         if (f3==3'b111) illegal=1; end                   // funct3=111 reserved
         5'b01000: begin is_mem=1; is_store=1; op2_imm=1; alu_op=`ALU_ADD;// STORE
                         mem_size=f3[1:0]; if (f3[2]) illegal=1; end
-        5'b11000: begin is_branch=1; br_func=f3;                         // BRANCH
+        5'b11000: begin is_branch=1; br_func=f3; alu_op=`ALU_SUB;       // BRANCH: its compares are the adder's
                         if (f3==3'b010||f3==3'b011) illegal=1; end
 
         5'b11100: begin // SYSTEM
