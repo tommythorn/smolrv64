@@ -25,7 +25,7 @@ module tb;
 
    // fpnew op enums
    localparam FMADD=0, FNMSUB=1, ADD=2, MUL=3, DIV=4, SQRT=5, MINMAX=7, F2F=10, F2I=11, I2F=12;
-   localparam C_FPU=0, C_SGNJ=1, C_CMP=2, C_MVXF=3, C_MVFX=4, C_FCLASS=5;
+   localparam C_FPU=0, C_SGNJ=1, C_CMP=2, C_MVXF=3, C_MVFX=4, C_FCLASS=5, C_MINMAX=6;
 
    task chk;  // name, expected: valid, usefpu, class, op, opmod, src, dst, wrfp
       input [127:0] nm; input ev, eu; input [2:0] ec; input [3:0] eo; input em;
@@ -50,8 +50,9 @@ module tb;
       insn=opfp(7'b0001001,5'd3,5'd2,3'd0,5'd1); chk("FMUL.D",1,1,C_FPU,MUL,1'b0,3'd1,3'd1,1'b1);
       insn=opfp(7'b0001100,5'd3,5'd2,3'd0,5'd1); chk("FDIV.S",1,1,C_FPU,DIV,1'b0,3'd0,3'd0,1'b1);
       insn=opfp(7'b0101100,5'd0,5'd2,3'd0,5'd1); chk("FSQRT.S",1,1,C_FPU,SQRT,1'b0,3'd0,3'd0,1'b1);
-      // FMIN.S (use_fpu)
-      insn=opfp(7'b0010100,5'd3,5'd2,3'd0,5'd1); chk("FMIN.S",1,1,C_FPU,MINMAX,1'b0,3'd0,3'd0,1'b1);
+      // FMIN.S / FMAX.D (in-core)
+      insn=opfp(7'b0010100,5'd3,5'd2,3'd0,5'd1); chk("FMIN.S",1,0,C_MINMAX,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0010101,5'd3,5'd2,3'd1,5'd1); chk("FMAX.D",1,0,C_MINMAX,4'd0,1'b0,3'd0,3'd0,1'b1);
       // FCVT.S.D (dst S, src D) / FCVT.D.S (dst D, src S)
       insn=opfp(7'b0100000,5'd1,5'd2,3'd0,5'd1); chk("FCVT.S.D",1,1,C_FPU,F2F,1'b0,3'd1,3'd0,1'b1);
       insn=opfp(7'b0100001,5'd0,5'd2,3'd0,5'd1); chk("FCVT.D.S",1,1,C_FPU,F2F,1'b0,3'd0,3'd1,1'b1);

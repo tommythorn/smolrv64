@@ -72,7 +72,8 @@ module fp_unit #(parameter TAGW = 24,
       PipeRegs:   '{'{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}, '{default: PIPE_REGS}},
       UnitTypes:  '{'{default: fpnew_pkg::MERGED},   // ADDMUL
                     '{default: fpnew_pkg::DISABLED}, // DIVSQRT: fp_divsqrt
-                    '{default: fpnew_pkg::PARALLEL}, // NONCOMP
+                    '{default: fpnew_pkg::DISABLED}, // NONCOMP: compares, sign injection, classify
+                                                     // and FMIN/FMAX run in the core
                     '{default: fpnew_pkg::MERGED}},  // CONV
       PipeConfig: fpnew_pkg::DISTRIBUTED
    };

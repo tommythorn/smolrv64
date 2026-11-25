@@ -3108,6 +3108,8 @@ module smolrv64_core
    wire [31:0] fi_u2  = unbox_s(f_rs2_val);
    wire [1:0]  fi_cd  = fcmp_d(fi_f3, f_rs1_val, f_rs2_val);
    wire [1:0]  fi_cs  = fcmp_s(fi_f3, fi_u1, fi_u2);
+   wire [64:0] fi_mm  = fi_isd ? fminmax_d(fi_f3[0], f_rs1_val, f_rs2_val, fi_cd[0])
+                               : fminmax_s(fi_f3[0], fi_u1, fi_u2, fi_cs[0]);   // FMIN/FMAX: {nv, result}
    reg  [63:0] fi_res;
    always @* begin
       case (ff_cls)
@@ -3122,6 +3124,7 @@ module smolrv64_core
         3'd3: fi_res = fi_isd ? f_rs1_val : {{32{f_rs1_val[31]}}, f_rs1_val[31:0]}; // FMV.X.D/W -> int (raw)
         3'd4: fi_res = fi_isd ? f_rs1_val : {32'hffffffff, f_rs1_val[31:0]};        // FMV.D/W.X -> fp (box)
         3'd5: fi_res = fi_isd ? fclass_d(f_rs1_val) : fclass_s(f_rs1_val);           // FCLASS -> int
+        3'd6: fi_res = fi_mm[63:0];                                                   // FMIN/FMAX -> fp
         default: fi_res = 64'd0;
       endcase
    end
@@ -3131,7 +3134,7 @@ module smolrv64_core
       if (icr_take) begin
          icr_v <= 1'b1;  icr_data <= fi_res;
          icr_tag <= {1'b0, f_rd_v, f_rd, f_rob, f_prd};   // the FPU's tag layout, never re-boxed
-         icr_fflags <= {(ff_cls == 3'd2) & (fi_isd ? fi_cd[1] : fi_cs[1]), 4'd0};
+         icr_fflags <= {((ff_cls == 3'd2) & (fi_isd ? fi_cd[1] : fi_cs[1])) | ((ff_cls == 3'd6) & fi_mm[64]), 4'd0};
       end
       // the FPU's integer result: the register is free for it (fp_start, icr_take); a dead one goes nowhere
       if (fp_ret_int & ~dead(fp_res_tag[RN_PBITS +: ROB_IDXB])) begin

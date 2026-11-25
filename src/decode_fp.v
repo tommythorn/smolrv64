@@ -18,7 +18,7 @@ module decode_fp
    (input  wire [31:0] insn,
     output reg         fp_valid,        // a recognized FP-arith op (not load/store)
     output reg         use_fpu,         // routes to the shared CVFPU
-    output reg  [2:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS
+    output reg  [2:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX
     output reg  [3:0]  op,
     output reg         op_mod,
     output reg  [2:0]  src_fmt,
@@ -35,7 +35,7 @@ module decode_fp
                     SGNJo=6, MINMAX=7, CMPo=8, CLASS=9, F2F=10, F2I=11, I2F=12;
    localparam       FP32=3'd0, FP64=3'd1;
    localparam [1:0] INT32=2'd2, INT64=2'd3;
-   localparam       C_FPU=3'd0, C_SGNJ=3'd1, C_CMP=3'd2, C_MVXF=3'd3, C_MVFX=3'd4, C_FCLASS=3'd5;
+   localparam       C_FPU=3'd0, C_SGNJ=3'd1, C_CMP=3'd2, C_MVXF=3'd3, C_MVFX=3'd4, C_FCLASS=3'd5, C_MINMAX=3'd6;
    localparam [1:0] SZERO=2'd0, SFRS1=2'd1, SFRS2=2'd2, SFRS3=2'd3;
 
    wire [6:0] opcode = insn[6:0];
@@ -67,8 +67,7 @@ module decode_fp
               op0_sel=SFRS1; op1_sel=SFRS2; op2_sel=SZERO; end
            5'b01011: begin use_fpu=1'b1; op=SQRT;    // FSQRT
               op0_sel=SFRS1; op1_sel=SZERO; op2_sel=SZERO; end
-           5'b00101: begin use_fpu=1'b1; op=MINMAX;  // FMIN/FMAX (rnd carries the sub-op)
-              op0_sel=SFRS1; op1_sel=SFRS2; op2_sel=SZERO; end
+           5'b00101: begin use_fpu=1'b0; fp_class=C_MINMAX; end         // FMIN/FMAX (in-core)
            5'b01000: begin use_fpu=1'b1; op=F2F;     // FCVT.S.D / FCVT.D.S
               dst_fmt=fmt?FP64:FP32; src_fmt=fmt?FP32:FP64;
               op0_sel=SFRS1; op1_sel=SZERO; op2_sel=SZERO; end

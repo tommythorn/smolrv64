@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fpref -- the exact reference for the FPU's benches: RISC-V F/D results and flags, by rational arithmetic.
 
-    tools/fpref.py vectors <op> <n> [seed]     n random vectors for op (div, sqrt) as lines
+    tools/fpref.py vectors <op> <n> [seed]     n random vectors for op (div, sqrt, min, max) as lines
         "<fmt> <rm> <a> <b> <result> <flags>": fmt 0 = binary32, 1 = binary64; rm 0..4 = RNE RTZ RDN
         RUP RMM; a, b, result 16 hex digits (a binary32 value NaN-boxed: its upper 32 bits ones);
         flags = {NV, DZ, OF, UF, NX} as 2 hex digits.
@@ -155,7 +155,34 @@ def fsqrt(fmt, rm, a, _b=0):
     return box(fmt, r), fl
 
 
-OPS = {'div': fdiv, 'sqrt': fsqrt}
+def fminmax(fmt, a, b, is_max):
+    ua, ub = unbox(fmt, a), unbox(fmt, b)
+    da = decode(fmt, ua) if ua is not None else ('nan', False)
+    db = decode(fmt, ub) if ub is not None else ('nan', False)
+    e, f, *_ = params(fmt)
+    nv = NV if (da[0] == 'nan' and da[1]) or (db[0] == 'nan' and db[1]) else 0
+    if da[0] == 'nan' and db[0] == 'nan':
+        return box(fmt, canon_nan(fmt)), nv
+    if da[0] == 'nan':
+        return box(fmt, ub), nv
+    if db[0] == 'nan':
+        return box(fmt, ua), nv
+    def val(d):
+        return (Fraction(-1) if d[1] else Fraction(1)) * (Fraction(10) ** 400 if d[0] == 'inf' else d[2])
+    va, vb = val(da), val(db)
+    if va == vb == 0:                           # -0 < +0
+        sa, sb = ua >> (e + f), ub >> (e + f)
+        neg = (sa & sb) if is_max else (sa | sb)
+        return box(fmt, neg << (e + f)), nv
+    pick_a = (va > vb) if is_max else (va < vb)
+    if va == vb:
+        pick_a = True
+    return box(fmt, ua if pick_a else ub), nv
+
+
+OPS = {'div': fdiv, 'sqrt': fsqrt,
+       'min': lambda fmt, rm, a, b: fminmax(fmt, a, b, False),
+       'max': lambda fmt, rm, a, b: fminmax(fmt, a, b, True)}
 
 
 def operand(rng, fmt):
@@ -209,8 +236,10 @@ def main():
     for i in range(n):
         fmt = rng.getrandbits(1)
         rm = rng.randrange(5)
-        if i % 4 == 0:
+        if i % 4 == 0 and op in ('div', 'sqrt'):
             a, b = exact_pair(rng, fmt, op)
+        elif i % 4 == 0:
+            a = operand(rng, fmt); b = a ^ (rng.getrandbits(1) << (63 if fmt else 31))   # equal, or the same magnitude
         else:
             a, b = operand(rng, fmt), operand(rng, fmt)
         if op == 'sqrt':
