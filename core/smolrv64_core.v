@@ -1738,11 +1738,12 @@ module smolrv64_core
       // entry's done. Dropped when the kill or a redirect takes it in between (a late done must not
       // land on an entry the kill freed).
       reg                 ct_v;
-      reg [ROB_IDXB-1:0]  ct_rob;
+      reg [ROB_IDXB-1:ROB_CB] ct_row;          // the column is the lane's own, a constant
+      wire [ROB_IDXB-1:0] ct_rob = {ct_row, COL};
       initial ct_v = 1'b0;
       always @(posedge clk) begin
          ct_v   <= ~reset & ~redirect & cti & ~mis;
-         ct_rob <= {rob[ROB_IDXB-1:ROB_CB], COL};
+         ct_row <= rob[ROB_IDXB-1:ROB_CB];
       end
       assign rob_wv[NL + 5 + gl] = ct_v & ~redirect & ~dead(ct_rob);
       assign rob_wix[(NL + 5 + gl)*ROB_IDXB +: ROB_IDXB] = ct_rob;
