@@ -14,3 +14,5 @@ L2), 4 MiB (the dTLB's second level as well, and beyond the L2) and 64 MiB (a pa
 load), and `bw`'s sequential 8-byte reads and writes over 32 KiB (in the D$), 512 KiB (beyond it,
 the L2) and 64 MiB, all in core cycles. `membench/` goes
 to the boards' `/var/tmp/membench` with the scripts.
+
+`fpchk/fpchk.sh <board-ip> [n]` checks the FPU instruction by instruction against `tools/fpref.py` (the FMA group, the conversions, division, square root; both formats, every rounding mode, results and fflags); `fpchk.c` is compiled on the board. 0 mismatches is the pass.
