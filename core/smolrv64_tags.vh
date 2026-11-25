@@ -13,7 +13,7 @@
  `define SMOLRV64_LQB 4
 `endif
 `ifndef SMOLRV64_SQB
- `define SMOLRV64_SQB 5                 // the store queue's index width (1 << it entries)
+ `define SMOLRV64_SQB 4                 // the store queue's index width (1 << it entries)
 `endif
 `ifndef SMOLRV64_ROB_ROWS
  `define SMOLRV64_ROB_ROWS 64          // the ROB's rows of IW entries (a power of two)

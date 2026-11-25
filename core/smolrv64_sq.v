@@ -1,32 +1,19 @@
 `default_nettype none
 
-// smolrv64_sq -- the store buffer.
+// smolrv64_sq -- the store queue: every store from dispatch until the LSU drains it after commit.
 //
-// WHY. A store currently waits for BOTH its address operand and its data (`rs2`) before it
-// may issue, and `u_iq_l` is in-order, so it holds the head of the queue while it waits.
-// On workloads/saxpybench (the GB5 Camera loop) the data is an `fadds` result ~21 cycles
-// away, and the next element's loads sit behind it -- 22.08 cycles/element for work whose
-// elements are completely independent. docs/Area-Efficient-Scalar-OoO.md 11: a store issues
-// on its ADDRESS alone and commits when its data arrives.
-//
-// THE DATA ARRIVES BY SNOOPING, NOT BY A READ PORT. An entry holds `dpreg`, the renamed
-// rs2, and watches the writeback ports. When one names `dpreg` the value is captured in
-// flight. Holding a register number and reading the PRF at commit would cost a third read
-// port, and a read port costs a substantial fraction of the array (doc 15) -- this keeps
-// the PRF at 2R1W while still letting address and data arrive apart.
-//
-// ORDERING. Entries are allocated at DISPATCH in program order. That is not a detail:
-// allocating at issue lets younger stores take every slot while an older one waits for its
-// operands, and the older store can then never issue to free one (doc 11). Commit is in
+// ORDER. Entries are allocated at dispatch in program order (`SMOLRV64_SQB` sets the count),
+// so an older store waiting for its operands always holds a slot; commit and drain are in
 // order from the head.
 //
-// DISAMBIGUATION is a spectrum (doc 11.1) and the cheap end is correct. `ld_block` says an
-// older pending store MAY alias:
-//   * an entry whose address is not yet computed blocks unconditionally -- nothing can be
-//     compared against an unknown address
-//   * otherwise the byte ranges are compared, so a load past an adjacent store proceeds
-// Byte-range rather than the `|delta| > 8` sketch, because Camera stores y[i] and then
-// loads y[i+1] FOUR bytes away: a coarser test would block exactly the case worth winning.
+// ADDRESS AND DATA ARRIVE APART. A store issues on its address alone. Its data lands later,
+// one entry a cycle, into a distributed-RAM array: snooped from a writeback port that names
+// the entry's data register, or fetched by the queue's own PRF read (`ra2`) for an entry
+// whose data was ready at allocation or that the snoop left out.
+//
+// DISAMBIGUATION. Each load row is compared against every entry: an older entry with no
+// address yet blocks the load, otherwise byte ranges decide, and a load wholly covered by
+// one older store with data forwards from it instead of waiting for the drain.
 module smolrv64_sq
   #(parameter NENT  = 4,
     parameter IDXB  = 2,               // $clog2(NENT)

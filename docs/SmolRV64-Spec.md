@@ -1283,7 +1283,7 @@ starts a busy divider; the writeback's clear precedes the issue's set in the sta
   and a landing is the D$'s valid or a waiting forward, registers alone. The landing's destination
   likewise: the LQ registers `{rdv, prd}` a cycle ahead at the D$'s two pre-tags, the forward ring's
   next oldest (`fw_lt_n`) and the slow path's start, and a landing picks by flags (`LDPRE`, asserted
-  equal to the direct read), so no 32-way read of the queue stands in front of the wake, the store
+  equal to the direct read), so no 16-way read of the queue stands in front of the wake, the store
   queue's snoop or the lanes' straight-through choice. Straddles, uncached and device loads, AMOs and LR/SC keep the FSM path and its one
   slow landing (`ld_inflight_idx`), which yields its cycle to a fast landing (one PRF and one
   ROB port). Re-done from the retired da28895b. tiny128 at 60 M, measured DDR shape: IW=2
@@ -1987,7 +1987,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `ffc[*].fr` | `smolrv64_core` | 64 a column | 5 | 1 280 | LUTRAM | an FP op's exception flags by ROB slot, a memory per column: 1W (a landing result in that column), 1R (the head's row; the retire ports rotate the columns into program order) |
 | `ffc[*].fa`, `ffc[*].fb` | `smolrv64_core` | 64 a column, each | 1 | 512 | LUTRAM | the slot's FP result landed is `fa ^ fb`: the allocation writes `fa` (= `fb`), the landing writes `fb` (= `~fa`); 1W each, read at the head's row and at the writer's own row |
 | `mdw` | `smolrv64_core` | 256 | 2 | 512 | LUTRAM | the memory-dependence wait table: read at dispatch by the load's PC and by training, 1W (a replay, else one training event, else the forget's step; §8) |
-| `spl_ld`, `spl_st` | `smolrv64_core` | 16, 32 | 8+274 = 282 | 13 536 | LUTRAM | a lane load's or store's record by LQ/SQ entry: four banks by entry, 1W each (a group's row), 1R at M's pick (§8) |
+| `spl_ld`, `spl_st` | `smolrv64_core` | 16, 16 | 8+274 = 282 | 9 024 | LUTRAM | a lane load's or store's record by LQ/SQ entry: four banks by entry, 1W each (a group's row), 1R at M's pick (§8) |
 | `u_la`, `u_sa` `wb[0..IW-1].mem` | `smolrv64_mwram` (in `smolrv64_core`) | 16, 32 a bank | 64 | 9 216 | LUTRAM | the lanes' arrived VAs, a bank per lane (1W, its lane), 1R at M's pick; `lvt` (2 bits an entry, flops) names the bank that wrote the entry last (§8) |
 | `la_v`, `sa_v` | `smolrv64_core` | 16, 32 | 1 | 48 | flops | an entry's address has arrived and M has not taken it |
 | `u_iq_f` entry | `smolrv64_iq` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
@@ -1997,8 +1997,8 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `pcl[0..IW-1].mem` | `smolrv64_core` | 64 each | 2 | 512 | LUTRAM | which stream produces a pending integer register (§11): 1W each at dispatch, 5R (the schedulers' reported operands) |
 | `hps[0..IW-1].mem` | `smolrv64_core` | 64 each | 48 | 12 288 | LUTRAM | every op's {seq, PC} by ROB row and column: 1W each at dispatch (the tail's row), 1R the head's row; the queue-fault record's PC and seq (a faulting or replaying load or store is the ROB head). `pch` (`smolrv64_lq`, 16 × 8 flops) keeps a load's wait-table bits, which every entry reports |
 | `om` | `smolrv64_lq` | 16 | 16 | 256 | flops | the load queue's program order: an entry's row names the entries older than it, written at its allocation (the row the live entries, its column cleared); every "oldest of these" reads it |
-| `data` | `smolrv64_sq` | 32 | 64 | 2 048 | LUTRAM | the store queue's bytes: 1W (the landing, one entry a cycle), 2R (the handoff entry, a forward's store; the lockstep's record of the committing entry is a third, in simulation only) |
-| `addr_m`, `addr_w` | `smolrv64_sq` | 32 each | 33 (`PABITS`) | 2 112 | LUTRAM | the store queue's PA: 1W each (M's fill, the walker's answer), 1R (the handoff entry; the lockstep's record a second, in simulation only); `addr_lv`, a bit per entry in flops, picks the copy |
+| `data` | `smolrv64_sq` | 16 | 64 | 1 024 | LUTRAM | the store queue's bytes: 1W (the landing, one entry a cycle), 2R (the handoff entry, a forward's store; the lockstep's record of the committing entry is a third, in simulation only) |
+| `addr_m`, `addr_w` | `smolrv64_sq` | 16 each | 33 (`PABITS`) | 1 056 | LUTRAM | the store queue's PA: 1W each (M's fill, the walker's answer), 1R (the handoff entry; the lockstep's record a second, in simulation only); `addr_lv`, a bit per entry in flops, picks the copy |
 | `u_q` `bank[*].mem` | `smolrv64_bankq` (in `smolrv64_frontend`) | 8 x 2 | 179 | 2 864 | LUTRAM | a decoder a bank: the bundle register's slot landing in the bank is rotated to it raw and decoded there, so each bank writes its own decoder's record (`BYBANK`); the heads read it twice, in program order for the group rules and in lane order for the IR. The decoupling queue holds what decode cannot cheaply recompute (`QR_REC`, `QR_RECW = 2*PCW+PDW+SEQW+58`): the PC and the predicted next PC, the predict detail, the seq, the instruction expanded and its RVC bit, the fault, the illegal and static-mispredict verdicts, and the dispatch class `gc`; each lane's head decoder rebuilds the IR record from it, expanding nothing |
 
 Each PRF shard now has **its own write address** (`wa_ie`/`wa_ld`/`wa_fe`), which is §7 of
@@ -2729,8 +2729,8 @@ those failing in the most first.
   footprint that walks on every load (`chase2` over 32 MiB, `tools/board/membench`, 2ed18026) keeps 2.4 loads in flight
   at any number of independent chains, the walker busy 30 of a load's 33.8 cycles, against 7 to
   8 while the dTLB's two levels translate them.
-- **Up to `SQ_N`=32 stores between dispatch and their drain.** `SQ_N = 1 << SQ_IB`, `SQ_IB` =
-  `SMOLRV64_SQB` = 5 (`smolrv64_tags.vh`). A store holds its entry from dispatch until the LSU
+- **Up to `SQ_N`=16 stores between dispatch and their drain.** `SQ_N = 1 << SQ_IB`, `SQ_IB` =
+  `SMOLRV64_SQB` = 4 (`smolrv64_tags.vh`). A store holds its entry from dispatch until the LSU
   drains it after commit, and a load whose bytes overlap an older queued store waits for that
   drain unless it can forward from it (§8). 8 -> 32 entries (2026-10-13, IW=3): the 300 M
   lockstep boot 238,877,773 -> 246,963,412 retires (+3.38%; 16 entries +3.35%); GB5 slices of
@@ -2738,7 +2738,10 @@ those failing in the most first.
   Navigation -0.74%, HTML5 -2.49%, SQLite -1.40%, PDF Rendering -2.22%. `be:sq-full` falls
   below 1% of cycles in all four and the stall moves on: Navigation's ROB fills (0 -> 10.7%)
   with loads waiting on older stores (a load blocked in 19.5% -> 35.2% of cycles), PDF
-  Rendering's ROB and load queue (24.5% and 21.9%).
+  Rendering's ROB and load queue (24.5% and 21.9%). 32 -> 16 entries (2026-11-24, IW=4, FW=4)
+  for area: `u_sq` 16,935 -> 9,241 LUTs (core census, synthesis); the GB5 SimPoints +0.16%
+  cycles, PDF Rendering +1.65%, HTML5 +1.36%, Navigation +1.33%, Clang +0.83%; the tiny128 lockstep
+  boot -0.99% retires at 60 M cycles, -0.38% at 300 M.
 - **The FP scheduler holds `NF`=8 ops, behind a FIFO of `FQ`=8** (§2), which takes a group's FP
   ops together: one a group, against a row, cost GB5's 77 SimPoints 2.48% of the single-core cycles
   (2026-10-20, d3dd7b52: Structure from Motion -5.42%, Gaussian Blur -5.00%, Camera -2.74%, Rigid
