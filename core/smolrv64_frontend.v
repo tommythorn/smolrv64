@@ -314,7 +314,7 @@ module smolrv64_frontend
    // SQ order loads against stores by seqno, so a cracked instruction's loads and stores need their
    // own.
    localparam integer SLB = QLB;                         // a slot of the register
-   localparam integer UNB = UX_W + 1;                     // a uop count, 1..32
+   localparam integer UNB = UX_W + 1;                     // a uop count, 1..64
    reg  [UNB-1:0]   pb_n   [0:QNB-1];                    // slot k's uops (slots FW.. hold one: never read)
    reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state before it
    reg  [UX_W-1:0]  pb_s0  [0:QNB-1];                    // ...and its first uop's position (a whole-register access's, from vstart)

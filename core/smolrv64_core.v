@@ -3227,7 +3227,7 @@ module smolrv64_core
    wire         fv_ex  = (f_insn[6:0] == 7'b0100111);                // an extract (STORE-FP)
    wire         fv_h   = f_vpos[4];                                  // ...its chunk
    wire [1:0]   fv_esz = fv_pk ? fv_f3[1:0] : fv_sew;                // an element's log2 bytes
-   wire [7:0]   fv_vs  = f_vpos[5] ? 8'd0 : {1'b0, csr_vstart};     // vz: vstart is 0
+   wire [7:0]   fv_vs  = f_vpos[VP_VZ] ? 8'd0 : {1'b0, csr_vstart};  // vz: vstart is 0
    wire         fv_xs  = fv_v & (fv_op6 == 6'b010000) & (fv_f3 == 3'b010);  // vmv.x.s
    wire         fv_sx  = fv_v & (fv_op6 == 6'b010000) & (fv_f3 == 3'b110);  // vmv.s.x
    wire         fv_nr  = fv_v & (fv_op6 == 6'b100111);                      // vmv<nr>r.v

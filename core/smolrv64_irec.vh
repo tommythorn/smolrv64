@@ -4,7 +4,7 @@
 `ifndef SMOLRV64_IREC_VH
 `define SMOLRV64_IREC_VH
 `include "smolrv64_areg.vh"
-`define SMOLRV64_UX_W  5               // a uop's index in its instruction (smolrv64_vdec.vh)
+`define SMOLRV64_UX_W  6               // a uop's index in its instruction (smolrv64_vdec.vh)
 `define SMOLRV64_VST_W 15              // the vector decode state (smolrv64_vdec.vh)
 `define IR_REC(P) {P``pdet, P``pc, P``fault_hi, P``is_fp, P``seq, P``pred_npc, P``fault, P``fault_cause, P``insn, P``rvc, P``ux, P``ul, P``vst, P``is_vec, P``rd, P``rd_v, P``rs1, P``rs1_v, P``rs2, P``rs2_v, P``rs3, P``rs3_v, P``imm32, P``alu_op, P``alu_w, P``alu_uw, P``op1_sel, P``op2_imm, P``res_link, P``is_mem, P``is_store, P``mem_size, P``mem_signed, P``is_branch, P``br_func, P``is_jump, P``is_jalr, P``is_mul, P``is_csr, P``csr_func, P``is_serialize, P``is_amo, P``amo_func, P``is_fencei, P``is_cbo, P``cbo_zero, P``cbo_keep, P``illegal, P``mis_taken, P``mis_nt, P``gc}
 `define IR_RECW (2*PCW + PDW + SEQW + 4*`AREG_W + `SMOLRV64_UX_W + `SMOLRV64_VST_W + 136)

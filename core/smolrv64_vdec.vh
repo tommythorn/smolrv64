@@ -9,7 +9,7 @@
 // vstart is the CSR's, which only a refetching write or a trap changes. VLEN is 128.
 `include "smolrv64_irec.vh"
 localparam integer VST_W = `SMOLRV64_VST_W;
-localparam integer UX_W  = `SMOLRV64_UX_W;         // a uop's index within its instruction (up to 32)
+localparam integer UX_W  = `SMOLRV64_UX_W;         // a uop's index within its instruction (up to 64)
 localparam integer VS_VZ = VST_W - 1;              // the decode state's vz bit
 localparam [8:0]   VT_VILL = 9'h100;
 localparam [VST_W-1:0] VST_RESET = {1'b0, VT_VILL, 5'd0};
@@ -163,7 +163,8 @@ function automatic [UX_W:0] vwr_s0(input [31:0] i, input [6:0] vs);
    reg [6:0] c;
    begin
       c = vwr_c(i, vs);
-      vwr_s0 = ~vwr_past(i, vs) ? {c[UX_W-1:0], 1'b0} : {i[31:29], 2'b00} + (is_vlr(i) ? 6'd3 : 6'd2);
+      vwr_s0 = ~vwr_past(i, vs) ? {c[UX_W-1:0], 1'b0}
+             : {{(UX_W-4){1'b0}}, i[31:29], 2'b00} + (is_vlr(i) ? 3 : 2);
    end
 endfunction
 
@@ -175,9 +176,9 @@ endfunction
 function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input [6:0] vs);
    reg [UX_W:0] n;
    begin
-      n = {i[31:29], 2'b00} + 6'd4;                 // a whole-register access's uops from 0: 4 * nf
+      n = {{(UX_W-4){1'b0}}, i[31:29], 2'b00} + 4;  // a whole-register access's uops from 0: 4 * nf
       uop_count = vset_alloc(i) ? 2
-                : (is_vmv(i) & ~s[13]) ? {2'b00, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)}
+                : (is_vmv(i) & ~s[13]) ? {{(UX_W-3){1'b0}}, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)}
                 : ((is_vlr(i) | is_vsr(i)) & ~vwr_past(i, vs)) ? n - vwr_s0(i, vs)
                 : 1;
    end
@@ -228,13 +229,14 @@ function automatic [31:0] mvin_word(input [31:0] i);
 endfunction
 
 // A VECTOR UOP keeps its instruction's word (the last retires it); what else the F stage needs rides
-// in the record's immediate, the uop's place: {vz, vsew[1:0], the register of the group}, a pack's
-// or an extract's {vz, its chunk, 0, the register}
-localparam integer VP_W = 6;
+// in the record's immediate, the uop's place, vz at the top: {vz, 0, vsew[1:0], the register of the
+// group}, a whole-register pack's or extract's {vz, 0, its chunk, 0, the register}
+localparam integer VP_W = 10;
+localparam integer VP_VZ = VP_W - 1;
 function automatic [VP_W-1:0] vpos_of(input [31:0] i, input [UX_W-1:0] ux, input [VST_W-1:0] s);
    reg [UX_W-1:0] r;
    begin
       r = ux - {{(UX_W-1){1'b0}}, vmv_x(i)};
-      vpos_of = {s[VS_VZ], s[9:8], r[2:0]};
+      vpos_of = {s[VS_VZ], 4'd0, s[9:8], r[2:0]};
    end
 endfunction

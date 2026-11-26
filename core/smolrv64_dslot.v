@@ -96,7 +96,7 @@ module smolrv64_dslot
    // the vector instructions, the vset uops, and vsetvl (a serialising SYSQ op with rs1 and rs2)
    wire            m_is_vec = ~fault_op & is_vecins(s_exp);
    wire            v_set = ~fault_op & is_vset(s_exp) & ~is_vsetvl(s_exp);
-   wire            v_vl  = v_set & vset_alloc(s_exp) & (ux == 5'd0);    // the VL uop
+   wire            v_vl  = v_set & vset_alloc(s_exp) & (ux == {UX_W{1'b0}});   // the VL uop
    wire            v_rd  = v_set & ul;                                  // the rd uop
    wire            v_svl = ~fault_op & is_vsetvl(s_exp);
    wire [8:0]      v_vt  = vset_vtype(s_exp);
@@ -124,7 +124,7 @@ module smolrv64_dslot
    wire            w_m  = (w_ld & ~ux[0]) | (w_st & ux[0]);
    wire            w_u  = (w_ld | w_st) & ~w_m;
    wire [`AREG_W-1:0] w_vr = {2'b10, s_exp[11:7] + {2'b00, ux[4:2]}};       // the register (vd, or vs3)
-   wire [VP_W-1:0] w_pos = {vst[VS_VZ], ux[1], 1'b0, ux[4:2]};
+   wire [VP_W-1:0] w_pos = {vst[VS_VZ], 4'd0, ux[1], 1'b0, ux[4:2]};
    wire            m_is_fp = fault_op ? 1'b0 : ((s_exp[6:2] == 5'b10100) | (s_exp[6:2] == 5'b10000) | (s_exp[6:2] == 5'b10001) | (s_exp[6:2] == 5'b10010) | (s_exp[6:2] == 5'b10011) | (s_exp[6:2] == 5'b00001) | (s_exp[6:2] == 5'b01001));
    wire [SEQW-1:0] m_seq = seq_in;
    wire [PCW-1:0]  m_pred_npc = q_v ? q_pnpc : pnpc;
