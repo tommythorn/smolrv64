@@ -24,7 +24,7 @@ EV = re.compile(r"HPMEV_(\w+)\s*=\s*16'h([0-9a-fA-F]{4})\s*[,;]\s*//\s*(.+?)\s*$
 def build():
     events = []
     for name, code, desc in EV.findall(SRC.read_text()):
-        # Each description stands alone: one that continues the line above ("...on the CVFPU")
+        # Each description stands alone: one that continues the line above ("...on the FPU")
         # changes its meaning whenever that line is reworded.
         if desc.startswith("..."):
             sys.exit(f"{SRC}: HPMEV_{name}'s description \"{desc}\" continues the line above -- write it out whole")

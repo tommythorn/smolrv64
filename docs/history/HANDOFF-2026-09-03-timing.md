@@ -136,7 +136,7 @@ lever.
 | `tools/check-ram-inference.py` | did an array silently become flops? (fails the build, names it) |
 | `tools/gate.sh` | full gate; archives evidence to `gate-results/<sha>/` |
 
-`make ooc` cannot yet synthesise `ooo2_core` — the CVFPU wrapper (`fp_unit`) is outside the
+`make ooc` cannot yet synthesise `ooo2_core` — the FPU wrapper (`fp_unit`) is outside the
 `ooo2/` + `src/` glob. Worth fixing if core-level OOC is wanted.
 
 ---

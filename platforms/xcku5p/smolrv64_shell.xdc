@@ -5,8 +5,7 @@
 # Timing waiver for DDR4 calibration IP internal signal
 create_waiver -internal -user ddr4_v2_2_19 -scope -type METHODOLOGY -id {TIMING-17} -description "Ignore the TIMING-17 Critical Warning for sl_iport_i" -objects [get_pins -quiet -leaf -of [get_nets -quiet shell/u_ddr4_0/inst/u_ddr4_mem_intfc/u_ddr_cal_top/u_ddr_cal/U_XSDB_SLAVE/sl_iport_i*] -filter {DIRECTION==IN}]
 
-# CVFPU generated-clock and CDC constraints live in cvfpu_timing.tcl.  They
-# need normal Tcl conditionals, which Vivado's XDC parser rejects.
+# Constraints that need Tcl conditionals live in timing_hooks.tcl, which Vivado's XDC parser rejects.
 
 # MMIO clock-bridge FIFO reset is an async crossing (fifo_reset_q on ui_clk ->
 # XPM async-FIFO reset synchronizers in the core_clk/ui_clk domains). Because

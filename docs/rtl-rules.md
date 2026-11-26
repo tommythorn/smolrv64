@@ -50,7 +50,7 @@ to `core/`.
    what costs days.
 
 6. **The verified artifact is not the shipped artifact.** Behavioral `sdpram`
-   vs XPM BRAM, `fp_unit_stub` vs CVFPU, CDC constraints living only in `.tcl`,
+   vs XPM BRAM, `fp_unit_stub` vs the real FPU, CDC constraints living only in `.tcl`,
    width lints disabled. `3ef357e`, `e552aab`, `c629047`, `d3d09157`.
 
 ---
@@ -465,9 +465,9 @@ correct `fmin` retired with the right value while the very next instruction read
 zero. The interlock covers these consumers; the bypass must decline them.
 
 **D7. A variable-latency unit can answer in the ISSUE cycle.**
-"Latency >= 1" is an assumption, not a property. CVFPU's NONCOMP ops
+"Latency >= 1" is an assumption, not a property. An imported FPU's NONCOMP ops
 (min/max, sign-inject, compare, classify) assert `out_valid` combinationally
-with `in_valid`, `PipeRegs` notwithstanding, and parts of CONV do too. A
+with `in_valid`, its pipeline registers notwithstanding, and parts of CONV do too. A
 completion path that sets an in-flight flag on issue and clears it on result
 must handle both arriving together — `else if` on the issue arm, not a separate
 state. Dropping the branch the previous FSM had failed exactly the 16
@@ -475,7 +475,7 @@ fcvt/fmin/recoding tests and nothing else.
 
 **D8. An output a caller feeds back into its ISSUE decision is a register.**
 Exposing a downstream unit's combinational `ready` closes a loop through the
-scheduler: `fpnew_top.in_ready_o` is combinational in `in_valid_i`, and
+scheduler: an imported FPU's `in_ready` is combinational in its `in_valid`, and
 `exec_shard.v` computes `munit_busy = ... | ~fp_iss_ready`, which produces
 `fp_start`, which is that valid. The reason this is a RULE and not a lint
 finding is that `run-vl-tests.sh` builds with `-Wno-UNOPTFLAT`: the loop does
@@ -710,7 +710,7 @@ arriving and one released while the clock is stopped.
 `MULTIDRIVEN` are errors. Waivers are file-scoped in `src/verilator.vlt` and
 must name a file; if a waiver would have to name one of our own modules, fix
 the RTL instead. Never a global `-Wno-`: the build carried global suppressions
-to quiet imported CVFPU, which switched the same rules off for our code, and
+to quiet an imported FPU, which switched the same rules off for our code, and
 that is why `e552aab`, `c629047`, `4ac3d92`, `f157d1d` and `857dfc8` reached a
 bitstream or a wrong measurement. `-Wno-fatal` meant none of it stopped a build
 anyway.
@@ -780,7 +780,7 @@ lint error.
 
 **F3. A constraint that affects function has a sim-side equivalent or a
 checked-in check.**
-CDC false paths are function, not timing (`make cdc`; the CVFPU
+CDC false paths are function, not timing (`make cdc`; the FPU clock-domain
 `clock_groups` bug).
 
 **F4. No function reads a RAM array.**
@@ -992,7 +992,7 @@ associativity, indexing, storage primitive, latencies, the pipeline stages, and
 crucially WHAT STALLS AND WHAT RESTARTS. A spec that lags the RTL is worse than
 no spec, because the next person budgets against it — this project has already
 paid for that twice. The FPU handshake cost 14.02 cycles per op against 4 cycles
-of arithmetic and nobody knew, because "CVFPU, PIPE_REGS=4" was the only thing
+of arithmetic and nobody knew, because "FPU, 4 pipeline registers" was the only thing
 written down; and a whole day went into a CPI bucket worth 0.243 while a 45%
 bucket sat unexamined. If a change moves a number in that file, moving the
 number is part of the change.
@@ -1177,13 +1177,13 @@ merely preserved by the move, it is what makes the BRAM legal.
 
 **I5. A CDC wrapper instantiated on a SINGLE clock still costs its full
 synchroniser latency.**
-`smolrv64_cvfpu` crosses two clock domains with a toggle request/response and an
+An FPU wrapper crossed two clock domains with a toggle request/response and an
 `ASYNC_REG` two-flop synchroniser each way. `fp_unit.sv` had tied `fpu_clock` to
 `clk` since it was written — with a comment saying so, treating the crossing as
 absent — but the toggle protocol and both synchronisers are structural and run
 regardless:
 
-    1 req toggle + 2 sync + 1 IDLE->ISSUE + 5 accept/PipeRegs
+    1 req toggle + 2 sync + 1 IDLE->ISSUE + 5 accept/pipeline
                  + 1 resp toggle + 2 sync + 1 latch   ~= 13
 
 against 4 cycles of actual arithmetic. Hardware measured **14.02 stall cycles

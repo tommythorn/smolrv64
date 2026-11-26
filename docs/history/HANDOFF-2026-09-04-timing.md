@@ -76,8 +76,8 @@ events. After `ede8159e` the same door was still open through the FSM-starting a
 | A | `ede8159e` | AltSpread | -0.090 / 318 | -0.060 | 213 | u_lq/sqt_reg 1632 (closed by `b37e8bdf`), fe 673, ps_out 247; 213 < 0, 754 < +0.10, 2218 < +0.30 |
 | B | `b37e8bdf` | AltSpread | **+0.014 / 0** | +0.014 | **0** | u_csr/stimecmp 559 (the Sstc compare, registered next), fe 481, ps_out 176; 0 < 0, 129 < +0.10, 537 < +0.20, 1194 < +0.30. **Bitstream written**, banked as `/var/tmp/ooo2_166MHz_b37e8bdf_altspread.bit` |
 | C | `7f9bcc97` (fetch pair) | AltSpread | **-0.879 / 3199** | -0.670 | 2661 | u_sq/head_reg 5667: the port grant reaching `xo_ok` through `sel_pt -> nb -> xpage`, a door B had placed at +0.038 with 49 endpoints. Closed by `4ebec992`, which was also a functional defect (below) |
-| D | `4ebec992` (+ Sstc register, width fix) | AltSpread | -0.575 (est.) | **-0.406** | many | u_fpu/u_fpnew internal 132 (an fpnew retiming outcome, not in B or C), m_addr_reg_replica -> fe_red_tgt_q 62 / ps_out 45 (the CSR write-valid chain, cut by `3caf36e8`) |
-| E | `4ebec992` | Explore | -0.073 | **0.000 / 0** | **0** | u_fpu/u_fpnew 124 at 0.000, m_addr_reg_replica -> u_fpu/req_ops_q 234, ps_out; 0 < 0, 215 < +0.10, 1198 < +0.30 (B: 129 / 537). Bitstream banked: `/var/tmp/ooo2_166MHz_4ebec992_explore.bit` |
+| D | `4ebec992` (+ Sstc register, width fix) | AltSpread | -0.575 (est.) | **-0.406** | many | u_fpu internal 132 (an FPU retiming outcome, not in B or C), m_addr_reg_replica -> fe_red_tgt_q 62 / ps_out 45 (the CSR write-valid chain, cut by `3caf36e8`) |
+| E | `4ebec992` | Explore | -0.073 | **0.000 / 0** | **0** | u_fpu 124 at 0.000, m_addr_reg_replica -> u_fpu/req_ops_q 234, ps_out; 0 < 0, 215 < +0.10, 1198 < +0.30 (B: 129 / 537). Bitstream banked: `/var/tmp/ooo2_166MHz_4ebec992_explore.bit` |
 | I | `4a769238` (H + the store-seqno wrap bit) | AltSpread | **+0.082 / 0** | +0.082 | **0** | bitstream banked: `/var/tmp/ooo2_166MHz_4a769238_altspread.bit`; board gate in `scratchpad/board-I` -- see 4 (1) |
 | H | `1d80d59c` (F + the load queue's uncached bit) | AltSpread | **+0.059 / 0** | +0.059 | **0** | bitstream banked: `/var/tmp/ooo2_166MHz_1d80d59c_altspread.bit`; board gate in `scratchpad/board-H` -- see 4 (1) |
 | F | `c7e9051a` (main HEAD: + `3caf36e8`, `c7e9051a`) | AltSpread | **+0.084 / 0** | +0.084 | **0** | m_csr_func_reg_replica -> ps_out 19 at +0.152 (the CSR function decode on the operand select); **0 < +0.10, 14 < +0.20, 56 < +0.30** (B: 129 / -- / 537). 63,809 LUTs, 46,406 regs (the 09-03 tree: 66,754 / 46,223 -- nothing pruned). Bitstream banked: `/var/tmp/ooo2_166MHz_c7e9051a_altspread.bit`; board gate in `scratchpad/board-F` |
@@ -92,7 +92,7 @@ longer depends on phys_opt's yield. The population under +0.30 went 2819 -> 2218
 B's 129 and 537. D (-0.406) and F differ in RTL by `3caf36e8` alone -- the CSR unit's write
 valid taken from the non-memory done, which removed `m_addr -> upd_valid` from under every
 family D listed first (`m_addr_reg_replica -> fe_red_tgt_q`, `-> ps_out`) -- and D's other
-head, the fpnew-internal retiming, is absent from F. So D was a real chain plus a lottery,
+head, the FPU-internal retiming, is absent from F. So D was a real chain plus a lottery,
 E (Explore, 0.000) was the lottery alone, and the chain is gone. The 0.4 ns between D and
 F on near-identical RTL is a reminder that one AltSpread sample judges nothing under 400 ps;
 F's margin over B is larger than that, and its census is 10x thinner.
@@ -162,7 +162,7 @@ NFS boot to `login:`, zero faults (`scratchpad/board-J`). Bitstream banked:
 onto main when its +4.4% is wanted; the choice is only whether to take the thinner timing
 margin (+0.047 against I's +0.082). Before the fixes: build G (`d8108049`, AltSpread) routes at -0.031 with 14 failing
 and closes at **+0.026 / 0 failing** after post-route phys_opt; census 534 endpoints under
-+0.35 (F: 78), worst family `m_csr_func_reg -> ps_out` at +0.026 and fpnew-internal at
++0.35 (F: 78), worst family `m_csr_func_reg -> ps_out` at +0.026 and FPU-internal at
 +0.045. Thinner than F, as the new terms on the port grant predicted; it closes. Bitstream
 banked: `/var/tmp/ooo2_166MHz_d8108049_ipc_altspread.bit`. It carries the uncached-bit
 defect above (fixed on main after it was built) and needs the fix cherry-picked before a

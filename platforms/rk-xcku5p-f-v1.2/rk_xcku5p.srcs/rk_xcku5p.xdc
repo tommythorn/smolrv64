@@ -171,7 +171,7 @@ set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup [current_design]
 # the recovered RX clock (eth_rxc, 125 MHz), deskewed + phase-centered by the
 # MMCM in rgmii_rx (see there for why: unconstrained BUFG capture had ~0.2ns
 # of eye margin and broke RX per-build). eth_rxc and its generated clocks are
-# declared async to the DDR/core clocks in cvfpu_timing.tcl (eth_tx_engine
+# declared async to the DDR/core clocks in timing_hooks.tcl (eth_tx_engine
 # crosses with 2-FF synchronizers + an async-read frame RAM).
 create_clock -period 8.000 -name eth_rxc [get_ports eth_rxc]
 

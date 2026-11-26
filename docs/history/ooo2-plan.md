@@ -145,8 +145,8 @@ with a poison bit and a mux in one stage.
 Harnesses (`ooo2/tb_ooo2_riscv.v` serves the first three):
 - `run-ooo2-tests.sh [class ...]` — iverilog, `fp_unit_stub.sv`. Fast **integer**
   regression.
-- `run-ooo2-vl.sh [class ...]` — verilator, the **real CVFPU**. This is the flow
-  that covers F/D: fpnew uses SystemVerilog concurrent assertions iverilog cannot
+- `run-ooo2-vl.sh [class ...]` — verilator, the **real FPU**. This is the flow
+  that covers F/D: the FPU uses SystemVerilog concurrent assertions iverilog cannot
   parse.
 - `run-ooo2-cosim.sh <test> | -a [class ...]` — verilator + simmerv lockstep.
 - `run-ooo2-linux.sh` — verilator, `rv_soc_top` + `tb_ooo2_linux.v`: boots OpenSBI +
@@ -201,9 +201,9 @@ completes the current time slot (the loop ran on and printed a bogus TIMEOUT
 FP lives in M with the LSU and mul/div, and in-order deletes most of what the OoO
 core needs around it:
 
-- **No zombie/abort/drain latch.** M is the commit point, so an in-flight CVFPU op
+- **No zombie/abort/drain latch.** M is the commit point, so an in-flight FPU op
   can never be squashed. `probe/exec_shard.v` needs `fp_zomb` (a squashed op must
-  *drain*, never flush — a mid-op flush corrupts fpnew's internal state) plus an
+  *drain*, never flush — a mid-op flush corrupts the FPU's internal state) plus an
   abort-by-seqno; neither exists here.
 - **No latched per-op FP state.** The M-stage instruction cannot change while the
   FPU runs, so every `decode_fp` output — including `fp_dst32` for NaN-boxing an

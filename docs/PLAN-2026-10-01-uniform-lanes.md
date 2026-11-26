@@ -497,7 +497,7 @@ wholesale on `redirect`, which fires only at the head:
 | LQ | `rob` | allocated in order, frees out of order | dead entries are the youngest: `v` cleared, tail back to the oldest dead; the LSU's `o_kill` takes the dead entries' tags (it already drops a killed tag's response and holds the tag until it returns) |
 | SQ | `rob`, `sqn` | yes | the flush already keeps the committed part; it keeps everything older than the branch instead |
 | training queue | `tq_rob`, `tq_seq` | resolve order | by age (the restarted path reuses the dead ops' sequence numbers) |
-| FPU (fpnew, 4 in flight) | its tag, which holds `rob` | no | **no per-op kill in fpnew**: the release waits for its dead ops (below) |
+| FPU (4 in flight) | its tag, which holds `rob` | no | **no per-op kill in the FPU**: the release waits for its dead ops (below) |
 | `csr_infl`, `ho_inf` | -- | -- | cleared when the op that set them dies |
 | `wk_n` (weak branches in flight) | -- | -- | zeroed: it only holds walks back, and a low count costs nothing but a walk |
 
@@ -511,7 +511,7 @@ the tail) and `{k_row, k_col}`. An entry is dead when `dead_row[e_row] | (e_row 
 e_col > k_col)`: a 32:1 mux and a 2-bit compare per entry, from flops, nothing from the
 resolve cone. Everything above applies the same function.
 
-**The FPU holds the release.** fpnew has one global flush and no per-op kill, so a dead op in
+**The FPU holds the release.** It has one global flush and no per-op kill, so a dead op in
 it must land before its register and ROB index are handed out again. A table of the FPU's ops
 in flight (by ROB index, added as the unit accepts one, removed as its result lands) says
 whether a dead one is left; the release waits for none. (A generation bit per ROB entry,

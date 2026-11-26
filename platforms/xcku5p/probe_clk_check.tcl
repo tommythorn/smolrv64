@@ -1,6 +1,6 @@
 # Assert that probe_clk resolves, and record what it actually is.
 #
-# This is a Tcl hook rather than XDC for the same reason cvfpu_timing.tcl is:
+# This is a Tcl hook rather than XDC for the same reason timing_hooks.tcl is:
 # Vivado's XDC parser rejects normal Tcl control flow (an `if` in an .xdc is a
 # CRITICAL WARNING and is then silently ignored, which is worse than useless for
 # a guard).  The hook runs after the implementation design is opened.

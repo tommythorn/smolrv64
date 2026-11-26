@@ -12,7 +12,7 @@ set xpr [file normalize $::env(PROJECT).xpr]
 set repo_root [file normalize [file join [file dirname [info script]] ../..]]
 set src_dir [file join $repo_root src]
 set smolrv64_dir [file join $repo_root core]
-set cvfpu_timing_hook [file normalize [file join [file dirname [info script]] cvfpu_timing.tcl]]
+set timing_hook [file normalize [file join [file dirname [info script]] timing_hooks.tcl]]
 set probe_clk_check_hook [file normalize [file join [file dirname [info script]] probe_clk_check.tcl]]
 
 puts "Opening project: $xpr"
@@ -21,7 +21,7 @@ open_project $xpr
 # would otherwise stay in the fileset and stop synthesis ("No HDL sources found" at the
 # 2026-09 release, when the retired cores left). Drop what no longer exists, loudly -- and what
 # lies outside this tree: Vivado resolves a missing relative path through the absolute one it
-# last saved, so a worktree's project found the shared checkout's deleted CVFPU (2026-11-25).
+# last saved, so a worktree's project found the shared checkout's copy of a deleted source.
 foreach f [get_files -quiet -of_objects [get_filesets sources_1]] {
     set nf [file normalize $f]
     if {![file exists $nf] || ![string match "$repo_root/*" $nf]} {
@@ -581,8 +581,8 @@ if {$step in {impl bit}} {
     } else {
         set_property INCREMENTAL_CHECKPOINT "" [get_runs impl_1]
     }
-    if {![file exists $cvfpu_timing_hook]} {
-        error "CVFPU timing hook missing: $cvfpu_timing_hook"
+    if {![file exists $timing_hook]} {
+        error "timing hook missing: $timing_hook"
     }
     # Apply the timing hook before opt, place AND route. A constraint set only at
     # OPT_DESIGN.TCL.PRE does not survive into route_design's timing view or the
@@ -590,9 +590,9 @@ if {$step in {impl bit}} {
     # uncertainty had no effect on route's hold-fixing. Re-applying it before
     # place and route makes route honor it (real hold margin) and persists it
     # into the saved checkpoint. The hook is idempotent.
-    set_property STEPS.OPT_DESIGN.TCL.PRE   $cvfpu_timing_hook [get_runs impl_1]
-    set_property STEPS.PLACE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
-    set_property STEPS.ROUTE_DESIGN.TCL.PRE $cvfpu_timing_hook [get_runs impl_1]
+    set_property STEPS.OPT_DESIGN.TCL.PRE   $timing_hook [get_runs impl_1]
+    set_property STEPS.PLACE_DESIGN.TCL.PRE $timing_hook [get_runs impl_1]
+    set_property STEPS.ROUTE_DESIGN.TCL.PRE $timing_hook [get_runs impl_1]
     # probe_clk guard: assert the CDC constraints in the board's .xdc actually bound to a
     # clock, and record the frequency the bitstream really runs at. Twice: after opt so a
     # dropped constraint fails in minutes instead of after a full place-and-route, and after

@@ -37,7 +37,7 @@ static struct ev EVENTS[] = {
    { "ST_MEM",   PERF_TYPE_RAW,      0x0300,                     "M stalled on the LSU (D$/dTLB/AMO)" },
    { "ST_DIV",   PERF_TYPE_RAW,      0x0301,                     "...on the iterative divider"   },
    { "ST_MUL",   PERF_TYPE_RAW,      0x0302,                     "...on the 3-cycle multiplier"  },
-   { "ST_FPU",   PERF_TYPE_RAW,      0x0303,                     "...on the CVFPU"               },
+   { "ST_FPU",   PERF_TYPE_RAW,      0x0303,                     "...on the FPU"                 },
    { "ST_SER",   PERF_TYPE_RAW,      0x0304,                     "serializing op holds frontend off" },
    { "FE_BUB",   PERF_TYPE_RAW,      0x0310,                     "X idle: frontend supplied nothing" },
    { "FE_MMU",   PERF_TYPE_RAW,      0x0311,                     "...because the iMMU was walking"   },

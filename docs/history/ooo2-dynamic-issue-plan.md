@@ -87,7 +87,7 @@ strictly simpler than what is there now and removes `m_needs_head`.
 
 **4b. In-flight ops at flush.** Today nothing younger than the redirecting op can be in
 flight, because `head_block` guarantees it. That guarantee is gone: a load may be in the D$
-and an FP op in the CVFPU when the flush lands. Their destinations are dead and may already
+and an FP op in the FPU when the flush lands. Their destinations are dead and may already
 be **reallocated**, so their writeback must be suppressed, not just ignored — a per-unit
 `zombie` bit set on flush and cleared when the unit's result is discarded. `src/exec_shard.v`
 already does exactly this (`fp_zomb`, "drain, don't flush"); copy the shape.

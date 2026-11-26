@@ -802,7 +802,7 @@ module smolrv64_core
    //
    //   NF=8  -0.012   "frontend PC increment"    24 levels,  6x CARRY8
    //   NF=7  -0.082   u_csr/mhpmcounter[12]      32 levels, 10x CARRY8
-   //   NF=6  -0.210   fpnew i_fpnew_cast_multi internal pipeline
+   //   NF=6  -0.210   the FPU's internal conversion pipeline
    //   NF=5  +0.038   PASSES
    //
    // The NF=8 family has since been DIAGNOSED and REMOVED: it was not an increment at all

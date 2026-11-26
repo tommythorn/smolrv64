@@ -775,7 +775,7 @@ DISTINGUISH THE CONFIGURATIONS.** Rule I2: four placer directives over IDENTICAL
 |---|---:|---|
 | `NF`=8 | -0.012 | frontend PC increment, 24 levels, 6x CARRY8 |
 | `NF`=7 | **-0.082** | `u_csr/mhpmcounter[12]` carry, 32 levels, 10x CARRY8 |
-| `NF`=6 | **-0.210** | `fpnew` `i_fpnew_cast_multi` internal pipeline |
+| `NF`=6 | **-0.210** | the FPU's internal conversion pipeline |
 | `NF`=5 | **+0.038** | PASSES — the shipped size until 2026-08-28; 8 since (47e1d26a), closing at +0.001–0.002 ns on every gated build |
 | `NF`=4 | +0.050 | -- |
 
@@ -2641,7 +2641,7 @@ closed on 2026-09-17.)
 |---|---|---|---|---|
 | dd371e6d | dispatch stage | −0.528 | −1275 | 3940 |
 | hm1 | fetch tags, `pt_ld_kill` latch-only, SH_FE = F only, stall-free free-list address, delayed minstret | −0.117 | −5.5 | 90 |
-| hm2 | + fpnew 5, UART decode, REGRDY, M rs3 off, free-list bank index, map-indexed pending lookup, matrix wake | −0.130 | −6.7 | 143 |
+| hm2 | + FPU 5 stages, UART decode, REGRDY, M rs3 off, free-list bank index, map-indexed pending lookup, matrix wake | −0.130 | −6.7 | 143 |
 | hm3 | + the served-slot hint, matrix column clear after the row write | **+0.007** | 0 | 0 |
 | w1p3 | hm3 with W1' (in-core FP back on SH_FE; the CTF link has priority, M yields) and the narrow instret hold (M1b) | **+0.034** | 0 | 0 |
 | w1p2 | the same RTL at `SMOLRV64_IW=2` (the shipping width) | **+0.035** | 0 | 0 |
@@ -2659,7 +2659,7 @@ closed on 2026-09-17.)
 | c4a2iw3 | C4a step 2 attempt 1: the door self-loop with `hit` in `rd_ack` | −0.270 | — | 6028 near-critical |
 | c4a2skid | + the door's skid buffer (the accept is register-decoded again) | **+0.061** | 0 | 0 |
 
-Worst families at hm3 (census, slack < +0.35: 1823 endpoints): fpnew's own pipeline +0.007,
+Worst families at hm3 (census, slack < +0.35: 1823 endpoints): the FPU's own pipeline +0.007,
 ROB head → scheduler ready +0.020, ROB head → `pl_q` CE +0.038 (257), `m_addr` → rename
 commit +0.08, the PRF read into the ALUs +0.085. Cosim: IW=3 retires 11,682,439 (−0.02%
 vs the base: the second cycle at head), IW=2 13,491,763 (+0.5%). `docs/HANDOFF-iw3-hail-mary.md`
@@ -3156,7 +3156,7 @@ measured that cheaply.)
    an independent walk overlaps. **The next gain needs a CLIENT that can hold two requests
    in flight**, which is a multiple-outstanding LSU, not more cache work.
 4. **FP latency.** 16 of the 21-cycle chain is `fmuls` + `fadds` at 8 cycles each. Real, but
-   it is an fpnew `PIPE_REGS` / Fmax trade, not free.
+   it is an FPU pipeline-depth / Fmax trade, not free.
 5. **Superscalar.** 7 instructions per element is a 7-cycle floor at `IW=1`, so this cannot
    pay until 1-3 have moved the wall below it.
 
@@ -3472,10 +3472,10 @@ of six `m_needs_head` terms are decode-static and can gate at issue on
 
 ### P3a -- FP multiple in flight -- **DONE**
 
-`fp_unit` held exactly one op while `fpnew` underneath is pipelined (`PipeRegs=4`) and
+`fp_unit` held exactly one op while the FPU underneath is pipelined (four stages) and
 already had tag ports, instantiated `TAGW(1)` with `iss_tag(1'b0)` and `res_tag()`
 unconnected. The destination now rides in a 21-bit tag (`dst32, rd_v, rd, rob, prd`), so
-results self-describe and may return out of issue order -- which they do, because fpnew's
+results self-describe and may return out of issue order -- which they do, because the FPU's
 op groups (ADDMUL, DIVSQRT, NONCOMP, CONV) have different latencies. `NFLIGHT=4`.
 
 Measured on `workloads/fpbench`, eight independent chains:
@@ -3506,10 +3506,10 @@ unchanged at 2.25 cyc/op throughput and 8.00 latency, correctly -- it was alread
 rather than issue-bound, so the gain lands exactly where the trace predicted and nowhere
 else.
 
-One hazard this exposed, recorded because it will return: an FP op still in fpnew's
+One hazard this exposed, recorded because it will return: an FP op still in the FPU's
 pipeline when a squash happens writes back after rename has rolled its physreg away.
 `smolrv64_pending` caught it as *"writeback to p352, which was not pending"*. `fp_unit` already
-forwarded `flush` to `fpnew_top`; the core tied it to 0. Flushing EVERY in-flight op on
+forwarded `flush` to the FPU; the core tied it to 0. Flushing EVERY in-flight op on
 redirect is correct only while `head_block` holds -- a redirect fires only at ROB head, so
 anything in flight is younger by construction. **Removing `head_block` (P2) requires
 replacing this with an epoch tag first.**

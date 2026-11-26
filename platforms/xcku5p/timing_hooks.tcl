@@ -1,11 +1,9 @@
 # Timing hooks beyond the XDC: constraints that need Tcl control flow (Vivado's XDC parser
-# rejects it). The hook runs after the implementation design is opened. The file keeps its
-# historical name (the .xpr's utils_1 fileset records it); the CVFPU clock-domain bridge it
-# was written for left with the scalar core -- the FPU now runs at probe_clk inside the core.
+# rejects it). The hook runs after the implementation design is opened.
 
 # --- Ethernet PHY RX clock (eth_rxc, 125 MHz) ---------------------------------
 # eth_rxc (BUFG -> gmii_rx_clk, BUFIO for the IDDRE1s) is fully asynchronous to
-# the DDR ui_clk / core_clk / fpu_clk tree.  The only crossing is eth_tx_engine,
+# the DDR ui_clk / core_clk tree.  The only crossing is eth_tx_engine,
 # which uses 2-FF (async_reg) synchronizers for the send/done handshake and an
 # async-read distributed-RAM frame buffer (written in ui_clk, read in
 # gmii_rx_clk while stable).  Declaring eth_rxc async to all other clocks keeps

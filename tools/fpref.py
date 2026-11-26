@@ -157,7 +157,7 @@ def fsqrt(fmt, rm, a, _b=0):
     return box(fmt, r), fl
 
 
-# FMA variants, fpnew's ADDMUL group: v = 0 FMADD (a*b+c), 1 FMSUB (a*b-c), 2 FNMSUB (-a*b+c),
+# FMA variants: v = 0 FMADD (a*b+c), 1 FMSUB (a*b-c), 2 FNMSUB (-a*b+c),
 # 3 FNMADD (-a*b-c), 4 ADD (a+c), 5 SUB (a-c), 6 MUL (a*b). ADD/SUB take a times an exact 1; MUL has
 # no addend, so an exact zero product keeps its own sign.
 FMA_NAMES = ['fmadd', 'fmsub', 'fnmsub', 'fnmadd', 'add', 'sub', 'mul']
@@ -206,7 +206,7 @@ def ffma(fmt, rm, v, a, b, c):
     return box(fmt, bits), fl
 
 
-# The conversions, fpnew's CONV group: F2F (fcvt.s.d / fcvt.d.s), I2F (fcvt.{s,d}.{w,wu,l,lu}), F2I
+# The conversions: F2F (fcvt.s.d / fcvt.d.s), I2F (fcvt.{s,d}.{w,wu,l,lu}), F2I
 # (fcvt.{w,wu,l,lu}.{s,d}). il: a 64-bit integer (l/lu), iu: unsigned (wu/lu). A 32-bit integer
 # result is sign-extended to 64 bits; an integer source reads its low 32 bits for w/wu.
 def f2f(sf, df, rm, a):

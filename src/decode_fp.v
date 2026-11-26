@@ -1,23 +1,22 @@
 `default_nettype none
 
 // FP operation decode: maps an RV64 F/D instruction (OP-FP 0x53 or the FMADD
-// family 0x43/47/4b/4f) to CVFPU control + operand routing, ported from SmolRV64's
-// start_cvfpu_issue mapping (smolrv64.v ~5624+) and the fpnew enums.
+// family 0x43/47/4b/4f) to the FPU's control and operand routing.
 //
-//   op[3:0] (fpnew operation_e): FMADD=0 FNMSUB=1 ADD=2 MUL=3 DIV=4 SQRT=5 SGNJ=6
+//   op[3:0]: FMADD=0 FNMSUB=1 ADD=2 MUL=3 DIV=4 SQRT=5 SGNJ=6
 //      MINMAX=7 CMP=8 CLASSIFY=9 F2F=10 F2I=11 I2F=12 ...   fp_format: FP32=0 FP64=1
 //   int_fmt: INT32=2 INT64=3
 //
-// fp_class routes execution: FPU ops go to the shared CVFPU; SGNJ/CMP/MVXF/MVFX/
-// FCLASS are cheap and done in-core (as SmolRV64 does) -- decode emits the class and
+// fp_class routes execution: FPU ops go to fp_unit; SGNJ/CMP/MVXF/MVFX/
+// FCLASS/MINMAX are cheap and done in-core -- decode emits the class and
 // the execute stage handles them without the FPU pipeline.
 //
 // Operand routing (op{0,1,2}_sel): 0=zero 1=frs1 2=frs2 3=frs3. op0_int marks the
-// CVFPU operand-0 as coming from the INTEGER rs1 (I2F / FMV.W.X).
+// FPU's operand 0 as coming from the INTEGER rs1 (I2F / FMV.W.X).
 module decode_fp
    (input  wire [31:0] insn,
     output reg         fp_valid,        // a recognized FP-arith op (not load/store)
-    output reg         use_fpu,         // routes to the shared CVFPU
+    output reg         use_fpu,         // routes to fp_unit
     output reg  [2:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX
     output reg  [3:0]  op,
     output reg         op_mod,
@@ -28,7 +27,7 @@ module decode_fp
     output reg  [1:0]  op0_sel,
     output reg  [1:0]  op1_sel,
     output reg  [1:0]  op2_sel,
-    output reg         op0_int,         // CVFPU op0 from integer rs1 (I2F / FMV.W.X)
+    output reg         op0_int,         // FPU op0 from integer rs1 (I2F / FMV.W.X)
     output reg         wr_fp);          // destination is an FP register (else integer)
 
    localparam [3:0] FMADD=0, FNMSUB=1, ADD=2, MUL=3, DIV=4, SQRT=5,

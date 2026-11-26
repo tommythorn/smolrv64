@@ -2,8 +2,8 @@
 `default_nettype none
 
 // Directed unit TB for decode_fp: feed representative RV64 F/D encodings and check
-// the decoded CVFPU control (op/op_mod/src_fmt/dst_fmt/use_fpu/class/wr_fp) against
-// the SmolRV64 / fpnew mapping.
+// the decoded FPU control (op/op_mod/src_fmt/dst_fmt/use_fpu/class/wr_fp) against
+// the expected mapping.
 module tb;
    reg  [31:0] insn;
    wire        fp_valid, use_fpu, op0_int, wr_fp;
@@ -23,7 +23,7 @@ module tb;
                         input [4:0] rs1; input [2:0] rm; input [4:0] rd;
       fma = {rs3, fmt, rs2, rs1, rm, rd, oc}; endfunction
 
-   // fpnew op enums
+   // op codes (decode_fp.v)
    localparam FMADD=0, FNMSUB=1, ADD=2, MUL=3, DIV=4, SQRT=5, MINMAX=7, F2F=10, F2I=11, I2F=12;
    localparam C_FPU=0, C_SGNJ=1, C_CMP=2, C_MVXF=3, C_MVFX=4, C_FCLASS=5, C_MINMAX=6;
 

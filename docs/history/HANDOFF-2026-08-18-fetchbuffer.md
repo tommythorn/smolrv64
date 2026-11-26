@@ -131,7 +131,7 @@ whose CDC constraints have been broken.** Expect more of these as the frequency 
 Fixing it moves design WNS -1.401 -> -0.780 (91.7 -> 97.3 MHz on that build). Worth having,
 but it is NOT what blocks the frequency — the core is.
 
-**Do not reach for `set_clock_groups -asynchronous` without thought.** `cvfpu_timing.tcl`
+**Do not reach for `set_clock_groups -asynchronous` without thought.** `timing_hooks.tcl`
 records that it outranks `set_max_delay`, and a `set_max_delay -datapath_only` is what
 protects the 512-bit `ddr_line_cdc` payload. Grouping probe_clk/ui_clk asynchronous would
 leave that bus untimed — the same mistake that once produced stale FP data on core<->fpu.

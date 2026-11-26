@@ -1,6 +1,6 @@
 // ldbench -- load LATENCY vs load THROUGHPUT, both L1-resident.
 //
-// The FP equivalent of this (workloads/fpbench) found that fpnew was pipelined all along
+// The FP equivalent of this (workloads/fpbench) found that the FPU was pipelined all along
 // and its WRAPPER held one op; the fix was a tag, not a rewrite. The LSU is suspected of
 // the same shape, so measure the same way before touching rv_cache.v:
 //

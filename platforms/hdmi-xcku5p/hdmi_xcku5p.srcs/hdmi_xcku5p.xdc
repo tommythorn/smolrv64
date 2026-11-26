@@ -80,7 +80,7 @@ set_property CLOCK_DEDICATED_ROUTE ANY_CMT_COLUMN [get_nets -of_objects [get_pin
 # RXCLK's rising edge and holds it 0.5 ns after (GMII at the PHY's pins, IEEE 802.3 35.4.2.3): input
 # delay max 8 - 2.5, min 0.5. (The receiver-side 2.0 / 0.0 leaves the IOB flop's capture ~0.01 ns,
 # under one MMCM phase step.) Transmit leaves IOB flops with GTX_CLK forwarded inverted.
-# named eth_rxc on every board: cvfpu_timing.tcl declares it asynchronous to the rest
+# named eth_rxc on every board: timing_hooks.tcl declares it asynchronous to the rest
 create_clock -period 8.000 -name eth_rxc [get_ports eth_rxclk]
 set_input_delay -clock eth_rxc -max 5.500 [get_ports {eth_rxd[*] eth_rxdv}]
 set_input_delay -clock eth_rxc -min 0.500 [get_ports {eth_rxd[*] eth_rxdv}]

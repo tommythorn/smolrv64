@@ -79,8 +79,7 @@ even there, the IW=3 timing push is moot and the real boot-IPC lever is the **D$
   rebuild). **No Verilator while Vivado builds.** Long jobs in tmux (the harness culls
   background waiters under memory pressure; tmux jobs survive).
 - Always pass `VDEFS='-DSMOLRV64_IW=3 -DSMOLRV64_HW=8'` for IW=3 cosims (default is IW=2).
-- Git in the worktree: `third_party/cvfpu` is a **symlink** — `mv` it aside for any git op,
-  `mv` it back for sims. Stage EXPLICIT paths only, never `git add -A/-u`. Commit only
+- Git in the worktree: Stage EXPLICIT paths only, never `git add -A/-u`. Commit only
   outside Mon–Fri 09:00–17:00 PDT and only when Tommy asks; exclude `rk_xcku5p.xpr`.
 - Cheap-probe lesson: before a large rearchitecture, run a correctness-broken **timing
   probe** (like the BTB read-address probe, or kill-ALU) to prove the lever moves WNS first.

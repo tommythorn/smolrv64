@@ -1,6 +1,6 @@
 // Floating-point classify and compare helpers for the smolrv64 core.
 // Pure combinational functions of their operands. `include inside the module
-// body. (Classification/compare are done in the core; arithmetic is the CV-FPU.)
+// body. (Classification, the compares and FMIN/FMAX are done in the core; arithmetic is fp_unit's.)
 
    function [63:0] fclass_d;
       input [63:0] v;

@@ -70,9 +70,9 @@ front of otherwise reasonable logic:
    lag is invisible to a CSR read; `csr_file` drops the writer's own retirement after a
    `csrw minstret` (`minstret_wr_q`). One cycle per CSR op, trap, fence.i, system op.
 
-## Round 2 (hm2): fpnew +1 stage, UART decode, registered ALU-scheduler ready, M rs3 off
+## Round 2 (hm2): FPU +1 stage, UART decode, registered ALU-scheduler ready, M rs3 off
 
-- `fp_unit` PIPE_REGS 4 → 5 (fpnew's own 25-level path was −0.51; FP gives way).
+- `fp_unit` PIPE_REGS 4 → 5 (the FPU's own 25-level path was −0.51; FP gives way).
 - The UART write decode subtracted the 64-bit base per byte lane; `dmem_waddr[2:0]` is the
   offset (16-aligned base, window bounded by `is_uart_w`), as the read side already did.
 - `smolrv64_iq` REGRDY (u_iq_i, u_iq_i2 only): `d_ready` is a register, "≥2 free last cycle"
@@ -111,7 +111,7 @@ Implemented as described below and exact (the 60 M cosim's retire count is uncha
 wrong-hint assertion never fires). hm2's matrix row write also had to be unmasked: masking it
 by the issuing column put the select (and the D$ response behind it) on 359 `dep` endpoints;
 the column clear is ordered after the row write instead. hm3's census (1823 endpoints under
-+0.35): fpnew's own pipeline +0.007 (66), ROB head → scheduler ready +0.020, ROB head →
++0.35): the FPU's own pipeline +0.007 (66), ROB head → scheduler ready +0.020, ROB head →
 `pl_q` CE +0.038 (257), `m_addr` → rename commit +0.08, PRF read → ALU +0.085. The fetch
 family is gone from the list. Round 5a (the stall taxonomy / hpm_ev from a 41-root
 snapshot, `scratchpad/edit5.py`, `scratchpad/hm5/smolrv64_core.v`) is verified (lint, 240/0,
