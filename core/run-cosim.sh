@@ -40,7 +40,14 @@ PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/branch_unit.v ../src/mul3.v ../src/divider.v \
             ../src/csr_file.v ../src/mmu.v ../src/fp_unit.sv"
 
-if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ]; then
+# A binary older than any source it is built from is rebuilt (rule G2: a stale binary is never a
+# silent run): the RTL and headers here and in ../src, the harness, and Simmerv's library.
+STALE=""
+[ -x "$BIN" ] && STALE=$(find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.vh' -o -name '*.sv' -o -name '*.cpp' \) \
+                             -newer "$BIN" -print -quit 2>/dev/null)
+[ -x "$BIN" ] && [ "$SIMMERV_LIB" -nt "$BIN" ] && STALE="$SIMMERV_LIB"
+[ -n "$STALE" ] && echo "rebuilding: $STALE is newer than the binary"
+if [ ! -x "$BIN" ] || [ "${BUILD:-0}" = 1 ] || [ -n "$STALE" ]; then
    echo "building obj_dir_smolrv64_cosim/tb_smolrv64_cosim ..."
    verilator --binary --timing -j 0 -sv -Wall \
       -Wno-fatal -Wno-TIMESCALEMOD -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \

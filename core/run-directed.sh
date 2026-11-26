@@ -10,7 +10,7 @@
 #   ./run-directed.sh              all tests in directed/
 #   ./run-directed.sh amomis       just one
 #
-# Assumes obj_dir_core/tb_core is current (./run-vl.sh builds it).
+# Needs obj_dir_core/tb_core current (./run-vl.sh builds it): a stale one is refused.
 set -u
 cd "$(dirname "$0")"
 
@@ -21,6 +21,9 @@ OC=${CC%gcc}objcopy
 NM=${CC%gcc}nm
 
 [ -x "$BIN" ] || { echo "ERROR: $BIN missing -- run ./run-vl.sh first" >&2; exit 1; }
+# a binary older than the RTL it is built from is an error, never a silent run (rule G2)
+STALE=$(find . ../src -maxdepth 1 \( -name '*.v' -o -name '*.vh' -o -name '*.sv' \) -newer "$BIN" -print -quit 2>/dev/null)
+[ -z "$STALE" ] || { echo "ERROR: $STALE is newer than $BIN -- run ./run-vl.sh first" >&2; exit 1; }
 
 tests=("$@")
 [ ${#tests[@]} -eq 0 ] && tests=($(cd directed && ls *.S | sed 's/\.S$//'))
