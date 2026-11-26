@@ -165,7 +165,7 @@ if [ ! -f "$BIT" ]; then
    # Name the stage that failed: a build that never reached timing is not a timing failure
    # (gate U, 2026-09-05: two "FAIL (timing)" verdicts were the RAM-inference check, and
    # one of them was misread as memory pressure).
-   if grep -q 'RAM INFERENCE REGRESSED' "$RES/build.log"; then WHY="ram-inference: $(grep -oE '^ +[a-z_0-9]+ +is no longer a RAM' "$RES/build.log" | awk '{print $1}' | tr '\n' ' ')"
+   if grep -q 'RAM INFERENCE REGRESSED' "$RES/build.log"; then WHY="ram-inference: $(grep -oE '^ +[^ ]+( x[^ ]+)? +is no longer a RAM' "$RES/build.log" | awk '{print $1}' | tr '\n' ' ')"
    elif [ -z "$WNS" ]; then WHY="build: $(grep -E '^ERROR:|^Error|^make: ' "$RES/build.log" | head -1 | cut -c1-120)"
    else WHY="timing"; fi
    echo "GATE: FAIL ($WHY) $WNS   [evidence: $RES/]"

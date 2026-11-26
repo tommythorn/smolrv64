@@ -27,6 +27,7 @@ psmem_f : source tags, the FP scheduler
 # ---- the physical register file: the largest array in the design ------------------------
 ish[*].mem x{IW} : PRF integer shards, one per lane; sharded by WRITER so each has ONE write port
 fp[*].mem x2 : PRF FP file, a shard per writer (the load landing's, the F stage's), so each has ONE write port
+vrf : the vector file (SH_V), 64 x 128 bits: written by the vector unit's landing alone, read at the F port's three tags
 
 # ---- rename: free lists and maps, initialised by the bitstream and never reset ----------
 # A `for` loop over every entry in the reset branch pinned all five into flops (~3,400 bits)
@@ -35,7 +36,7 @@ fp[*].mem x2 : PRF FP file, a shard per writer (the load landing's, the F stage'
 # One generate block per shard, fl[shard], each with FLNB=next_pow2(IW) banks (one muxed write per
 # bank: a cycle's frees land at tail, tail+1, tail+2). Two copies of each map since retire-two /
 # dispatch-two (items 10b/10c): one write per bank per cycle is all a LUTRAM has.
-fl[*].u.bank[*].mem x{4*(IW+2)} : free lists, a shard per lane and SH_FL, SH_FF (the FP loads', the F stage's), 4 banks each at IW 3 and 4 (circular FIFO, head read / tail write)
+fl[*].u.bank[*].mem x{4*(IW+3)} : free lists, a shard per lane and SH_FL, SH_FF, SH_V (the FP loads', the F stage's, the vector unit's), 4 banks each at IW 3 and 4 (circular FIFO, head read / tail write)
 cp[*].rmap x{IW} : committed map, one copy per commit port; read at the sources + c_rd, written at one index (a mapping is the XOR of the copies' words)
 cp[*].smap x{IW} : speculative map, one copy per rename port; flush clears `lv`, so no wholesale copy is needed (a mapping is the XOR of the copies' words)
 cp[*].dmap.smap_d x{IW if IW >= 4 else 0} : its second copy past 15 reads (the destinations', the commits' and the writers' reads), at IW=4
@@ -52,6 +53,7 @@ dn[*].w[*].m x{20+2*IW} : the ROB's done bits, a bit by row per column and compl
 dn[*].al.ma x4 : the ROB's done bits, a column's allocation bit by row (an entry is done when the XOR of its column's bits is 1)
 vr : the ROB's live columns by row: written whole at allocation, cut back at a release; read at the head's, irr's and the walk's rows
 rcc[*].m x{IW} : each ROB entry's {call, ret}, a column per lane: written at dispatch, read at the head's row for the retired RAS pointer
+vtc[*].vt x{IW} : each ROB entry's vector decode state and chunk, a column per lane: written at dispatch, read at the head's row and the restarting branch's
 # The banked queues (smolrv64_bankq): a bank per position mod NB, one write each. The decoupling
 # queue's QNB = next_pow2(FW) = 8, the fetch ring's 8, the training queue's 4, each lane's landing
 # buffer's 2 (6 at IW=3), and next_pow2(IW) = 4 each for what a dispatch group's row writes: the
