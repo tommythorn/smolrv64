@@ -43,6 +43,11 @@ module csr_file
     output wire        o_mxr,         // mstatus.MXR
     output wire [2:0]  o_frm,         // fcsr.frm -> FP units for dynamic rounding
     output wire        o_fs_off,      // mstatus.FS==Off -> FP instructions trap illegal
+    output wire        o_vs_off,      // mstatus.VS==Off -> vector instructions trap illegal
+    output wire [6:0]  o_vstart,      // vstart: the element a vector instruction starts at
+    input  wire [7:0]  v_vl,          // the committed vl and vtype (vill, vma, vta, vsew, vlmul)
+    input  wire [8:0]  v_vtype,
+    input  wire        v_dirty_commit, // a retiring op changed vector state: VS -> Dirty
     // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
     // (the flags of the FP ops retiring this cycle, reduced by the caller).
     input  wire        fp_fflags_we,
@@ -120,6 +125,8 @@ module csr_file
                      FFLAGS=12'h001, FRM=12'h002, FCSR=12'h003,
                      STIMECMP=12'h14D, MENVCFG=12'h30A,
                      MSTATEEN0=12'h30C, SSTATEEN0=12'h10C,
+                     VSTART=12'h008, VXSAT=12'h009, VXRM=12'h00A, VCSR=12'h00F,
+                     VL=12'hC20, VTYPE=12'hC21, VLENB=12'hC22,
                      // Zicntr: M-mode counters + their U/S read-only shadows. time is the
                      // hardware-backed CLINT mtime (like SmolRV64); cycle/instret shadow
                      // the free-running mcycle / retired-instruction minstret.
@@ -151,10 +158,10 @@ module csr_file
                               | (64'd1<<18) /*S*/ | (64'd1<<20) /*U*/;
 
    // mstatus writable bits (M-mode write); SXL/UXL (35:32) are hardwired to 2.
-   localparam [63:0] MSTATUS_WMASK = 64'h0000_0000_007E_79AA;
+   localparam [63:0] MSTATUS_WMASK = 64'h0000_0000_007E_7FAA;
    // sstatus view: SIE,SPIE,SPP,FS,VS,XS,SUM,MXR,UXL + SD
-   localparam [63:0] SSTATUS_RMASK = 64'h8000_0003_000D_E133;
-   localparam [63:0] SSTATUS_WMASK = 64'h0000_0000_000C_6122;
+   localparam [63:0] SSTATUS_RMASK = 64'h8000_0003_000D_E733;
+   localparam [63:0] SSTATUS_WMASK = 64'h0000_0000_000C_6722;
    // interrupt-enable/pending S-visible bits (SSIE/STIE/SEIE = 1,5,9, Sscofpmf's LCOFIE = 13)
    localparam [63:0] S_INT_MASK = 64'h0000_0000_0000_2222;
    localparam        LCOFIP_B = 13;   // Sscofpmf local counter-overflow interrupt
@@ -406,6 +413,12 @@ module csr_file
    reg [7:0]  fcsr;                  // [7:5]=frm  [4:0]=fflags (NV DZ OF UF NX)
    assign o_frm    = fcsr[7:5];
    assign o_fs_off = (mstatus[14:13] == 2'b00);
+   assign o_vs_off = (mstatus[10:9] == 2'b00);
+   // the vector CSRs held here (vl and vtype are the committed state's, v_vl / v_vtype)
+   reg [6:0]  vstart;                // VLEN 128: element 0..127 (e8 at LMUL 8)
+   reg        vxsat;
+   reg [1:0]  vxrm;
+   assign o_vstart = vstart;
 
 `include "va_codec.vh"
 
@@ -553,6 +566,13 @@ module csr_file
         FFLAGS:     rdata = {59'd0, fcsr[4:0]};
         FRM:        rdata = {61'd0, fcsr[7:5]};
         FCSR:       rdata = {56'd0, fcsr};
+        VSTART:     rdata = {57'd0, vstart};
+        VXSAT:      rdata = {63'd0, vxsat};
+        VXRM:       rdata = {62'd0, vxrm};
+        VCSR:       rdata = {61'd0, vxrm, vxsat};
+        VL:         rdata = {56'd0, v_vl};
+        VTYPE:      rdata = {v_vtype[8], 55'd0, v_vtype[7:0]};
+        VLENB:      rdata = 64'd16;
         MCYCLE, CYCLE:     rdata = mcycle;
         TIME, MTIME:       rdata = mtime;     // hardware-backed CLINT mtime (0xC01 std + 0xB01 SmolRV64 alias)
         MINSTRET, INSTRET: rdata = minstret;
@@ -652,8 +672,12 @@ module csr_file
    // Sstc: stimecmp access in S-mode requires menvcfg.STCE (else illegal). M-mode always
    // allowed; U-mode already blocked by csr_nopriv. (Matches simmerv cpu.rs:1384.)
    wire stce_ill    = upd_is_csr & (upd_addr == STIMECMP) & (priv == S) & ~menvcfg[63];
+   // The vector CSRs while VS is Off, as every vector instruction then.
+   wire csr_vec     = (upd_addr == VSTART) | (upd_addr == VXSAT) | (upd_addr == VXRM) | (upd_addr == VCSR)
+                    | (upd_addr == VL) | (upd_addr == VTYPE) | (upd_addr == VLENB);
+   wire vs_ill      = upd_is_csr & csr_vec & o_vs_off;
    assign csr_illegal = upd_valid & (csr_ro | csr_nopriv | satp_tvm | csr_unimpl | stce_ill
-                                     | stateen_ill);
+                                     | stateen_ill | vs_ill);
 
    // sfence.vma is illegal in U, or in S with TVM; sret is illegal in U, or in S with TSR.
    wire sfence_illegal = is_sfence & ((priv == U) | ((priv == S) & tvm));
@@ -711,9 +735,9 @@ module csr_file
    // refetches every younger instruction so any store that was check-translated against the
    // pre-sfence page tables is re-executed (and re-walked) against the flushed/new tables.
    wire        do_sfence  = upd_valid & is_sfence & ~sysop_exc;
-   // A write that changes mstatus.FS redirects to fall-through (like sfence): younger FP ops
-   // already in flight were evaluated against the old FS, so refetch them to re-evaluate the
-   // FS-disabled illegal-instruction trap. FS-changes are rare (context switch) so the cost is
+   // A write that changes mstatus.FS or VS redirects to fall-through (like sfence): younger FP
+   // and vector ops already in flight were evaluated against the old field, so refetch them to
+   // re-evaluate the disabled-unit illegal-instruction trap. FS-changes are rare (context switch) so the cost is
    // negligible; the FP arithmetic tests set FS once at startup and never trip this.
    // FMAX: derive the change-detect below from the mstatus REGISTER, not the generic
    // `rdata` mux. These terms are guarded by upd_addr==MSTATUS/SSTATUS, where rdata is
@@ -736,8 +760,8 @@ module csr_file
    wire [1:0]  newfs_m = newms_m[14:13];   // mstatus.FS, sliced rather than shift-truncated
    wire [1:0]  newfs_s = newms_s[14:13];
    wire        do_fschg = upd_valid & upd_is_csr & ~csr_illegal &
-                          ( ((upd_addr==MSTATUS) & (newfs_m != mstatus[14:13]))
-                          | ((upd_addr==SSTATUS) & (newfs_s != mstatus[14:13])) );
+                          ( ((upd_addr==MSTATUS) & ((newfs_m != mstatus[14:13]) | (newms_m[10:9] != mstatus[10:9])))
+                          | ((upd_addr==SSTATUS) & ((newfs_s != mstatus[14:13]) | (newms_s[10:9] != mstatus[10:9]))) );
 
    // Likewise, a write that changes a DATA-TRANSLATION context bit of mstatus -- MPRV(17),
    // MPP(12:11, the priv MPRV borrows), SUM(18), MXR(19) -- must redirect to fall-through:
@@ -764,10 +788,11 @@ module csr_file
    // A CSR op does not drain: younger work runs while it waits for the head. A write that changes
    // what younger ops already used refetches them too: the rounding mode (frm, fcsr) an FP op read
    // at execute, and the enables (menvcfg, senvcfg, mstateen0) decode judged a CBO by and the
-   // translation honours (PBMTE). Rare writes, at the cost of FS's refetch.
+   // translation honours (PBMTE), and vstart, which decode cracks a vector instruction by. Rare
+   // writes, at the cost of FS's refetch.
    wire        do_ctxw  = upd_valid & upd_is_csr & ~csr_illegal & csr_writes
                         & ((upd_addr == FRM) | (upd_addr == FCSR) | (upd_addr == MENVCFG)
-                         | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0));
+                         | (upd_addr == SENVCFG) | (upd_addr == MSTATEEN0) | (upd_addr == VSTART));
 
    // A write that can make an interrupt deliverable -- a global enable (mstatus.MIE/SIE) rising with
    // something pending and enabled, or any write of mie/sie/mip/sip/mideleg -- refetches what
@@ -940,6 +965,7 @@ module csr_file
          mnstatus<=0;
          stvec<=0; sepc<=0; scause<=0; stval<=0; sscratch<=0; scounteren<=0;
          fcsr<=0; stimecmp<=~64'd0; menvcfg<=64'd0; senvcfg<=64'd0;   // Sstc: stimecmp resets to "no deadline"
+         vstart<=7'd0; vxsat<=1'b0; vxrm<=2'd0;
          mstateen0<=64'hC000_0000_0000_0000;   // SE0|ENVCFG set: no stateen restrictions
       end else if (trap_v) begin
          // trap (system-op exception OR external page fault); target priv per delegation
@@ -1013,6 +1039,10 @@ module csr_file
               FFLAGS:     fcsr[4:0] <= newv[4:0];
               FRM:        fcsr[7:5] <= newv[2:0];
               FCSR:       fcsr      <= newv[7:0];
+              VSTART:     vstart    <= newv[6:0];
+              VXSAT:      vxsat     <= newv[0];
+              VXRM:       vxrm      <= newv[1:0];
+              VCSR:       {vxrm, vxsat} <= newv[2:0];
               default:    ;
             endcase
          end else if (is_mret) begin
@@ -1034,6 +1064,12 @@ module csr_file
           (fp_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
                               & ((upd_addr==FCSR) | (upd_addr==FFLAGS) | (upd_addr==FRM)))))
          mstatus[14:13] <= 2'b11;
+      // VS -> Dirty likewise: a retiring op that changed vector state (v_dirty_commit) or a
+      // write of a vector CSR. Guarded to VS != Off.
+      if (!reset && (mstatus[10:9] != 2'b00) &&
+          (v_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
+                             & ((upd_addr==VSTART) | (upd_addr==VXSAT) | (upd_addr==VXRM) | (upd_addr==VCSR)))))
+         mstatus[10:9] <= 2'b11;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
       // clocks; minstret adds the committing checkpoint's instruction count. An M-mode
       // write to mcycle/minstret loads the value a cycle late (cw_*, with the Zihpm counters').

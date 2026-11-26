@@ -3695,6 +3695,8 @@ module smolrv64_core
       hpm_ret_q <= reset ? 6'd0 : {2'd0, ones_nl(retire)};
    end
 
+   wire        vs_off;                 // mstatus.VS is Off
+   wire [6:0]  csr_vstart;
    csr_file u_csr
      (.clk(clk), .reset(reset),
       .raddr(sy_addr), .rdata(csr_rdata),
@@ -3702,6 +3704,9 @@ module smolrv64_core
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(csr_ifx_d), .o_dpriv(mmu_dpriv), .o_pm_u(csr_pm_u),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
+      // the vector state: no vector instruction decodes yet, so vl and vtype are their reset
+      // values (vl 0, vill) and nothing retires that changes it
+      .o_vs_off(vs_off), .o_vstart(csr_vstart), .v_vl(8'd0), .v_vtype(9'h100), .v_dirty_commit(1'b0),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
       // that wrote an f-register (arch 32..63: FP arith, the in-core FP writers, FP loads; not

@@ -1170,6 +1170,17 @@ arm last keep it sound while redirects fire at the ROB head. Invariants: no thir
 flight, none handed to a full queue, at most two lanes hand one over in a cycle, an issue never
 starts a busy divider; the writeback's clear precedes the issue's set in the stage register.
 
+### 7.v Vector state (not advertised)
+
+The V extension is being built in increments (`docs/PLAN-2026-11-25-vector.md` §5, §7); misa and
+the device trees do not name V until it is whole. **mstatus.VS** is writable (and sstatus's view,
+and SD) and resets Off. The vector CSRs are `csr_file`'s: `vstart` (7 bits: VLEN 128 holds at
+most 128 elements, e8 at LMUL 8), `vxsat`, `vxrm` and `vcsr` (their two fields as one), and the
+read-only `vl`, `vtype` (from the committed state: vl 0 and vill until `vset*` decodes) and
+`vlenb` (16). While VS is Off every vector CSR access is illegal; a write of `vstart`, `vxsat`,
+`vxrm` or `vcsr` sets VS Dirty, and a write that changes VS or `vstart` refetches what follows,
+as one that changes FS does. Directed test: `core/directed/vcsr.S`.
+
 ## 8. Load/store unit and MMU
 
 - **Address generation in the lanes; M is the fill stage (lanes 5.2d-a).** A plain load or
