@@ -64,9 +64,10 @@ g_lp[*].ml x{IW} : the landing buffers' data from the LD stream, a lane each: wr
 g_lp[*].mf x{IW} : the landing buffers' data from the FE stream, a lane each: written after the LD stream's, read at the head
 pcl[*].mem x{IW} : which stream produces a pending integer register (the LD stream's, the FE stream's), two bits a register by shard: written at dispatch, read at the schedulers' reported operands
 hps[*].mem x{IW} : every op's {seq, PC} by ROB row, a column per lane: written at dispatch, read at the head's row (a faulting or replaying load or store is the head)
-# Multi-writer arrays (smolrv64_mwram), a bank per writer: the arrived addresses' (a bank per lane,
-# the LQ's 3 and the SQ's 3) and the load queue's PA (M's fill, the walker's answer: 2).
-wb[*].mem x{2*IW+2} : a lane load's or store's VA by LQ/SQ entry (written by its lane, read at M's fill); a load's PA (written by the fill and the walk)
+# Multi-writer arrays (smolrv64_mwram), a bank per writer: the arrived addresses' and the vector
+# accesses' sides beside them (a bank per lane in each of the LQ's two and the SQ's two) and the load
+# queue's PA (M's fill, the walker's answer: 2).
+wb[*].mem x{4*IW+2} : a lane load's or store's VA, and a vector access's side, by LQ/SQ entry (written by its lane, read at M's fill); a load's PA (written by the fill and the walk)
 mdw : the memory-dependence wait table: one write a cycle (a replay, a training event, the forget's step), read at dispatch and by training
 ras     : return address stack
 bank[*].way[*].btb x16 : BTB, 8 halfword banks x 2 skewed ways, 128 x 53 -- read as the fetch stream moves and by training
