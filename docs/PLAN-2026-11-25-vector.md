@@ -379,3 +379,84 @@ bytes).
 - **f.** Whole-register loads and stores, and their traps.
 
 Then the board gates on the whole increment.
+
+## 8. Increment 2: integer vector and unit-stride memory
+
+Tommy, 2026-11-26, chose (A) of three: aligned doublewords with vl at the lane, over predicting vl
+at decode (glibc's short `memcpy`/`strlen` would refetch on nearly every call) and one uop per
+element (4-16x slower than scalar).
+
+### 8.1 The integer operations
+
+`vadd`, `vsub`, `vrsub`, `vand`, `vor`, `vxor`, `vsll`, `vsrl`, `vsra`, `vminu`, `vmin`, `vmaxu`,
+`vmax`, in their `.vv`, `.vx` and `.vi` forms (`vrsub` has no `.vv`, `vsub` no `.vi`), unmasked
+(vm = 1): one uop a register of the group, as `vmv.v.*`. The unit's new value is an ALU result per
+SEW over vs2 and the second operand (vs1, the scalar in VH0 after a move-in, or the immediate:
+simm5, uimm5 for the shifts); the per-byte merge (vstart, vl, the old vd) is the moves'. Masked
+forms, the compares, `vmadc`/`vmsbc`, `vmerge`, multiply, divide and fixed point come with
+increment 3, and are illegal until then.
+
+### 8.2 Why the LSU changes
+
+Decode knows vtype but not vl (an AVL from a register), and not the base's alignment. A unit-stride
+access must touch no byte past vl or before vstart, and fault on none, and an element-aligned access
+that crosses a page must not raise address-misaligned (today the LSU raises it for any misaligned
+access across a page, `smolrv64_lsu.v`). So each memory uop decides at its lane what it touches.
+
+### 8.3 The uops
+
+For `vle<eew>.v` / `vse<eew>.v` (vm = 1) with EMUL = EEW/SEW * LMUL registers (one for a fractional
+EMUL; a reserved EMUL is illegal), base b = rs1, o = b mod 8, the instruction's bytes
+[S, B) = [vstart * EEW, vl * EEW) from b:
+
+- **The end** (an F-stage in-core op with an integer source, as the VL uop): XH0 := o + B, from rs1
+  and the VL file. XH0 is an **integer-kind hidden register** (ids 104-111 are integer hidden; it maps
+  at reset to SH_IE's register 32, so SH_IE's free list starts at 33).
+- **The base's move-in**: VH1 := rs1 (FMV.D.X through a lane), for the packs' and extracts' o.
+- **Doubleword k**, k from S/8 to 2*EMUL, is [8k, 8k + 8) from b - o, aligned, so it never straddles
+  and never crosses a page. Its active bytes are [lo, hi) = [max(o + S, 8k), min(XH0, 8k + 8)), the
+  memory uop's lane computes them from rs1 (o), rs2 = XH0 and the immediate (k and S):
+  - a **load** reads the whole doubleword into VH0 when lo < hi (its other bytes are on the same
+    page), else is a null load: no translation, no fault, no access;
+  - a **store** writes bytes [lo, hi) of it (a **byte count**, 0 to 8, in the SQ: a count of 0 drains
+    as nothing), its data from rs3 (VH0), rs2 being XH0.
+- **A load's pack** of doubleword k writes its active bytes into the group, bytes [8k - o, 8k - o + 8)
+  of it: one register for odd k, two (the register before and after) for even k, a pack a register
+  (sources VH0, VH1, the old vd, the VL file); it follows the doubleword's load.
+- **A store's extract** for doubleword k gathers group bytes [8k - o + lo, ...) into VH0, byte 0 the
+  first active one (sources the two registers it may span and VH1).
+- An element-misaligned base (o not a multiple of EEW) raises address-misaligned (cause 4 / 6), as
+  the spec allows.
+
+A group of EMUL registers is then 3 + 5 * EMUL uops for a load, 4 + 4 * EMUL for a store.
+
+### 8.4 Traps
+
+With an element-aligned base, elements start on doubleword boundaries, and every doubleword before k
+is loaded and packed (or stored) before k's access, so a fault at doubleword k leaves exactly the
+elements before its first active byte done. The lane computes that element, (8k + lo - o) >> log2
+EEW; the LQ/SQ entry keeps it (7 bits) with the address, and a vector memory fault writes vstart
+with it (tval is b - o + 8k + lo, the faulting element's address). The retry cracks from vstart's
+doubleword.
+
+### 8.5 What changes in the LSU and the queues (the census, 2026-11-26)
+
+- The D$ takes a byte mask already: no change.
+- The SQ's `sz[]` (2 bits, log2) becomes a byte count; every range test is `+ (1 << size)` and turns
+  into `+ count` (`ovl_ab`, `cov_ab`, `dw[]`, the page-cross assertions); the LSU's commit mask
+  (`sp_wm`) becomes `((1 << n) - 1) << off`. Scalar stores are unchanged: their count is 1 << size.
+- The LQ gets a null bit and a whole-doubleword bit (the raw doubleword, unformatted).
+- The lane's rs2 port (integer, idle for loads and stores) carries XH0; the scheduler waits on it
+  for a vector memory uop (a store's rs2 is waited on today only as data, by the SQ's snoop).
+- The cosim's store-size convention becomes a byte count.
+
+### 8.6 Steps, each locksteped and with a directed test
+
+- **a.** This design.
+- **b.** The integer operations.
+- **c.** Byte counts in the SQ and the LSU: no behaviour change, the Linux locksteps cycle-identical.
+- **d.** The integer hidden register XH0.
+- **e.** Unit-stride loads and their traps.
+- **f.** Unit-stride stores and their traps.
+
+Then the board gates on the whole increment.
