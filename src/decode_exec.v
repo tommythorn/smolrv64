@@ -47,6 +47,7 @@ module decode_exec
    wire [2:0] f3  = insn[14:12];
    wire [6:0] f7  = insn[31:25];
    wire [5:0] f6  = insn[31:26];
+   `include "smolrv64_sysop.vh"
    // decode_fp holds the one list of the FP operations this core implements: an OP-FP or
    // FMADD-family word it does not recognise is illegal
    wire       fp_known;
@@ -160,7 +161,10 @@ module decode_exec
 
         5'b11100: begin // SYSTEM
            if (f3==3'b000) is_serialize=1;                              // ECALL/EBREAK/xRET/SFENCE/WFI
-           else if (f3==3'b100) illegal=1;                              // reserved
+           else if (f3==3'b100) begin                                   // Zimop: rd <- 0 & imm
+              if (zimop(insn)) begin op1_sel=OP1_ZERO; op2_imm=1; alu_op=`ALU_AND; end
+              else illegal=1;                                          // reserved
+           end
            else begin is_csr=1; csr_func=f3; is_serialize=1; end        // CSRRW/S/C (+imm)
                       // every CSR op serializes (issues only when oldest) -- simplest
                       // correct rule; a read-only CSR is rare enough that the drain is free

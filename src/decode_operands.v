@@ -51,6 +51,7 @@ module decode_operands
                   && (insn[31:30]==2'b11)
                   && ((funct3[1:0]==2'b01) || (rs1f != 5'b0));
 
+   `include "smolrv64_sysop.vh"
    localparam [2:0] N=0, I=1, S=2, B=3, U=4, J=5, C=6;     // imm selectors
    reg [2:0] imm_sel;
    reg       has_rd, has_rs1, has_rs2, has_rs3;
@@ -97,6 +98,9 @@ module decode_operands
                   3'b000: ;
                   3'b001,3'b010,3'b011: begin has_rd=1'b1; has_rs1=1'b1; end
                   3'b101,3'b110,3'b111: begin has_rd=1'b1; imm_sel=C; end
+                  // Zimop mop.r.N / mop.rr.N: write 0 to rd, read nothing
+                  3'b100: if (zimop(insn)) has_rd=1'b1;
+                          else legal=1'b0;
                   default: legal=1'b0;
                 endcase
         default:    legal=1'b0;

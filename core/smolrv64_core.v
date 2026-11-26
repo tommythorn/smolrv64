@@ -854,8 +854,9 @@ module smolrv64_core
    // SYSTEM opcode (the irqop included), FENCE and FENCE.I (MISC-MEM, funct3 00x; CBO is 010),
    // and an instruction that traps at dispatch -- a fetch fault or an illegal instruction: every
    // one serialises and fires at the ROB head from the SYSQ's flops.
+   `include "smolrv64_sysop.vh"
    function is_sysq(input [31:0] i, input ill, input flt);
-      is_sysq = (i[6:2] == 5'b11100) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00)) | ill | flt;
+      is_sysq = sysop(i[14:0]) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00)) | ill | flt;
    endfunction
    wire d_cls_s = d_gq[GC_S];
    wire d_cls_l = d_gq[GC_L];
@@ -3324,7 +3325,7 @@ module smolrv64_core
    end
 
    // ---- CSR file ----
-   wire        m_is_sys  = m_valid & (m_insn[6:2] == 5'b11100);
+   wire        m_is_sys  = m_valid & sysop(m_insn[14:0]);
    wire [63:0] csr_rdata;
    wire [PCW-1:0] csr_redir_tgt;
    wire        csr_redir_v, csr_redir_trap, csr_illegal;

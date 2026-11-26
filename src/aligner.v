@@ -78,12 +78,13 @@ module aligner
    // one the predictor calls not taken, or does not know, is predicted to fall through, and the
    // bundle reads on. A branch with younger instructions in its own group is what the core
    // recovers from by its ROB row's columns (smolrv64_rob's kill and walk).
+   `include "smolrv64_sysop.vh"
    function is_cti(input [15:0] h0);
       if (h0[1:0] == 2'b11)                 // base 32-bit op (h0[1:0]==11 IS the old `is32` input)
          is_cti = (h0[6:0] == 7'b1100011)   // BRANCH
                 | (h0[6:0] == 7'b1101111)   // JAL
                 | (h0[6:0] == 7'b1100111)   // JALR
-                | (h0[6:0] == 7'b1110011)   // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence)
+                | sysop(h0[14:0])            // SYSTEM (ecall/ebreak/csr/xret/wfi/sfence; not Zimop)
                 | (h0[6:0] == 7'b0101111)   // AMO (atomic: solo, serialized RMW)
                 | ((h0[6:0] == 7'b0001111) & (h0[14:13] == 2'b00)); // FENCE / FENCE.I (barrier; excl CBO f3=010)
       else case (h0[1:0])
@@ -142,7 +143,7 @@ module aligner
          p32[i]   = (h0[1:0] == 2'b11);
          phave[i] = (i < avail) && (!p32[i] || ((i + 1) < avail));
          pmkin[i] = p32[i] & mk[i];                          // a mark inside it: what follows is another path's
-         psys[i]  = p32[i] && ((h0[6:0] == 7'b1110011) || (h0[6:0] == 7'b0101111)
+         psys[i]  = p32[i] && (sysop(h0[14:0]) || (h0[6:0] == 7'b0101111)
                                || ((h0[6:0] == 7'b0001111) && (h0[14:13] == 2'b00)));
          pend[i]  = is_cti(h0) & ~is_cond(h0);               // a jump, SYSTEM, AMO or FENCE ends the bundle
          pbr[i]   = is_br(h0);

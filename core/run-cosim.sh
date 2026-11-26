@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 SIMMERV_DIR=${SIMMERV_DIR:-$HOME/simmerv}
 SIMMERV_LIB=$SIMMERV_DIR/target/release/libsimmerv_cosim.a
 SIMMERV_INC=$SIMMERV_DIR/cosim
-TESTDIR=../tests/riscv-tests/passes
+TESTDIR=${TESTDIR:-../tests/riscv-tests/passes}
 NM=$(command -v riscv64-unknown-elf-nm || command -v riscv64-elf-nm || command -v riscv64-linux-gnu-nm)
 CYC=${CYC:-2000000}
 RESET_PC=${RESET_PC:-80000000}

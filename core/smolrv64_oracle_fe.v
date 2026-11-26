@@ -39,6 +39,7 @@ module smolrv64_oracle_fe
     output reg  [FW*PCW-1:0]    tgt,             // ...this one
     output wire [SEQW-1:0]      cur_seq);
 
+   `include "smolrv64_sysop.vh"
    localparam [PCW-1:0] ENDM = {PCW{1'b1}};     // past the trace's last instruction
    reg [7:0]      img  [0:(1 << IMGB) - 1];
    reg [PCW-1:0]  tr   [0:(1 << TRB) - 1];
@@ -89,7 +90,7 @@ module smolrv64_oracle_fe
          o   = {{(64-PCW){1'b0}}, p} - BASE;
          w   = (o + 3 < (64'd1 << IMGB)) ? {img[o[IMGB-1:0] + 3], img[o[IMGB-1:0] + 2],
                                             img[o[IMGB-1:0] + 1], img[o[IMGB-1:0]]} : 32'd0;
-         sys = (w[1:0] == 2'b11) & ((w[6:0] == 7'h73) | (w[6:0] == 7'h0f));
+         sys = (w[1:0] == 2'b11) & (sysop(w[14:0]) | (w[6:0] == 7'h0f));
          if (!stop && p != ENDM && !(sys && j != 0)) begin
             nx = off ? p + ((w[1:0] == 2'b11) ? 4 : 2) : tr[k + j[TRB-1:0] + 1];
             if (nx == ENDM) nx = p + ((w[1:0] == 2'b11) ? 4 : 2);

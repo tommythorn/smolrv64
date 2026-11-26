@@ -123,6 +123,8 @@ void cosim_init() {
                  (int)COSIM_MEM_SIZE_LG2);
     g_ctx = simmerv_create(MEM_BYTES);
     if (!g_ctx) { std::fprintf(stderr, "cosim: simmerv_create failed\n"); std::abort(); }
+    // The core's ISA: RVA23's scalar extensions, no V yet.
+    simmerv_set_isa(g_ctx, true, false);
     if (const char* ck = plusarg("ckpt")) {
         if (simmerv_load_ckpt(g_ctx, ck) != 0) std::abort();
         g_in_stub = true;

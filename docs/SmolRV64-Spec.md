@@ -19,7 +19,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | ISA | RV64IMAFDC (`misa` = A, C, D, F, I, M, S, U; MXL=2) |
 | Privilege | M / S / U |
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
-| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot |
+| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot; Zcb and Zcmop (`src/rvc_expand.v`: each expands to its 32-bit equivalent, a c.mop.N to a nop), Zimop (mop.r.N / mop.rr.N write 0 and issue as ALU ops, not system ops: `src/smolrv64_sysop.vh`), Zawrs (wrs.nto / wrs.sto retire at once, as the extension allows), Zihintntl and Zihintpause (hints in encodings that already execute as no-ops) |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **four-wide** (`SMOLRV64_IW=4`, set once in `core/smolrv64_width.vh` for the RTL, the build and the benches; `SMOLRV64_IW=3` and `2` build the three- and two-wide machines); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops, multiplies, divides, branches and jumps issue in their slot's lane (a scheduler, an ALU and a multiplier per lane, four of each; a divide's operands go to the one MD stage) and reorder freely; a system op issues in lane A and fires from the SYSQ at the ROB head; FP ops reorder on the FP port (§7); loads, stores, AMOs, LR/SC and CBOs generate their address in their slot's lane and reach M through their LQ/SQ entry or the head-op register (§8) |

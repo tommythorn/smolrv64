@@ -1,6 +1,6 @@
 `default_nettype none
 
-// RV64 C-extension expander: 16-bit compressed parcel -> 32-bit instruction,
+// RV64 C-extension expander (with Zcb and Zcmop): 16-bit compressed parcel -> 32-bit instruction,
 // purely combinational. Output is 32'h00000000 for illegal/reserved encodings
 // and for the [1:0]==11 quadrant (not compressed), matching the oracle
 // tools/rvc.rs (RVC64_EXPANDED). Verified exhaustively by tb_rvc_expand.v.
@@ -56,6 +56,8 @@ module rvc_expand (input wire [15:0] c, output reg [31:0] insn);
    wire [31:0] i_ldsp = {23'b0, c[4:2], c[12], c[6:5], 3'b000};              // LDSP/FLDSP (zext)
    wire [31:0] i_swsp = {24'b0, c[8:7], c[12:9], 2'b00};                     // SWSP (zext)
    wire [31:0] i_sdsp = {23'b0, c[9:7], c[12:10], 3'b000};                   // SDSP/FSDSP (zext)
+   wire [31:0] i_zb   = {30'b0, c[5], c[6]};                                 // Zcb byte load/store (zext)
+   wire [31:0] i_zh   = {30'b0, c[5], 1'b0};                                 // Zcb halfword load/store (zext)
 
    wire [2:0] f3 = c[15:13];
 
@@ -71,7 +73,13 @@ module rvc_expand (input wire [15:0] c, output reg [31:0] insn);
           3'b101: insn = Stype(i_cld, rdsp, rs1p, 3'b011, STOREFP);  // FSD
           3'b110: insn = Stype(i_clw, rdsp, rs1p, 3'b010, STORE);    // SW
           3'b111: insn = Stype(i_cld, rdsp, rs1p, 3'b011, STORE);    // SD
-          default: insn = 32'h0;       // 100 reserved
+          3'b100: case (c[12:10])     // Zcb loads and stores
+                    3'b000: insn = Itype(i_zb, rs1p, 3'b100, rdsp, LOAD);    // C.LBU
+                    3'b001: insn = Itype(i_zh, rs1p, c[6] ? 3'b001 : 3'b101, rdsp, LOAD); // C.LH / C.LHU
+                    3'b010: insn = Stype(i_zb, rdsp, rs1p, 3'b000, STORE);   // C.SB
+                    3'b011: if (!c[6]) insn = Stype(i_zh, rdsp, rs1p, 3'b001, STORE); // C.SH
+                    default: insn = 32'h0;       // reserved
+                  endcase
         endcase
         2'b01: case (f3)              // ---- quadrant 1
           3'b000: insn = Itype(i_ci, rd, 3'b000, rd, OPIMM);        // ADDI (rd=0,imm=0 -> nop)
@@ -84,6 +92,8 @@ module rvc_expand (input wire [15:0] c, output reg [31:0] insn);
                   end else begin                                    // LUI
                      if ({c[12], c[6:2]} != 6'b0)
                         insn = Utype(i_lui, rd, LUI);
+                     else if (rd[4] == 1'b0 && rd[0] == 1'b1)
+                        insn = 32'h00000013;                        // Zcmop C.MOP.N (rd 1,3,..15): a nop
                   end
           3'b100: case (c[11:10])     // MISC-ALU
                     2'b00: insn = Itype(i_shl, rs1p, 3'b101, rs1p, OPIMM);   // SRLI
@@ -96,7 +106,16 @@ module rvc_expand (input wire [15:0] c, output reg [31:0] insn);
                              3'b011: insn = Rtype(7'h00, rdsp, rs1p, 3'b111, rs1p, OP);    // AND
                              3'b100: insn = Rtype(7'h20, rdsp, rs1p, 3'b000, rs1p, OP32);  // SUBW
                              3'b101: insn = Rtype(7'h00, rdsp, rs1p, 3'b000, rs1p, OP32);  // ADDW
-                             default: insn = 32'h0;                  // 110/111 reserved
+                             3'b110: insn = Rtype(7'h01, rdsp, rs1p, 3'b000, rs1p, OP);    // Zcb C.MUL
+                             3'b111: case (c[4:2])   // Zcb unary ops on rd'
+                                       3'b000: insn = Itype(32'hff,  rs1p, 3'b111, rs1p, OPIMM);       // C.ZEXT.B: andi 255
+                                       3'b001: insn = Itype(32'h604, rs1p, 3'b001, rs1p, OPIMM);       // C.SEXT.B
+                                       3'b010: insn = Rtype(7'h04, 5'd0, rs1p, 3'b100, rs1p, OP32);    // C.ZEXT.H
+                                       3'b011: insn = Itype(32'h605, rs1p, 3'b001, rs1p, OPIMM);       // C.SEXT.H
+                                       3'b100: insn = Rtype(7'h04, 5'd0, rs1p, 3'b000, rs1p, OP32);    // C.ZEXT.W: add.uw x0
+                                       3'b101: insn = Itype(32'hfff, rs1p, 3'b100, rs1p, OPIMM);       // C.NOT: xori -1
+                                       default: insn = 32'h0;                  // reserved
+                                     endcase
                            endcase
                   endcase
           3'b101: insn = Jtype(i_cj, 5'd0, JAL);                    // J
