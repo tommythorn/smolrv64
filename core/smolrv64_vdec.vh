@@ -119,6 +119,7 @@ function automatic vmv_x(input [31:0] i);
    vmv_x = ((is_vmvv(i) | is_viop(i)) & (i[14:12] == 3'b100)) | is_vmvsx(i);
 endfunction
 localparam [6:0] VH0 = 7'd96;                      // the first hidden register
+localparam [6:0] XH0 = 7'd104;                     // the integer-kind hidden register (smolrv64_areg.vh)
 // the registers one writes: nr, LMUL (1 for a fractional one), or 1
 function automatic [3:0] vmv_regs(input [31:0] i, input [VST_W-1:0] s);
    vmv_regs = is_vmvr(i) ? {1'b0, i[17:15]} + 4'd1

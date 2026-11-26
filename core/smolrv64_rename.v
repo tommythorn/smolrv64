@@ -111,14 +111,17 @@ module smolrv64_rename
    localparam integer NS = 3 * IW;                       // the map's source reads
    localparam integer NR = NS + IW;                      // ...and each slot's destination
    localparam integer NAR = 1 << `AREG_W;                 // the architectural registers, every kind
-   localparam integer NHID = 1;                           // the hidden registers in use (VH0)
+   localparam integer NHID = 1;                           // the FP-kind hidden registers in use (VH0)
+   localparam [IDXB-1:0] XH_IX = 32;                      // ...and the integer-kind one, XH0: SH_IE's
    // THE RESET MAPPING: x0-x31 in SH_IE, f0-f31 in SH_FL and v0-v31 in SH_V at indices 0..31, the
-   // hidden registers in use in SH_FF at 0..NHID-1, any other register at physical 0 (never written).
+   // FP-kind hidden registers in use in SH_FF at 0..NHID-1, XH0 (104) in SH_IE at 32, any other
+   // register at physical 0 (never written).
    // An expression, not a function: Vivado ignores a function's value in an initial block (Synth
    // 8-311), and the maps' initial values are their reset.
 `define RN_MAP0(j) (((j) < 32) ? {SH_IE, j[IDXB-1:0]} : ((j) < 64) ? {SH_FL, {(IDXB-5){1'b0}}, j[4:0]} \
                   : ((j) < 96) ? {SH_V, {(IDXB-5){1'b0}}, j[4:0]} \
-                  : ((j) < 96 + NHID) ? {SH_FF, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}})
+                  : ((j) < 96 + NHID) ? {SH_FF, {(IDXB-5){1'b0}}, j[4:0]} \
+                  : ((j) == 104) ? {SH_IE, XH_IX} : {PBITS{1'b0}})
 
    // ---- the map -------------------------------------------------------------------
    // IW COPIES OF THE SPECULATIVE MAP, one write port each: slot k writes copy k (as do the
@@ -469,13 +472,16 @@ module smolrv64_rename
    localparam integer FLLB = $clog2(FLNB);
    localparam integer CW   = $clog2(IW + 1);    // a count of 0..IW
    // A shard's size, and the first free index at reset: SH_IE, SH_FL and SH_V hold the reset
-   // mappings of x0-x31, f0-f31 and v0-v31 at indices 0..31, so their lists start at 32, and SH_FF
-   // the hidden registers' at 0..NHID-1.
+   // mappings of x0-x31, f0-f31 and v0-v31 at indices 0..31, so their lists start at 32, SH_IE's
+   // after XH0's (32), and SH_FF after the FP-kind hidden registers'.
    function automatic integer n_of(input integer sh);
       n_of = (sh < SH_FL) ? N_INT : (sh == SH_FL) ? N_FL : (sh == SH_V) ? N_V : N_FF;
    endfunction
    function automatic integer base_of(input integer sh);
-      base_of = (sh == SH_IE || sh == SH_FL || sh == SH_V) ? 32 : (sh == SH_FF) ? NHID : 0;
+      base_of = (sh == SH_IE) ? 33 : (sh == SH_FL || sh == SH_V) ? 32 : (sh == SH_FF) ? NHID : 0;
+   endfunction
+   function automatic fpk(input [`AREG_W-1:0] a);   // an id that lives in an FP shard
+      fpk = `AR_FPK(a);
    endfunction
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
@@ -756,10 +762,10 @@ module smolrv64_rename
             $fatal(1, "smolrv64_rename: slot %0d renamed x0", ik);
          if (r_valid[ik] & ~r_cand[ik])
             $fatal(1, "smolrv64_rename: slot %0d renamed and was not a candidate", ik);
-         // a vector register goes to the vector file, an FP-kind one to an FP shard, an x-register to its
-         // slot's lane
+         // a vector register goes to the vector file, an FP-kind one to an FP shard, an integer-kind one to
+         // its slot's lane
          if (alloc[ik] && ((r_rd[ik*`AREG_W + 6 -: 2] == 2'b10) ? (r_shard[ik*3 +: 3] != SH_V)
-                         : r_rd[ik*`AREG_W + 5] ? ((r_shard[ik*3 +: 3] != SH_FL) && (r_shard[ik*3 +: 3] != SH_FF))
+                         : fpk(r_rd[ik*`AREG_W +: `AREG_W]) ? ((r_shard[ik*3 +: 3] != SH_FL) && (r_shard[ik*3 +: 3] != SH_FF))
                          : (r_shard[ik*3 +: 3] != ik[2:0])))
             $fatal(1, "smolrv64_rename: slot %0d renames r%0d into shard %0d", ik, r_rd[ik*`AREG_W +: `AREG_W], r_shard[ik*3 +: 3]);
          if (alloc[ik] & ~sh_used(r_shard[ik*3 +: 3]))
