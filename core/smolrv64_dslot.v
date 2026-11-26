@@ -39,7 +39,8 @@ module smolrv64_dslot
 
    wire        d_rvc, s_rd_v, s_rs1_v, s_rs2_v, s_rs3_v, s_legal, s_has_imm;
    wire [31:0] s_exp;
-   wire [5:0]  s_rd, s_rs1, s_rs2, s_rs3, s_alu_op;
+   wire [`AREG_W-1:0] s_rd, s_rs1, s_rs2, s_rs3;
+   wire [5:0]  s_alu_op;
    wire [63:0] s_imm;
    wire        s_alu_w, s_alu_uw, s_op2_imm, s_res_link;
    wire [1:0]  s_op1_sel, s_mem_size;
@@ -83,13 +84,13 @@ module smolrv64_dslot
    wire [3:0]      m_fault_cause = cause;
    wire [31:0]     m_insn = fault_op ? 32'd0 : s_exp;
    wire            m_rvc = fault_op ? 1'b0 : s_rvc;
-   wire [5:0]      m_rd = fault_op ? 6'd0 : s_rd;
+   wire [`AREG_W-1:0] m_rd = fault_op ? {`AREG_W{1'b0}} : s_rd;
    wire            m_rd_v = fault_op ? 1'b0 : s_rd_v;
-   wire [5:0]      m_rs1 = fault_op ? 6'd0 : s_rs1;
+   wire [`AREG_W-1:0] m_rs1 = fault_op ? {`AREG_W{1'b0}} : s_rs1;
    wire            m_rs1_v = fault_op ? 1'b0 : s_rs1_v;
-   wire [5:0]      m_rs2 = fault_op ? 6'd0 : s_rs2;
+   wire [`AREG_W-1:0] m_rs2 = fault_op ? {`AREG_W{1'b0}} : s_rs2;
    wire            m_rs2_v = fault_op ? 1'b0 : s_rs2_v;
-   wire [5:0]      m_rs3 = fault_op ? 6'd0 : s_rs3;
+   wire [`AREG_W-1:0] m_rs3 = fault_op ? {`AREG_W{1'b0}} : s_rs3;
    wire            m_rs3_v = fault_op ? 1'b0 : s_rs3_v;
    wire [63:0]     m_imm = fault_op ? 64'd0 : s_imm;
    wire [31:0]     m_imm32 = m_imm[31:0];

@@ -1,10 +1,11 @@
 `default_nettype none
+`include "smolrv64_areg.vh"
 
 // RV64I + F/D operand decode. Input is a full 32-bit
 // instruction (already RVC-expanded by rvc_expand). Produces the rename-facing
 // operand contract:
-//   rd/rs1/rs2/rs3 - UNIFIED 6-bit arch register ids: integer -> {1'b0,field},
-//                    FP -> {1'b1,field} = arch 32..63 (one rename map / PRF for both).
+//   rd/rs1/rs2/rs3 - UNIFIED arch register ids (smolrv64_areg.vh): integer -> {2'b00,field},
+//                    FP -> {2'b01,field} = arch 32..63 (one rename map for every kind).
 //   *_v            - per-operand valid bits (validity is explicit). rd_v drops
 //                    integer x0 (write discarded); FP f0 is a real register, kept.
 //   rs3            - FMA third source (insn[31:27]); rs3_v only for FMADD-family.
@@ -14,13 +15,13 @@
 // The execution `ctl` blob (incl. is_fp) is decoded separately (decode_exec).
 module decode_operands
    (input  wire [31:0] insn,
-    output reg  [5:0]  rd,
+    output reg  [`AREG_W-1:0] rd,
     output reg         rd_v,
-    output reg  [5:0]  rs1,
+    output reg  [`AREG_W-1:0] rs1,
     output reg         rs1_v,
-    output reg  [5:0]  rs2,
+    output reg  [`AREG_W-1:0] rs2,
     output reg         rs2_v,
-    output reg  [5:0]  rs3,
+    output reg  [`AREG_W-1:0] rs3,
     output reg         rs3_v,
     output reg  [63:0] imm,
     output reg         has_imm,
@@ -107,15 +108,15 @@ module decode_operands
         default:    legal=1'b0;
       endcase
 
-      // operand ids: {fp_bit, field}. integer x0 dest is discarded; FP f0 is a real reg.
+      // operand ids: {kind, field}. integer x0 dest is discarded; FP f0 is a real reg.
       rd_v  = legal && has_rd && !csr_ro_wr && (rd_fp || (rdf != 5'b0));
       rs1_v = legal && has_rs1;
       rs2_v = legal && has_rs2;
       rs3_v = legal && has_rs3;
-      rd    = {rd_fp, rdf};
-      rs1   = rs1_v ? {rs1_fp, rs1f} : 6'd0;       // absent source -> arch x0 (phys p0, always ready)
-      rs2   = rs2_v ? {rs2_fp, rs2f} : 6'd0;
-      rs3   = rs3_v ? {rs3_fp, rs3f} : 6'd0;
+      rd    = {1'b0, rd_fp, rdf};
+      rs1   = rs1_v ? {1'b0, rs1_fp, rs1f} : {`AREG_W{1'b0}};   // absent source -> arch x0 (phys p0, always ready)
+      rs2   = rs2_v ? {1'b0, rs2_fp, rs2f} : {`AREG_W{1'b0}};
+      rs3   = rs3_v ? {1'b0, rs3_fp, rs3f} : {`AREG_W{1'b0}};
 
       has_imm = legal && (imm_sel != N);
       case (imm_sel)

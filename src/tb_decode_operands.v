@@ -1,11 +1,12 @@
 `timescale 1ns/1ps
 `default_nettype none
+`include "smolrv64_areg.vh"
 
 // Directed test for decode_operands: one representative per format/opcode plus
 // the tricky cases (x0 dest, shift-imm rs2 not a read, CSR vs CSR-imm, illegal).
 module tb;
    reg  [31:0] insn;
-   wire [5:0]  rd, rs1, rs2;
+   wire [`AREG_W-1:0] rd, rs1, rs2;
    wire        rd_v, rs1_v, rs2_v, has_imm, legal;
    wire [63:0] imm;
    integer errs = 0, tid = 0;
@@ -23,11 +24,11 @@ module tb;
          insn = iw; #1; tid = tid + 1;
          if (elegal>=0 && legal!==elegal[0])         begin $display("T%0d(%08h) legal=%b exp %0d",tid,iw,legal,elegal); errs=errs+1; end
          if (erdv >=0 && rd_v !==erdv[0])             begin $display("T%0d(%08h) rd_v=%b exp %0d",tid,iw,rd_v,erdv); errs=errs+1; end
-         if (erd  >=0 && rd   !==erd[5:0])            begin $display("T%0d(%08h) rd=%0d exp %0d",tid,iw,rd,erd); errs=errs+1; end
+         if (erd  >=0 && rd   !==erd[`AREG_W-1:0])            begin $display("T%0d(%08h) rd=%0d exp %0d",tid,iw,rd,erd); errs=errs+1; end
          if (ers1v>=0 && rs1_v!==ers1v[0])            begin $display("T%0d(%08h) rs1_v=%b exp %0d",tid,iw,rs1_v,ers1v); errs=errs+1; end
-         if (ers1 >=0 && rs1  !==ers1[5:0])           begin $display("T%0d(%08h) rs1=%0d exp %0d",tid,iw,rs1,ers1); errs=errs+1; end
+         if (ers1 >=0 && rs1  !==ers1[`AREG_W-1:0])           begin $display("T%0d(%08h) rs1=%0d exp %0d",tid,iw,rs1,ers1); errs=errs+1; end
          if (ers2v>=0 && rs2_v!==ers2v[0])            begin $display("T%0d(%08h) rs2_v=%b exp %0d",tid,iw,rs2_v,ers2v); errs=errs+1; end
-         if (ers2 >=0 && rs2  !==ers2[5:0])           begin $display("T%0d(%08h) rs2=%0d exp %0d",tid,iw,rs2,ers2); errs=errs+1; end
+         if (ers2 >=0 && rs2  !==ers2[`AREG_W-1:0])           begin $display("T%0d(%08h) rs2=%0d exp %0d",tid,iw,rs2,ers2); errs=errs+1; end
          if (ehimm>=0 && has_imm!==ehimm[0])          begin $display("T%0d(%08h) has_imm=%b exp %0d",tid,iw,has_imm,ehimm); errs=errs+1; end
          if (ehimm==1 && imm  !==eimm)                begin $display("T%0d(%08h) imm=%h exp %h",tid,iw,imm,eimm); errs=errs+1; end
       end

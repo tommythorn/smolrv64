@@ -26,6 +26,7 @@
 //
 //   +seed=<n>   (default 1)      +nops=<n>   (default 20000)
 // Configuration is stated in the output: NENT=4 both queues, small, so both fill and wrap all the time.
+`include "smolrv64_areg.vh"
 module tb;
    localparam NENT=4, IDXB=2, PAW=56, PBITS=9, ROBB=4, NWB=3;
    localparam NW=2;                           // a row: two ops dispatch together (the LQ's 2 banks of 2)
@@ -57,7 +58,7 @@ module tb;
    wire [2:0]       sq_f_sbo;                 // ...from this byte of the doubleword
    wire [NW*IDXB-1:0] lq_d_idx;  wire [IDXB-1:0] lq_x_idx;  wire [IDXB:0] lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
-   wire [PBITS-1:0] lq_l_prd;  wire [5:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
+   wire [PBITS-1:0] lq_l_prd;  wire [`AREG_W-1:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
    wire [NENT*12-1:0] e_off;
    // the walker and trap ports: every fill here is translated, so they stay quiet
    wire             lk_v, sk_v, lf_v, sf_v;
@@ -94,7 +95,7 @@ module tb;
    wire lf_new;                // an entry flagged for replay this cycle (the core's one-cycle hold)
    smolrv64_lq #(.LDPRE(0),.DRAM_BASE(64'd0),.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.SQIB(IDXB+1),.NW(NW),.NB(2)) u_lq
      (.clk(clk),.reset(reset),
-      .d_alloc(lq_d_alloc),.d_pc({NW{39'd0}}),.d_seq({NW{8'd0}}),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd({NW{6'd0}}),.d_rd_v({NW{1'b1}}),
+      .d_alloc(lq_d_alloc),.d_pc({NW{39'd0}}),.d_seq({NW{8'd0}}),.d_rob(lq_d_rob),.d_prd(lq_d_prd),.d_rd({NW{`AREG_W'd0}}),.d_rd_v({NW{1'b1}}),
       .d_sqtag(lq_d_sqtag),.d_wt({NW{1'b1}}),.d_rank(lq_d_rank),.d_ready(lq_d_ready),.d_bfree(lq_bfree),.d_bp(lq_bp),.d_idx(lq_d_idx),
       .a_v(lq_a_v),.a_sent(lq_a_sent),.a_cancel(sq_l_cancel),.a_idx(lq_a_idx),.a_pa(lq_a_pa),.a_va(39'(lq_a_pa)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(lq_a_size),
       .a_signed(lq_a_signed),.a_fp(lq_a_fp),.a_unc(lq_a_unc),

@@ -3,11 +3,12 @@
 
 // End-to-end execute test: insn -> decode_operands (imm) + decode_exec (ctl)
 // -> exec_alu, on real 32-bit encodings with hand-computed expectations.
+`include "smolrv64_areg.vh"
 module tb;
    reg  [31:0] insn;
    reg  [63:0] rs1v, rs2v, pc;
    wire [63:0] imm; wire dummy_himm, dummy_legal, dummy_rdv, dummy_r1v, dummy_r2v;
-   wire [5:0]  dummy_rd, dummy_rs1, dummy_rs2;
+   wire [`AREG_W-1:0] dummy_rd, dummy_rs1, dummy_rs2;
    // decode_exec ctl
    wire [5:0]  alu_op; wire alu_w, alu_uw; wire [1:0] op1_sel; wire op2_imm, res_link;
    wire is_mem, is_store; wire [1:0] mem_size; wire mem_signed;

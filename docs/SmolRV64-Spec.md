@@ -520,8 +520,11 @@ them. Full OoO will need them back.
 
 ## 5. Rename and the physical register file
 
-Architectural registers are a **unified 64-entry space**: 0–31 integer, 32–63 FP, matching
-`decode_operands`' `{fp_bit, field}` encoding. The physical registers are not: f0–f31 rename
+Architectural registers are a **unified 128-entry space** of 7-bit ids, `{kind, field}`
+(`src/smolrv64_areg.vh`): 0–31 integer, 32–63 FP, 64–95 the vector registers and 96–127 hidden
+FP-kind temporaries that cracked instructions will pass values through (§7.v); bit 5 says a
+register lives in an FP shard. Decode names ids 0–63; the rest belong to the vector increments
+(§7.v). The physical registers are not: f0–f31 rename
 only into the **FP file**, two shards SH_FL and SH_FF, and x1–x31 only into the integer shards.
 A physical register is `{shard[2:0], index}` (`core/smolrv64_shards.vh`): lane k's integer
 shard is k, SH_FL (4) holds the FP loads' destinations and SH_FF (5) the FP ops', so an
@@ -533,7 +536,7 @@ is asserted.
 per-shard free list with a speculative head and a committed head. Every source reads SMAP alone
 (no committed candidate beside it), so each slot looks up three readiness bits, not six. A
 mispredict's walk restores SMAP entry by entry (§6). A total squash (a redirect at the ROB head,
-or reset) restores it by **the sweep**: `dirty` (64 flops) names the registers whose SMAP mapping
+or reset) restores it by **the sweep**: `dirty` (a flop an architectural register) names the registers whose SMAP mapping
 may be uncommitted -- set by a rename and by the walk, cleared a cycle after a commit whose
 register is still the newest mapping, and as swept -- and the sweep rewrites them from RMAP, the
 IW lowest dirty registers each cycle from the squash's own cycle (picked, then written a cycle

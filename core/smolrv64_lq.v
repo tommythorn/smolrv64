@@ -42,6 +42,7 @@
 // so it fires only with the redirecting instruction at the ROB head, and everything still
 // live here is younger than that. A load already ACCESSED but not yet landed is younger
 // too -- a load has no side effect, so discarding its result is free.
+`include "smolrv64_areg.vh"
 module smolrv64_lq
   #(parameter NENT  = 4,
     parameter IDXB  = 2,               // $clog2(NENT)
@@ -72,7 +73,7 @@ module smolrv64_lq
     input  wire [NW*RKB-1:0]     d_rank,      // writer j's rank among the cycle's loads, in program order
     input  wire [NW*ROBB-1:0]    d_rob,
     input  wire [NW*PBITS-1:0]   d_prd,
-    input  wire [NW*6-1:0]       d_rd,
+    input  wire [NW*`AREG_W-1:0] d_rd,
     input  wire [NW-1:0]         d_rd_v,
     input  wire [NW*SQIB-1:0]    d_sqtag,     // store-seqno captured at the same dispatch
     input  wire [NW-1:0]         d_wt,        // the load's wait bit: it waits for older stores' unknown addresses
@@ -172,7 +173,7 @@ module smolrv64_lq
     input  wire                  l_fw,
     input  wire [IDXB-1:0]       l_fwn,
     output wire [PBITS-1:0]      l_prd,
-    output wire [5:0]            l_rd,
+    output wire [`AREG_W-1:0]    l_rd,
     output wire                  l_rd_v,
     output wire [ROBB-1:0]       l_rob,
     // The landing load's OWN address, for the cosim's memory-effect record. It has to come
@@ -243,7 +244,7 @@ module smolrv64_lq
    reg [NENT-1:0]        mem;                 // PA is DRAM/LRAM (idempotent): may access speculatively
    reg [NENT-1:0]        bare;                // the address was not translated (smolrv64_sq a_bare)
    reg [PBITS-1:0]       prd  [0:NENT-1];
-   reg [5:0]             rdn  [0:NENT-1];
+   reg [`AREG_W-1:0]     rdn  [0:NENT-1];
    reg [NENT-1:0]        rdv;
    reg [ROBB-1:0]        rob  [0:NENT-1];
    reg [SQIB-1:0]        sqt  [0:NENT-1];
@@ -336,13 +337,13 @@ module smolrv64_lq
    reg  [NB-1:0]      b_w;                 // bank b takes a load this cycle...
    reg  [NW-1:0]      b_oh [0:NB-1];       // ...writer j's
    reg                b_wt [0:NB-1];  reg b_rdv [0:NB-1];
-   reg [ROBB-1:0]     b_rob [0:NB-1];  reg [PBITS-1:0] b_prd [0:NB-1];  reg [5:0] b_rdn [0:NB-1];
+   reg [ROBB-1:0]     b_rob [0:NB-1];  reg [PBITS-1:0] b_prd [0:NB-1];  reg [`AREG_W-1:0] b_rdn [0:NB-1];
    reg [SQIB-1:0]     b_sqt [0:NB-1];  reg [PCHB:1] b_pch [0:NB-1];  reg [SEQW-1:0] b_sqn [0:NB-1];
    integer            fbk, fwj;
    always @* for (fbk = 0; fbk < NB; fbk = fbk + 1) begin
       b_w[fbk] = 1'b0;  b_oh[fbk] = {NW{1'b0}};
       b_wt[fbk] = 1'b0;  b_rdv[fbk] = 1'b0;  b_rob[fbk] = {ROBB{1'b0}};  b_prd[fbk] = {PBITS{1'b0}};
-      b_rdn[fbk] = 6'd0;  b_sqt[fbk] = {SQIB{1'b0}};  b_pch[fbk] = {PCHB{1'b0}};  b_sqn[fbk] = {SEQW{1'b0}};
+      b_rdn[fbk] = {`AREG_W{1'b0}};  b_sqt[fbk] = {SQIB{1'b0}};  b_pch[fbk] = {PCHB{1'b0}};  b_sqn[fbk] = {SEQW{1'b0}};
       for (fwj = 0; fwj < NW; fwj = fwj + 1)
          if (d_alloc[fwj] & (wbk[fwj] == fbk[BL-1:0])) begin
             b_w[fbk] = 1'b1;  b_oh[fbk][fwj] = 1'b1;
@@ -350,7 +351,7 @@ module smolrv64_lq
             b_rdv[fbk] = b_rdv[fbk] | d_rd_v[fwj];
             b_rob[fbk] = b_rob[fbk] | d_rob[fwj*ROBB +: ROBB];
             b_prd[fbk] = b_prd[fbk] | d_prd[fwj*PBITS +: PBITS];
-            b_rdn[fbk] = b_rdn[fbk] | d_rd[fwj*6 +: 6];
+            b_rdn[fbk] = b_rdn[fbk] | d_rd[fwj*`AREG_W +: `AREG_W];
             b_sqt[fbk] = b_sqt[fbk] | d_sqtag[fwj*SQIB +: SQIB];
             b_pch[fbk] = b_pch[fbk] | d_pc[fwj*VAW + 1 +: PCHB];
             b_sqn[fbk] = b_sqn[fbk] | d_seq[fwj*SEQW +: SEQW];

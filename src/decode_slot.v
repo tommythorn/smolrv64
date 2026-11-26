@@ -1,4 +1,5 @@
 `default_nettype none
+`include "smolrv64_areg.vh"
 
 // One decoder lane: raw aligner word -> decoded per-slot IR (no cross-slot yet).
 // The aligner delivers a 32-bit word with the top 16 bits ignored for compressed
@@ -15,13 +16,13 @@ module decode_slot #(parameter SEQW = 8,
     output wire [SEQW-1:0]  seq,
     output wire             is_rvc,
     output wire [31:0]      expanded,
-    output wire [5:0]       rd,
+    output wire [`AREG_W-1:0] rd,
     output wire             rd_v,
-    output wire [5:0]       rs1,
+    output wire [`AREG_W-1:0] rs1,
     output wire             rs1_v,
-    output wire [5:0]       rs2,
+    output wire [`AREG_W-1:0] rs2,
     output wire             rs2_v,
-    output wire [5:0]       rs3,
+    output wire [`AREG_W-1:0] rs3,
     output wire             rs3_v,
     output wire [63:0]      imm,
     output wire             has_imm,
@@ -57,7 +58,7 @@ module decode_slot #(parameter SEQW = 8,
    rvc_expand u_rvc (.c(inst[15:0]), .insn(exp_rvc));
    wire [31:0] full = is_c ? exp_rvc : inst;
 
-   wire [5:0]  d_rd, d_rs1, d_rs2, d_rs3;
+   wire [`AREG_W-1:0] d_rd, d_rs1, d_rs2, d_rs3;
    wire        d_rdv, d_rs1v, d_rs2v, d_rs3v, d_himm, d_legal;
    wire [63:0] d_imm;
    decode_operands u_op (.insn(full), .rd(d_rd), .rd_v(d_rdv), .rs1(d_rs1),

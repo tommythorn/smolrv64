@@ -20,6 +20,7 @@
 //   * the load queue's ordering: no overtaking of an unfilled older entry, two in flight,
 //     landing by index, the early start (a_sent)
 // Configuration stated in the output: NENT=4 both queues, small, so the directed cases fill and wrap them.
+`include "smolrv64_areg.vh"
 module tb;
    localparam NENT=4, IDXB=2, PAW=56, PBITS=9, ROBB=4, NWB=3;
    reg clk=0, reset=1, flush=0;
@@ -29,7 +30,7 @@ module tb;
 
    // ---- load queue ports ----
    reg              lq_d_alloc=0, lq_a_v=0, lq_a_sent=0, lq_x_take=0, lq_l_v=0;
-   reg [ROBB-1:0]   lq_d_rob=0;  reg [PBITS-1:0] lq_d_prd=0;  reg [5:0] lq_d_rd=0;  reg lq_d_rd_v=1;
+   reg [ROBB-1:0]   lq_d_rob=0;  reg [PBITS-1:0] lq_d_prd=0;  reg [`AREG_W-1:0] lq_d_rd=0;  reg lq_d_rd_v=1;
    reg [IDXB:0]     lq_d_sqtag=0;
    reg [IDXB-1:0]   lq_a_idx=0, lq_b_idx=0, lq_l_idx=0;
    reg [PAW-1:0]    lq_a_pa=0;   reg [1:0] lq_a_size=2;  reg lq_a_signed=0, lq_a_fp=0, lq_a_unc=0;
@@ -44,7 +45,7 @@ module tb;
    wire             lq_d_ready, lq_x_v, lq_x_block, lq_b_ok, lq_x_signed, lq_x_fp, lq_x_unc, lq_l_rd_v;
    wire [IDXB-1:0]  lq_d_idx, lq_x_idx;  wire [IDXB:0] lq_q_tag;
    wire [PAW-1:0]   lq_x_pa, lq_l_pa;  wire [1:0] lq_x_size;
-   wire [PBITS-1:0] lq_l_prd;  wire [5:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
+   wire [PBITS-1:0] lq_l_prd;  wire [`AREG_W-1:0] lq_l_rd;  wire [ROBB-1:0] lq_l_rob;  wire [IDXB:0] lq_occ;
    wire [NENT*12-1:0] e_off;
    // the walker and trap ports: every fill here is translated, so they stay quiet
    wire             lk_v, sk_v, lf_v, sf_v;

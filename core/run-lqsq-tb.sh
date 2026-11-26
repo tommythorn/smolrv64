@@ -6,6 +6,6 @@ cd "$(dirname "$0")"
 verilator --binary --timing -j 0 -sv -Wall \
    -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-TIMESCALEMOD -Wno-PROCASSINIT -Wno-UNUSEDPARAM -Wno-BLKSEQ \
-   --top-module tb --Mdir obj_dir_lqsq -o tb_lqsq smolrv64_lq.v smolrv64_sq.v smolrv64_mwram.v tb_smolrv64_lqsq.v > /tmp/lqsqtb_build.log 2>&1 \
+   -I../src --top-module tb --Mdir obj_dir_lqsq -o tb_lqsq smolrv64_lq.v smolrv64_sq.v smolrv64_mwram.v tb_smolrv64_lqsq.v > /tmp/lqsqtb_build.log 2>&1 \
    || { echo "BUILD FAILED"; grep -E '%Error' /tmp/lqsqtb_build.log | head; exit 1; }
 ./obj_dir_lqsq/tb_lqsq 2>&1 | grep -E 'FAIL|PASS|tb_smolrv64_lqsq'

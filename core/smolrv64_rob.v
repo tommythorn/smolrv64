@@ -23,6 +23,7 @@
 // position p), so the commit and the walk read column (fc + p) % IW: a rotation of the row's
 // records at the ports, from fc. A row may take several cycles to commit, and the head moves to
 // the next row when the row's last valid position commits.
+`include "smolrv64_areg.vh"
 module smolrv64_rob
   #(parameter ROWS  = 32,
     parameter CAP   = ROWS,           // the rows it fills (at most ROWS)
@@ -41,7 +42,7 @@ module smolrv64_rob
     // the group's lanes are a cyclic run from d_fc: (d_fc + p) % IW for p below its size
     input  wire [IW-1:0]          d_valid,
     input  wire [CB-1:0]          d_fc,
-    input  wire [IW*6-1:0]        d_rd,
+    input  wire [IW*`AREG_W-1:0]  d_rd,
     // 0 when the instruction writes no register. Physical register 0 is never allocated --
     // it is architectural x0's permanent mapping and is never freed -- so `d_prd != 0` IS
     // the writes-a-register predicate.
@@ -76,7 +77,7 @@ module smolrv64_rob
     output wire [IW-1:0]          c_valid,
     output wire [IW-1:0]          c_head,       // port p is the head's (one-hot while the ROB holds any)
     output wire [IW*IDXB-1:0]     c_idx,        // port p's entry, its tag
-    output wire [IW*6-1:0]        c_rd,
+    output wire [IW*`AREG_W-1:0]  c_rd,
     output wire [IW-1:0]          c_rd_v,       // derived: |c_prd
     output wire [IW*PBITS-1:0]    c_prd,
     output wire [IW*PBITS-1:0]    c_pold,       // the mapping it displaced: rename frees it
@@ -116,7 +117,7 @@ module smolrv64_rob
     input  wire [IDXB-1:0]        k_idx,
     output wire                   wl_on,        // the walk runs (a register)
     output wire [IW-1:0]          wl_v,
-    output wire [IW*6-1:0]        wl_rd,
+    output wire [IW*`AREG_W-1:0]  wl_rd,
     output wire [IW*PBITS-1:0]    wl_prd, wl_pold,
     output wire                   wl_done,
     // THE KILL: every entry younger than the branch, one bit per storage index, from flops, for
@@ -135,7 +136,7 @@ module smolrv64_rob
 
    // {pold, noret, rd, prd}. rd_v is `|prd`; the destination SHARD is the top bits of prd; pold,
    // the mapping the op displaced, serves the walk's restore and, at commit, the free.
-   localparam EW    = PBITS + 1 + 6 + PBITS;      // {pold, noret, rd, prd}
+   localparam EW    = PBITS + 1 + `AREG_W + PBITS;   // {pold, noret, rd, prd}
    localparam NCOL  = 1 << CB;                    // columns; those at IW and above are never valid
    localparam RB    = IDXB - 1 - CB;              // row bits
    localparam SB    = RB + CB;                    // a storage index: {row, column}
@@ -396,7 +397,7 @@ module smolrv64_rob
    generate for (gk = 0; gk < IW; gk = gk + 1) begin: col
       reg [EW-1:0] mem [0:ROWS-1];
       integer bi; initial for (bi = 0; bi < ROWS; bi = bi + 1) mem[bi] = {EW{1'b0}};
-      always @(posedge clk) if (do_alloc[gk]) mem[trow] <= {d_pold[gk*PBITS +: PBITS], d_noret[gk], d_rd[gk*6 +: 6], d_prd[gk*PBITS +: PBITS]};
+      always @(posedge clk) if (do_alloc[gk]) mem[trow] <= {d_pold[gk*PBITS +: PBITS], d_noret[gk], d_rd[gk*`AREG_W +: `AREG_W], d_prd[gk*PBITS +: PBITS]};
       assign he[gk] = mem[hrow];
       assign we[gk] = mem[wl_row];                 // the walk's read port
    end endgenerate
@@ -408,7 +409,7 @@ module smolrv64_rob
       assign wl_v[gk] = wl_run & vw[wc] & ({1'b0, P} < wl_lim) & ((wl_row != k_row) | (P > k_p))
                       & (w[PBITS-1:0] != {PBITS{1'b0}});
       assign wl_prd[gk*PBITS +: PBITS]  = w[PBITS-1:0];
-      assign wl_rd[gk*6 +: 6]           = w[PBITS +: 6];
+      assign wl_rd[gk*`AREG_W +: `AREG_W] = w[PBITS +: `AREG_W];
       assign wl_pold[gk*PBITS +: PBITS] = w[EW-1 -: PBITS];
       // the head row's position p
       wire [CB-1:0]   hc = col_of(hfc, P);
@@ -424,8 +425,8 @@ module smolrv64_rob
       assign c_idx[gk*IDXB +: IDXB]   = tag_of(hrow, hfc, P);
       assign c_prd[gk*PBITS +: PBITS] = e[PBITS-1:0];
       assign c_pold[gk*PBITS +: PBITS] = e[EW-1 -: PBITS];
-      assign c_rd[gk*6 +: 6]          = e[PBITS +: 6];
-      assign c_noret[gk]              = e[PBITS+6];
+      assign c_rd[gk*`AREG_W +: `AREG_W] = e[PBITS +: `AREG_W];
+      assign c_noret[gk]              = e[PBITS+`AREG_W];
       assign c_rd_v[gk]               = |e[PBITS-1:0];
    end endgenerate
    assign c_valid = cv;

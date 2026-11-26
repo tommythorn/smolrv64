@@ -15,6 +15,7 @@
 // region is never touched and the run is the plain initrd boot.
 `include "tb_rand.vh"
 `include "smolrv64_tags.vh"           // the queue sizes FWD-SIM and DEPLD-SIM walk (SMOLRV64_LQB, SMOLRV64_SQB)
+`include "smolrv64_areg.vh"
 `include "smolrv64_width.vh"
 module tb;
    localparam integer IW = `SMOLRV64_IW;     // the core's width (the same define sets its IW)
@@ -1250,13 +1251,14 @@ module tb;
    localparam integer RV_CB = (RV_IW > 2) ? 2 : 1, RV_NC = 1 << RV_CB;
    reg        rv_wk, rv_wkq;  reg [63:0] rv_cw, rv_cwe, rv_nwk;   // the branch was weak; the weak model
    initial begin rv_wk = 0; rv_wkq = 0; rv_cwe = 0; rv_nwk = 0; end
-   reg [63:0] rv_set, rv_rows, rv_cwk, rv_dist;  integer rv_p;
+   localparam integer RV_NAR = 1 << `AREG_W;                   // the architectural registers
+   reg [RV_NAR-1:0] rv_set;  reg [63:0] rv_rows, rv_cwk, rv_dist;  integer rv_p;
    initial begin rv_set = 0; rv_rows = 0; rv_cwk = 0; rv_dist = 0; end
    always @(posedge clk) if (!reset && meas) begin : rvwalk     // the walk's restored destinations
-      reg [63:0] nset;
+      reg [RV_NAR-1:0] nset;
       nset = rv_set;
       for (rv_p = 0; rv_p < RV_IW; rv_p = rv_p + 1)
-         if (dut.core.u_rob.wl_v[rv_p]) nset[dut.core.u_rob.wl_rd[rv_p*6 +: 6]] = 1'b1;
+         if (dut.core.u_rob.wl_v[rv_p]) nset[dut.core.u_rob.wl_rd[rv_p*`AREG_W +: `AREG_W]] = 1'b1;
       if (dut.core.fr_rel || dut.core.cf_red_fire) begin rv_set <= 0;  rv_rows <= 0; end
       else begin rv_set <= nset;  if (dut.core.u_rob.wl_run) rv_rows <= rv_rows + 1; end
    end
@@ -1289,27 +1291,30 @@ module tb;
    function automatic integer pop64(input [63:0] x);
       integer b; begin pop64 = 0; for (b = 0; b < 64; b = b + 1) pop64 = pop64 + x[b]; end
    endfunction
+   function automatic integer popar(input [RV_NAR-1:0] x);      // a set of architectural registers
+      integer b; begin popar = 0; for (b = 0; b < RV_NAR; b = b + 1) popar = popar + x[b]; end
+   endfunction
    localparam integer RV_IW = `SMOLRV64_IW;
    always @(posedge clk) if (!reset && meas) begin : recov
       reg [63:0] rec, fe, ex_now, ex_best, ex_ck, cwr;  integer k3;
       if (dut.core.u_rob.k_v) begin
          if (rv_on) rv_sup <= rv_sup + 1;
          rv_on <= 1'b1;  rv_t0 <= c;  rv_fes <= 1'b0;
-         rv_fwd <= 64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1;
+         rv_fwd <= 64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1;
          rv_b   <= 64'((dut.core.u_rob.trow - dut.core.u_rob.kn_row - 1) & (`SMOLRV64_ROB_ROWS - 1)) + 1;
          rv_wk <= rv_wkq;
          rv_cw <= ck_weak(dut.core.u_rob.hrow, dut.core.u_rob.kb_rel, rv_wkq,
-                          64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
+                          64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
          rv_ck[0] <= ck_cost(4,  dut.core.u_rob.hrow, dut.core.u_rob.kb_rel,
-                             64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
+                             64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
          rv_ck[1] <= ck_cost(8,  dut.core.u_rob.hrow, dut.core.u_rob.kb_rel,
-                             64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
+                             64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
          rv_ck[2] <= ck_cost(16, dut.core.u_rob.hrow, dut.core.u_rob.kb_rel,
-                             64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
+                             64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW) + 64'(dut.core.u_rob.kb_rel) + 1);
       end else if (rv_on) begin
          if (!rv_fes && dut.core.fe_hd_v && c > rv_t0 + 1) begin rv_fes <= 1'b1;  rv_fe <= c - rv_t0; end
          if (dut.core.fr_rel || dut.core.cf_red_fire) begin
-            rec = c - rv_t0 + (dut.core.fr_rel ? 64'd0 : 64'((pop64(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW));
+            rec = c - rv_t0 + (dut.core.fr_rel ? 64'd0 : 64'((popar(dut.core.u_rename.dirty) + RV_IW - 1) / RV_IW));
             fe  = rv_fes ? rv_fe : rec;
             ex_now  = (rec > fe) ? rec - fe : 0;
             ex_best = ((rec < rv_fwd ? rec : rv_fwd) > fe) ? (rec < rv_fwd ? rec : rv_fwd) - fe : 0;
@@ -1320,10 +1325,10 @@ module tb;
             if (ex_best < ex_now) rv_win <= rv_win + 1;
             ex_ck = ((rec < rv_cw ? rec : rv_cw) > fe) ? (rec < rv_cw ? rec : rv_cw) - fe : 0;
             rv_cwe <= rv_cwe + ex_ck;  if (rv_wk) rv_nwk <= rv_nwk + 1;
-            cwr = dut.core.fr_rel ? rec - rv_rows + 64'((pop64(rv_set) + RV_IW - 1) / RV_IW) : rec;
+            cwr = dut.core.fr_rel ? rec - rv_rows + 64'((popar(rv_set) + RV_IW - 1) / RV_IW) : rec;
             if (cwr > rec) cwr = rec;
             rv_cwk <= rv_cwk + ((cwr > fe) ? cwr - fe : 0);
-            if (dut.core.fr_rel) rv_dist <= rv_dist + 64'(pop64(rv_set));
+            if (dut.core.fr_rel) rv_dist <= rv_dist + 64'(popar(rv_set));
             for (k3 = 0; k3 < 3; k3 = k3 + 1) begin
                ex_ck = ((rec < rv_ck[k3] ? rec : rv_ck[k3]) > fe) ? (rec < rv_ck[k3] ? rec : rv_ck[k3]) - fe : 0;
                rv_cke[k3] <= rv_cke[k3] + ex_ck;

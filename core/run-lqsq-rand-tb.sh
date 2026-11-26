@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 verilator --binary --timing -j 0 -sv -Wall \
    -Wno-DECLFILENAME -Wno-UNUSEDSIGNAL -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
    -Wno-TIMESCALEMOD -Wno-PROCASSINIT -Wno-UNUSEDPARAM -Wno-BLKSEQ -Wno-UNUSEDLOOP \
-   --top-module tb --Mdir obj_dir_lqsq_rand -o tb_lqsq_rand smolrv64_lq.v smolrv64_sq.v smolrv64_mwram.v tb_smolrv64_lqsq_rand.v > /tmp/lqsqrandtb_build.log 2>&1 \
+   -I../src --top-module tb --Mdir obj_dir_lqsq_rand -o tb_lqsq_rand smolrv64_lq.v smolrv64_sq.v smolrv64_mwram.v tb_smolrv64_lqsq_rand.v > /tmp/lqsqrandtb_build.log 2>&1 \
    || { echo "BUILD FAILED"; grep -E '%Error|%Warning' /tmp/lqsqrandtb_build.log | head; exit 1; }
 rc=0
 for s in ${SEEDS:-1 2 3}; do

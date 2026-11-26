@@ -1,4 +1,5 @@
 `include "smolrv64_tags.vh"
+`include "smolrv64_areg.vh"
 `timescale 1ns/1ps
 `default_nettype none
 
@@ -159,7 +160,7 @@ module tb;
          for (rk = 0; rk < IW; rk = rk + 1) if (retire[rk]) begin
             nret = nret + 1;
             if (trace &&  dut.rf_we[rk]) $display("[%0d] R pc=%h insn=%h x%0d=%h", c, retire_pc[rk*PCW +: PCW],
-                                                 retire_insn[rk*32 +: 32], dut.rf_wa[rk*6 +: 6], dut.rf_wd[rk*64 +: 64]);
+                                                 retire_insn[rk*32 +: 32], dut.rf_wa[rk*`AREG_W +: `AREG_W], dut.rf_wd[rk*64 +: 64]);
             if (trace && !dut.rf_we[rk]) $display("[%0d] R pc=%h insn=%h", c, retire_pc[rk*PCW +: PCW], retire_insn[rk*32 +: 32]);
          end
          if (trace) begin

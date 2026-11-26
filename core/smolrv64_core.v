@@ -10,7 +10,7 @@
    wire [PCW-1:0] P``fault_tval = P``pc + {{(PCW-2){1'b0}}, P``fault_hi, 1'b0}; \
    wire [SQ_IB-1:0] P``sq_tag; wire [LQ_IB-1:0] P``lq_idx; \
    wire P``rvc, P``rd_v, P``mem_signed, P``is_mem, P``is_store, P``is_amo; \
-   wire [SEQW-1:0] P``seq; wire [PDW-1:0] P``pdet; wire [5:0] P``rd, P``rs1; \
+   wire [SEQW-1:0] P``seq; wire [PDW-1:0] P``pdet; wire [`AREG_W-1:0] P``rd, P``rs1; \
    wire [RN_PBITS-1:0] P``prd; wire [1:0] P``mem_size; \
    wire [4:0] P``amo_func; wire P``is_branch, P``is_jump, P``is_jalr, P``is_csr; \
    wire [2:0] P``csr_func; wire P``is_serialize, P``is_fp, P``is_cbo, P``cbo_zero; \
@@ -33,7 +33,7 @@
    wire [PCW-1:0] P``fault_tval = P``pc + {{(PCW-2){1'b0}}, P``fault_hi, 1'b0}; \
    wire [SQ_IB-1:0] P``sq_tag; wire [LQ_IB-1:0] P``lq_idx; \
    wire P``rvc, P``rd_v, P``is_store, P``link_rs; \
-   wire [SEQW-1:0] P``seq; wire [PDW-1:0] P``pdet; wire [5:0] P``rd; \
+   wire [SEQW-1:0] P``seq; wire [PDW-1:0] P``pdet; wire [`AREG_W-1:0] P``rd; \
    wire [RN_PBITS-1:0] P``prd; wire P``is_branch, P``is_jump, P``is_jalr, P``is_csr; \
    wire [2:0] P``csr_func; wire P``illegal, P``fault; wire [3:0] P``fault_cause; wire [5:0] P``alu_op; \
    wire P``alu_w, P``alu_uw, P``op2_imm, P``res_link, P``mis_taken, P``mis_nt; \
@@ -188,7 +188,7 @@ module smolrv64_core
    wire [31:0]              d_insn;
    wire [SEQW-1:0]          d_seq;
    wire [PDW-1:0]           d_pdet;
-   wire [5:0]               d_rd, d_rs1, d_rs2, d_rs3;
+   wire [`AREG_W-1:0]       d_rd, d_rs1, d_rs2, d_rs3;
    wire [31:0]              d_imm32;
    wire [5:0]               d_alu_op;
    wire                     d_alu_w, d_alu_uw, d_op2_imm, d_res_link;
@@ -459,7 +459,7 @@ module smolrv64_core
    // =========================================================== stage X
    // the architectural writes of commit port k, for tb_smolrv64_riscv's trace
    wire [IW-1:0]    rf_we;
-   wire [IW*6-1:0]  rf_wa;
+   wire [IW*`AREG_W-1:0] rf_wa;
    wire [IW*64-1:0] rf_wd;
 
    // ---- renaming and the sharded PRF ----------------------------------------------
@@ -491,12 +491,12 @@ module smolrv64_core
    // the walk (5.4e): the ROB's dead rows, a row a cycle, into rename
    wire [IW-1:0]          rob_wl_v;
    wire                   rob_wl_on;
-   wire [IW*6-1:0]        rob_wl_rd;
+   wire [IW*`AREG_W-1:0]  rob_wl_rd;
    wire [IW*RN_PBITS-1:0] rob_wl_prd, rob_wl_pold;
    wire                   rob_wl_done;
    wire                   cf_red_fire;
    wire [IW-1:0]          rn_byp1v, rn_byp2v, rn_byp3v;
-   wire [IW*6-1:0]        s_rs1v, s_rs2v, s_rs3v, s_rdv;
+   wire [IW*`AREG_W-1:0]  s_rs1v, s_rs2v, s_rs3v, s_rdv;
    wire [IW-1:0]          s_rd_vv, s_takev;
    wire [IW*3-1:0]        s_shardv;
    wire                rn_stall;
@@ -659,7 +659,7 @@ module smolrv64_core
       $fatal(1, "smolrv64_core: M's head flag %b disagrees with the head compare (m_rob=%0d head=%0d)", m_at_head, m_rob_idx, rob_head_idx);
    // the ROB's commit ports: port k is position k of the head's row (rc_idx[k]), in program order
    wire [IW-1:0]          rc_v, rc_rdv, rc_noret, rc_kill, rc_f;
-   wire [IW*6-1:0]        rc_rd;
+   wire [IW*`AREG_W-1:0]  rc_rd;
    wire [IW*RN_PBITS-1:0] rc_prd, rc_pold;
    wire [ROB_IDXB-1:0]    rc_idx [0:IW-1];
    wire [ROB_SIXB-1:0]    rc_sx  [0:IW-1];          // ...their storage indexes
@@ -904,7 +904,7 @@ module smolrv64_core
    wire [SEQW-1:0]        s_seq [0:IW-1];
    wire [31:0]            s_insn [0:IW-1];
    wire [PDW-1:0]         s_pdet [0:IW-1];
-   wire [5:0]             s_rd [0:IW-1];
+   wire [`AREG_W-1:0]     s_rd [0:IW-1];
    wire [3:0]             s_fault_cause [0:IW-1];
    wire [IW-1:0]          s_fault, s_illegal, s_is_branch;
    wire [1:0]             s_ccls [0:IW-1];          // a call or a return (the retired RAS pointer)
@@ -927,7 +927,7 @@ module smolrv64_core
       assign s_gc[gs] = q_gc;
       assign s_clsbad[gs] = fe_dv[gs] & ((st_nb != (q_is_store & ~q_is_amo & ~q_is_cbo))
                                         | (ld_nb != (q_is_mem & ~q_is_store & ~q_is_amo & ~q_is_cbo)));
-      wire [2:0] shard = shard_of(q_rd[5], q_is_mem, LANE);
+      wire [2:0] shard = shard_of(`AR_FPK(q_rd), q_is_mem, LANE);
       wire [RN_PBITS-1:0] prs1 = rn_prs1v[gs*RN_PBITS +: RN_PBITS], prs2 = rn_prs2v[gs*RN_PBITS +: RN_PBITS],
                           prs3 = rn_prs3v[gs*RN_PBITS +: RN_PBITS], prd = rn_prdv[gs*RN_PBITS +: RN_PBITS];
       // readiness: the map read's pending bit; a source that is an earlier slot's new register
@@ -959,8 +959,9 @@ module smolrv64_core
       assign s_cls_i[gs] = q_gc[GC_I];  assign s_cls_l[gs] = q_gc[GC_L];  assign s_cls_fc[gs] = q_gc[GC_FC];
       assign s_cls_m[gs] = q_gc[GC_M];
       assign s_ld_nb[gs] = ld_nb;  assign s_st_nb[gs] = st_nb;  assign s_dcr[gs] = dcr;
-      assign s_rs1v[gs*6 +: 6] = q_rs1;  assign s_rs2v[gs*6 +: 6] = q_rs2;  assign s_rs3v[gs*6 +: 6] = q_rs3;
-      assign s_rdv[gs*6 +: 6] = q_rd;    assign s_rd_vv[gs] = q_rd_v;     assign s_shardv[gs*3 +: 3] = shard;
+      assign s_rs1v[gs*`AREG_W +: `AREG_W] = q_rs1;  assign s_rs2v[gs*`AREG_W +: `AREG_W] = q_rs2;
+      assign s_rs3v[gs*`AREG_W +: `AREG_W] = q_rs3;
+      assign s_rdv[gs*`AREG_W +: `AREG_W] = q_rd;  assign s_rd_vv[gs] = q_rd_v;     assign s_shardv[gs*3 +: 3] = shard;
       assign pnd_sq[(3*gs)*RN_PBITS +: 3*RN_PBITS] =
              {rn_sprs3v[gs*RN_PBITS +: RN_PBITS], rn_sprs2v[gs*RN_PBITS +: RN_PBITS], rn_sprs1v[gs*RN_PBITS +: RN_PBITS]};
       // EVERY CANDIDATE'S PENDING BIT IS SET, TAKEN OR NOT (see u_pend)
@@ -987,10 +988,10 @@ module smolrv64_core
       assign sl_prd[gs] = prd_g;
       `PL_DECL(sp_)
       assign `PL_REC(sp_) = s_pl_in[gs];
-      wire sp_link_rs = (sp_rs1 == 6'd1) | (sp_rs1 == 6'd5);
+      wire sp_link_rs = (sp_rs1 == `AREG_W'd1) | (sp_rs1 == `AREG_W'd5);
       assign sl_pl[gs]  = `LPL_REC(sp_);
       always @(posedge clk) if (!reset)
-         if (sl_li[gs] & q_rd_v & ~q_rd[5] & (shard != LANE))
+         if (sl_li[gs] & q_rd_v & `AR_X(q_rd) & (shard != LANE))
             $fatal(1, "smolrv64_core: slot %0d's ALU op is in shard %0d, not its lane's", gs, shard);
    end endgenerate
 
@@ -1035,7 +1036,7 @@ module smolrv64_core
    wire [NL-1:0]        hl_vv, f_hl_take;        // ...and one executing in its lane this cycle (flops)
    wire                 hl_any = |hl_vv;
    wire [31:0]          hx_insn_l [0:NL-1];
-   wire [5:0]           hx_rd_l   [0:NL-1];
+   wire [`AREG_W-1:0]   hx_rd_l   [0:NL-1];
    wire                 hx_rdv_l  [0:NL-1];
    wire [RN_PBITS-1:0]  hx_prd_l  [0:NL-1];
    wire [ROB_IDXB-1:0]  hx_rob_l  [0:NL-1];
@@ -1075,7 +1076,7 @@ module smolrv64_core
    initial stg_v_f = 1'b0;
    // AN FP OP'S PAYLOAD is what F reads of it: the instruction (decode_fp) and its destination
    // (the FPU's tag carries rd), the physical register lowest.
-   localparam integer FPW = 32 + 6 + 1 + RN_PBITS;      // {insn, rd, rd_v, prd}
+   localparam integer FPW = 32 + `AREG_W + 1 + RN_PBITS;   // {insn, rd, rd_v, prd}
    // the FIFO behind the head: the payloads in distributed RAM, banked by the entry's low bits so
    // that a group's FP ops, consecutive entries, write one bank each; the sources, their readiness
    // and the ROB slot in flops (every entry's sources watch the wakes, the kill reads every ROB slot)
@@ -1113,7 +1114,7 @@ module smolrv64_core
       lane_late = is_mulop(i) | is_divop(i) | is_lmem(i) | is_hop(i) | is_i2fop(i) | is_sysq(i, ill, flt);
    endfunction
    localparam integer PL_INSN = PLW - PCW - 32;   // the instruction's place in the payload (pl_in)
-   localparam integer LPLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 1 + 32
+   localparam integer LPLW = PCW + 32 + 1 + SEQW + PDW + PCW + `AREG_W + 1 + RN_PBITS + 1 + 32
                            + 1 + 1 + 1 + 1 + 1 + 3 + 1 + 1 + 4 + 1
                            + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1 + 1 + 1 + SQ_IB + LQ_IB;   // a lane's payload
    localparam integer LPL_INSN = LPLW - PCW - 32;  // the instruction's place in it
@@ -1270,7 +1271,7 @@ module smolrv64_core
 
    // Payload: packed at dispatch, unpacked at issue with the SAME concatenation, so a
    // width or ordering mistake is a lint error rather than a wrong instruction.
-   localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + 6 + 1 + RN_PBITS + 6
+   localparam integer PLW = PCW + 32 + 1 + SEQW + PDW + PCW + `AREG_W + 1 + RN_PBITS + `AREG_W
                           + 32 + 2 + 1 + 1 + 1 + 1 + 5 + 1 + 1 + 1 + 1 + 3 + 1 + 1   // imm32
                           + 1 + 1 + 1 + 1 + 1 + 4 + 1                               // fault_hi
                           + 6 + 1 + 1 + 2 + 1 + 1 + 3 + 1 + 1   // execute controls
@@ -1478,7 +1479,7 @@ module smolrv64_core
    wire [SEQW-1:0]       l_seq [0:NL-1];
    wire [PCW-1:0]        l_pc [0:NL-1];
    wire [PDW-1:0]        l_pdet [0:NL-1];
-   wire [5:0]            l_rd [0:NL-1];
+   wire [`AREG_W-1:0]    l_rd [0:NL-1];
    wire                  l_lks [0:NL-1];          // rs1 is a link register (the return stack's)
    wire [31:0]           l_insn [0:NL-1];
    wire [LQ_IB-1:0]      l_lqi [0:NL-1];
@@ -1664,7 +1665,7 @@ module smolrv64_core
       wire                 hx_go = iss & ~sys & is_i2fop(q_insn);
       reg                  hx_v, hx_rdv;
       reg  [31:0]          hx_insn;
-      reg  [5:0]           hx_rd;
+      reg  [`AREG_W-1:0]   hx_rd;
       reg  [RN_PBITS-1:0]  hx_prd;
       reg  [ROB_IDXB-1:0]  hx_rob;
       reg  [63:0]          hx_val;
@@ -1805,7 +1806,7 @@ module smolrv64_core
    always @(posedge clk) if (mv_f) plmem_f[rf_d_ent] <= stg_pl_f;
 
    // the FP port's payload, unpacked
-   wire [31:0] qf_insn;  wire [5:0] qf_rd;  wire qf_rd_v;  wire [RN_PBITS-1:0] qf_prd;
+   wire [31:0] qf_insn;  wire [`AREG_W-1:0] qf_rd;  wire qf_rd_v;  wire [RN_PBITS-1:0] qf_prd;
    assign {qf_insn, qf_rd, qf_rd_v, qf_prd} = plf_out;
 
    // The pack/unpack check that stood here compared the payload against the m_* registers
@@ -2020,7 +2021,7 @@ module smolrv64_core
    wire                lq_f_rp;
    wire [SQ_TB-1:0]    lq_q_tag;
    wire [RN_PBITS-1:0] lq_l_prd;
-   wire [5:0]          lq_l_rd;
+   wire [`AREG_W-1:0]  lq_l_rd;
    wire [ROB_IDXB-1:0] lq_l_rob;
    wire [PABITS-1:0]   lq_l_pa;      // the landing load's own PA (cosim memory effect)
    wire [LQ_IB:0]      lq_occ;  wire lq_av_any, lq_uf_any;
@@ -2213,7 +2214,8 @@ module smolrv64_core
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: rc
       assign rc_idx[gs]  = rc_idxv[gs*ROB_IDXB +: ROB_IDXB];
       assign rc_sx[gs]   = rsi(rc_idx[gs]);
-      assign rc_f[gs]    = rc_rdv[gs] & rc_rd[gs*6+5];     // writes an f-register
+      wire [`AREG_W-1:0] rcr = rc_rd[gs*`AREG_W +: `AREG_W];
+      assign rc_f[gs]    = rc_rdv[gs] & `AR_F(rcr);        // writes an f-register
       assign rc_kill[gs] = (rc_head[gs] ? rc_tkill : m_valid & (m_rob_idx == rc_idx[gs]))
                          | (rp_f_q & (rp_rob_q == rc_idx[gs]));   // a load flagged for replay never retires
       always @(posedge clk) if (!reset && rc_v[gs] && lq_f_v && lq_f_rp && (lq_f_rob == rc_idx[gs]))
@@ -2443,7 +2445,7 @@ module smolrv64_core
    `PL_DECL(sx_)
    assign {sx_rd_v, sx_prd, sx_mem_size, sx_mem_signed, sx_is_fp} = s_rec[SRW-1:0];
    assign sx_pc = {PCW{1'b0}};  assign sx_insn = 32'd0;  assign sx_rvc = 1'b0;  assign sx_seq = {SEQW{1'b0}};
-   assign sx_pdet = {PDW{1'b0}};  assign sx_pred_npc = {PCW{1'b0}};  assign sx_rd = 6'd0;  assign sx_rs1 = 6'd0;
+   assign sx_pdet = {PDW{1'b0}};  assign sx_pred_npc = {PCW{1'b0}};  assign sx_rd = {`AREG_W{1'b0}};  assign sx_rs1 = {`AREG_W{1'b0}};
    assign sx_imm32 = 32'd0;  assign sx_is_mem = 1'b1;  assign sx_is_store = s_st;  assign sx_is_amo = 1'b0;
    assign sx_amo_func = 5'd0;  assign sx_is_branch = 1'b0;  assign sx_is_jump = 1'b0;  assign sx_is_jalr = 1'b0;
    assign sx_is_csr = 1'b0;  assign sx_csr_func = 3'd0;  assign sx_is_serialize = 1'b0;  assign sx_is_cbo = 1'b0;
@@ -2964,7 +2966,7 @@ module smolrv64_core
    wire        fp_iss_ready, fp_res_valid, fp_res_fp, fp_res_int, fpu_busy;
    wire [63:0] fp_res_data;
    wire [4:0]  fp_res_fflags;
-   localparam integer FTAGW = 2 + 6 + ROB_IDXB + RN_PBITS;   // dst32, rd_v, rd, rob, prd
+   localparam integer FTAGW = 2 + `AREG_W + ROB_IDXB + RN_PBITS;   // dst32, rd_v, rd, rob, prd
    wire [FTAGW-1:0] fp_res_tag;
 
    // THE TAG CARRIES THE DESTINATION. rule: a response is matched by a tag the requester
@@ -3047,7 +3049,7 @@ module smolrv64_core
    // what made the split cheap -- all that is added here is dispatch.
    reg         f_valid;
    reg [31:0]  f_insn;
-   reg [5:0]   f_rd;
+   reg [`AREG_W-1:0] f_rd;
    reg         f_rd_v;
    reg [RN_PBITS-1:0] f_prd;
    reg [ROB_IDXB-1:0] f_rob;
@@ -3191,7 +3193,7 @@ module smolrv64_core
    end
    assign f_hl_take = hl_pick & {NL{f_advance & ~hx_any}};
    reg  [31:0]         hls_insn;
-   reg  [5:0]          hls_rd;
+   reg  [`AREG_W-1:0]  hls_rd;
    reg                 hls_rdv;
    reg  [RN_PBITS-1:0] hls_prd;
    reg  [ROB_IDXB-1:0] hls_rob;
@@ -3206,7 +3208,7 @@ module smolrv64_core
          end
    end
    reg  [31:0]         hxs_insn;
-   reg  [5:0]          hxs_rd;
+   reg  [`AREG_W-1:0]  hxs_rd;
    reg                 hxs_rdv;
    reg  [RN_PBITS-1:0] hxs_prd;
    reg  [ROB_IDXB-1:0] hxs_rob;
@@ -3288,7 +3290,7 @@ module smolrv64_core
    reg  [PCW-1:0]      lr_tgt  [0:NL-1];
    reg  [PCW-1:0]      lr_ttgt [0:NL-1];
    reg  [PDW-1:0]      lr_pdet [0:NL-1];
-   reg  [5:0]          lr_rd   [0:NL-1];
+   reg  [`AREG_W-1:0]  lr_rd   [0:NL-1];
    reg                 lr_lks  [0:NL-1];
    reg  [NL-1:0]       lr_old  [0:NL-1];   // lr_old[j][k]: lane j's op is older than lane k's (older(lr_seq))
    initial lr_v = {NL{1'b0}};
@@ -3338,7 +3340,7 @@ module smolrv64_core
    wire                cf_is_branch = lr_br[wl], cf_is_jump = lr_jmp[wl], cf_is_jalr = lr_jalr[wl];
    wire                cf_taken     = lr_taken[wl];
    // call/return classification for the RAS
-   wire                cf_link_rd   = lr_rdv[wl] & ((lr_rd[wl] == 6'd1) | (lr_rd[wl] == 6'd5));
+   wire                cf_link_rd   = lr_rdv[wl] & ((lr_rd[wl] == `AREG_W'd1) | (lr_rd[wl] == `AREG_W'd5));
    wire                cf_link_rs   = lr_lks[wl];
    always @(posedge clk) if (!reset) begin
       if (ones_nl(lw) > 4'd1)
@@ -3783,7 +3785,7 @@ module smolrv64_core
    // be in flight at all -- fp_unit returns them out of issue order (fp_fma's and fp_divsqrt's).
    wire        ft_dst32 = fl_tag[FTAGW-1];
    wire        ft_rd_v  = fl_tag[FTAGW-2];
-   wire [5:0]  ft_rd    = fl_tag[FTAGW-3 -: 6];
+   wire [`AREG_W-1:0] ft_rd = fl_tag[FTAGW-3 -: `AREG_W];
    wire [ROB_IDXB-1:0]  ft_rob = fl_tag[RN_PBITS +: ROB_IDXB];
    wire [RN_PBITS-1:0]  ft_prd = fl_tag[RN_PBITS-1:0];
    wire [63:0] fp_wval  = ft_dst32 ? {32'hffffffff, fl_data[31:0]} : fl_data;
@@ -4195,7 +4197,7 @@ module smolrv64_core
    // each lane's CTI is a call (writes x1/x5) or a return (a jalr reading x1/x5, writing neither)
    reg  [NL-1:0] l_lrd, l_lrs;
    always @* for (tqi = 0; tqi < NL; tqi = tqi + 1) begin
-      l_lrd[tqi] = lr_rdv[tqi] & ((lr_rd[tqi] == 6'd1) | (lr_rd[tqi] == 6'd5));
+      l_lrd[tqi] = lr_rdv[tqi] & ((lr_rd[tqi] == `AREG_W'd1) | (lr_rd[tqi] == `AREG_W'd5));
       l_lrs[tqi] = lr_lks[tqi];
    end
    wire [NL-1:0] l_call = lr_jmp & l_lrd, l_ret = lr_jalr & l_lrs & ~l_lrd;
@@ -4732,13 +4734,13 @@ module smolrv64_core
       assign retire_pc[gs*PCW +: PCW]  = cs_pc[rsi(ix)];
       assign retire_insn[gs*32 +: 32]  = cs_insn[rsi(ix)];
       assign rf_we[gs]                 = rc_v[gs] & rc_rdv[gs];
-      assign rf_wa[gs*6 +: 6]          = rc_rd[gs*6 +: 6];
+      assign rf_wa[gs*`AREG_W +: `AREG_W] = rc_rd[gs*`AREG_W +: `AREG_W];
       assign rf_wd[gs*64 +: 64]        = cs_val_h[gs];
    end endgenerate
 `else
    assign retire_pc   = {(IW*PCW){1'b0}};
    assign retire_insn = {(IW*32){1'b0}};
-   assign rf_we = {IW{1'b0}};  assign rf_wa = {(IW*6){1'b0}};  assign rf_wd = {(IW*64){1'b0}};
+   assign rf_we = {IW{1'b0}};  assign rf_wa = {(IW*`AREG_W){1'b0}};  assign rf_wd = {(IW*64){1'b0}};
 `endif
 
    // Nothing may sit in X while a serializing op is in M. This is what `ser_block`
@@ -4915,6 +4917,10 @@ module smolrv64_core
    reg [4:0]  e_ri [0:IW-1];
    initial    e_v = {IW{1'b0}};
    integer    ek;
+   wire [`AREG_W-1:0] rc_rdk [0:IW-1];   // commit port k's architectural destination
+   for (genvar gk = 0; gk < IW; gk = gk + 1) begin: rck
+      assign rc_rdk[gk] = rc_rd[gk*`AREG_W +: `AREG_W];
+   end
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
@@ -4943,8 +4949,8 @@ module smolrv64_core
                if (retire[ek]) begin
                   e_v[ek] <= 1'b1;
                   e_pc[ek] <= pc64(cs_pc[rc_sx[ek]]);  e_insn[ek] <= cs_insn[rc_sx[ek]];
-                  e_rk[ek] <= ~rc_rdv[ek] ? 2'd0 : rc_rd[ek*6+5] ? 2'd2 : 2'd1;
-                  e_ri[ek] <= rc_rd[ek*6 +: 5];  e_val[ek] <= cs_val_h[ek];
+                  e_rk[ek] <= ~rc_rdv[ek] ? 2'd0 : `AR_F(rc_rdk[ek]) ? 2'd2 : `AR_X(rc_rdk[ek]) ? 2'd1 : 2'd0;
+                  e_ri[ek] <= rc_rdk[ek][4:0];  e_val[ek] <= cs_val_h[ek];
                   e_mkind[ek] <= cs_mkind_h[ek];  e_mpa[ek] <= cs_mpa_h[ek];
                   e_mdata[ek] <= cs_mdata_h[ek];  e_msz[ek] <= cs_msz_h[ek];
                end
@@ -5197,11 +5203,11 @@ module smolrv64_core
    // A call or return is x1/x5 linkage: a call writes a link register, a return is a jalr that
    // reads one and writes none.
    function [1:0] cti_cls;     // {call, ret}
-      input is_jump, is_jalr, rd_v;  input [5:0] rd, rs1;
+      input is_jump, is_jalr, rd_v;  input [`AREG_W-1:0] rd, rs1;
       reg lrd, lrs;
       begin
-         lrd = rd_v & ((rd == 6'd1) | (rd == 6'd5));
-         lrs = (rs1 == 6'd1) | (rs1 == 6'd5);
+         lrd = rd_v & ((rd == `AREG_W'd1) | (rd == `AREG_W'd5));
+         lrs = (rs1 == `AREG_W'd1) | (rs1 == `AREG_W'd5);
          cti_cls = {is_jump & lrd, is_jalr & lrs & ~lrd};
       end
    endfunction
