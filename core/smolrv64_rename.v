@@ -113,12 +113,12 @@ module smolrv64_rename
    localparam integer NAR = 1 << `AREG_W;                 // the architectural registers, every kind
    localparam integer NHID = 1;                           // the hidden registers in use (VH0)
    // THE RESET MAPPING: x0-x31 in SH_IE, f0-f31 in SH_FL and v0-v31 in SH_V at indices 0..31, the
-   // hidden registers in use in SH_FF at 0..NHID-1, any other register at physical 0 (never written)
-   function automatic [PBITS-1:0] map0(input integer j);
-      map0 = (j < 32) ? {SH_IE, j[IDXB-1:0]} : (j < 64) ? {SH_FL, {(IDXB-5){1'b0}}, j[4:0]}
-           : (j < 96) ? {SH_V, {(IDXB-5){1'b0}}, j[4:0]}
-           : (j < 96 + NHID) ? {SH_FF, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}};
-   endfunction
+   // hidden registers in use in SH_FF at 0..NHID-1, any other register at physical 0 (never written).
+   // An expression, not a function: Vivado ignores a function's value in an initial block (Synth
+   // 8-311), and the maps' initial values are their reset.
+`define RN_MAP0(j) (((j) < 32) ? {SH_IE, j[IDXB-1:0]} : ((j) < 64) ? {SH_FL, {(IDXB-5){1'b0}}, j[4:0]} \
+                  : ((j) < 96) ? {SH_V, {(IDXB-5){1'b0}}, j[4:0]} \
+                  : ((j) < 96 + NHID) ? {SH_FF, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}})
 
    // ---- the map -------------------------------------------------------------------
    // IW COPIES OF THE SPECULATIVE MAP, one write port each: slot k writes copy k (as do the
@@ -165,7 +165,7 @@ module smolrv64_rename
    // (the last commit of r wins).
    reg [PBITS-1:0] cm [0:NAR-1];
    integer cmi;
-   initial for (cmi = 0; cmi < NAR; cmi = cmi + 1) cm[cmi] = map0(cmi);
+   initial for (cmi = 0; cmi < NAR; cmi = cmi + 1) cm[cmi] = `RN_MAP0(cmi);
    reg [PBITS-1:0] cm_after [0:NAR-1];
    integer cmr, cmq;
    always @* for (cmr = 0; cmr < NAR; cmr = cmr + 1) begin
@@ -182,9 +182,9 @@ module smolrv64_rename
       (* ram_style = "distributed" *) reg [PBITS-1:0] rmap [0:NAR-1];
       integer j;
       // x0 -> physical 0 (SH_IE index 0), which smolrv64_prf hardwires to read zero and never
-      // writes. Copy 0 holds the reset mappings (map0), the others zero.
+      // writes. Copy 0 holds the reset mappings (RN_MAP0), the others zero.
       initial for (j = 0; j < NAR; j = j + 1) begin
-         rmap[j] = (gc != 0) ? {PBITS{1'b0}} : map0(j);
+         rmap[j] = (gc != 0) ? {PBITS{1'b0}} : `RN_MAP0(j);
          smap[j] = rmap[j];
       end
       wire sw = r_valid[gc] & r_rd_v[gc] & ~shadowed[gc];   // this slot's mapping is its register's newest
@@ -212,7 +212,7 @@ module smolrv64_rename
       wire [PBITS-1:0] dv [0:3*IW-1];
       if (NR + 2*IW > 15) begin: dmap
          (* ram_style = "distributed" *) reg [PBITS-1:0] smap_d [0:NAR-1];
-         initial for (j = 0; j < NAR; j = j + 1) smap_d[j] = (gc != 0) ? {PBITS{1'b0}} : map0(j);
+         initial for (j = 0; j < NAR; j = j + 1) smap_d[j] = (gc != 0) ? {PBITS{1'b0}} : `RN_MAP0(j);
          always @(posedge clk) if (!reset & s_we[gc]) smap_d[wa] <= wx;
          for (gp = 0; gp < IW; gp = gp + 1) begin: r
             assign dv[gp]        = smap_d[sa[NS + gp]];
@@ -775,4 +775,5 @@ module smolrv64_rename
    end
 endmodule
 
+`undef RN_MAP0
 `default_nettype wire

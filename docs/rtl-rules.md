@@ -795,6 +795,14 @@ to the other port. A read of a `(* ram_style *)` array is a continuous assign or
 always-block statement at module scope, one per reader; Vivado then replicates the LUTRAM
 per read port (smap_a has six copies, correctly). `smolrv64_rename.v` head reads, cdf30cb0+1.
 
+**F4b. An initial value is a constant expression, never a function's value.**
+Vivado ignores an `initial` assignment whose value comes from a function call (Synth 8-311,
+"ignoring non-constant assignment in initial block"), and for a LUTRAM or a flop the initial
+value is its reset. The rename maps' reset mapping, moved into a function `map0` (68bba5a3),
+simulated correctly everywhere and synthesized to all-zero maps: the netlist retired 33
+instructions and printed nothing. `tools/netlist-boot.sh` now fails on any Synth 8-311 with the
+line that caused it; the reset mapping is a macro (`RN_MAP0`).
+
 **F5. The post-synthesis netlist boots the monitor before a bitstream is built.**
 `tools/netlist-boot.sh`: rv_soc_top synthesized out of context with the shipping
 options and defines, `write_verilog -mode funcsim`, and the ROM monitor booted on that

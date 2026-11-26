@@ -12,6 +12,10 @@ SHA=$(git -C "$REPO" rev-parse --short HEAD); O=$REPO/gate-results/netlist-$SHA;
 echo "netlist-boot $SHA: synthesizing rv_soc_top out of context ($(date +%H:%M))"
 "$XIL/bin/vivado" -mode batch -nojournal -log "$O/synth.vlog" -source "$REPO/tools/ooc-netlist.tcl" -tclargs "$REPO" "$SHA" "$O" > "$O/synth.out" 2>&1
 grep -q "^OOC-DONE" "$O/synth.out" || { echo "NETLIST-BOOT: FAIL (synthesis) $(grep -E '^ERROR' "$O/synth.out" | head -1 | cut -c1-160)"; exit 1; }
+# an initial value synthesis ignored (a function's value, say) is a reset that the netlist lacks: the
+# maps of a rename came up zero that way and the netlist died at its 33rd instruction
+I=$(grep -m1 "Synth 8-311" "$O/synth.vlog")
+[ -z "$I" ] || { echo "NETLIST-BOOT: FAIL (an initial value ignored) $(echo "$I" | cut -c1-200)"; exit 1; }
 source "$XIL/settings64.sh" >/dev/null 2>&1
 xvlog --relax -log "$O/xvlog.log" "$O/ooc-$SHA-funcsim.v" "$REPO/core/tb_smolrv64_netlist.v" "$XIL/data/verilog/src/glbl.v" > "$O/xvlog.out" 2>&1 || { echo "NETLIST-BOOT: FAIL (xvlog) $(grep ERROR "$O/xvlog.out" | head -1 | cut -c1-160)"; exit 1; }
 xelab -log "$O/xelab.log" -L unisims_ver -L secureip -timescale 1ns/1ps --snapshot boot-$SHA tb glbl > "$O/xelab.out" 2>&1 || { echo "NETLIST-BOOT: FAIL (xelab) $(grep ERROR "$O/xelab.out" | head -1 | cut -c1-160)"; exit 1; }
