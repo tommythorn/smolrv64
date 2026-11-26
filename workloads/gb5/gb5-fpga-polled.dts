@@ -54,12 +54,12 @@
 			reg = <0>;
 			status = "okay";
 			compatible = "riscv";
-			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_zawrs_zba_zbb_zbs_zcb_zcmop_zicond_zicbom_zicbop_zicboz_sscofpmf_svpbmt";
+			riscv,isa = "rv64imafdcsu_zicntr_zicsr_zifencei_zihintntl_zihintpause_zihpm_zimop_zawrs_zba_zbb_zbs_zcb_zcmop_zicond_zicbom_zicbop_zicboz_sscofpmf_ssnpm_supm_svpbmt";
 			riscv,isa-base = "rv64i";
 			riscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 				"zicntr", "zicsr", "zifencei", "zihintntl", "zihintpause", "zihpm",
 				"zimop", "zawrs", "zba", "zbb", "zbs", "zcb", "zcmop", "zicond",
-				"zicbom", "zicbop", "zicboz", "sscofpmf", "svpbmt";
+				"zicbom", "zicbop", "zicboz", "sscofpmf", "ssnpm", "supm", "svpbmt";
 			riscv,cbom-block-size = <64>;
 			riscv,cbop-block-size = <64>;
 			riscv,cboz-block-size = <64>;

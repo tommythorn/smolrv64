@@ -38,6 +38,7 @@ module csr_file
     output wire [1:0]  o_priv,        // current privilege (instruction-fetch priv)
     output wire        o_ifx_d,       // fetch translates NEXT cycle (priv not M, satp MODE Sv39): a flop's D
     output wire [1:0]  o_dpriv,       // effective data-access priv (honors MPRV/MPP)
+    output wire        o_pm_u,        // senvcfg.PMM is PMLEN=7 (Ssnpm): U-mode data addresses are masked
     output wire        o_sum,         // mstatus.SUM
     output wire        o_mxr,         // mstatus.MXR
     output wire [2:0]  o_frm,         // fcsr.frm -> FP units for dynamic rounding
@@ -539,7 +540,7 @@ module csr_file
         MNSTATUS:   rdata = mnstatus;
         STIMECMP:   rdata = stimecmp;
         MENVCFG:    rdata = menvcfg;
-        SENVCFG:    rdata = {56'd0, senvcfg[7:0]};
+        SENVCFG:    rdata = {30'd0, senvcfg[33:32], 24'd0, senvcfg[7:0]};
         MSTATEEN0:  rdata = mstateen0;
         // mstateen1..3 / sstateen0..3 are read-only zero: they gate only state this
         // core does not implement, so the default case (0) is the whole model.
@@ -607,6 +608,7 @@ module csr_file
    assign o_satp      = satp;
    assign o_priv      = priv;
    assign o_dpriv     = mstatus[17] ? mstatus[12:11] : priv;
+   assign o_pm_u      = senvcfg[33];
    assign o_sum       = mstatus[18];
    assign o_mxr       = mstatus[19];
 
@@ -1005,7 +1007,8 @@ module csr_file
 `endif
               end
               MENVCFG:    menvcfg <= newv;
-              SENVCFG:    senvcfg <= newv & 64'h00000000000000f1;  // FIOM + CBZE/CBCFE/CBIE (SmolRV64 mask)
+              // FIOM + CBZE/CBCFE/CBIE, and PMM (Ssnpm): PMLEN=7 (10) or off, 01 and 11 read as off
+              SENVCFG:    senvcfg <= (newv & 64'h00000000000000f1) | {30'd0, (newv[33:32] == 2'b10), 33'd0};
               MSTATEEN0:  mstateen0 <= newv & 64'hC000_0000_0000_0000;   // SE0|ENVCFG only
               FFLAGS:     fcsr[4:0] <= newv[4:0];
               FRM:        fcsr[7:5] <= newv[2:0];

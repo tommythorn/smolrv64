@@ -381,6 +381,14 @@ module smolrv64_core
    // instruction-side translation. M-mode fetches are physical (satp forced Bare).
    wire [63:0] mmu_satp;
    wire [1:0]  mmu_priv, mmu_dpriv;
+   wire        csr_pm_u;
+   // Pointer masking (Ssnpm/Supm, PMLEN=7): a U-mode explicit data access ignores its top 7 bits --
+   // sign-extended from bit 56 under translation, zero-extended under Bare -- except a load while
+   // MXR is in effect. Applied once, to the VA M takes, so the dMMU's checks, the queues' recorded
+   // VAs and every fault's tval see the transformed address. Its inputs change only at a refetch.
+   function [63:0] pm_va(input [63:0] va, input on, input xl);
+      pm_va = on ? {{7{xl & va[56]}}, va[56:0]} : va;
+   endfunction
    wire        mmu_sum, mmu_mxr, mmu_flush;
    // THE TLB FLUSH IS A REGISTER: csr_file's is its system op's live fire (an sfence.vma or a satp
    // write), and through the fetch freeze and the iTLB it reached the I$ request and the fetch
@@ -3677,7 +3685,7 @@ module smolrv64_core
       .raddr(sy_addr), .rdata(csr_rdata),
       .redir_target(csr_redir_tgt), .redir_valid(csr_redir_v),
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
-      .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(csr_ifx_d), .o_dpriv(mmu_dpriv),
+      .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(csr_ifx_d), .o_dpriv(mmu_dpriv), .o_pm_u(csr_pm_u),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
@@ -5260,7 +5268,9 @@ module smolrv64_core
             m_seq         <= qm_seq;
             m_rd_v        <= qm_rd_v;
             m_prd         <= qm_prd;
-            m_addr        <= s_win ? s_va : ho_va;
+            m_addr        <= pm_va(s_win ? s_va : ho_va,
+                                   (mmu_dpriv == 2'd0) & csr_pm_u & (qm_is_mem | qm_is_amo)
+                                   & ~(mmu_mxr & ~qm_is_store & ~qm_is_amo), satp_data[63:60] == 4'd8);
             m_st_data     <= ho_dat;         // an AMO's or SC's: the store queue reads its own
             m_sq_tag      <= qm_sq_tag;
             m_lq_idx      <= qm_lq_idx;

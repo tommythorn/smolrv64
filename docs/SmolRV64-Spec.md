@@ -19,7 +19,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | ISA | RV64IMAFDC (`misa` = A, C, D, F, I, M, S, U; MXL=2) |
 | Privilege | M / S / U |
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
-| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot; Zcb and Zcmop (`src/rvc_expand.v`: each expands to its 32-bit equivalent, a c.mop.N to a nop), Zimop (mop.r.N / mop.rr.N write 0 and issue as ALU ops, not system ops: `src/smolrv64_sysop.vh`), Zawrs (wrs.nto / wrs.sto retire at once, as the extension allows), Zihintntl and Zihintpause (hints in encodings that already execute as no-ops) |
+| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot; Zcb and Zcmop (`src/rvc_expand.v`: each expands to its 32-bit equivalent, a c.mop.N to a nop), Zimop (mop.r.N / mop.rr.N write 0 and issue as ALU ops, not system ops: `src/smolrv64_sysop.vh`), Zawrs (wrs.nto / wrs.sto retire at once, as the extension allows), Zihintntl and Zihintpause (hints in encodings that already execute as no-ops), Ssnpm and Supm (`senvcfg.PMM` = PMLEN 7, §8.1) |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **four-wide** (`SMOLRV64_IW=4`, set once in `core/smolrv64_width.vh` for the RTL, the build and the benches; `SMOLRV64_IW=3` and `2` build the three- and two-wide machines); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops, multiplies, divides, branches and jumps issue in their slot's lane (a scheduler, an ALU and a multiplier per lane, four of each; a divide's operands go to the one MD stage) and reorder freely; a system op issues in lane A and fires from the SYSQ at the ROB head; FP ops reorder on the FP port (§7); loads, stores, AMOs, LR/SC and CBOs generate their address in their slot's lane and reach M through their LQ/SQ entry or the head-op register (§8) |
@@ -1681,6 +1681,14 @@ I$ misses up 4.6%, one line in five never retired from); with the walk throttle 
 entries, with the fill hold too +3.20% (fe:icache 24.91% -> 22.67% of cycles). `ITLB-SIM` and
 `ICMISS-SIM` in the Linux bench count walks and I$ misses whose page or line nothing retired
 from; a held miss that is cancelled counts as a miss.
+
+**Pointer masking (Ssnpm, Supm).** `senvcfg.PMM` is WARL: 10 (PMLEN 7) holds, 01 and 11 read
+back as 00. While it is 10, M's address register (`m_addr`) takes the access's VA with bits 63:57
+replaced, for every load, store, AMO, LR/SC and CBO whose effective privilege (`mstatus.MPRV`
+included) is U: the sign extension of bit 56 under Sv39, zeros under Bare. A load is not masked
+while `mstatus.MXR` is set. Translation, the PMA check and a fault's `stval`/`mtval` all see the
+masked address; instruction fetch and page-table walks are never masked. Directed test:
+`core/directed/supm.S`; on the board, `tools/board/pmtest` enables it through `prctl`.
 
 The MMU also range-checks the resolved PA: anything outside {RAM, CLINT, PLIC, UART, LSRAM,
 virtio} faults rather than being silently dropped.
