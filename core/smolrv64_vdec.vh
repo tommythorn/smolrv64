@@ -217,11 +217,25 @@ function automatic [9:0] vle_at(input [UX_W-1:0] ux);
       endcase
    end
 endfunction
+// a store's uop ux, {kind, k, ra, rb}: kind 0 the base's move-in, 1 the end, 2 doubleword k's
+// extract into VH0 from registers ra and rb of the group (the doubleword's bytes are in [ra, rb]), 3
+// its store. 4 * EMUL + 4 uops.
+function automatic [12:0] vse_at(input [UX_W-1:0] ux, input [3:0] e);
+   reg [UX_W-1:0] t;
+   reg [4:0]      k;
+   reg [2:0]      ra, rb;
+   begin
+      t  = ux - 2;  k = t[5:1];
+      ra = (k == 5'd0) ? 3'd0 : k[3:1] - {2'd0, ~k[0]};                   // (k - 1) >> 1
+      rb = (k[0] | (k == 5'd0) | (k == {e, 1'b0})) ? ra : ra + 3'd1;
+      vse_at = (ux < 2) ? {ux[1:0], 11'd0} : {t[0] ? 2'd3 : 2'd2, k, ra, rb};
+   end
+endfunction
 
 // the instruction's uops, from the decode state before it and vstart: a vset that allocates is two
 // (the vl write, then rd); a move one a register it writes, after the scalar's move-in; a
-// whole-register access four a register from vstart's chunk on; a unit-stride load 5 * EMUL + 3;
-// anything else one (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches
+// whole-register access four a register from vstart's chunk on; a unit-stride load 5 * EMUL + 3, a
+// store 4 * EMUL + 4; anything else one (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches
 // what follows, and an illegal one, which traps)
 function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input [6:0] vs);
    reg [UX_W:0] n;
@@ -231,6 +245,7 @@ function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input
                 : (is_vmv(i) & ~s[13]) ? {{(UX_W-3){1'b0}}, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)}
                 : ((is_vlr(i) | is_vsr(i)) & ~vwr_past(i, vs)) ? n - vwr_s0(i, vs)
                 : (is_vus(i, 1'b0) & (vus_regs(i, s) != 4'd0)) ? {{(UX_W-3){1'b0}}, vus_regs(i, s)} * 5 + 3
+                : (is_vus(i, 1'b1) & (vus_regs(i, s) != 4'd0)) ? {{(UX_W-3){1'b0}}, vus_regs(i, s)} * 4 + 4
                 : 1;
    end
 endfunction

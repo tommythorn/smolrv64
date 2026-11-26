@@ -1276,6 +1276,18 @@ one is loaded as well, the straddling element at vstart). The retry cracks the w
 again: doublewords before vstart are null and the packs keep the prestart bytes. Directed test:
 `core/directed/vle.S` (a tail ending at an unmapped page, a page fault mid-register retried).
 
+**Unit-stride stores** (`vse<eew>.v`, unmasked, the same legality) are the base's move-in and the
+end, then each doubleword k = 0 .. 2 * EMUL an extract and a store: 4 * EMUL + 4 uops. The extract
+gathers the doubleword's bytes from the one or two registers of the group they are in (rs1 and rs2,
+VH1 as rs3) into VH0, the first active byte at byte 0; the store writes its active bytes alone, a
+**byte count** at the first one's address (the store queue's entry and PA take that offset from the
+lane's side), its data VH0 named as rs3, which the store queue snoops as it does a plain store's rs2
+and which is no scheduler source, while rs2 is XH0, which the scheduler waits on. A null store
+(no active byte) fills translated at the DRAM base with a count of 0 and drains through the store
+register writing nothing. A fault writes vstart and tval as a load's does; the bytes before it are
+stored. Directed test: `core/directed/vse.S` (every destination compared whole against its
+expected image; a tail ending at an unmapped page; a page fault mid-register retried).
+
 ## 8. Load/store unit and MMU
 
 - **Address generation in the lanes; M is the fill stage (lanes 5.2d-a).** A plain load or

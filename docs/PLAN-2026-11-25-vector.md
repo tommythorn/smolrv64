@@ -420,13 +420,14 @@ EMUL; a reserved EMUL is illegal), base b = rs1, o = b mod 8, the instruction's 
   - a **load** reads the whole doubleword into VH0 when lo < hi (its other bytes are on the same
     page), else is a null load: M fills it translated, with no fault, at the DRAM base (a doubleword
     the packs ignore), so it touches no page of the access;
-  - a **store** writes bytes [lo, hi) of it (a **byte count**, 0 to 8, in the SQ: a count of 0 drains
-    as nothing), its data from rs3 (VH0), rs2 being XH0.
+  - a **store** writes bytes [lo, hi) of it (a **byte count**, 0 to 8, in the SQ: a count of 0 fills
+    translated at the DRAM base and drains through the store register as nothing), its data VH0
+    named as rs3 (the SQ snoops it; no scheduler source), rs2 being XH0.
 - **A load's pack** of doubleword k writes its active bytes into the group, bytes [8k - o, 8k - o + 8)
   of it: one register for odd k, two (the register before and after) for even k, a pack a register
   (sources VH0, VH1, the old vd, the VL file); it follows the doubleword's load.
 - **A store's extract** for doubleword k gathers group bytes [8k - o + lo, ...) into VH0, byte 0 the
-  first active one (sources the two registers it may span and VH1).
+  first active one (sources the two registers it may span, ra and rb, and VH1 as rs3); then its store.
 - An element-misaligned base (o not a multiple of EEW) raises address-misaligned (cause 4 / 6), as
   the spec allows.
 

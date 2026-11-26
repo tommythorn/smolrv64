@@ -555,9 +555,11 @@ module smolrv64_lsu
    // the store register (see its ports): a store a cycle, one at a time behind the state machine's
    reg         sp_v;  reg [PAW-1:0] sp_a;  reg [63:0] sp_wd;  reg [7:0] sp_wm;
    initial sp_v = 1'b0;
-   wire        sp_on = sp_v & ~(st_go | amo_go);
+   // a store of no bytes (a vector access's null doubleword) writes nothing: done as it is held
+   reg         sp_z;
+   wire        sp_on = sp_v & ~sp_z & ~(st_go | amo_go);
    assign sp_busy = sp_v;
-   assign sp_done = sp_on & mem_wroom;
+   assign sp_done = (sp_on & mem_wroom) | (sp_v & sp_z);
    always @(posedge clk) begin
       if (reset) sp_v <= 1'b0;
       else if (sp_go) sp_v <= 1'b1;
@@ -566,13 +568,14 @@ module smolrv64_lsu
          sp_a  <= sp_pa & PA_DWM;
          sp_wd <= sp_data << {sp_pa[2:0], 3'b000};
          sp_wm <= (8'hff >> (4'd8 - sp_nb)) << sp_pa[2:0];
+         sp_z  <= sp_nb == 4'd0;
       end
    end
    always @(posedge clk) if (!reset) begin
       if (sp_go & sp_v & ~sp_done)
          $fatal(1, "smolrv64_lsu: a store handed to the store register while it still holds one (pa %h)", sp_a);
-      if (sp_go & ((({1'b0, sp_pa[2:0]} + sp_nb) > 4'd8) | (sp_nb == 4'd0) | ~((sp_pa >= LSU_DRAM_BASE) | (sp_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]))))
-         $fatal(1, "smolrv64_lsu: the store register takes only a store to memory inside one doubleword, of at least a byte (pa %h bytes %0d)", sp_pa, sp_nb);
+      if (sp_go & ((({1'b0, sp_pa[2:0]} + sp_nb) > 4'd8) | ~((sp_pa >= LSU_DRAM_BASE) | (sp_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]))))
+         $fatal(1, "smolrv64_lsu: the store register takes only a store to memory inside one doubleword (pa %h bytes %0d)", sp_pa, sp_nb);
       if (sp_v & ((st == S_ARD) | amo_go | (st_go & run_cbo)))
          $fatal(1, "smolrv64_lsu: the store register holds a store under an atomic or a CBO (state %0d)", st);
    end

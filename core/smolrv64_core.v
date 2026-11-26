@@ -964,7 +964,10 @@ module smolrv64_core
       wire pr3 = ~rn_byp3v[gs] & pnd_rf[3*gs];
       // A plain store's rs2 is an operand of its store-buffer entry, which watches for it itself
       // (smolrv64_sq's snoop), so the scheduler does not wait on it: the store issues on its address.
-      wire [2:0] srdy = {pr3 | ~q_rs3_v, pr2 | ~q_rs2_v | st_nb, pr1 | ~q_rs1_v};
+      // ...but a unit-stride vector store's rs2 is XH0, its doubleword's bounds: it waits on that, and
+      // its data, the queue's operand, is its rs3 (VH0), not a scheduler source
+      wire       vus_st = is_vus(q_insn, 1'b1) & q_is_mem;
+      wire [2:0] srdy = {pr3 | ~q_rs3_v, pr2 | ~q_rs2_v | (st_nb & ~vus_st), pr1 | ~q_rs1_v};
       // a VL uop's destination is its version's entry of the VL file, never renamed: rd names it
       wire vlu = ~q_rd_v & ~q_illegal & (q_rd[`AREG_W-1 -: 3] == VL_ID[6:4]);
       wire [RN_PBITS-1:0] pvl_w = {SH_VL, {(RN_IDXB-4){1'b0}}, q_rd[3:0]};
@@ -1021,7 +1024,7 @@ module smolrv64_core
       assign s_srdy_hit[gs] = srdy | {wk(prs3), wk(prs2), wk(prs1)};
       // the ROB's and the LQ's: the renamed register (a VL uop's entry is no register: `d_prd != 0` is rd_v)
       assign s_prd_g[gs] = prd_g;  assign s_prd_gv[gs*RN_PBITS +: RN_PBITS] = q_rd_v ? prd : {RN_PBITS{1'b0}};
-      assign s_prs2[gs] = prs2;    assign s_r2rdy[gs] = pr2 | ~q_rs2_v;
+      assign s_prs2[gs] = vus_st ? prs3 : prs2;    assign s_r2rdy[gs] = vus_st ? pr3 : (pr2 | ~q_rs2_v);
       assign s_ps_in[gs] = {prs3, prs2, prs1};
       assign s_rob[gs] = rob_d_idxv[gs*ROB_IDXB +: ROB_IDXB];
       assign s_pc[gs] = q_pc;  assign s_tgt[gs] = q_pc + q_imm[PCW-1:0];  assign s_seq[gs] = q_seq;  assign s_insn[gs] = q_insn;
@@ -1036,7 +1039,7 @@ module smolrv64_core
       // a lane reads integer registers only: an FP source (an FP op that traps at FS off, a system
       // op in lane A) is no source to it, its tag zero and ready
       wire f1 = prs1[RN_PBITS-1], f2 = prs2[RN_PBITS-1];
-      assign sl_ps[gs]  = {prs3, (st_nb | f2) ? {RN_PBITS{1'b0}} : prs2, f1 ? {RN_PBITS{1'b0}} : prs1};
+      assign sl_ps[gs]  = {prs3, ((st_nb & ~vus_st) | f2) ? {RN_PBITS{1'b0}} : prs2, f1 ? {RN_PBITS{1'b0}} : prs1};
       assign sl_rdy[gs] = s_srdy_hit[gs][1:0] | {f2, f1};
       assign sl_prd[gs] = prd_g;
       `PL_DECL(sp_)
@@ -1679,7 +1682,7 @@ module smolrv64_core
                    gl, ps1, q_pc, dmem_rvalid_c, dmem_rtag_resp, lq_l_prd, ld_land_fast, u_lsu.r_kill, rob, dead(rob));
          if (sp1 & ~(is_lmem(q_insn) & sv_v))
             $fatal(1, "core: lane %0d issued a speculative op that generates no address, or without a verdict (pc=%h)", gl, q_pc);
-         if (q_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(q_is_store & is_lmem(q_insn)))
+         if (q_rs2_v & ~pnd_q[3*IW + 2*gl + 1] & ~(q_is_store & is_lmem(q_insn) & ~is_vus(q_insn, 1'b1)))
             $fatal(1, "core: lane %0d executed with rs2 p%0d still pending (rob=%0d)", gl, ps2, rob);
       end
       wire sys  = is_sysq(q_insn, q_illegal, q_fault);   // a system op or a trap: the SYSQ's, nothing here
@@ -1839,15 +1842,16 @@ module smolrv64_core
       // those of [rs2's start, rs2's end) (XH0, bytes from the base's doubleword) in [8k, 8k + 8)
       // (8k its immediate): their count (0: none, a null access), the first one's offset in the
       // doubleword, and the element it is in, (first - o) >> EEW (o = the base mod 8), which a fault
-      // there writes into vstart. A whole-register chunk is all active, its element its offset's.
-      wire        vus  = is_vus(q_insn, 1'b0);
+      // there writes into vstart. A whole-register chunk is all active, at its address, its element its
+      // offset's.
+      wire        vus  = is_vus(q_insn, 1'b0) | is_vus(q_insn, 1'b1);
       wire [1:0]  vew  = q_insn[14] ? q_insn[13:12] : 2'd0;
       wire [11:0] vdk  = q_imm[11:0];
       wire [11:0] vlo  = (rs2[43:32] > vdk) ? rs2[43:32] : vdk;
       wire [11:0] vhi  = (rs2[11:0] < vdk + 12'd8) ? rs2[11:0] : vdk + 12'd8;
       wire [11:0] vcn  = vhi - vlo;
       wire [11:0] vel  = (vus ? vlo - {9'd0, rs1[2:0]} : vdk) >> vew;
-      assign l_vx[gl]  = {is_vecins(q_insn), vus ? ((vlo < vhi) ? vcn[3:0] : 4'd0) : 4'd8, vus ? vlo[2:0] : 3'd0, vel[6:0]};
+      assign l_vx[gl]  = {is_vecins(q_insn), vus ? ((vlo < vhi) ? vcn[3:0] : 4'd0) : 4'd8, vus ? vlo[2:0] : addr[2:0], vel[6:0]};
       assign l_addr[gl] = vus ? {addr[63:3], 3'b000} : addr;    assign l_tgt[gl] = target;   assign l_ttgt[gl] = taken_tgt;
       assign l_red[gl] = red;      assign l_taken[gl] = taken;
       assign l_qvv[gl] = qv;  assign l_qprdv[gl*RN_PBITS +: RN_PBITS] = qprd;  assign l_qvalv[gl*64 +: 64] = qval;
@@ -2021,7 +2025,10 @@ module smolrv64_core
    reg  [9:0]  fve_s [0:SQ_N-1];
    always @(posedge clk) begin
       if (m_lq_fill) begin fva_l[m_lq_idx] <= m_addr;  fve_l[m_lq_idx] <= m_vacc ? m_vx[9:0] : 10'd0; end
-      if (m_sq_fill) begin fva_s[m_sq_tag] <= m_addr;  fve_s[m_sq_tag] <= m_vacc ? m_vx[9:0] : 10'd0; end
+      // (a vector store's VA is its first active byte's: the store queue's own)
+      if (m_sq_fill) begin
+         fva_s[m_sq_tag] <= m_vacc ? {m_addr[63:3], m_vx[7 +: 3]} : m_addr;  fve_s[m_sq_tag] <= m_vacc ? m_vx[9:0] : 10'd0;
+      end
    end
    wire                wk_cur_dead = wk_lk_st ? sq_kmask[sq_k_idx] : lq_kmask[wk_lk_li];
    wire                wk_st = wk_lk_st;
@@ -2050,9 +2057,11 @@ module smolrv64_core
       .d_seq(q_seq),
       .d_ready(sq_d_ready), .d_free(sq_free), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .ar(sa_v), .pk_v(sq_pk_v), .pk_idx(sq_pk_idx), .pk_seq(sq_pk_seq),
-      .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
-      .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_nb(4'd1 << m_mem_size),
-      .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
+      .a_v(m_sq_fill), .a_idx(m_sq_tag),
+      .a_addr(m_vnull ? VNULL_PA : m_vacc ? {lsu_xo_pa[PABITS-1:3], m_vx[7 +: 3]} : lsu_xo_pa),
+      .a_va(m_vacc ? {m_addr[38:3], m_vx[7 +: 3]} : m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt | m_vnull),
+      .a_flt(lsu_xo_flt & ~m_vnull), .a_fc(lsu_xo_fc), .a_nb(m_vacc ? m_vx[VXW-2 -: 4] : 4'd1 << m_mem_size),
+      .a_unc(lsu_xo_unc & ~m_vnull), .a_mem(lsu_xo_mem | m_vnull), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}), .wb_dq({128'd0, l_qvalv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
       .c_nb(sq_c_nb), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
@@ -3269,7 +3278,8 @@ module smolrv64_core
    wire         fv_pk  = (f_insn[6:0] == 7'b0000111) & (f_insn[24:20] == 5'b01000);  // a whole-register pack
    wire         fv_up  = (f_insn[6:0] == 7'b0000111) & (f_insn[24:20] == 5'b00000);  // a unit-stride pack
    wire         fv_en  = is_vend(f_insn);                                         // a unit-stride access's end
-   wire         fv_ex  = (f_insn[6:0] == 7'b0100111);                // an extract (STORE-FP)
+   wire         fv_ex  = (f_insn[6:0] == 7'b0100111) & (f_insn[24:20] == 5'b01000);  // a whole-register extract
+   wire         fv_ux  = (f_insn[6:0] == 7'b0100111) & (f_insn[24:20] == 5'b00000);  // a unit-stride extract
    wire         fv_h   = f_vpos[4];                                  // ...its chunk
    wire [1:0]   fv_esz = fv_pk ? fv_f3[1:0] : fv_sew;                // an element's log2 bytes
    wire [7:0]   fv_vs  = f_vpos[VP_VZ] ? 8'd0 : {1'b0, csr_vstart};  // vz: vstart is 0
@@ -3350,7 +3360,14 @@ module smolrv64_core
    wire [1:0]   fv_ew  = f_insn[14] ? f_insn[13:12] : 2'd0;               // a unit-stride access's log2 EEW
    wire [10:0]  fv_s   = {3'd0, fv_vs} << (fv_en ? f_insn[21:20] : fv_ew);  // its first byte, from b
    wire [10:0]  fv_b   = {3'd0, f_vl} << (fv_en ? f_insn[21:20] : fv_ew);   // ...and its end
-   wire [2:0]   fv_o   = fv_en ? f_rs1_val[2:0] : f_rs2_val[2:0];
+   wire [2:0]   fv_o   = fv_en ? f_rs1_val[2:0] : fv_ux ? f_rs3_val[2:0] : f_rs2_val[2:0];
+   // a store's extract of doubleword k: its first active byte, at max(o + vstart * EEW, 8k), is the
+   // group's byte 8k + lo - o, which is byte w of {rb, ra} (registers ra and ra + 1 or ra itself); VH0
+   // takes it and the seven after it
+   wire [10:0]  fv_dk  = {3'd0, f_vpos[7:3], 3'd0};
+   wire [10:0]  fv_ul  = (fv_s + {8'd0, fv_o} > fv_dk) ? fv_s + {8'd0, fv_o} : fv_dk;
+   wire [10:0]  fv_uw  = fv_ul - {8'd0, fv_o} - {4'd0, f_vpos[2:0], 4'd0};
+   wire [255:0] fv_win = {f_vb, f_va} >> {fv_uw[4:0], 3'd0};
    reg  [127:0] fv_res;
    reg  [7:0]   fv_ei;
    reg  [10:0]  fv_g;                                                    // a byte's offset from b
@@ -3389,6 +3406,7 @@ module smolrv64_core
         4'd8: fi_res = fi_rn[63:0];                                                   // FROUND(NX) -> fp
         4'd9: fi_res = {56'd0, vl_of(f_insn, f_rs1_val)};                             // a VL uop -> the VL file
         4'd10: fi_res = fv_xs ? fv_x : fv_ex ? (fv_h ? f_vb[127:64] : f_vb[63:0])     // a vector uop (its high half: fv_res)
+                      : fv_ux ? fv_win[63:0]
                       : fv_en ? {21'd0, fv_s + {8'd0, fv_o}, 21'd0, fv_b + {8'd0, fv_o}}
                       : fv_res[63:0];
         default: fi_res = 64'd0;
