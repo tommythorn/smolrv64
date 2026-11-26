@@ -123,8 +123,9 @@ void cosim_init() {
                  (int)COSIM_MEM_SIZE_LG2);
     g_ctx = simmerv_create(MEM_BYTES);
     if (!g_ctx) { std::fprintf(stderr, "cosim: simmerv_create failed\n"); std::abort(); }
-    // The core's ISA: RVA23's scalar extensions, no V yet.
-    simmerv_set_isa(g_ctx, true, false);
+    // RVA23's scalar extensions and V. The core does not advertise V (misa is the core's,
+    // below), so software that asks never uses it; the directed tests do.
+    simmerv_set_isa(g_ctx, true, true);
     if (const char* ck = plusarg("ckpt")) {
         if (simmerv_load_ckpt(g_ctx, ck) != 0) std::abort();
         g_in_stub = true;
@@ -226,7 +227,9 @@ int csr_read_to_override(uint32_t insn) {
         // simmerv's CSR fast-path ignores writes -> let the DUT's read value win.
         case 0x3A0: case 0x3B0:
         // scountovf: the OF bits of the counters, which run on the DUT's events.
-        case 0xDA0: return (int)csrno;
+        case 0xDA0:
+        // misa: the core's own letters (V is executed before it is advertised).
+        case 0x301: return (int)csrno;
         default:
             if ((csrno >= 0xB03 && csrno <= 0xB1F) ||
                 (csrno >= 0xC03 && csrno <= 0xC1F) ||

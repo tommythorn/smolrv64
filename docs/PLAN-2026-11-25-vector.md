@@ -223,3 +223,136 @@ rvv-bench, and our benchmarks rebuilt with `-march=rva23u64` (the full-march rul
 3. Memory is cracked into the existing LSU first, widened only on a measured need.
 4. Supm is in increment 0.
 5. Zvbb (all of it, for vrol) is implemented; Zvkb is not advertised.
+6. One vector unit: a uop is one 128-bit register a cycle; a second unit, a second FMA or VLEN 256
+   only on a measured case.
+
+## 7. Increment 1: vector state
+
+What the core has after it: mstatus.VS and the vector CSRs, `vset{i}vl{i}` and `vsetvl`, the 32
+vector registers renamed into their own file, the vector unit's moves (`vmv<nr>r.v`, `vmv.v.v/x/i`,
+`vmv.x.s`, `vmv.s.x`) and the whole-register loads and stores (`vl<nf>re<eew>.v`, `vs<nf>r.v`).
+V is not advertised (misa.V and the device trees stay as they are), so Linux never runs it; the
+directed tests and the lockstep do.
+
+### 7.1 Cracking: in the bundle register
+
+An instruction that needs more than one uop is cracked where the bundle register (`pb_in`) feeds
+the queue. Each slot's uop count is predecoded when the register loads (from the instruction and
+the decode state, below) and held with the slot. A bundle then pushes in as many cycles as its uops
+need, up to FW uops a cycle, slots and uops in program order; `pb_ready` waits for its last part.
+Each uop is a queue entry of its own with the instruction's PC and bits, its uop index `ux` and a
+`last` bit, so the queue, the head's rebuild, dispatch, the ROB and the LQ/SQ see ordinary entries.
+
+**Seqnos are given at the push**, one per uop, by a counter the redirect sets (`redirect_seq`):
+the LQ/SQ order loads against stores by seqno (`older`), so a cracked load and store each need
+their own. Fetch's own count is then read by nothing (`cur_seq` has no consumer today).
+
+**Retirement.** Every uop but the last commits as `d_noret` (the ROB's existing not-counted
+commit, the interrupt pseudo-op's); the last retires the instruction, so minstret, the cosim's
+retire and a trap's epc are the instruction's. A uop that traps traps the instruction.
+
+### 7.2 Decode state
+
+The frontend holds, in program order at the predecode: `vtype` (vlmul, vsew, vta, vma, vill), the
+**vl version** (below) and `vstart`. `vset{i}vl{i}` is decoded completely there (its vtype is an
+immediate), so every younger instruction is predecoded with the state it executes under, and each
+queue entry carries the state after it.
+
+- **vstart** changes only by a CSR write (which refetches) and a trap (which goes to a handler,
+  whose `sret` refetches), so its committed value is exact at the predecode.
+- **vsetvl** (vtype from a register) is a SYSQ op: it fires at the ROB head on a drained machine,
+  writes the decode state, vl and rd itself, and refetches the next instruction.
+- **Restore.** A per-entry table beside the ROB (column x row, the state after each entry) is
+  read at a lane's redirect, as the branch's own snapshot (rule D14); a decode redirect takes it
+  from its record; a squash at the head takes the committed copy, which commit keeps from the
+  same table (every commit port, rule C6).
+
+### 7.3 vl: versioned at decode
+
+`vl` is not an architectural register in the map. Each `vset{i}vl{i}` that sets vl allocates the
+next **version**, a register of a small file on the F side (the VL shard: 16 entries of 8 bits;
+VLMAX is at most 128), in ring order by the predecode, not from a free list. Its vl uop writes
+the version; a vector uop names the version it reads in its record, a fourth source the F-side
+scheduler waits on like any other. A version is free when the next one's `vset` commits; the
+predecode stalls when all 16 are live. vl therefore costs no rename-map read.
+
+- `vsetvli rd, rs1` (rs1 != x0): uop 0 is a lane ALU op `rd := minu(rs1, VLMAX)` (VLMAX an
+  immediate), uop 1 hands rs1 to the F stage, which writes `min(rs1, VLMAX)` into the version.
+- `vsetivli`, and `vsetvli` with rs1 = x0 and rd != x0: vl is a constant; the same two uops with
+  an immediate.
+- `vsetvli x0, x0`: vtype changes, vl is kept: no version is allocated (Simmerv's behaviour; the
+  spec reserves a change of VLMAX here).
+- An unsupported vtype sets vill and vl = 0, as `legalize_vtype` in Simmerv: reserved bits, vlmul
+  100, SEW above 64, or a VLMAX of 0.
+- `csrr vl` reads the committed version, `csrr vtype` the committed vtype, `vlenb` is 16; vl, vtype
+  and vlenb are read-only.
+
+### 7.4 Registers
+
+- **Architectural ids are 7 bits**: 0-31 x, 32-63 f, 64-95 v, 96-127 hidden. The hidden ones are
+  FP-kind temporaries (two in this increment: the halves of a register on their way to or from
+  memory). The rename maps grow to 128 entries; every literal 6-bit id (decode_operands, the
+  records, rename, the ROB, the LQ, the cosim's capture) becomes the one width.
+- **A vector register is `{SH_V, index}`**, shard 6, 64 entries of 128 bits, written only by the
+  vector unit (rule B2), read by it for vs1, vs2, vs3/v0 and the old vd. **The VL shard** is 7.
+  `shard[2]` then means "the F side" (FP or vector), which is what every lane-or-not test of it
+  asks; what tells SH_FL from SH_FF (the pending table's index, the PRF's port mux) names them,
+  and the vector and VL registers get pending bits and ports of their own.
+- **Old vd** is the rename's own `r_pold`, the mapping the destination replaces: a vector uop reads
+  it as a source (tail and prestart elements are undisturbed, the agnostic policy).
+
+### 7.5 Scheduling and the vector unit
+
+Vector uops are FP-class: they go to the FP queue and scheduler (`u_iq_f`), whose entries grow
+from three sources to five (vs1, vs2, vs3/v0, old vd, the vl version), and its wakes take the
+vector file's and the VL shard's writes. The vector unit is the F stage's: one uop a cycle,
+single-cycle like the in-core FP ops. A vector result lands in the vector file through its own
+write port; an f-register result (an extract) and an x-register result (`vmv.x.s`) take the
+in-core ops' result register (`icr`), as FMV does.
+
+Increment 1's unit: copy (`vmv<nr>r.v`), the masked move by element (`vmv.v.*`, `vmv.s.x`: vl,
+vstart and SEW from the record and the version), element 0 to a scalar (`vmv.x.s`), **pack** (two
+64-bit FP temporaries into a register, prestart elements from the old vd) and **extract** (a
+register's half into an FP temporary).
+
+### 7.6 Whole-register memory
+
+- `vl<nf>re<eew>.v`: per register k, two FP loads into the temporaries (`[rs1 + 16k]`,
+  `[rs1 + 16k + 8]`) and a pack into `vd + k`.
+- `vs<nf>r.v`: per register k, two extracts and two FP stores of the temporaries.
+- **A trap** in a load or store uop writes vstart with the index of the first element it covers
+  (the uop carries it), tval with its address; the handler's `sret` refetches and the predecode
+  cracks from vstart: registers wholly before it get no uops, the register holding it packs
+  prestart elements from the old vd, and a store chunk that straddles vstart goes element by
+  element.
+- The LSU and the store queue are unchanged. A misaligned chunk that crosses a page traps as a
+  scalar one does: a known limit until the misaligned vector access gets its own handling.
+
+### 7.7 CSRs and VS
+
+`vstart` (7 bits), `vxsat`, `vxrm`, `vcsr` live in `csr_file`; `vl`, `vtype` come from the
+committed state. `mstatus.VS` (and sstatus's view, and SD) is writable and resets Off. VS Off
+makes every vector instruction illegal at the predecode (as FS Off does) and every vector CSR
+access illegal; a write that changes VS or vstart refetches. Commit of any vector instruction's
+uop sets VS Dirty (every commit port) and the last one clears vstart.
+
+### 7.8 Lockstep
+
+Simmerv runs with V (`simmerv_set_isa(ctx, true, true)`), VS Off at reset as the core's, and the
+harness takes the core's misa. A uop that writes a vector register reports it (`probe_vwrite`:
+the register and its 128 bits); the harness holds them until the instruction retires and compares
+each against Simmerv's register file after its step (`simmerv_read_vreg`), and a `vset` against
+Simmerv's vl and vtype. Simmerv fixes found against the spec: `vmv<nr>r.v` writes whatever vl is
+(it skipped at vl = 0), and a whole-register access counts vstart in elements of EEW (it counted
+bytes).
+
+### 7.9 Steps, each locksteped and with a directed test
+
+- **a.** Simmerv: the vector-state API, the VS reset, the two fixes; the harness's misa.
+- **b.** VS and the vector CSRs; vector instructions illegal while VS is Off.
+- **c.** 7-bit architectural ids: no behaviour change, the Linux locksteps cycle-identical.
+- **d.** The cracker and the decode state, with `vset*` and the VL shard as its first users.
+- **e.** The vector file, its renaming and the vector unit's moves.
+- **f.** Whole-register loads and stores, and their traps.
+
+Then the board gates on the whole increment.
