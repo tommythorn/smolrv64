@@ -29,10 +29,9 @@ BIN=$(pwd)/obj_dir_smolrv64_cosim/tb_smolrv64_cosim
 EXTRA_LD=""
 [ "$(uname -s)" = "Darwin" ] && EXTRA_LD="-framework vmnet"
 
-if [ ! -f "$SIMMERV_LIB" ]; then
-   echo "building simmerv cosim lib ..."
-   (cd "$SIMMERV_DIR" && cargo build --release -p simmerv-cosim) || exit 1
-fi
+# the library follows its sources (cargo builds nothing when it is current), and the binary the library
+echo "building simmerv cosim lib ..."
+(cd "$SIMMERV_DIR" && flock /tmp/simmerv-cargo-$(id -un).lock cargo build --release -p simmerv-cosim) || exit 1
 
 PROBE_SRCS="../src/fetch.v ../src/aligner.v ../src/rvc_expand.v \
             ../src/decode_slot.v ../src/decode_operands.v ../src/decode_exec.v \

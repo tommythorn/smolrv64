@@ -109,13 +109,61 @@ function automatic [3:0] vmv_regs(input [31:0] i, input [VST_W-1:0] s);
             : (is_vmvv(i) & ~s[7]) ? (4'd1 << s[6:5]) : 4'd1;
 endfunction
 
-// the instruction's uops, from the decode state before it: a vset that allocates is two (the vl
-// write, then rd); a move one a register it writes, after the scalar's move-in; anything else one
-// (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches what follows,
-// and a move at vill, which traps)
-function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s);
-   uop_count = vset_alloc(i) ? 2
-             : (is_vmv(i) & ~s[13]) ? {2'b00, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)} : 1;
+// THE WHOLE-REGISTER LOADS AND STORES, vl<nf>re<eew>.v and vs<nf>r.v (nf = 1, 2, 4 or 8, the group
+// not past v31; vtype and vl are not read, so vill does not trap them). Each register is two 8-byte
+// chunks through VH0, a chunk two uops: a load's FLD of the chunk into VH0 and its pack into the
+// register (prestart bytes keep the old ones), a store's extract of the chunk into VH0 and its FSD.
+// Position p of the uops is {register, chunk, second}: a fault at a chunk leaves the chunks before
+// it written, and a retry cracks from the chunk vstart is in, every chunk before it done.
+function automatic is_vwr(input [31:0] i, input st);   // st: a store's
+   reg [5:0] nf;
+   begin
+      nf = {2'b00, i[31:29]} + 6'd1;
+      is_vwr = (i[6:0] == (st ? 7'b0100111 : 7'b0000111))
+             & ((i[14:12] == 3'b000) | (i[14] & (i[13:12] != 2'b00)))      // a vector width
+             & (i[28:26] == 3'b000) & (i[24:20] == 5'b01000)                // mew 0, unit-stride, whole
+             & ((i[31:29] == 3'd0) | (i[31:29] == 3'd1) | (i[31:29] == 3'd3) | (i[31:29] == 3'd7))
+             & (({1'b0, i[11:7]} + nf) <= 6'd32);
+   end
+endfunction
+function automatic is_vlr(input [31:0] i); is_vlr = is_vwr(i, 1'b0); endfunction
+function automatic is_vsr(input [31:0] i); is_vsr = is_vwr(i, 1'b1); endfunction
+// the position a whole-register access cracks from, and its uops: four a register, less the two
+// of each chunk wholly before vstart (vstart counts elements of the encoding's EEW, i[13:12] its
+// log2 bytes). Past the last element it is one uop that changes nothing: the last register's
+// pack of nothing, or its second extract.
+function automatic [6:0] vwr_c(input [31:0] i, input [6:0] vs);   // vstart's chunk
+   reg [9:0] b;                                    // vstart in bytes
+   begin
+      b = {3'd0, vs} << i[13:12];
+      vwr_c = b[9:3];
+   end
+endfunction
+function automatic vwr_past(input [31:0] i, input [6:0] vs);
+   vwr_past = vwr_c(i, vs) >= {2'b00, i[31:29], 1'b0} + 7'd2;
+endfunction
+function automatic [UX_W:0] vwr_s0(input [31:0] i, input [6:0] vs);
+   reg [6:0] c;
+   begin
+      c = vwr_c(i, vs);
+      vwr_s0 = ~vwr_past(i, vs) ? {c[UX_W-1:0], 1'b0} : {i[31:29], 2'b00} + (is_vlr(i) ? 6'd3 : 6'd2);
+   end
+endfunction
+
+// the instruction's uops, from the decode state before it and vstart: a vset that allocates is two
+// (the vl write, then rd); a move one a register it writes, after the scalar's move-in; a
+// whole-register access four a register from vstart's chunk on; anything else one (vsetvl too: it
+// is a SYSQ op, which writes the decode state itself and refetches what follows, and a move at
+// vill, which traps)
+function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input [6:0] vs);
+   reg [UX_W:0] n;
+   begin
+      n = {i[31:29], 2'b00} + 6'd4;                 // a whole-register access's uops from 0: 4 * nf
+      uop_count = vset_alloc(i) ? 2
+                : (is_vmv(i) & ~s[13]) ? {2'b00, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)}
+                : ((is_vlr(i) | is_vsr(i)) & ~vwr_past(i, vs)) ? n - vwr_s0(i, vs)
+                : 1;
+   end
 endfunction
 // the decode state after the instruction, from the state before it
 function automatic [VST_W-1:0] vst_after(input [31:0] i, input [VST_W-1:0] s);
@@ -163,7 +211,8 @@ function automatic [31:0] mvin_word(input [31:0] i);
 endfunction
 
 // A VECTOR UOP keeps its instruction's word (the last retires it); what else the F stage needs rides
-// in the record's immediate, the uop's place: {vz, vsew[1:0], the register of the group}
+// in the record's immediate, the uop's place: {vz, vsew[1:0], the register of the group}, a pack's
+// or an extract's {vz, its chunk, 0, the register}
 localparam integer VP_W = 6;
 function automatic [VP_W-1:0] vpos_of(input [31:0] i, input [UX_W-1:0] ux, input [VST_W-1:0] s);
    reg [UX_W-1:0] r;

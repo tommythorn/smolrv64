@@ -49,6 +49,7 @@ module smolrv64_frontend
     input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
     input  wire                    vs_off,            // mstatus.VS is Off: a vector instruction decodes illegal
     input  wire [`SMOLRV64_VST_W-1:0] redirect_vst,   // the vector decode state the redirect restores
+    input  wire [6:0]              vstart,            // the vstart CSR (exact at a refetch: the predecode's while vz is 0)
     input  wire [4:0]              cmt_ver,           // the committed vl version (the ring's oldest live entry)
     input  wire [5*IW+5:0]         crd,               // the dispatch credits: CRW bits (smolrv64_credits.vh)
     output wire                    hd_v,              // the queue head has an instruction...
@@ -313,6 +314,7 @@ module smolrv64_frontend
    localparam integer UNB = UX_W + 1;                     // a uop count, 1..32
    reg  [UNB-1:0]   pb_n   [0:QNB-1];                    // slot k's uops (slots FW.. hold one: never read)
    reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state before it
+   reg  [UX_W-1:0]  pb_s0  [0:QNB-1];                    // ...and its first uop's position (a whole-register access's, from vstart)
    reg  [SLB-1:0]   pb_cs;                               // the cursor: the slot...
    reg  [UX_W-1:0]  pb_cu;                               // ...and the uop of it the next push starts at
    reg  [VST_W-1:0] vsp;                                 // the predecode's decode state
@@ -325,7 +327,10 @@ module smolrv64_frontend
    assign pb_go = ~pb_al | (pb_ld < 5'd16);
    // the predecode, from fetch's slots as the register loads
    reg  [UNB-1:0]   pd_n   [0:FW-1];
+   reg  [UX_W-1:0]  pd_s0  [0:FW-1];
    reg  [VST_W-1:0] pd_vs  [0:FW];
+   reg  [6:0]       pd_vt;                               // the slot's vstart: 0 once a vector instruction is predecoded
+   reg  [UX_W:0]    pd_sw;
    reg  [FW-1:0]    pd_al;
    reg  [UX_W+2:0]  pd_tot;                              // the bundle's uops
    integer          pk;
@@ -334,10 +339,14 @@ module smolrv64_frontend
       for (pk = 0; pk < FW; pk = pk + 1) begin
          // a fetch-fault pseudo-op (slot 0), an RVC instruction, and any while VS is Off (a vector one
          // traps then) are one uop and change nothing
+         pd_vt = pd_vs[pk][VS_VZ] ? 7'd0 : vstart;
+         pd_sw = vwr_s0(dq_inst[pk*32 +: 32], pd_vt);
+         pd_s0[pk] = {UX_W{1'b0}};
          if (((pk == 0) & dq_fault) | ~dq_sv[pk] | (dq_inst[pk*32 +: 2] != 2'b11) | vs_off) begin
             pd_n[pk] = 1;  pd_al[pk] = 1'b0;  pd_vs[pk+1] = pd_vs[pk];
          end else begin
-            pd_n[pk] = uop_count(dq_inst[pk*32 +: 32], pd_vs[pk]);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
+            if (is_vlr(dq_inst[pk*32 +: 32]) | is_vsr(dq_inst[pk*32 +: 32])) pd_s0[pk] = pd_sw[UX_W-1:0];
+            pd_n[pk] = uop_count(dq_inst[pk*32 +: 32], pd_vs[pk], pd_vt);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
             pd_vs[pk+1] = vst_after(dq_inst[pk*32 +: 32], pd_vs[pk]);
          end
          if ((pk == 0) | dq_sv[pk]) pd_tot = pd_tot + {2'b00, pd_n[pk]};
@@ -417,8 +426,8 @@ module smolrv64_frontend
       else if (redirect)      vsp <= redirect_vst;
       else if (pb_load)       vsp <= pd_vs[FW];
       if (pb_ready) begin
-         for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k]; end
-         for (k = FW; k < QNB; k = k + 1) begin pb_n[k] <= 1;  pb_vst[k] <= {VST_W{1'b0}}; end
+         for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k];  pb_s0[k] <= pd_s0[k]; end
+         for (k = FW; k < QNB; k = k + 1) begin pb_n[k] <= 1;  pb_vst[k] <= {VST_W{1'b0}};  pb_s0[k] <= {UX_W{1'b0}}; end
          pb_cs <= {SLB{1'b0}};  pb_cu <= {UX_W{1'b0}};
          pb_fin <= (pd_tot <= FW);  pb_al <= |pd_al;  pb_lv <= pd_vs[FW][4:0];
       end else if (q_push) begin
@@ -461,7 +470,7 @@ module smolrv64_frontend
 `else
         (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_tgt), .fault_op(fault_op),
 `endif
-         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off), .vs_off(vs_off), .ux(ju), .ul(ul), .vst(pb_vst[js]),
+         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off), .vs_off(vs_off), .ux(ju + pb_s0[js]), .ul(ul), .vst(pb_vst[js]),
          .q_rvc(1'b0), .q_pnpc({PCW{1'b0}}), .q_illegal(1'b0), .q_mis_taken(1'b0), .q_mis_nt(1'b0), .q_gc(16'd0),
          .qrec(q_wd[gk*QRW +: QRW]), .rec(q_fwd[gk*IRW +: IRW]), .imm_wide(imm_wide));
       assign q_bv[gk] = q_push & map_v[j];

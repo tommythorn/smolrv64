@@ -328,7 +328,7 @@ module smolrv64_core
      (.clk(clk), .reset(reset), .accept(accept), .consume(fe_consume),
       .d_valid(fe_dv), .d_rec(fe_rec), .d_fc(fe_fc),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc), .hd_lane(fe_hd_lane),
-      .vs_off(vs_off), .redirect_vst(fe_red_vst_q), .cmt_ver(cmt_vst[4:0]),
+      .vs_off(vs_off), .redirect_vst(fe_red_vst_q), .vstart(csr_vstart), .cmt_ver(cmt_vst[4:0]),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -931,6 +931,8 @@ module smolrv64_core
    wire [FNS*RN_PBITS-1:0] s_fps [0:IW-1];          // an F-side op's sources (FNS)...
    wire [FNS-1:0]          s_fr  [0:IW-1];          // ...and their readiness, the dispatch cycle's wakes folded in
    wire [VST_W-1:0]       s_vst [0:IW-1];           // the vector decode state after its instruction
+   wire [IW-1:0]          s_vacc;                   // a vector access's load or store...
+   wire [6:0]             s_ve  [0:IW-1];           // ...and the first element of its chunk
    genvar gs;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: sl
       `IR_DECL(q_)
@@ -945,6 +947,8 @@ module smolrv64_core
       wire st_nb = q_gc[GC_ST], ld_nb = q_gc[GC_LD];
       assign s_gc[gs] = q_gc;
       assign s_ul[gs] = q_ul;  assign s_isvec[gs] = q_is_vec;  assign s_vst[gs] = q_vst;
+      assign s_vacc[gs] = q_is_vec & q_is_mem & ~q_illegal;
+      assign s_ve[gs] = q_imm32[6:0] >> q_insn[13:12];   // its byte offset in elements of the EEW
       assign s_clsbad[gs] = fe_dv[gs] & ((st_nb != (q_is_store & ~q_is_amo & ~q_is_cbo))
                                         | (ld_nb != (q_is_mem & ~q_is_store & ~q_is_amo & ~q_is_cbo)));
       wire [2:0] shard = shard_of(q_rd, q_is_mem, LANE);
@@ -964,10 +968,10 @@ module smolrv64_core
       wire [RN_PBITS-1:0] prd_g = q_rd_v ? prd : vlu ? pvl_w : {RN_PBITS{1'b0}};
       assign s_vlu[gs] = fe_dv[gs] & vlu;  assign s_vlx[gs] = q_rd[3:0];
       // A VECTOR UOP's two more sources: the register its destination displaces (the elements it does
-      // not write keep their value: tail, prestart, and the element of a move to element 0 alone) and
+      // not write keep their value: tail, prestart, a move's to element 0 alone, a pack's other chunk) and
       // the vl version it reads. The version is its instruction's (a move changes none), pending while
       // its VL uop is in flight, which an earlier slot of the group may be.
-      wire vu   = q_gc[GC_FC] & is_opv(q_insn);
+      wire vu   = q_gc[GC_FC] & is_vecins(q_insn);
       wire v_od = vu & q_rd_v & (q_rd[`AREG_W-1 -: 2] == 2'b10);
       wire v_rv = vu & (is_vmvv(q_insn) | is_vmvsx(q_insn));
       wire [RN_PBITS-1:0] pold = v_od ? rn_poldv[gs*RN_PBITS +: RN_PBITS] : {RN_PBITS{1'b0}};
@@ -3211,14 +3215,22 @@ module smolrv64_core
    // past vstart and below evl, else the old destination's byte (tail and prestart undisturbed).
    // vmv<nr>r.v writes every element past vstart, vmv.s.x element 0 when vl is not 0, vmv.v.* those
    // below vl; vmv.x.s returns element 0 sign-extended into an x register.
+   // A whole-register load's pack merges VH0 into chunk h of its register by element of the encoding's
+   // EEW (prestart bytes keep the old), a store's extract returns chunk h into VH0: their place is
+   // {vz, h, 0, r}.
    wire [5:0]   fv_op6 = f_insn[31:26];
    wire [2:0]   fv_f3  = f_insn[14:12];
    wire [1:0]   fv_sew = f_vpos[4:3];
+   wire         fv_v   = (f_insn[6:0] == 7'b1010111);                // a move (OP-V)
+   wire         fv_pk  = (f_insn[6:0] == 7'b0000111);                // a pack (LOAD-FP)
+   wire         fv_ex  = (f_insn[6:0] == 7'b0100111);                // an extract (STORE-FP)
+   wire         fv_h   = f_vpos[4];                                  // ...its chunk
+   wire [1:0]   fv_esz = fv_pk ? fv_f3[1:0] : fv_sew;                // an element's log2 bytes
    wire [7:0]   fv_vs  = f_vpos[5] ? 8'd0 : {1'b0, csr_vstart};     // vz: vstart is 0
-   wire         fv_xs  = (fv_op6 == 6'b010000) & (fv_f3 == 3'b010);  // vmv.x.s
-   wire         fv_sx  = (fv_op6 == 6'b010000) & (fv_f3 == 3'b110);  // vmv.s.x
-   wire         fv_nr  = (fv_op6 == 6'b100111);                      // vmv<nr>r.v
-   wire [8:0]   fv_evl = fv_nr ? 9'd256 : fv_sx ? {8'd0, f_vl != 8'd0} : {1'b0, f_vl};
+   wire         fv_xs  = fv_v & (fv_op6 == 6'b010000) & (fv_f3 == 3'b010);  // vmv.x.s
+   wire         fv_sx  = fv_v & (fv_op6 == 6'b010000) & (fv_f3 == 3'b110);  // vmv.s.x
+   wire         fv_nr  = fv_v & (fv_op6 == 6'b100111);                      // vmv<nr>r.v
+   wire [8:0]   fv_evl = (fv_nr | fv_pk) ? 9'd256 : fv_sx ? {8'd0, f_vl != 8'd0} : {1'b0, f_vl};
    wire [63:0]  fv_sc  = (fv_f3 == 3'b011) ? {{59{f_insn[19]}}, f_insn[19:15]} : f_rs1_val;   // .i's, else VH0's
    reg  [127:0] fv_rep;                                              // the scalar at SEW, in every element
    always @* case (fv_sew)
@@ -3227,13 +3239,14 @@ module smolrv64_core
       2'd2:    fv_rep = {4{fv_sc[31:0]}};
       default: fv_rep = {2{fv_sc}};
    endcase
-   wire [127:0] fv_new = (fv_f3 == 3'b000) ? f_va : fv_nr ? f_vb : fv_rep;
+   wire [127:0] fv_new = fv_pk ? {2{f_rs1_val}} : (fv_f3 == 3'b000) ? f_va : fv_nr ? f_vb : fv_rep;
    reg  [127:0] fv_res;
    reg  [7:0]   fv_ei;
    integer      fvb;
    always @* for (fvb = 0; fvb < 16; fvb = fvb + 1) begin
-      fv_ei = ({5'd0, f_vpos[2:0]} << (3'd4 - {1'b0, fv_sew})) + (fvb[7:0] >> fv_sew);
-      fv_res[fvb*8 +: 8] = ((fv_ei >= fv_vs) & ({1'b0, fv_ei} < fv_evl)) ? fv_new[fvb*8 +: 8] : f_vd[fvb*8 +: 8];
+      fv_ei = {1'b0, f_vpos[2:0], fvb[3:0]} >> fv_esz;
+      fv_res[fvb*8 +: 8] = ((fv_ei >= fv_vs) & ({1'b0, fv_ei} < fv_evl) & (~fv_pk | (fvb[3] == fv_h)))
+                         ? fv_new[fvb*8 +: 8] : f_vd[fvb*8 +: 8];
    end
    wire [63:0]  fv_x = (fv_sew == 2'd0) ? {{56{f_vb[7]}}, f_vb[7:0]} : (fv_sew == 2'd1) ? {{48{f_vb[15]}}, f_vb[15:0]}
                      : (fv_sew == 2'd2) ? {{32{f_vb[31]}}, f_vb[31:0]} : f_vb[63:0];
@@ -3257,7 +3270,8 @@ module smolrv64_core
         4'd7: fi_res = fi_isd ? fli_d(f_insn[19:15]) : {32'hffffffff, fli_s(f_insn[19:15])};  // FLI -> fp
         4'd8: fi_res = fi_rn[63:0];                                                   // FROUND(NX) -> fp
         4'd9: fi_res = {56'd0, vl_of(f_insn, f_rs1_val)};                             // a VL uop -> the VL file
-        4'd10: fi_res = fv_xs ? fv_x : fv_res[63:0];                                  // a vector uop (its high half: fv_res)
+        4'd10: fi_res = fv_xs ? fv_x : fv_ex ? (fv_h ? f_vb[127:64] : f_vb[63:0])     // a vector uop (its high half: fv_res)
+                      : fv_res[63:0];
         default: fi_res = 64'd0;
       endcase
    end
@@ -3821,6 +3835,7 @@ module smolrv64_core
       // Dirty as a vector instruction's uop commits, on any commit port (rule C6)
       .o_vs_off(vs_off), .o_vstart(csr_vstart), .v_vl(vlf[cmt_vst[3:0]]), .v_vtype(cmt_vst[13:5]),
       .v_dirty_commit(|rc_vec),
+      .v_trap_vs(vt_h[VTW-1]), .v_trap_vstart(vt_h[VTW-2 -: 7]),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
       // that wrote an f-register (arch 32..63: FP arith, the in-core FP writers, FP loads; not
@@ -4742,14 +4757,18 @@ module smolrv64_core
    // its instruction, as the predecode gave it, a LUTRAM a column like the flags'. A branch's restart
    // restores the frontend's from its entry (rule D14: the redirecting instruction's own snapshot);
    // the committed state follows the commits, and a squash at the head restores that.
-   wire [VST_W:0]             vt_c [0:IW-1];   // the head's row, by column: {a vector instruction retires, its state}
-   wire [VST_W:0]             vt_r [0:IW-1];   // the restarting branch's row, by column
+   // An entry's {a vector access's load or store, the first element of its chunk, a vector instruction
+   // retires, the state}: a trap at a vector access's chunk writes vstart with its first element.
+   localparam integer VTW = VST_W + 9;
+   wire [VTW-1:0]             vt_c [0:IW-1];   // the head's row, by column
+   wire [VTW-1:0]             vt_r [0:IW-1];   // the restarting branch's row, by column
    wire [ROB_IDXB-ROB_CB-2:0] cf_row = cf_rob[ROB_IDXB-1:ROB_CB+1];
    generate for (gff = 0; gff < IW; gff = gff + 1) begin: vtc
-      (* ram_style = "distributed" *) reg [VST_W:0] vt [0:ROB_ROWS-1];
+      (* ram_style = "distributed" *) reg [VTW-1:0] vt [0:ROB_ROWS-1];
       integer vi;
-      initial for (vi = 0; vi < ROB_ROWS; vi = vi + 1) vt[vi] = {(VST_W+1){1'b0}};
-      always @(posedge clk) if (s_takev[gff]) vt[s_rob[gff][ROB_IDXB-1:ROB_CB+1]] <= {s_isvec[gff] & s_ul[gff], s_vst[gff]};
+      initial for (vi = 0; vi < ROB_ROWS; vi = vi + 1) vt[vi] = {VTW{1'b0}};
+      always @(posedge clk) if (s_takev[gff])
+         vt[s_rob[gff][ROB_IDXB-1:ROB_CB+1]] <= {s_vacc[gff], s_ve[gff], s_isvec[gff] & s_ul[gff], s_vst[gff]};
       assign vt_c[gff] = vt[rc_row];
       assign vt_r[gff] = vt[cf_row];
    end endgenerate
@@ -4771,6 +4790,7 @@ module smolrv64_core
    initial cmt_vst = VST_RESET;
    always @(posedge clk) cmt_vst <= reset ? VST_RESET : cmt_n;
    wire [VST_W-1:0] cf_vst = vt_r[cf_rob[ROB_CB-1:0]][VST_W-1:0];
+   wire [VTW-1:0]   vt_h   = vt_c[rob_head_idx[ROB_CB-1:0]];       // the head's entry (its row's): a trap's
    reg  [4:0] ret_fflags;
    integer    ffh;
    always @* begin
@@ -5059,8 +5079,10 @@ module smolrv64_core
    // REGISTERED at retire time, not read live.
    reg [1:0]  e_mkind [0:IW-1];   reg [PABITS-1:0] e_mpa [0:IW-1];      // cosim memory-effect capture
    reg [63:0] e_mdata [0:IW-1];   reg [3:0]  e_msz [0:IW-1];
-   // a uop's write of a vector register, as it commits, ahead of its instruction's probe_retire
+   // a uop's write of a vector register, and a vector access's chunk store, as it commits, ahead of
+   // its instruction's probe_retire (which then reports no memory effect: the chunks are the effect)
    import "DPI-C" function void probe_vwrite(input byte unsigned idx, input longint unsigned lo, input longint unsigned hi);
+   import "DPI-C" function void probe_vstore(input longint unsigned pa, input longint unsigned data, input byte unsigned size);
    import "DPI-C" function void probe_retire(
       input longint unsigned pc,
       input int     unsigned insn,
@@ -5106,17 +5128,20 @@ module smolrv64_core
    reg [IW-1:0] e_vw;                    // commit port k's uop wrote vector register e_vi (e_vlo, e_vhi)
    reg [4:0]  e_vi [0:IW-1];
    reg [63:0] e_vlo [0:IW-1], e_vhi [0:IW-1];
-   initial    begin e_v = {IW{1'b0}};  e_vw = {IW{1'b0}}; end
+   reg [IW-1:0] e_vs;                    // ...or stored a vector access's chunk (e_mpa, e_mdata, e_msz)
+   initial    begin e_v = {IW{1'b0}};  e_vw = {IW{1'b0}};  e_vs = {IW{1'b0}}; end
    integer    ek;
    wire [`AREG_W-1:0] rc_rdk [0:IW-1];   // commit port k's architectural destination
+   wire [IW-1:0]      rc_vacc;           // ...is a vector access's load or store
    for (genvar gk = 0; gk < IW; gk = gk + 1) begin: rck
       assign rc_rdk[gk] = rc_rd[gk*`AREG_W +: `AREG_W];
+      assign rc_vacc[gk] = vt_c[rc_idx[gk][ROB_CB-1:0]][VTW-1];
    end
 
    // A trap and a retire remain mutually exclusive, but they are no longer both "an M cycle":
    // the trap is M's (and fires only when M is the ROB head), the retire is the head's.
    always @(posedge clk) begin
-      e_v <= {IW{1'b0}};  e_vw <= {IW{1'b0}};
+      e_v <= {IW{1'b0}};  e_vw <= {IW{1'b0}};  e_vs <= {IW{1'b0}};
       if (!reset) begin
          if (cot_take) begin                     // M's trap, or the SYSQ's (C3 step 3)
             e_v[0] <= 1'b1;  e_trap <= 1'b1;
@@ -5140,12 +5165,15 @@ module smolrv64_core
                if (rc_v[ek] & rc_rdv[ek] & (rc_rdk[ek][`AREG_W-1 -: 2] == 2'b10)) begin
                   e_vw[ek] <= 1'b1;  e_vi[ek] <= rc_rdk[ek][4:0];  e_vlo[ek] <= cs_val_h[ek];  e_vhi[ek] <= cs_vhi_h[ek];
                end
+               if (rc_v[ek] & rc_vacc[ek] & (cs_mkind_h[ek] == 2'd2)) begin
+                  e_vs[ek] <= 1'b1;  e_mpa[ek] <= cs_mpa_h[ek];  e_mdata[ek] <= cs_mdata_h[ek];  e_msz[ek] <= cs_msz_h[ek];
+               end
                if (retire[ek]) begin
                   e_v[ek] <= 1'b1;
                   e_pc[ek] <= pc64(cs_pc[rc_sx[ek]]);  e_insn[ek] <= cs_insn[rc_sx[ek]];
                   e_rk[ek] <= ~rc_rdv[ek] ? 2'd0 : `AR_F(rc_rdk[ek]) ? 2'd2 : `AR_X(rc_rdk[ek]) ? 2'd1 : 2'd0;
                   e_ri[ek] <= rc_rdk[ek][4:0];  e_val[ek] <= cs_val_h[ek];
-                  e_mkind[ek] <= cs_mkind_h[ek];  e_mpa[ek] <= cs_mpa_h[ek];
+                  e_mkind[ek] <= rc_vacc[ek] ? 2'd0 : cs_mkind_h[ek];  e_mpa[ek] <= cs_mpa_h[ek];
                   e_mdata[ek] <= cs_mdata_h[ek];  e_msz[ek] <= cs_msz_h[ek];
                end
             end
@@ -5153,6 +5181,7 @@ module smolrv64_core
       // emit one cycle later, so this instruction's own CSR writes have landed
       for (ek = 0; ek < IW; ek = ek + 1) begin
          if (e_vw[ek]) probe_vwrite({3'd0, e_vi[ek]}, e_vlo[ek], e_vhi[ek]);
+         if (e_vs[ek]) probe_vstore({{(64-PABITS){1'b0}}, e_mpa[ek]}, e_mdata[ek], {4'd0, e_msz[ek]});
          if (e_v[ek])
             probe_retire(e_pc[ek], e_insn[ek], {6'd0, e_rk[ek]},
                          (e_rk[ek] == 2'd0) ? 8'd0 : {3'd0, e_ri[ek]},

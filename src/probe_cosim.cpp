@@ -248,15 +248,18 @@ int csr_read_to_override(uint32_t insn) {
 // checked and unchecked stores is printed with the progress line so a class that is never
 // checked is visible, not silent.
 static unsigned long long g_st_checked = 0, g_st_unchecked = 0;
+// +st_corrupt=<seqno>: flip a byte of that retirement's reported store value (a vector access's
+// chunks too) -- the checks' own self-test (a corrupted byte must abort at ITS retire), not a DUT fault.
+static uint64_t st_corrupt(const SimmervRetire& dut) {
+    static const unsigned long long corrupt_at =
+        plusarg("st_corrupt") ? std::strtoull(plusarg("st_corrupt"), nullptr, 10) : 0ull;
+    return (corrupt_at && dut.seqno == corrupt_at) ? 0x80u : 0u;
+}
 static bool store_data_ok(const SimmervRetire& dut, const SimmervRetire& ref) {
     if (dut.mem_kind != 2 || ref.mem_kind != 2) return true;
     if (!ref.mem_ram || dut.mem_size == 0xF) { g_st_unchecked++; return true; }
     g_st_checked++;
-    // +st_corrupt=<seqno>: flip a byte of that retirement's reported value -- the check's own
-    // self-test (a corrupted byte must abort at ITS retire), not a DUT fault.
-    static const unsigned long long corrupt_at =
-        plusarg("st_corrupt") ? std::strtoull(plusarg("st_corrupt"), nullptr, 10) : 0ull;
-    const uint64_t val = dut.mem_rdback ^ ((corrupt_at && dut.seqno == corrupt_at) ? 0x80u : 0u);
+    const uint64_t val = dut.mem_rdback ^ st_corrupt(dut);
     const unsigned n = 1u << dut.mem_size, off = (unsigned)(ref.mem_pa & 7);
     bool ok = (n == ref.mem_size);
     for (unsigned i = 0; ok && i < n && off + i < 8; i++)
@@ -271,13 +274,43 @@ static bool store_data_ok(const SimmervRetire& dut, const SimmervRetire& ref) {
 
 // VECTOR REGISTER WRITES. The DUT reports each uop's write of a vector register as it commits
 // (probe_vwrite), ahead of its instruction's probe_retire: they ride with that retire (g_vw_prev, as
-// g_prev waits for its next_pc) and are compared against simmerv's register after its step.
+// g_prev waits for its next_pc) and are compared against simmerv's register after its step, the
+// last write of a register only (a whole-register load writes each register a chunk at a time).
 struct VWrite { uint32_t idx; uint64_t lo, hi; };
 static std::vector<VWrite> g_vw_pend, g_vw_prev;
 static unsigned long long g_vw_checked = 0;
+// ...and a vector access's chunk stores (probe_vstore), each checked against simmerv's memory after
+// the step: simmerv stores a vector access element by element and reports none of it as one effect
+struct VStore { uint64_t pa, data; uint32_t size; };
+static std::vector<VStore> g_vs_pend, g_vs_prev;
+static bool vstores_ok(const SimmervRetire& dut) {
+    bool ok = true;
+    for (const VStore& w : g_vs_prev) {
+        if (w.size > 3) { g_st_unchecked++; continue; }
+        const unsigned n = 1u << w.size;
+        uint8_t b[8] = {};
+        if (simmerv_read_memory(g_ctx, w.pa, b, n) != n) { g_st_unchecked++; continue; }
+        g_st_checked++;
+        uint64_t ref = 0;
+        for (unsigned i = 0; i < n; i++) ref |= uint64_t(b[i]) << (8 * i);
+        const uint64_t mask = (n == 8) ? ~0ull : ((1ull << (8 * n)) - 1);
+        const uint64_t val = w.data ^ st_corrupt(dut);
+        if ((val & mask) != ref) {
+            std::fprintf(stderr, "cosim: VECTOR STORE MISMATCH pc=%016llx pa=%012llx size=%u dut=%016llx ref=%016llx\n",
+                         (unsigned long long)dut.pc, (unsigned long long)w.pa, n,
+                         (unsigned long long)(val & mask), (unsigned long long)ref);
+            ok = false;
+        }
+    }
+    return ok;
+}
 static bool vregs_ok(const SimmervRetire& dut) {
     bool ok = true;
-    for (const VWrite& w : g_vw_prev) {
+    uint32_t seen = 0;
+    for (auto it = g_vw_prev.rbegin(); it != g_vw_prev.rend(); ++it) {
+        const VWrite& w = *it;
+        if (seen & (1u << w.idx)) continue;
+        seen |= 1u << w.idx;
         uint64_t lo = 0, hi = 0;
         simmerv_read_vreg(g_ctx, w.idx, &lo, &hi);
         g_vw_checked++;
@@ -357,7 +390,8 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
         (dut.mem_kind == 0 || ref.mem_kind == 0 ||
          (dut.mem_kind == ref.mem_kind && dut.mem_pa == ref.mem_pa)) &&
         store_data_ok(dut, ref) &&
-        vregs_ok(dut);
+        vregs_ok(dut) &&
+        vstores_ok(dut);
 
     g_ring[g_ring_idx] = { dut, ref, true };
     g_ring_idx = (g_ring_idx + 1) % RING_N;
@@ -437,6 +471,9 @@ extern "C" void probe_vwrite(unsigned char idx, unsigned long long lo, unsigned 
     if (++n == corrupt_at) hi ^= 1ull << 63;
     g_vw_pend.push_back({idx, lo, hi});
 }
+extern "C" void probe_vstore(unsigned long long pa, unsigned long long data, unsigned char size) {
+    g_vs_pend.push_back({pa, data, size});
+}
 
 // DPI callback from backend_top.v (one per committed instruction or trap).
 extern "C" void probe_retire(
@@ -484,8 +521,10 @@ extern "C" void probe_retire(
     }
     drain_dma_queue();                  // DMA beats older than the retire just held
     g_prev = e;
-    g_vw_prev.swap(g_vw_pend);          // this retire's vector writes ride with it
+    g_vw_prev.swap(g_vw_pend);          // this retire's vector writes and stores ride with it
     g_vw_pend.clear();
+    g_vs_prev.swap(g_vs_pend);
+    g_vs_pend.clear();
     g_prev_mtimecmp = mtimecmp;
     g_prev_seip = (seip != 0);
     g_have_prev = true;

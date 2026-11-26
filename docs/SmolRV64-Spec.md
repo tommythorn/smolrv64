@@ -522,7 +522,7 @@ them. Full OoO will need them back.
 
 Architectural registers are a **unified 128-entry space** of 7-bit ids, `{kind, field}`
 (`src/smolrv64_areg.vh`): 0–31 integer, 32–63 FP, 64–95 the vector registers and 96–127 hidden
-FP-kind registers that cracked instructions pass values through (§7.v; VH0 and VH1 are in use);
+FP-kind registers that cracked instructions pass values through (§7.v; VH0 is in use);
 bit 5 says a register lives in an FP shard. The physical registers are not one space: f0–f31
 and the hidden registers rename only into the **FP file**, two shards SH_FL and SH_FF, v0–v31
 only into the **vector file** (SH_V), and x1–x31 only into the integer shards. A physical
@@ -531,8 +531,8 @@ SH_FL (4) holds the FP loads' destinations, SH_FF (5) the FP ops', SH_V (6) the 
 registers (64 of 128 bits) and SH_VL (7) the VL file's 16 entries, which no rename allocates
 (§7.v): `shard[2]` is the F side. A width-IW core uses lanes 0..IW-1 and the F side's shards;
 rename builds free lists for the lanes, SH_FL, SH_FF and SH_V, and a result routed to any other
-shard is asserted. At reset x0–x31, f0–f31 and v0–v31 map to their shards' indices 0–31 and VH0,
-VH1 to SH_FF's 0 and 1, so SH_FF's list starts with 62.
+shard is asserted. At reset x0–x31, f0–f31 and v0–v31 map to their shards' indices 0–31 and VH0
+to SH_FF's 0, so SH_FF's list starts with 63.
 
 `smolrv64_rename` carries a full speculative/committed split — SMAP/RMAP for the map, and a
 per-shard free list with a speculative head and a committed head. Every source reads SMAP alone
@@ -1238,6 +1238,18 @@ x register. A vector instruction's last uop sets VS Dirty and clears vstart as i
 lockstep compares every vector register a uop writes, all 16 bytes, against Simmerv's after its
 instruction (`probe_vwrite`; `+vw_corrupt=<n>` is the check's self-test). Directed test:
 `core/directed/vmv.S`.
+
+**Whole-register loads and stores** (`vl<nf>re<eew>.v`, `vs<nf>r.v`; vtype is not read, so vill
+does not trap them) go through VH0 a chunk of 8 bytes at a time, a chunk two uops: a load's FLD of
+`[rs1 + 16k + 8h]` into VH0 and its pack into chunk h of `vd + k`, a store's extract of chunk h
+of `vs3 + k` into VH0 and its FSD. The memory uops are ordinary FP loads and stores to the LSU (the
+record an FLD's or FSD's, the word the instruction's). A trap at a chunk writes vstart with its
+first element (the table beside the ROB keeps it for each entry) and leaves the chunks before it
+written; the retry cracks from vstart's chunk, and a pack keeps the prestart bytes. Past the last
+element the instruction is one uop that changes nothing. The lockstep checks each chunk store
+against Simmerv's memory after the instruction (`probe_vstore`, `simmerv_read_memory`; Simmerv
+stores byte by byte); `+st_corrupt=<n>` covers the chunks too. Directed test:
+`core/directed/vwr.S` (Sv39 page faults at the second register of a load and of a store).
 
 ## 8. Load/store unit and MMU
 
@@ -2094,6 +2106,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `u_iq_f` entry | `smolrv64_iq` | 8 | 2+5×10 = 52 | 416 | flops | FP and vector uops, reorders, `NSRC`=5 (§6.1) |
 | `vrf` | `smolrv64_core` | 64 | 128 | 8 192 | LUTRAM | the vector file (SH_V): 1W (the vector unit's landing), 3R (the F port's rs1, rs2 and old destination) |
 | `vlf` | `smolrv64_core` | 16 | 8 | 128 | flops | the VL file (SH_VL): written by a VL uop's landing or `vsetvl`'s fire, read by the F port and at the committed version |
+| `vtc[0..IW-1].vt` | `smolrv64_core` | 64 a column | 24 | 6 144 | LUTRAM | each entry's vector decode state after its instruction, whether it retires a vector instruction, and a vector access's chunk: its first element (§7.v); 1W (dispatch), 2R (the head's row: the committed state, a trap's vstart; the restarting branch's row) |
 | `plmem` (payload) | `smolrv64_core` | 38 (10+10+10+8) | 274 | 10 412 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each; the immediate is stored as its low 32 bits, which it sign-extends (the queue's write asserts it), and a fetch fault's address as one bit, set for a straddler's pc+2 (`imm` and `fault_tval` are rebuilt from them) |
 | `ipend`, `fpend` | `smolrv64_pending` | 256, 256 | 1 | 512 | flops | readiness, a table per side indexed by {shard, index} (the F side's: SH_FL, SH_FF, SH_V, SH_VL): 33R, 16 that read both and let the number's side pick (the slots' rs1/rs2, 8; the lanes' operands, 8) and 17 of the F side's alone (the slots' rs3, old vd and vl version, 12; the F FIFO head's sources, 5), and each writeback its own register (the integrity check); 4 sets, 6 clears into the integer table (the lanes', the streams' integer landings) and 2 into the F side's (the streams'), bulk-clear |
 | `u_pa` `wb[0..1].mem` | `smolrv64_mwram` (in `smolrv64_lq`) | 16 a bank | 33 (`PABITS`) | 1 056 | LUTRAM | the load queue's PA, a bank per writer (M's fill, the walker's answer), 3R (the start's entry, the landing's two candidates); `lvt` (a bit an entry, flops) names the writer |
@@ -2799,6 +2812,9 @@ those failing in the most first.
 
 ## 14. Known limits
 
+- **A whole-register access works by 8-byte chunk** (§7.v): a misaligned chunk that crosses a page
+  faults at the chunk's address, where the specification names the faulting byte's, and a store
+  whose vstart falls inside a chunk (only a CSR write makes one) stores the whole chunk.
 - **Up to `LQ_N`=16 fast loads outstanding (by tag), one slow one, and two divides in the MD
   stage** (the stage and its queue register; the divide credit holds a third at dispatch). FP is no longer
   among them: `NFLIGHT`=4 and results return by tag, out of issue order (§7). `LQ_N = 1 << LQ_IB`;

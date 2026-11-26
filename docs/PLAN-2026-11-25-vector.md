@@ -293,8 +293,8 @@ predecode stalls when all 16 are live. vl therefore costs no rename-map read.
 ### 7.4 Registers
 
 - **Architectural ids are 7 bits**: 0-31 x, 32-63 f, 64-95 v, 96-127 hidden. The hidden ones are
-  FP-kind temporaries (two in this increment, VH0 and VH1: a move's scalar, and the halves of a
-  register on their way to or from memory), mapped at reset to SH_FF's first two registers. The rename maps grow to 128 entries; every literal 6-bit id (decode_operands, the
+  FP-kind temporaries (one in this increment, VH0: a move's scalar, and a register's chunks on
+  their way to or from memory), mapped at reset to SH_FF's first register. The rename maps grow to 128 entries; every literal 6-bit id (decode_operands, the
   records, rename, the ROB, the LQ, the cosim's capture) becomes the one width.
 - **A vector register is `{SH_V, index}`**, shard 6, 64 entries of 128 bits, written only by the
   vector unit (rule B2), read by it for vs1, vs2, vs3/v0 and the old vd. **The VL shard** is 7: a
@@ -320,23 +320,32 @@ the record's immediate and the F side's payload. The vector file has three read 
 increment (rs1, rs2, old vd); v0's comes with masking.
 
 Increment 1's unit: copy (`vmv<nr>r.v`), the move by element (`vmv.v.*`, `vmv.s.x`: vl, vstart
-and SEW from the record and the version), element 0 to a scalar (`vmv.x.s`), **pack** (two
-64-bit FP temporaries into a register, prestart elements from the old vd) and **extract** (a
-register's half into an FP temporary). A move from an x register (`vmv.v.x`, `vmv.s.x`) first
+and SEW from the record and the version), element 0 to a scalar (`vmv.x.s`), **pack** (VH0 into a
+chunk of a register, prestart elements and the other chunk from the old vd) and **extract** (a
+register's chunk into VH0). A move from an x register (`vmv.v.x`, `vmv.s.x`) first
 moves the scalar into VH0 (an FMV.D.X uop through a lane, as any int-to-FP op).
 
 ### 7.6 Whole-register memory
 
-- `vl<nf>re<eew>.v`: per register k, two FP loads into the temporaries (`[rs1 + 16k]`,
-  `[rs1 + 16k + 8]`) and a pack into `vd + k`.
-- `vs<nf>r.v`: per register k, two extracts and two FP stores of the temporaries.
-- **A trap** in a load or store uop writes vstart with the index of the first element it covers
-  (the uop carries it), tval with its address; the handler's `sret` refetches and the predecode
-  cracks from vstart: registers wholly before it get no uops, the register holding it packs
-  prestart elements from the old vd, and a store chunk that straddles vstart goes element by
-  element.
-- The LSU and the store queue are unchanged. A misaligned chunk that crosses a page traps as a
-  scalar one does: a known limit until the misaligned vector access gets its own handling.
+Each register is two 8-byte chunks through VH0, a chunk two uops, so a fault at a chunk leaves the
+chunks before it written, as the element order requires:
+
+- `vl<nf>re<eew>.v`: per register k and chunk h, an FLD of `[rs1 + 16k + 8h]` into VH0 and a pack
+  of VH0 into chunk h of `vd + k` (the other chunk and the prestart bytes from the old vd).
+- `vs<nf>r.v`: per register k and chunk h, an extract of chunk h of `vs3 + k` into VH0 and an FSD
+  of VH0 to `[rs1 + 16k + 8h]`.
+- Every uop keeps the instruction's word (the last retires it); the record's fields are an FLD's or
+  an FSD's for the memory uops, and the pack's and extract's place rides in the immediate. A uop's
+  position is `{register, chunk, second}`.
+- **A trap** in a load or store uop writes vstart with the first element of its chunk (a table
+  beside the ROB keeps it, by entry), tval with its address; the handler's `sret` refetches and the
+  predecode cracks from vstart's chunk, every chunk before it done. A load's pack keeps prestart
+  bytes from the old vd. Past the last element the instruction is one uop that changes nothing.
+- The LSU and the store queue are unchanged. Known limits: a misaligned chunk that crosses a page
+  traps as a scalar one does, at the chunk's address rather than the faulting byte's; a store whose
+  vstart (only a CSR write makes one) falls inside a chunk stores the whole chunk.
+- The lockstep checks each chunk store against Simmerv's memory after the instruction
+  (`probe_vstore`, `simmerv_read_memory`): Simmerv stores a vector access byte by byte.
 
 ### 7.7 CSRs and VS
 

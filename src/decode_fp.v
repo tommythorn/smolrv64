@@ -7,8 +7,9 @@
 //      CLASSIFY=9 F2F=10 F2I=11 I2F=12 F2IM=13 (fcvtmod.w.d)   fp_format: FP32=0 FP64=1 FP16=2
 //   int_fmt: INT32=2 INT64=3
 //
-// A vector uop (an OP-V instruction's, not a vset's) is an in-core op of class 10, its operands the
-// vector file's; vmv.x.s writes an integer register.
+// A vector uop (an OP-V instruction's, not a vset's, and a vector load's pack or store's extract: a
+// LOAD-FP or STORE-FP word of a vector width) is an in-core op of class 10, its operands the vector
+// file's; vmv.x.s writes an integer register. A vector access's own loads and stores are memory ops.
 //
 // fp_class routes execution: FPU ops go to fp_unit; SGNJ/CMP/MVXF/MVFX/
 // FCLASS/MINMAX/FLI/FROUND are cheap and done in-core -- decode emits the class and
@@ -68,8 +69,9 @@ module decode_fp
          // a vset's VL uop (core/smolrv64_vdec.vh's internal word, never fetched: no instruction
          // uses this class): vl = min(AVL, VLMAX) from the integer rs1, into the VL file
          fp_valid=1'b1; fp_class=C_VL; op0_int=1'b1; wr_fp=1'b0;
-      end else if ((opcode == 7'b1010111) && (f3 != 3'b111)) begin
-         fp_valid=1'b1; fp_class=C_V; src_fmt=FP64; dst_fmt=FP64; wr_fp=(f3 != 3'b010);
+      end else if (((opcode == 7'b1010111) && (f3 != 3'b111))
+                   || (((opcode == 7'b0000111) || (opcode == 7'b0100111)) && ((f3 == 3'b000) || (f3[2] && (f3[1:0] != 2'b00))))) begin
+         fp_valid=1'b1; fp_class=C_V; src_fmt=FP64; dst_fmt=FP64; wr_fp=(opcode != 7'b1010111) || (f3 != 3'b010);
       end else if (opcode == 7'b1010011) begin
          case (op5)
            5'b00000,5'b00001: begin fp_valid=sd;     // FADD / FSUB

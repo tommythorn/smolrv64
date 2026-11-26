@@ -48,6 +48,8 @@ module csr_file
     input  wire [7:0]  v_vl,          // the committed vl and vtype (vill, vma, vta, vsew, vlmul)
     input  wire [8:0]  v_vtype,
     input  wire        v_dirty_commit, // a vector instruction retires: VS -> Dirty, vstart -> 0
+    input  wire        v_trap_vs,      // the trapping op is a vector access's load or store...
+    input  wire [6:0]  v_trap_vstart,  // ...whose chunk starts at this element: vstart
     // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
     // (the flags of the FP ops retiring this cycle, reduced by the caller).
     input  wire        fp_fflags_we,
@@ -982,6 +984,8 @@ module csr_file
             mstatus[MPIE_B] <= mstatus[MIE_B]; mstatus[MIE_B] <= 1'b0;
             mstatus[12:11]  <= priv;
          end
+         // a vector access's chunk faulted: the elements before it are done
+         if (v_trap_vs) vstart <= v_trap_vstart;
       end else if (upd_valid) begin
          if (upd_is_csr) begin
             case (upd_addr)
