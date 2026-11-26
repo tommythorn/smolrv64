@@ -111,7 +111,7 @@ module smolrv64_rename
    localparam integer NS = 3 * IW;                       // the map's source reads
    localparam integer NR = NS + IW;                      // ...and each slot's destination
    localparam integer NAR = 1 << `AREG_W;                 // the architectural registers, every kind
-   localparam integer NHID = 1;                           // the FP-kind hidden registers in use (VH0)
+   localparam integer NHID = 2;                           // the FP-kind hidden registers in use (VH0, VH1)
    localparam [IDXB-1:0] XH_IX = 32;                      // ...and the integer-kind one, XH0: SH_IE's
    // THE RESET MAPPING: x0-x31 in SH_IE, f0-f31 in SH_FL and v0-v31 in SH_V at indices 0..31, the
    // FP-kind hidden registers in use in SH_FF at 0..NHID-1, XH0 (104) in SH_IE at 32, any other

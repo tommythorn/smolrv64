@@ -119,6 +119,7 @@ function automatic vmv_x(input [31:0] i);
    vmv_x = ((is_vmvv(i) | is_viop(i)) & (i[14:12] == 3'b100)) | is_vmvsx(i);
 endfunction
 localparam [6:0] VH0 = 7'd96;                      // the first hidden register
+localparam [6:0] VH1 = 7'd97;                      // ...the second: a unit-stride access's base
 localparam [6:0] XH0 = 7'd104;                     // the integer-kind hidden register (smolrv64_areg.vh)
 // the registers one writes: nr, LMUL (1 for a fractional one), or 1
 function automatic [3:0] vmv_regs(input [31:0] i, input [VST_W-1:0] s);
@@ -168,11 +169,60 @@ function automatic [UX_W:0] vwr_s0(input [31:0] i, input [6:0] vs);
    end
 endfunction
 
+// THE UNIT-STRIDE LOADS AND STORES, vle<eew>.v and vse<eew>.v (vm = 1, nf = 1, lumop 0, mew 0), of
+// EMUL = EEW / SEW * LMUL registers (one for a fractional EMUL), through the scalar LSU a doubleword
+// at a time (docs/PLAN-2026-11-25-vector.md §8): the base b moves into VH1, then the end uop writes
+// XH0 = {o + vstart * EEW, o + vl * EEW} (o = b mod 8, bytes from b - o), and doubleword k of the
+// access, [b - o + 8k, + 8), aligned, k = 0 .. 2 * EMUL, takes the active bytes of that range.
+function automatic is_vus(input [31:0] i, input st);
+   is_vus = (i[6:0] == (st ? 7'b0100111 : 7'b0000111))
+          & ((i[14:12] == 3'b000) | (i[14] & (i[13:12] != 2'b00)))           // a vector width
+          & (i[31:25] == 7'b0000001) & (i[24:20] == 5'd0);                   // nf 1, mew 0, unit-stride, vm 1
+endfunction
+function automatic [1:0] vus_eew(input [31:0] i);  // log2 of its element's bytes
+   vus_eew = i[14] ? i[13:12] : 2'd0;
+endfunction
+// its registers, EMUL (one for a fractional EMUL), or 0: illegal (EMUL above 8 or below 1/8, vill, the
+// group past v31)
+function automatic [3:0] vus_regs(input [31:0] i, input [VST_W-1:0] s);
+   reg signed [4:0] el;
+   reg [3:0]        n;
+   begin
+      el = $signed({3'b000, vus_eew(i)}) - $signed({3'b000, s[9:8]}) + $signed({s[7], s[7], s[7:5]});
+      n  = (el <= 0) ? 4'd1 : (4'd1 << el[1:0]);
+      vus_regs = (s[13] | (el > 3) | (el < -3) | (({1'b0, i[11:7]} + {2'b00, n}) > 6'd32)) ? 4'd0 : n;
+   end
+endfunction
+// a load's uop ux, {kind, k, r}: kind 0 the base's move-in, 1 the end, 2 doubleword k's load into VH0,
+// 3 its pack into register r of the group. Each doubleword's packs follow its load: k = 0 and
+// k = 2 * EMUL into one register, an odd k into register (k - 1) / 2, an even one into the registers
+// k / 2 - 1 and k / 2. 5 * EMUL + 3 uops.
+function automatic [9:0] vle_at(input [UX_W-1:0] ux);
+   reg [UX_W-1:0] t, q6;
+   reg [2:0]      m, q;
+   integer        j;
+   begin
+      t = ux - 4;  m = 3'd0;
+      for (j = 1; j < 8; j = j + 1) if ({26'd0, t} >= 5 * j) m = j[2:0];
+      q6 = t - ({{(UX_W-5){1'b0}}, m, 2'b00} + {{(UX_W-3){1'b0}}, m});   // t - 5m
+      q  = q6[2:0];
+      if (ux < 2)      vle_at = {ux[1:0], 8'd0};
+      else if (ux < 4) vle_at = {ux[0] ? 2'd3 : 2'd2, 8'd0};
+      else case (q)
+        3'd0:    vle_at = {2'd2, {1'b0, m, 1'b1}, 3'd0};         // load 2m + 1
+        3'd1:    vle_at = {2'd3, {1'b0, m, 1'b1}, m};            // ...its pack into m
+        3'd2:    vle_at = {2'd2, {1'b0, m, 1'b0} + 5'd2, 3'd0};  // load 2m + 2
+        3'd3:    vle_at = {2'd3, {1'b0, m, 1'b0} + 5'd2, m};     // ...its pack into m
+        default: vle_at = {2'd3, {1'b0, m, 1'b0} + 5'd2, m + 3'd1};   // ...and into m + 1
+      endcase
+   end
+endfunction
+
 // the instruction's uops, from the decode state before it and vstart: a vset that allocates is two
 // (the vl write, then rd); a move one a register it writes, after the scalar's move-in; a
-// whole-register access four a register from vstart's chunk on; anything else one (vsetvl too: it
-// is a SYSQ op, which writes the decode state itself and refetches what follows, and a move at
-// vill, which traps)
+// whole-register access four a register from vstart's chunk on; a unit-stride load 5 * EMUL + 3;
+// anything else one (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches
+// what follows, and an illegal one, which traps)
 function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input [6:0] vs);
    reg [UX_W:0] n;
    begin
@@ -180,6 +230,7 @@ function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s, input
       uop_count = vset_alloc(i) ? 2
                 : (is_vmv(i) & ~s[13]) ? {{(UX_W-3){1'b0}}, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)}
                 : ((is_vlr(i) | is_vsr(i)) & ~vwr_past(i, vs)) ? n - vwr_s0(i, vs)
+                : (is_vus(i, 1'b0) & (vus_regs(i, s) != 4'd0)) ? {{(UX_W-3){1'b0}}, vus_regs(i, s)} * 5 + 3
                 : 1;
    end
 endfunction
@@ -226,6 +277,15 @@ endfunction
 // THE MOVE-IN's internal word: FMV.D.X of the instruction's rs1 (its destination is VH0)
 function automatic [31:0] mvin_word(input [31:0] i);
    mvin_word = {5'b11110, 2'b01, 5'd0, i[19:15], 3'b000, 5'd0, 7'b1010011};
+endfunction
+// THE END UOP's internal word (a unit-stride access's uop 1): an OPMVV op with vs1 11111, which no
+// instruction is (VWXUNARY0), so decode_fp calls it the vector unit's with an x-register result; vs2
+// holds log2 EEW. The F stage writes XH0 = {o + vstart * EEW, o + vl * EEW} from VH1's low bits.
+function automatic [31:0] vend_word(input [31:0] i);
+   vend_word = {6'b010000, 1'b1, 3'b000, vus_eew(i), 5'b11111, 3'b010, 5'd0, 7'b1010111};
+endfunction
+function automatic is_vend(input [31:0] i);
+   is_vend = (i[6:0] == 7'b1010111) & (i[14:12] == 3'b010) & (i[31:26] == 6'b010000) & (i[19:15] == 5'b11111);
 endfunction
 
 // A VECTOR UOP keeps its instruction's word (the last retires it); what else the F stage needs rides

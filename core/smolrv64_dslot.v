@@ -125,13 +125,25 @@ module smolrv64_dslot
    wire            w_u  = (w_ld | w_st) & ~w_m;
    wire [`AREG_W-1:0] w_vr = {2'b10, s_exp[11:7] + {2'b00, ux[4:2]}};       // the register (vd, or vs3)
    wire [VP_W-1:0] w_pos = {vst[VS_VZ], 4'd0, ux[1], 1'b0, ux[4:2]};
+   // a unit-stride load: uop ux is {kind, k, r} (vle_at): the base's move-in into VH1 (u_mi), the end
+   // into XH0 (u_en), doubleword k's load into VH0 (u_m: rs1 the base, rs2 XH0, at 8k) and its pack
+   // into register r of the group (u_u: VH0, VH1, at its place {vz, 0, k, r})
+   wire            u_ld = ~fault_op & is_vus(s_exp, 1'b0);
+   wire [9:0]      u_at = vle_at(ux);
+   wire            u_mi = u_ld & (u_at[9:8] == 2'd0);
+   wire            u_en = u_ld & (u_at[9:8] == 2'd1);
+   wire            u_m  = u_ld & (u_at[9:8] == 2'd2);
+   wire            u_u  = u_ld & (u_at[9:8] == 2'd3);
+   wire [`AREG_W-1:0] u_vr = {2'b10, s_exp[11:7] + {2'b00, u_at[2:0]}};
+   wire [VP_W-1:0] u_pos = {vst[VS_VZ], 1'b0, u_at[7:0]};
    wire            m_is_fp = fault_op ? 1'b0 : ((s_exp[6:2] == 5'b10100) | (s_exp[6:2] == 5'b10000) | (s_exp[6:2] == 5'b10001) | (s_exp[6:2] == 5'b10010) | (s_exp[6:2] == 5'b10011) | (s_exp[6:2] == 5'b00001) | (s_exp[6:2] == 5'b01001));
    wire [SEQW-1:0] m_seq = seq_in;
    wire [PCW-1:0]  m_pred_npc = q_v ? q_pnpc : pnpc;
    wire            m_fault = fault_op;
    wire [3:0]      m_fault_cause = cause;
    // an illegal uop traps as its instruction, so it keeps the instruction's word
-   wire [31:0]     m_insn = fault_op ? 32'd0 : m_illegal ? s_exp : v_vl ? vl_word(s_exp) : v_mi ? mvin_word(s_exp) : s_exp;
+   wire [31:0]     m_insn = fault_op ? 32'd0 : m_illegal ? s_exp : v_vl ? vl_word(s_exp) : (v_mi | u_mi) ? mvin_word(s_exp)
+                          : u_en ? vend_word(s_exp) : s_exp;
    wire [UX_W-1:0] m_ux = ux;
    wire            m_ul = ul;
    // the state after: an instruction that traps changes none (the trap refetches)
@@ -143,24 +155,30 @@ module smolrv64_dslot
    wire [VST_W-1:0] v_aft = vst_after(s_exp, vst);
    wire [`AREG_W-1:0] m_rd = fault_op ? {`AREG_W{1'b0}} : v_vl ? (VL_ID | {3'd0, v_aft[3:0]}) : (v_rd | v_svl) ? v_xrd
                            : (v_mi | (w_ld & w_m) | (w_st & w_u)) ? VH0 : v_mu ? (v_xs ? v_xrd : v_vd)
-                           : (w_ld & w_u) ? w_vr : w_st ? {`AREG_W{1'b0}} : s_rd;
+                           : (w_ld & w_u) ? w_vr : w_st ? {`AREG_W{1'b0}} : u_mi ? VH1 : u_en ? XH0 : u_m ? VH0
+                           : u_u ? u_vr : s_rd;
    wire            m_rd_v = fault_op ? 1'b0 : v_vl ? 1'b0 : (v_rd | v_svl) ? (s_exp[11:7] != 5'd0)
                            : v_mi ? 1'b1 : v_mu ? (~v_xs | (s_exp[11:7] != 5'd0))
-                           : (w_ld | w_st) ? ~(w_st & w_m) : s_rd_v;
+                           : (w_ld | w_st) ? ~(w_st & w_m) : u_ld ? 1'b1 : s_rd_v;
    wire [`AREG_W-1:0] m_rs1 = fault_op ? {`AREG_W{1'b0}} : (v_vl | v_rd) ? (v_reg ? v_xrs1 : {`AREG_W{1'b0}}) : (v_svl | v_mi | w_m) ? v_xrs1
                             : v_mu ? (v_vv ? v_vs1 : vmv_x(s_exp) ? VH0 : {`AREG_W{1'b0}})
-                            : (w_ld & w_u) ? VH0 : w_st ? {`AREG_W{1'b0}} : s_rs1;
+                            : (w_ld & w_u) ? VH0 : w_st ? {`AREG_W{1'b0}} : (u_mi | u_m) ? v_xrs1 : u_en ? VH1
+                            : u_u ? VH0 : s_rs1;
    wire            m_rs1_v = fault_op ? 1'b0 : (v_vl | v_rd) ? v_reg : (v_svl | v_mi | w_m) ? 1'b1 : v_mu ? (v_vv | vmv_x(s_exp))
-                            : (w_ld | w_st) ? w_ld : s_rs1_v;
-   wire [`AREG_W-1:0] m_rs2 = (fault_op | v_set | v_mi | w_ld) ? {`AREG_W{1'b0}} : v_svl ? {2'b00, s_exp[24:20]}
-                            : v_mu ? ((v_vr | v_xs) ? v_vs2 : {`AREG_W{1'b0}}) : w_st ? (w_m ? VH0 : w_vr) : s_rs2;
-   wire            m_rs2_v = (fault_op | v_set | v_mi | w_ld) ? 1'b0 : v_svl ? 1'b1 : v_mu ? (v_vr | v_xs) : w_st ? 1'b1 : s_rs2_v;
-   wire [`AREG_W-1:0] m_rs3 = (fault_op | v_set | v_mv | w_ld | w_st) ? {`AREG_W{1'b0}} : s_rs3;
-   wire            m_rs3_v = (fault_op | v_set | v_mv | w_ld | w_st) ? 1'b0 : s_rs3_v;
-   // a whole-register access's chunk is at rs1 + 16 * register + 8 * chunk
+                            : (w_ld | w_st) ? w_ld : u_ld ? 1'b1 : s_rs1_v;
+   wire [`AREG_W-1:0] m_rs2 = (fault_op | v_set | v_mi | w_ld | u_mi | u_en) ? {`AREG_W{1'b0}} : v_svl ? {2'b00, s_exp[24:20]}
+                            : v_mu ? ((v_vr | v_xs) ? v_vs2 : {`AREG_W{1'b0}}) : w_st ? (w_m ? VH0 : w_vr)
+                            : u_m ? XH0 : u_u ? VH1 : s_rs2;
+   wire            m_rs2_v = (fault_op | v_set | v_mi | w_ld | u_mi | u_en) ? 1'b0 : v_svl ? 1'b1 : v_mu ? (v_vr | v_xs)
+                            : (w_st | u_ld) ? 1'b1 : s_rs2_v;
+   wire [`AREG_W-1:0] m_rs3 = (fault_op | v_set | v_mv | w_ld | w_st | u_ld) ? {`AREG_W{1'b0}} : s_rs3;
+   wire            m_rs3_v = (fault_op | v_set | v_mv | w_ld | w_st | u_ld) ? 1'b0 : s_rs3_v;
+   // a whole-register access's chunk is at rs1 + 16 * register + 8 * chunk, a unit-stride load's
+   // doubleword k at 8k from the base's doubleword
    wire [63:0]     m_imm = fault_op ? 64'd0 : v_rd ? (v_reg ? {56'd0, v_max} : {56'd0, v_imm})
                          : v_mv ? {{(64-VP_W){1'b0}}, v_pos} : w_m ? {57'd0, ux[4:1], 3'd0}
-                         : w_u ? {{(64-VP_W){1'b0}}, w_pos} : s_imm;
+                         : w_u ? {{(64-VP_W){1'b0}}, w_pos} : u_m ? {56'd0, u_at[7:3], 3'd0}
+                         : (u_en | u_u) ? {{(64-VP_W){1'b0}}, u_pos} : u_mi ? 64'd0 : s_imm;
    wire [31:0]     m_imm32 = m_imm[31:0];
    assign imm_wide = m_imm[63:32] != {32{m_imm[31]}};
    // the rd uop: minu rd, rs1, VLMAX, or rd = the constant vl
@@ -170,10 +188,10 @@ module smolrv64_dslot
    wire [1:0]      m_op1_sel = fault_op ? 2'd0 : v_rd ? (v_reg ? 2'd0 : 2'd2) : s_op1_sel;   // OP1_RS1 / OP1_ZERO
    wire            m_op2_imm = fault_op ? 1'b0 : v_rd ? 1'b1 : s_op2_imm;
    wire            m_res_link = fault_op ? 1'b0 : s_res_link;
-   wire            m_is_mem = fault_op ? 1'b0 : (w_ld | w_st) ? w_m : s_is_mem;
-   wire            m_is_store = fault_op ? 1'b0 : (w_ld | w_st) ? (w_st & w_m) : s_is_store;
-   wire [1:0]      m_mem_size = (w_ld | w_st) ? 2'd3 : s_mem_size;     // a chunk is an FLD's or FSD's
-   wire            m_mem_signed = (w_ld | w_st) ? 1'b0 : s_mem_signed;
+   wire            m_is_mem = fault_op ? 1'b0 : (w_ld | w_st) ? w_m : u_ld ? u_m : s_is_mem;
+   wire            m_is_store = fault_op ? 1'b0 : (w_ld | w_st) ? (w_st & w_m) : u_ld ? 1'b0 : s_is_store;
+   wire [1:0]      m_mem_size = (w_ld | w_st | u_ld) ? 2'd3 : s_mem_size;     // a chunk is an FLD's or FSD's
+   wire            m_mem_signed = (w_ld | w_st | u_ld) ? 1'b0 : s_mem_signed;
    wire            m_is_branch = fault_op ? 1'b0 : s_is_branch;
    wire [2:0]      m_br_func = s_br_func;
    wire            m_is_jump = fault_op ? 1'b0 : s_is_jump;
@@ -189,6 +207,7 @@ module smolrv64_dslot
    wire            m_cbo_zero = s_cbo_zero;
    wire            m_cbo_keep = s_cbo_keep;
    wire            m_illegal = q_v ? q_illegal : fault_op ? 1'b0 : (v_set | v_svl | w_ld | w_st) ? vs_off : v_mv ? (vs_off | vst[13])
+                             : u_ld ? (vs_off | (vus_regs(s_exp, vst) == 4'd0))
                              : s_illegal | (m_is_fp & fs_off);
    wire            m_mis_taken = q_v ? q_mis_taken : (s_taken_pc != pnpc);
    wire            m_mis_nt = q_v ? q_mis_nt : (s_ft_pc != pnpc);

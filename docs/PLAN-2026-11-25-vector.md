@@ -409,15 +409,17 @@ For `vle<eew>.v` / `vse<eew>.v` (vm = 1) with EMUL = EEW/SEW * LMUL registers (o
 EMUL; a reserved EMUL is illegal), base b = rs1, o = b mod 8, the instruction's bytes
 [S, B) = [vstart * EEW, vl * EEW) from b:
 
-- **The end** (an F-stage in-core op with an integer source, as the VL uop): XH0 := o + B, from rs1
-  and the VL file. XH0 is an **integer-kind hidden register** (ids 104-111 are integer hidden; it maps
-  at reset to SH_IE's register 32, so SH_IE's free list starts at 33).
-- **The base's move-in**: VH1 := rs1 (FMV.D.X through a lane), for the packs' and extracts' o.
+- **The base's move-in** (uop 0): VH1 := rs1 (FMV.D.X through a lane), for o.
+- **The end** (uop 1, the vector unit's, an internal OPMVV word with an x-register result, as
+  `vmv.x.s`): XH0 := {o + S, o + B}, from VH1 and the VL file. XH0 is an **integer-kind hidden
+  register** (ids 104-111 are integer hidden; it maps at reset to SH_IE's register 32, so SH_IE's
+  free list starts at 33).
 - **Doubleword k**, k from S/8 to 2*EMUL, is [8k, 8k + 8) from b - o, aligned, so it never straddles
   and never crosses a page. Its active bytes are [lo, hi) = [max(o + S, 8k), min(XH0, 8k + 8)), the
-  memory uop's lane computes them from rs1 (o), rs2 = XH0 and the immediate (k and S):
+  memory uop's lane computes them from rs1 (o), rs2 = XH0 and the immediate (k):
   - a **load** reads the whole doubleword into VH0 when lo < hi (its other bytes are on the same
-    page), else is a null load: no translation, no fault, no access;
+    page), else is a null load: M fills it translated, with no fault, at the DRAM base (a doubleword
+    the packs ignore), so it touches no page of the access;
   - a **store** writes bytes [lo, hi) of it (a **byte count**, 0 to 8, in the SQ: a count of 0 drains
     as nothing), its data from rs3 (VH0), rs2 being XH0.
 - **A load's pack** of doubleword k writes its active bytes into the group, bytes [8k - o, 8k - o + 8)
@@ -428,16 +430,17 @@ EMUL; a reserved EMUL is illegal), base b = rs1, o = b mod 8, the instruction's 
 - An element-misaligned base (o not a multiple of EEW) raises address-misaligned (cause 4 / 6), as
   the spec allows.
 
-A group of EMUL registers is then 3 + 5 * EMUL uops for a load, 4 + 4 * EMUL for a store.
+A group of EMUL registers is then 3 + 5 * EMUL uops for a load (43 at EMUL 8: the uop index is 6
+bits), 4 + 4 * EMUL for a store.
 
 ### 8.4 Traps
 
 With an element-aligned base, elements start on doubleword boundaries, and every doubleword before k
 is loaded and packed (or stored) before k's access, so a fault at doubleword k leaves exactly the
 elements before its first active byte done. The lane computes that element, (8k + lo - o) >> log2
-EEW; the LQ/SQ entry keeps it (7 bits) with the address, and a vector memory fault writes vstart
-with it (tval is b - o + 8k + lo, the faulting element's address). The retry cracks from vstart's
-doubleword.
+EEW; the queue entry keeps it with lo beside its address, and a vector memory fault writes vstart
+with it (tval is b - o + 8k + lo, the faulting element's address). The retry cracks the whole
+instruction again: the doublewords before vstart's are null, and the packs keep the prestart bytes.
 
 ### 8.5 What changes in the LSU and the queues (the census, 2026-11-26)
 

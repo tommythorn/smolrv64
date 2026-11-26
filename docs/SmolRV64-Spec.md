@@ -1249,12 +1249,32 @@ does not trap them) go through VH0 a chunk of 8 bytes at a time, a chunk two uop
 `[rs1 + 16k + 8h]` into VH0 and its pack into chunk h of `vd + k`, a store's extract of chunk h
 of `vs3 + k` into VH0 and its FSD. The memory uops are ordinary FP loads and stores to the LSU (the
 record an FLD's or FSD's, the word the instruction's). A trap at a chunk writes vstart with its
-first element (the table beside the ROB keeps it for each entry) and leaves the chunks before it
+first element (the lane computes it, and the faulting queue entry keeps it) and leaves the chunks before it
 written; the retry cracks from vstart's chunk, and a pack keeps the prestart bytes. Past the last
 element the instruction is one uop that changes nothing. The lockstep checks each chunk store
 against Simmerv's memory after the instruction (`probe_vstore`, `simmerv_read_memory`; Simmerv
 stores byte by byte); `+st_corrupt=<n>` covers the chunks too. Directed test:
 `core/directed/vwr.S` (Sv39 page faults at the second register of a load and of a store).
+
+**Unit-stride loads** (`vle<eew>.v`, unmasked; EMUL = EEW/SEW * LMUL registers, one for a
+fractional EMUL; an EMUL above 8 or below 1/8 is illegal, as is the group past v31 or vill) go
+through the LSU an aligned doubleword at a time, so none straddles or crosses a page
+(`docs/PLAN-2026-11-25-vector.md` §8). With b the base and o = b mod 8, the access is bytes
+[o + vstart * EEW, o + vl * EEW) from b - o. Uop 0 moves b into VH1; uop 1 (the end, an internal
+OPMVV word) writes those two bounds into XH0, the integer-kind hidden register; then each
+doubleword k = 0 .. 2 * EMUL is a load into VH0 (an FLD of `[(b + 8k) & ~7]`, rs2 = XH0) followed
+by its packs: into one register of the group (k = 0, odd k, k = 2 * EMUL) or two (even k), each
+writing the register's bytes the doubleword holds that are in the access. 5 * EMUL + 3 uops; the
+uop index is 6 bits. The load's lane computes its doubleword's active bytes from rs1's low bits,
+XH0 and the immediate, and writes them beside the address (`u_lx`, `u_sx`: a vector-access bit,
+the count, the first one's offset, its element); M fills **a null load** (no active byte)
+translated, with no fault, at the DRAM base, whose doubleword the packs ignore, so it touches no
+page of the access. A fault at doubleword k writes vstart with the element of its first active
+byte and tval with that byte's address (`fve_l`, `fve_s` beside `fva_*`); every element before it
+is loaded, as elements start on doubleword boundaries for an element-aligned base (a misaligned
+one is loaded as well, the straddling element at vstart). The retry cracks the whole instruction
+again: doublewords before vstart are null and the packs keep the prestart bytes. Directed test:
+`core/directed/vle.S` (a tail ending at an unmapped page, a page fault mid-register retried).
 
 ## 8. Load/store unit and MMU
 
