@@ -6,7 +6,9 @@
         RUP RMM; a, b, result 16 hex digits (a binary32 value NaN-boxed: its upper 32 bits ones);
         flags = {NV, DZ, OF, UF, NX} as 2 hex digits.
     tools/fpref.py vectors fma <n> [seed]      n vectors for the FMA unit, "v sf df rm x a b c result flags":
-                                               the FMA group (ffma) and the conversions (f2f, i2f, f2i)
+                                               the FMA group (ffma) and the conversions (f2f, i2f, f2i,
+                                               fcvtmod)
+    tools/fpref.py vectors zfa <n> [seed]      n vectors for the core's Zfa ops, "op fmt rm a b result flags"
 
 Every value is decoded to an exact rational, the operation is done exactly (a square root by an
 integer square root of the scaled radicand, its remainder the sticky bit), and the one rounding
@@ -19,7 +21,7 @@ import sys
 from fractions import Fraction
 from math import isqrt
 
-FMT = {0: (8, 23), 1: (11, 52)}            # exponent bits, fraction bits
+FMT = {0: (8, 23), 1: (11, 52), 2: (5, 10)}   # binary32, binary64, binary16: exponent bits, fraction bits
 NV, DZ, OF, UF, NX = 16, 8, 4, 2, 1
 
 
@@ -29,15 +31,22 @@ def params(fmt):
     return e, f, bias, 1 - bias, bias        # ..., emin, emax
 
 
+def width(fmt):
+    e, f = FMT[fmt]
+    return 1 + e + f
+
+
 def unbox(fmt, x):
-    """The operand's own bits, or None for a binary32 value that is not NaN-boxed."""
+    """The operand's own bits, or None for a narrower value that is not NaN-boxed."""
     if fmt == 1:
         return x
-    return x & 0xFFFFFFFF if (x >> 32) == 0xFFFFFFFF else None
+    w = width(fmt)
+    return x & ((1 << w) - 1) if x >> w == (1 << (64 - w)) - 1 else None
 
 
 def box(fmt, x):
-    return x if fmt == 1 else (0xFFFFFFFF << 32) | x
+    w = width(fmt)
+    return x if fmt == 1 else ((1 << (64 - w)) - 1) << w | x
 
 
 def canon_nan(fmt):
@@ -206,7 +215,7 @@ def ffma(fmt, rm, v, a, b, c):
     return box(fmt, bits), fl
 
 
-# The conversions: F2F (fcvt.s.d / fcvt.d.s), I2F (fcvt.{s,d}.{w,wu,l,lu}), F2I
+# The conversions: F2F (fcvt between binary16, binary32 and binary64), I2F (fcvt.{s,d}.{w,wu,l,lu}), F2I
 # (fcvt.{w,wu,l,lu}.{s,d}). il: a 64-bit integer (l/lu), iu: unsigned (wu/lu). A 32-bit integer
 # result is sign-extended to 64 bits; an integer source reads its low 32 bits for w/wu.
 def f2f(sf, df, rm, a):
@@ -268,9 +277,86 @@ def f2i(sf, rm, a, il, iu):
     return ext(n), NX if n != v else 0
 
 
+def fcvtmod(a):
+    """Zfa fcvtmod.w.d: toward zero, the low 32 bits of the unbounded integer, sign-extended; +-inf
+    and NaN give 0. The flags are fcvt.w.d's (RTZ) for the same operand."""
+    da = decode(1, a)
+    _, fl = f2i(1, 1, a, 0, 0)
+    if da[0] != 'num':
+        return 0, fl
+    v = -da[2] if da[1] else da[2]
+    n = int(v) & 0xFFFFFFFF                          # int() truncates toward zero
+    return n | (0xFFFFFFFF00000000 if n >> 31 else 0), fl
+
+
+def fround(fmt, rm, a, nx):
+    """Zfa fround (nx False) / froundnx: to an integral value in the same format. Zeros and
+    infinities pass unchanged; a NaN gives the canonical NaN (NV for a signaling one); a zero result
+    keeps the operand's sign; froundnx alone raises NX, when the result differs."""
+    ua = unbox(fmt, a)
+    da = decode(fmt, ua) if ua is not None else ('nan', False)
+    e, f, *_ = params(fmt)
+    if da[0] == 'nan':
+        return box(fmt, canon_nan(fmt)), NV if da[1] else 0
+    if da[0] == 'inf' or da[2] == 0:
+        return box(fmt, ua), 0
+    v = -da[2] if da[1] else da[2]
+    n = round_int(v, rm)
+    if n == 0:
+        bits = da[1] << (e + f)
+    else:
+        bits, _ = round_to(fmt, 0, 1 if n < 0 else 0, Fraction(abs(n)), False)   # exact
+    return box(fmt, bits), NX if nx and n != v else 0
+
+
+FLI = [-1, 'min', Fraction(1, 2**16), Fraction(1, 2**15), Fraction(1, 2**8), Fraction(1, 2**7),
+       Fraction(1, 16), Fraction(1, 8), Fraction(1, 4), Fraction(5, 16), Fraction(3, 8), Fraction(7, 16),
+       Fraction(1, 2), Fraction(5, 8), Fraction(3, 4), Fraction(7, 8), 1, Fraction(5, 4), Fraction(3, 2),
+       Fraction(7, 4), 2, Fraction(5, 2), 3, 4, 8, 16, 128, 256, 2**15, 2**16, 'inf', 'nan']
+
+
+def fli(fmt, i):
+    """Zfa fli: entry i of the constant table, in fmt."""
+    e, f, bias, emin, _ = params(fmt)
+    c = FLI[i]
+    if c == 'nan':
+        bits = canon_nan(fmt)
+    elif c == 'inf':
+        bits = ((1 << e) - 1) << f
+    elif c == 'min':
+        bits = 1 << f
+    else:
+        bits, _ = round_to(fmt, 0, 1 if c < 0 else 0, Fraction(abs(c)), False)
+    return box(fmt, bits), 0
+
+
+def fminmaxm(fmt, a, b, is_max):
+    """Zfa fminm/fmaxm: fmin/fmax, except that a NaN in either operand gives the canonical NaN."""
+    ua, ub = unbox(fmt, a), unbox(fmt, b)
+    da = decode(fmt, ua) if ua is not None else ('nan', False)
+    db = decode(fmt, ub) if ub is not None else ('nan', False)
+    if da[0] == 'nan' or db[0] == 'nan':
+        nv = (da[0] == 'nan' and da[1]) or (db[0] == 'nan' and db[1])
+        return box(fmt, canon_nan(fmt)), NV if nv else 0
+    return fminmax(fmt, a, b, is_max)
+
+
+def fcmpq(fmt, a, b, lt):
+    """Zfa fleq (lt False) / fltq: the quiet compares, NV only for a signaling NaN."""
+    ua, ub = unbox(fmt, a), unbox(fmt, b)
+    da = decode(fmt, ua) if ua is not None else ('nan', False)
+    db = decode(fmt, ub) if ub is not None else ('nan', False)
+    if da[0] == 'nan' or db[0] == 'nan':
+        nv = (da[0] == 'nan' and da[1]) or (db[0] == 'nan' and db[1])
+        return 0, NV if nv else 0
+    val = lambda d: (Fraction(-1) if d[1] else Fraction(1)) * (Fraction(10) ** 400 if d[0] == 'inf' else d[2])
+    return int(val(da) < val(db) if lt else val(da) <= val(db)), 0
+
+
 def fma_vectors(n, seed):
-    """Lines "v sf df rm x a b c result flags" (sf, df: the source and destination formats; x: {il, iu});
-    a quarter are conversions (v 7 F2F, 8 I2F, 9 F2I), a quarter of the rest cancel: c is about -(a*b)."""
+    """Lines "v sf df rm x a b c result flags" (sf, df: the source and destination formats, 0 binary32,
+    1 binary64, 2 binary16; x: {il, iu}); a quarter are conversions (v 7 F2F, 8 I2F, 9 F2I, 10
+    fcvtmod.w.d), a quarter of the rest cancel: c is about -(a*b)."""
     rng = random.Random(seed)
     out = sys.stdout
     for i in range(n):
@@ -290,10 +376,17 @@ def fma_vectors(n, seed):
                     c = box(fmt, (pa[1] ^ 1 ^ (v == 5)) << (e + f) | (unbox(fmt, a) & ((1 << (e + f)) - 1)) ^ rng.getrandbits(3))
         sf = df = fmt; x = 0
         if rng.randrange(4) == 0:                    # a conversion
-            v = 7 + rng.randrange(3); x = rng.randrange(4); sf = rng.getrandbits(1); df = sf ^ 1 if v == 7 else rng.getrandbits(1)
-            if v == 7:
+            v = 7 + rng.randrange(4); x = rng.randrange(4); sf = rng.getrandbits(1); df = rng.getrandbits(1)
+            if v == 7:                               # between any two of binary16, binary32, binary64
+                sf, df = rng.choice([(0, 1), (1, 0), (2, 0), (2, 1), (0, 2), (1, 2)])
                 a = operand(rng, sf)
                 r, fl = f2f(sf, df, rm, a)
+            elif v == 10:                            # fcvtmod.w.d: binary64, RTZ
+                sf = df = 1; rm = 1; x = 0
+                a = operand(rng, 1)
+                if rng.randrange(2):                 # around the 32-bit range and beyond 2^64
+                    a = rng.getrandbits(1) << 63 | (1023 + rng.choice([-1, 0, 30, 31, 32, 52, 62, 63, 64, 83, 84, 85, 100])) << 52 | rng.getrandbits(52)
+                r, fl = fcvtmod(a)
             elif v == 8:
                 k = rng.randrange(6)
                 a = [rng.getrandbits(64), rng.getrandbits(rng.randrange(1, 65)), -rng.getrandbits(rng.randrange(1, 64)) & (2**64 - 1),
@@ -360,8 +453,8 @@ def operand(rng, fmt):
     elif k == 8: ex, fr = bias + rng.randrange(-3, 4), rng.getrandbits(f)
     else:        ex, fr = rng.randrange(1, (1 << e) - 1), rng.getrandbits(f)
     x = s << (e + f) | ex << f | fr
-    if fmt == 0:
-        return box(0, x) if rng.randrange(64) else rng.getrandbits(64)   # 1/64: not NaN-boxed
+    if fmt != 1:
+        return box(fmt, x) if rng.randrange(64) else rng.getrandbits(64)   # 1/64: not NaN-boxed
     return x
 
 
@@ -384,9 +477,31 @@ def exact_pair(rng, fmt, op):
     return box(fmt, bits), b
 
 
+def zfa_vectors(n, seed):
+    """Lines "op fmt rm a b result flags" for the core's own Zfa ops: op 0 fround, 1 froundnx, 2 fminm,
+    3 fmaxm, 4 fleq, 5 fltq (an integer result), 6 fli (a is the table index)."""
+    rng = random.Random(seed)
+    out = sys.stdout
+    for i in range(n):
+        fmt = rng.getrandbits(1); rm = rng.randrange(5); op = rng.randrange(7)
+        a, b = operand(rng, fmt), operand(rng, fmt)
+        if op in (0, 1) and rng.randrange(2):        # near the integers: halves, and the edge of 2^f
+            e, f, bias, *_ = params(fmt)
+            ex = bias + rng.choice([-2, -1, 0, 1, 2, 3, f - 2, f - 1, f, f + 1])
+            a = box(fmt, rng.getrandbits(1) << (e + f) | ex << f | (rng.getrandbits(f) & ~((1 << rng.randrange(f)) - 1)))
+        if op in (2, 3, 4, 5) and i % 4 == 0:
+            b = a ^ (rng.getrandbits(1) << (63 if fmt else 31))
+        if op == 6:
+            a, b = rng.randrange(32), 0
+        r, fl = [lambda: fround(fmt, rm, a, False), lambda: fround(fmt, rm, a, True),
+                 lambda: fminmaxm(fmt, a, b, False), lambda: fminmaxm(fmt, a, b, True),
+                 lambda: fcmpq(fmt, a, b, False), lambda: fcmpq(fmt, a, b, True), lambda: fli(fmt, a)][op]()
+        out.write(f"{op} {fmt} {rm} {a:016x} {b:016x} {r:016x} {fl:02x}\n")
+
+
 def main():
-    if len(sys.argv) >= 4 and sys.argv[1] == 'vectors' and sys.argv[2] == 'fma':
-        fma_vectors(int(sys.argv[3]), int(sys.argv[4]) if len(sys.argv) > 4 else 1)
+    if len(sys.argv) >= 4 and sys.argv[1] == 'vectors' and sys.argv[2] in ('fma', 'zfa'):
+        (fma_vectors if sys.argv[2] == 'fma' else zfa_vectors)(int(sys.argv[3]), int(sys.argv[4]) if len(sys.argv) > 4 else 1)
         return
     if len(sys.argv) < 4 or sys.argv[1] != 'vectors' or sys.argv[2] not in OPS:
         sys.exit(__doc__)

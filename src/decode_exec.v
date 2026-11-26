@@ -201,8 +201,8 @@ module decode_exec
                         is_fp=1; if (!fp_known) illegal=1; end
         5'b00001, 5'b01001: begin is_fp=1; is_mem=1; is_store=opc[3];   // F/D LOAD/STORE-FP
                                   op2_imm=1; alu_op=`ALU_ADD;
-                                  mem_size=f3[1:0]; mem_signed=1'b0;    // FLW=W FLD=D; no sign-ext
-                                  if (f3!=3'b010 && f3!=3'b011) illegal=1; end
+                                  mem_size=f3[1:0]; mem_signed=1'b0;    // FLH=H FLW=W FLD=D; NaN-boxed
+                                  if (f3!=3'b001 && f3!=3'b010 && f3!=3'b011) illegal=1; end
         default: illegal=1;
       endcase
 

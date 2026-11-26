@@ -90,7 +90,8 @@ module decode_operands
                    5'b11000,5'b11100:                         // FCVT.int.fp, FMV.X.W/FCLASS -> int rd, fp rs1
                        begin rd_fp=1'b0; rs1_fp=1'b1; end
                    5'b11010,5'b11110:                         // FCVT.fp.int, FMV.W.X -> fp rd, int rs1
-                       begin rd_fp=1'b1; rs1_fp=1'b0; end
+                       begin rd_fp=1'b1; rs1_fp=1'b0;
+                             if (fpop == 5'b11110 && rs2f == 5'd1) has_rs1=1'b0; end  // Zfa FLI: rs1 is an index
                    default: legal=1'b0;
                  endcase
               end

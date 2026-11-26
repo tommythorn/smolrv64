@@ -19,7 +19,7 @@ the 2026-09 release; their history is in git, and the dated records in `docs/his
 | ISA | RV64IMAFDC (`misa` = A, C, D, F, I, M, S, U; MXL=2) |
 | Privilege | M / S / U |
 | Translation | Sv39 (`satp.MODE`=8) or Bare; Ssvnapot level-0 NAPOT leaves |
-| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot; Zcb and Zcmop (`src/rvc_expand.v`: each expands to its 32-bit equivalent, a c.mop.N to a nop), Zimop (mop.r.N / mop.rr.N write 0 and issue as ALU ops, not system ops: `src/smolrv64_sysop.vh`), Zawrs (wrs.nto / wrs.sto retire at once, as the extension allows), Zihintntl and Zihintpause (hints in encodings that already execute as no-ops), Ssnpm and Supm (`senvcfg.PMM` = PMLEN 7, §8.1) |
+| Also implemented | Zicsr, Zifencei, Zicntr, Zihpm (29 counters: 13 general, 16 top-down), Sscofpmf, Sstc, Smstateen, Ssvnapot; Zcb and Zcmop (`src/rvc_expand.v`: each expands to its 32-bit equivalent, a c.mop.N to a nop), Zimop (mop.r.N / mop.rr.N write 0 and issue as ALU ops, not system ops: `src/smolrv64_sysop.vh`), Zawrs (wrs.nto / wrs.sto retire at once, as the extension allows), Zihintntl and Zihintpause (hints in encodings that already execute as no-ops), Zfa and Zfhmin (§7.1), Ssnpm and Supm (`senvcfg.PMM` = PMLEN 7, §8.1) |
 | Decoded but not in `misa` | Zba, Zbb, Zbs, Zicond (`src/decode_exec.v`) |
 | Fetch / dispatch / retire | **four-wide** (`SMOLRV64_IW=4`, set once in `core/smolrv64_width.vh` for the RTL, the build and the benches; `SMOLRV64_IW=3` and `2` build the three- and two-wide machines); fetch is one 16-byte pair per cycle into the fetch ring (§4) |
 | Issue | **dynamic**: ALU ops, multiplies, divides, branches and jumps issue in their slot's lane (a scheduler, an ALU and a multiplier per lane, four of each; a divide's operands go to the one MD stage) and reorder freely; a system op issues in lane A and fires from the SYSQ at the ROB head; FP ops reorder on the FP port (§7); loads, stores, AMOs, LR/SC and CBOs generate their address in their slot's lane and reach M through their LQ/SQ entry or the head-op register (§8) |
@@ -1047,9 +1047,12 @@ store has no destination register so a scoreboard slot buys it nothing.
 ### 7.1 FPU
 
 `fp_unit` (`u_fpu`: `NFLIGHT=4`) is two units of its own, `fp_fma` and `fp_divsqrt`; sign
-injection, the compares, FMIN/FMAX, the moves and FCLASS are the core's (stage F, `icr_*`). FMIN/FMAX
-take `fcmp`'s FLE/FLT answer for the instruction's own funct3 and `fminmax_d`/`_s` apply the NaN and
-signed-zero rules.
+injection, the compares, FMIN/FMAX, the moves and FCLASS are the core's (stage F, `icr_*`), and so are
+Zfa's FLI, FROUND/FROUNDNX, FMINM/FMAXM and the quiet FLEQ/FLTQ, and Zfhmin's FMV.X.H/FMV.H.X
+(`src/smolrv64_fp_ops.vh`). FMIN/FMAX(M) take `fcmp`'s FLE/FLT answer and `fminmax_d`/`_s` apply the
+NaN and signed-zero rules; FROUND keeps the operand's bits above the binary point and rounds up by
+adding one there, in one cycle; FLI is a 32-entry table per format. FLH NaN-boxes its 16 bits in the
+LSU's load formatter.
 
 - **`fp_fma`: the FMA group and the conversions, one op a cycle, 6 cycles** from the edge that takes
   an op to `res_valid` (f[n]madd/f[n]msub, fadd/fsub, fmul, every fcvt). One binary64-wide datapath
@@ -1057,9 +1060,13 @@ signed-zero rules.
   into a 164-bit window (the product at bits [107:2], the addend from LSB 110, shifted right by
   `56 + ea + eb - ec`), the sum's magnitude, a leading-zero count and normalization, then a right
   shift back into range for a tiny result and the one rounding at the destination's precision.
+  binary16 is a conversion's source or destination only (Zfhmin: fcvt between H and S or D), unpacked
+  and rounded like the other two at its own precision and exponent range.
   fcvt between the formats is a product with an exact 1; an integer source replaces the product
   (bit 0 at window bit 2); a conversion to an integer aligns its operand as the addend so window
-  bit 2 weighs 1, and rounds, negates and saturates the bits [65:2].
+  bit 2 weighs 1, and rounds, negates and saturates the bits [65:2]; Zfa's `fcvtmod.w.d` is that
+  conversion to a 32-bit integer under RTZ with its flags, keeping the low 32 bits instead of
+  saturating (0 for a NaN or an infinity).
 - **`fp_divsqrt`: division and square root**, one restoring digit recurrence for both
   (`b = (2r >= T)`, `r <- 2r - b*T`, T the divisor or `2Q + 2^-(j+1)`), 3 result bits a cycle, both
   formats in one internal form, one op at a time. From accept to `res_valid`, normal operands:
@@ -1073,7 +1080,8 @@ signed-zero rules.
   request register holds an op only while `fp_divsqrt` is busy.
 - **Every unit is correctly rounded in all five rounding modes with all five flags** (tininess
   after rounding), checked against `tools/fpref.py`, the specification computed in rationals:
-  `core/run-fma-tb.sh`, `core/run-fdiv-tb.sh`.
+  `core/run-fma-tb.sh`, `core/run-fdiv-tb.sh`, and `core/run-fpops-tb.sh` for the core's own Zfa ops;
+  on a board, `tools/board/fpchk/fpchk.sh` runs the same vectors as instructions.
 - **Dependent latency is the pipe depth plus the hand-over:** each op of a dependent chain waits
   `fp_fma`'s 6 cycles. That bounds a reduction such as GB5 Machine Learning's SGEMM inner loop,
   whose `fadd.s` into one accumulator carries the loop.

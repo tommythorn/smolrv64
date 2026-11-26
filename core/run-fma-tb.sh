@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit TB for fp_fma: tools/fpref.py's exact FMA-group vectors (both formats, every rounding mode,
+# Unit TB for fp_fma: tools/fpref.py's exact vectors (the FMA group in both formats, every rounding mode,
 # all seven op variants, a quarter of them cancelling), FMA_N of them (default 40000; FMA_SEED=<s>
 # for another draw), issued back to back. Seconds, no core build.
 set -euo pipefail

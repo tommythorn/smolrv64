@@ -7,7 +7,8 @@
 module tb;
    reg  [31:0] insn;
    wire        fp_valid, use_fpu, op0_int, wr_fp;
-   wire [2:0]  fp_class, src_fmt, dst_fmt, rnd;
+   wire [2:0]  src_fmt, dst_fmt, rnd;
+   wire [3:0]  fp_class;
    wire [3:0]  op;  wire op_mod;  wire [1:0] int_fmt, op0_sel, op1_sel, op2_sel;
    integer errs = 0;
 
@@ -24,15 +25,15 @@ module tb;
       fma = {rs3, fmt, rs2, rs1, rm, rd, oc}; endfunction
 
    // op codes (decode_fp.v)
-   localparam FMADD=0, FNMSUB=1, ADD=2, MUL=3, DIV=4, SQRT=5, MINMAX=7, F2F=10, F2I=11, I2F=12;
-   localparam C_FPU=0, C_SGNJ=1, C_CMP=2, C_MVXF=3, C_MVFX=4, C_FCLASS=5, C_MINMAX=6;
+   localparam FMADD=0, FNMSUB=1, ADD=2, MUL=3, DIV=4, SQRT=5, MINMAX=7, F2F=10, F2I=11, I2F=12, F2IM=13;
+   localparam C_FPU=0, C_SGNJ=1, C_CMP=2, C_MVXF=3, C_MVFX=4, C_FCLASS=5, C_MINMAX=6, C_FLI=7, C_FROUND=8;
 
    task chk;  // name, expected: valid, usefpu, class, op, opmod, src, dst, wrfp
-      input [127:0] nm; input ev, eu; input [2:0] ec; input [3:0] eo; input em;
+      input [127:0] nm; input ev, eu; input [3:0] ec; input [3:0] eo; input em;
       input [2:0] es, ed; input ew;
       begin
          #1;
-         if (fp_valid!==ev || use_fpu!==eu || fp_class!==ec || (eu && (op!==eo || op_mod!==em
+         if (fp_valid!==ev || (ev && (use_fpu!==eu || fp_class!==ec)) || (eu && (op!==eo || op_mod!==em
               || src_fmt!==es || dst_fmt!==ed)) || wr_fp!==ew) begin
             $display("FAIL %0s: valid=%b/%b usefpu=%b/%b class=%0d/%0d op=%0d/%0d mod=%b/%b src=%0d/%0d dst=%0d/%0d wrfp=%b/%b",
                nm, fp_valid,ev, use_fpu,eu, fp_class,ec, op,eo, op_mod,em, src_fmt,es, dst_fmt,ed, wr_fp,ew);
@@ -70,6 +71,38 @@ module tb;
       insn=opfp(7'b1111000,5'd0,5'd2,3'd0,5'd1); chk("FMV.W.X",1,0,C_MVFX,4'd0,1'b0,3'd0,3'd0,1'b1);
       // a non-FP op -> fp_valid=0
       insn=32'h00000033 /*ADD*/; chk("ADD(not-fp)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+
+      // Zfhmin: the conversions with binary16 (format field H = 10, source in rs2[1:0]), the moves
+      insn=opfp(7'b0100000,5'd2,5'd2,3'd0,5'd1); chk("FCVT.S.H",1,1,C_FPU,F2F,1'b0,3'd2,3'd0,1'b1);
+      insn=opfp(7'b0100010,5'd0,5'd2,3'd0,5'd1); chk("FCVT.H.S",1,1,C_FPU,F2F,1'b0,3'd0,3'd2,1'b1);
+      insn=opfp(7'b0100001,5'd2,5'd2,3'd0,5'd1); chk("FCVT.D.H",1,1,C_FPU,F2F,1'b0,3'd2,3'd1,1'b1);
+      insn=opfp(7'b0100010,5'd1,5'd2,3'd0,5'd1); chk("FCVT.H.D",1,1,C_FPU,F2F,1'b0,3'd1,3'd2,1'b1);
+      insn=opfp(7'b1110010,5'd0,5'd2,3'd0,5'd1); chk("FMV.X.H",1,0,C_MVXF,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1111010,5'd0,5'd2,3'd0,5'd1); chk("FMV.H.X",1,0,C_MVFX,4'd0,1'b0,3'd0,3'd0,1'b1);
+      // not Zfhmin (Zfh): H arithmetic, FCLASS.H, FCVT.H.H, and the Q format anywhere
+      insn=opfp(7'b0000010,5'd3,5'd2,3'd0,5'd1); chk("FADD.H(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b1110010,5'd0,5'd2,3'd1,5'd1); chk("FCLASS.H(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b0100010,5'd2,5'd2,3'd0,5'd1); chk("FCVT.H.H(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0100000,5'd0,5'd2,3'd0,5'd1); chk("FCVT.S.S(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0100011,5'd0,5'd2,3'd0,5'd1); chk("FCVT.Q.S(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b1110011,5'd0,5'd2,3'd0,5'd1); chk("FMV.X.Q(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      // Zfa
+      insn=opfp(7'b1111000,5'd1,5'd7,3'd0,5'd1); chk("FLI.S",1,0,C_FLI,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b1111001,5'd1,5'd7,3'd0,5'd1); chk("FLI.D",1,0,C_FLI,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b1111010,5'd1,5'd7,3'd0,5'd1); chk("FLI.H(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0010100,5'd3,5'd2,3'd2,5'd1); chk("FMINM.S",1,0,C_MINMAX,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0010101,5'd3,5'd2,3'd3,5'd1); chk("FMAXM.D",1,0,C_MINMAX,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0010101,5'd3,5'd2,3'd4,5'd1); chk("FMIN f3=4(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0100000,5'd4,5'd2,3'd0,5'd1); chk("FROUND.S",1,0,C_FROUND,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b0100001,5'd5,5'd2,3'd7,5'd1); chk("FROUNDNX.D",1,0,C_FROUND,4'd0,1'b0,3'd0,3'd0,1'b1);
+      insn=opfp(7'b1100001,5'd8,5'd2,3'd1,5'd1); chk("FCVTMOD.W.D",1,1,C_FPU,F2IM,1'b0,3'd1,3'd1,1'b0);
+      insn=opfp(7'b1100001,5'd8,5'd2,3'd0,5'd1); chk("FCVTMOD rne(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1100000,5'd8,5'd2,3'd1,5'd1); chk("FCVTMOD.W.S(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1010000,5'd3,5'd2,3'd4,5'd1); chk("FLEQ.S",1,0,C_CMP,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1010001,5'd3,5'd2,3'd5,5'd1); chk("FLTQ.D",1,0,C_CMP,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1010000,5'd3,5'd2,3'd3,5'd1); chk("FCMP f3=3(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b1110001,5'd1,5'd2,3'd0,5'd1); chk("FMVH.X.D(no: RV32)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b0);
+      insn=opfp(7'b0010000,5'd3,5'd2,3'd4,5'd1); chk("FSGNJ f3=4(no)",0,0,C_FPU,4'd0,1'b0,3'd0,3'd0,1'b1);
 
       // spot-check operand routing
       #1; insn=opfp(7'b0000000,5'd3,5'd2,3'd0,5'd1); #1;  // FADD: (ZERO,FRS1,FRS2)

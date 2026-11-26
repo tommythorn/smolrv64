@@ -7,7 +7,8 @@
 module tb;
    reg clk = 0;
    always #5 clk = ~clk;
-   reg         reset = 1, flush = 0, in_valid = 0, in_sf = 0, in_df = 0, in_il = 0, in_iu = 0;
+   reg         reset = 1, flush = 0, in_valid = 0, in_il = 0, in_iu = 0;
+   reg  [1:0]  in_sf = 0, in_df = 0;
    reg  [3:0]  in_op = 0;
    reg  [2:0]  in_rm = 0;
    reg  [63:0] in_a = 0, in_b = 0, in_c = 0;
@@ -26,7 +27,7 @@ module tb;
    reg  [7:0]  want_f [0:N-1];
    reg  [3:0]  op_of  [0:N-1];
    reg  [63:0] a_of [0:N-1], b_of [0:N-1], c_of [0:N-1];
-   reg  [7:0]  fr_of [0:N-1];
+   reg  [8:0]  fr_of [0:N-1];
    reg         dead  [0:N-1];                  // issued, then flushed
    integer fd, n, issued, got, bad, flushed, v, sf, df, rm, xi, lat, t_issue [0:N-1], maxlat;
    reg [63:0] a, b, c, r;  reg [7:0] f;
@@ -46,7 +47,7 @@ module tb;
             if (out_result !== want_r[exp_i] || {3'b000, out_flags} !== want_f[exp_i]) begin
                bad = bad + 1;
                if (bad <= 20)
-                  $display("FAIL: v=%0d sf.df.il.iu/rm=%02x a=%h b=%h c=%h got %h/%02x want %h/%02x",
+                  $display("FAIL: v=%0d sf.df.il.iu.rm=%03x a=%h b=%h c=%h got %h/%02x want %h/%02x",
                            op_of[exp_i], fr_of[exp_i], a_of[exp_i], b_of[exp_i], c_of[exp_i],
                            out_result, out_flags, want_r[exp_i], want_f[exp_i]);
             end
@@ -71,9 +72,9 @@ module tb;
          flush = 0;
          if (($urandom % 6) == 0) begin in_valid = 0; @(negedge clk); end   // a bubble
          want_r[issued] = r;  want_f[issued] = f;  op_of[issued] = v[3:0];
-         a_of[issued] = a;  b_of[issued] = b;  c_of[issued] = c;  fr_of[issued] = {sf[0], df[0], xi[1:0], rm[3:0]};
+         a_of[issued] = a;  b_of[issued] = b;  c_of[issued] = c;  fr_of[issued] = {sf[1:0], df[1:0], xi[1:0], rm[2:0]};
          dead[issued] = 1'b0;  t_issue[issued] = $time / 10 + 1;
-         in_valid = 1; in_op = v[3:0]; in_sf = sf[0]; in_df = df[0]; in_il = xi[1]; in_iu = xi[0]; in_rm = rm[2:0];
+         in_valid = 1; in_op = v[3:0]; in_sf = sf[1:0]; in_df = df[1:0]; in_il = xi[1]; in_iu = xi[0]; in_rm = rm[2:0];
          in_a = a; in_b = b; in_c = c; in_tag = issued[23:0];
          issued = issued + 1;
          if (($urandom % 2000) == 0) begin

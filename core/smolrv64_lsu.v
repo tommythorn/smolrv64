@@ -47,7 +47,7 @@ module smolrv64_lsu
     input  wire [63:0]     req_vaddr,
     input  wire [1:0]      req_size,       // 0=B 1=H 2=W 3=D
     input  wire            req_signed,     // load sign-extends
-    input  wire            req_fp,         // FLW -> NaN-box the 32-bit result
+    input  wire            req_fp,         // FLW/FLH -> NaN-box the 32- or 16-bit result
     input  wire [63:0]     req_st_data,    // rs2
 
     // ---- PRE-TRANSLATED ACCESS PORT ------------------------------------------------
@@ -539,7 +539,8 @@ module smolrv64_lsu
    // these three were not.
    wire [63:0] ld_val = (nb_q == 4'd1) ? (sgn_q ? {{56{mem_rdata_eff[7]}},  mem_rdata_eff[7:0]}
                                                 : {56'd0, mem_rdata_eff[7:0]})
-                      : (nb_q == 4'd2) ? (sgn_q ? {{48{mem_rdata_eff[15]}}, mem_rdata_eff[15:0]}
+                      : (nb_q == 4'd2) ? (fp_q  ? {48'hffff_ffff_ffff, mem_rdata_eff[15:0]}  // FLH: NaN-box
+                                       : sgn_q  ? {{48{mem_rdata_eff[15]}}, mem_rdata_eff[15:0]}
                                                 : {48'd0, mem_rdata_eff[15:0]})
                       : (nb_q == 4'd4) ? (fp_q  ? {32'hffffffff, mem_rdata_eff[31:0]}   // FLW: NaN-box
                                        : sgn_q  ? {{32{mem_rdata_eff[31]}}, mem_rdata_eff[31:0]}
@@ -776,7 +777,8 @@ module smolrv64_lsu
    wire        f_fp  = mem_rvalid_c ? o_fp[mem_rtag_resp]  : o_fp[fw_tag0];
    wire [63:0] ld_fast_val =
         (f_nb == 4'd1) ? (f_sgn ? {{56{f_eff[7]}},  f_eff[7:0]}  : {56'd0, f_eff[7:0]})
-      : (f_nb == 4'd2) ? (f_sgn ? {{48{f_eff[15]}}, f_eff[15:0]} : {48'd0, f_eff[15:0]})
+      : (f_nb == 4'd2) ? (f_fp  ? {48'hffff_ffff_ffff, f_eff[15:0]}
+                        : f_sgn ? {{48{f_eff[15]}}, f_eff[15:0]} : {48'd0, f_eff[15:0]})
       : (f_nb == 4'd4) ? (f_fp  ? {32'hffffffff, f_eff[31:0]}
                         : f_sgn ? {{32{f_eff[31]}}, f_eff[31:0]} : {32'd0, f_eff[31:0]})
       :                  f_eff;

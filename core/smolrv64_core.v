@@ -3055,7 +3055,8 @@ module smolrv64_core
    initial     f_valid = 1'b0;
 
    wire        ff_valid_d, ff_use_fpu, ff_o0i, ff_wrfp, ff_mod;
-   wire [2:0]  ff_cls, ff_src, ff_dst, ff_rnd;
+   wire [3:0]  ff_cls;
+   wire [2:0]  ff_src, ff_dst, ff_rnd;
    wire [3:0]  ff_op;
    wire [1:0]  ff_int, ff_o0, ff_o1, ff_o2;
    decode_fp u_dfp_f
@@ -3073,7 +3074,8 @@ module smolrv64_core
    wire [63:0] ffo2 = ff_src32 ? {32'hffffffff, unbox_s(ffo2r)} : ffo2r;
    wire        ff_dst32 = (ff_dst == 3'd0) & ff_wrfp;
 
-   // THE IN-CORE FP OPS (FSGNJ/N/X, FEQ/FLT/FLE, FCLASS, FMV both ways) run here in one cycle, off
+   // THE IN-CORE FP OPS (FSGNJ/N/X, FEQ/FLT/FLE, FCLASS, FMV both ways, FMIN/FMAX; Zfa's FLI, FROUND,
+   // FMINM/FMAXM, FLEQ/FLTQ; Zfhmin's FMV.X.H/FMV.H.X) run here in one cycle, off
    // the stage's operand registers, into a one-entry result register that lands through the
    // FPU's own landing (fp_land: the FE shard, the ROB port, the flags) in any cycle the FPU is
    // not landing an f-register. The FPU keeps priority, so its handshake is unchanged; a waiting
@@ -3110,28 +3112,41 @@ module smolrv64_core
    wire             icr_int_n = icr_tag_n[FTAGW-2] & ~icr_tag_n[RN_PBITS-1];
    always @(posedge clk) icr_room <= reset | ~icr_int_n | lb_fe_room_n[icr_tag_n[RN_IDXB +: 2]];
    wire        fi_isd = f_insn[25];                  // 0=single 1=double
+   wire        fi_h   = f_insn[26];                  // binary16: Zfhmin's FMV.X.H / FMV.H.X
    wire [2:0]  fi_f3  = f_insn[14:12];
    wire [31:0] fi_u1  = unbox_s(f_rs1_val);          // FMV.X.W is a raw bit-move: never unboxed
    wire [31:0] fi_u2  = unbox_s(f_rs2_val);
-   wire [1:0]  fi_cd  = fcmp_d(fi_f3, f_rs1_val, f_rs2_val);
-   wire [1:0]  fi_cs  = fcmp_s(fi_f3, fi_u1, fi_u2);
-   wire [64:0] fi_mm  = fi_isd ? fminmax_d(fi_f3[0], f_rs1_val, f_rs2_val, fi_cd[0])
-                               : fminmax_s(fi_f3[0], fi_u1, fi_u2, fi_cs[0]);   // FMIN/FMAX: {nv, result}
+   // FMIN/FMINM compare as FLE, FMAX/FMAXM as FLT; the compares' own funct3 otherwise
+   wire [2:0]  fi_cop = (ff_cls == 4'd6) ? {2'b00, fi_f3[0]} : fi_f3;
+   wire [1:0]  fi_cd  = fcmp_d(fi_cop, f_rs1_val, f_rs2_val);
+   wire [1:0]  fi_cs  = fcmp_s(fi_cop, fi_u1, fi_u2);
+   wire [64:0] fi_mm  = fi_isd ? fminmax_d(fi_f3[0], fi_f3[1], f_rs1_val, f_rs2_val, fi_cd[0])
+                               : fminmax_s(fi_f3[0], fi_f3[1], fi_u1, fi_u2, fi_cs[0]);   // FMIN/FMAX(M): {nv, result}
+   // Zfa FROUND / FROUNDNX (rs2 00100 / 00101): its own rounding mode, a dynamic one from frm
+   wire [2:0]  fi_rm  = (fi_f3 == 3'b111) ? csr_frm : fi_f3;
+   wire [68:0] fi_rn  = fi_isd ? fround_d(f_rs1_val, fi_rm, f_insn[20]) : fround_s(fi_u1, fi_rm, f_insn[20]);
+   wire [4:0]  fi_fl  = (ff_cls == 4'd2) ? {(fi_isd ? fi_cd[1] : fi_cs[1]), 4'd0}
+                      : (ff_cls == 4'd6) ? {fi_mm[64], 4'd0}
+                      : (ff_cls == 4'd8) ? fi_rn[68:64] : 5'd0;
    reg  [63:0] fi_res;
    always @* begin
       case (ff_cls)
-        3'd1: fi_res = fi_isd                                          // FSGNJ/N/X .D / .S
+        4'd1: fi_res = fi_isd                                          // FSGNJ/N/X .D / .S
                ? (fi_f3==3'b000 ? { f_rs2_val[63],               f_rs1_val[62:0]}
                 : fi_f3==3'b001 ? {~f_rs2_val[63],               f_rs1_val[62:0]}
                 :                 { f_rs2_val[63]^f_rs1_val[63], f_rs1_val[62:0]})
                : {32'hffffffff, (fi_f3==3'b000 ? { fi_u2[31],            fi_u1[30:0]}
                                : fi_f3==3'b001 ? {~fi_u2[31],            fi_u1[30:0]}
                                :                 { fi_u2[31]^fi_u1[31],  fi_u1[30:0]})};
-        3'd2: fi_res = {63'd0, (fi_isd ? fi_cd[0] : fi_cs[0])};          // FEQ/FLT/FLE -> int
-        3'd3: fi_res = fi_isd ? f_rs1_val : {{32{f_rs1_val[31]}}, f_rs1_val[31:0]}; // FMV.X.D/W -> int (raw)
-        3'd4: fi_res = fi_isd ? f_rs1_val : {32'hffffffff, f_rs1_val[31:0]};        // FMV.D/W.X -> fp (box)
-        3'd5: fi_res = fi_isd ? fclass_d(f_rs1_val) : fclass_s(f_rs1_val);           // FCLASS -> int
-        3'd6: fi_res = fi_mm[63:0];                                                   // FMIN/FMAX -> fp
+        4'd2: fi_res = {63'd0, (fi_isd ? fi_cd[0] : fi_cs[0])};          // FEQ/FLT/FLE(Q)/FLTQ -> int
+        4'd3: fi_res = fi_isd ? f_rs1_val : fi_h ? {{48{f_rs1_val[15]}}, f_rs1_val[15:0]}
+                                                 : {{32{f_rs1_val[31]}}, f_rs1_val[31:0]}; // FMV.X.D/W/H -> int (raw)
+        4'd4: fi_res = fi_isd ? f_rs1_val : fi_h ? {48'hffff_ffff_ffff, f_rs1_val[15:0]}
+                                                 : {32'hffffffff, f_rs1_val[31:0]};        // FMV.D/W/H.X -> fp (box)
+        4'd5: fi_res = fi_isd ? fclass_d(f_rs1_val) : fclass_s(f_rs1_val);           // FCLASS -> int
+        4'd6: fi_res = fi_mm[63:0];                                                   // FMIN/FMAX(M) -> fp
+        4'd7: fi_res = fi_isd ? fli_d(f_insn[19:15]) : {32'hffffffff, fli_s(f_insn[19:15])};  // FLI -> fp
+        4'd8: fi_res = fi_rn[63:0];                                                   // FROUND(NX) -> fp
         default: fi_res = 64'd0;
       endcase
    end
@@ -3141,7 +3156,7 @@ module smolrv64_core
       if (icr_take) begin
          icr_v <= 1'b1;  icr_data <= fi_res;
          icr_tag <= {1'b0, f_rd_v, f_rd, f_rob, f_prd};   // the FPU's tag layout, never re-boxed
-         icr_fflags <= {((ff_cls == 3'd2) & (fi_isd ? fi_cd[1] : fi_cs[1])) | ((ff_cls == 3'd6) & fi_mm[64]), 4'd0};
+         icr_fflags <= fi_fl;
       end
       // the FPU's integer result: the register is free for it (fp_start, icr_take); a dead one goes nowhere
       if (fp_ret_int & ~dead(fp_res_tag[RN_PBITS +: ROB_IDXB])) begin

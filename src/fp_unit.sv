@@ -8,8 +8,9 @@
 // waits), then fp_divsqrt's (it holds its answer meanwhile).
 //
 // iss_op is the decoder's op code (decode_fp.v): FMADD 0, FNMSUB 1, ADD 2, MUL 3, DIV 4, SQRT 5,
-// F2F 10, F2I 11, I2F 12; iss_op_mod negates the addend (FMSUB, FNMADD, FSUB) or makes a conversion's
-// integer unsigned. Formats: FP32 0, FP64 1; int_fmt INT32 2, INT64 3.
+// F2F 10, F2I 11, I2F 12, F2IM 13 (fcvtmod.w.d); iss_op_mod negates the addend (FMSUB, FNMADD, FSUB) or
+// makes a conversion's integer unsigned. Formats: FP32 0, FP64 1, FP16 2 (a conversion's only); int_fmt
+// INT32 2, INT64 3.
 //
 // NFLIGHT: ops taken and not yet returned. More than one only for a caller that routes results by tag.
 module fp_unit #(parameter TAGW = 24,
@@ -47,7 +48,7 @@ module fp_unit #(parameter TAGW = 24,
     output wire [15:0]      dbg);           // wait state for the board's wedge ILA (core_dbg)
 
    localparam [3:0] FMADD = 4'd0, FNMSUB = 4'd1, ADD = 4'd2, MUL = 4'd3, DIV = 4'd4, SQRT = 4'd5,
-                    F2F = 4'd10, F2I = 4'd11, I2F = 4'd12;
+                    F2F = 4'd10, F2I = 4'd11, I2F = 4'd12, F2IM = 4'd13;
 
    // EVERY OUTPUT OF THIS MODULE IS A REGISTER, iss_ready especially: the issue decision reads it,
    // so a combinational ready would close a loop through the scheduler. An op fp_divsqrt cannot take
@@ -93,7 +94,8 @@ module fp_unit #(parameter TAGW = 24,
                       (sel_op == ADD)    ? {3'b010, sel_mod} :
                       (sel_op == MUL)    ? 4'd6 :
                       (sel_op == F2F)    ? 4'd7 :
-                      (sel_op == I2F)    ? 4'd8 : 4'd9;
+                      (sel_op == I2F)    ? 4'd8 :
+                      (sel_op == F2IM)   ? 4'd10 : 4'd9;
    wire        ds_in_ready, ds_out_valid, ds_busy;
    wire [63:0] ds_result;
    wire [4:0]  ds_flags;
@@ -156,7 +158,7 @@ module fp_unit #(parameter TAGW = 24,
          $fatal(1, "fp_unit: a result (%s) with no op in flight", fma_out_valid ? "fp_fma" : "fp_divsqrt");
       if (e_over)
          $fatal(1, "fp_unit: result arrived while the previous one was unconsumed");
-      if (any_valid & ~sel_ds & ~((sel_op <= MUL) | (sel_op == F2F) | (sel_op == F2I) | (sel_op == I2F)))
+      if (any_valid & ~sel_ds & ~((sel_op <= MUL) | (sel_op == F2F) | (sel_op == F2I) | (sel_op == I2F) | (sel_op == F2IM)))
          $fatal(1, "fp_unit: op %0d is no FPU op (the core does it)", sel_op);
    end
 
@@ -170,7 +172,7 @@ module fp_unit #(parameter TAGW = 24,
    // operands in the decoder's convention: ADD is op1 + op2, the others start at op0
    fp_fma #(.TAGW(TAGW)) u_fma (
       .clk(clk), .reset(reset), .flush(flush),
-      .in_valid(fma_valid), .in_op(fma_v), .in_sf(sel_sf == 3'd1), .in_df(sel_df == 3'd1),
+      .in_valid(fma_valid), .in_op(fma_v), .in_sf(sel_sf[1:0]), .in_df(sel_df[1:0]),
       .in_il(sel_if[0]), .in_iu(sel_mod), .in_rm(sel_rnd),
       .in_a((sel_op == ADD) ? op1 : op0), .in_b(op1), .in_c(op2), .in_tag(sel_tag),
       .out_valid(fma_out_valid), .out_result(fma_result), .out_flags(fma_flags), .out_tag(fma_tag));

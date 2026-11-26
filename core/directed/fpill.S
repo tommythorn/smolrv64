@@ -1,7 +1,8 @@
 # fpill.S -- directed test: an FP-opcode word this core does not implement traps as illegal.
 #
 # riscv-tests runs only the F and D operations, so nothing in it reaches an unassigned OP-FP
-# funct5, the H or Q format, or an FP load or store of another width. Before the fix such a word
+# funct5, the H or Q format, or an FP load or store of a width the core lacks (Q; H is Zfhmin's,
+# directed/zfa.S). Before the fix such a word
 # decoded as a legal FP op that no unit implements: dispatch classed it a head op AND plain, so it
 # could be grouped beside other instructions, and alone it reached M, which holds no FP arithmetic.
 #
@@ -59,11 +60,11 @@ _start:
 	li	t1, 2
 	bne	s3, t1, fail3
 
-	#---------------- 4: a half-word FP load (flh ft3, 0(a0))
+	#---------------- 4: a quad-word FP load (flq ft3, 0(a0))
 	li	s5, 0
 	la	s2, 4f
 	addi	t3, t3, 1
-	.word	0x00051187
+	.word	0x00054187
 	addi	t4, t4, 1
 	li	s5, 99
 4:	li	t1, 1
@@ -71,11 +72,11 @@ _start:
 	li	t1, 2
 	bne	s3, t1, fail4
 
-	#---------------- 5: a half-word FP store (fsh ft3, 0(a0))
+	#---------------- 5: a quad-word FP store (fsq ft3, 0(a0))
 	li	s5, 0
 	la	s2, 5f
 	addi	t3, t3, 1
-	.word	0x00351027
+	.word	0x00354027
 	addi	t4, t4, 1
 	li	s5, 99
 5:	li	t1, 1
