@@ -260,7 +260,7 @@ static bool store_data_ok(const SimmervRetire& dut, const SimmervRetire& ref) {
     if (!ref.mem_ram || dut.mem_size == 0xF) { g_st_unchecked++; return true; }
     g_st_checked++;
     const uint64_t val = dut.mem_rdback ^ st_corrupt(dut);
-    const unsigned n = 1u << dut.mem_size, off = (unsigned)(ref.mem_pa & 7);
+    const unsigned n = dut.mem_size, off = (unsigned)(ref.mem_pa & 7);   // the DUT reports a store's bytes
     bool ok = (n == ref.mem_size);
     for (unsigned i = 0; ok && i < n && off + i < 8; i++)
         ok = ((val >> (8 * i)) & 0xff) == ((ref.mem_rdback >> (8 * (off + i))) & 0xff);
@@ -286,8 +286,8 @@ static std::vector<VStore> g_vs_pend, g_vs_prev;
 static bool vstores_ok(const SimmervRetire& dut) {
     bool ok = true;
     for (const VStore& w : g_vs_prev) {
-        if (w.size > 3) { g_st_unchecked++; continue; }
-        const unsigned n = 1u << w.size;
+        if (w.size == 0 || w.size > 8) { g_st_unchecked++; continue; }
+        const unsigned n = w.size;   // its bytes
         uint8_t b[8] = {};
         if (simmerv_read_memory(g_ctx, w.pa, b, n) != n) { g_st_unchecked++; continue; }
         g_st_checked++;

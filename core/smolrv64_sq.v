@@ -68,7 +68,7 @@ module smolrv64_sq
     input  wire                  a_tv,       // M's lookup translated it (else the walker will)
     input  wire                  a_flt,      // ...or its address alone faults (a_tv is then set)
     input  wire [3:0]            a_fc,
-    input  wire [1:0]            a_size,     // 0=B 1=H 2=W 3=D
+    input  wire [3:0]            a_nb,       // its bytes, 0 to 8 (0: it stores nothing), inside one doubleword or a scalar's
     input  wire                  a_unc,      // uncached, decided at translate time
     input  wire                  a_mem,      // the PA is memory (DRAM or the local SRAM), not a device
 
@@ -87,7 +87,7 @@ module smolrv64_sq
     output wire [ROBB-1:0]       c_rob,       // core commits only when this IS the ROB head
     output wire [PAW-1:0]        c_addr,
     output wire [63:0]           c_data,
-    output wire [1:0]            c_size,
+    output wire [3:0]            c_nb,
     output wire                  c_unc,
     output wire                  c_fast,      // ...a plain store to memory inside one doubleword: the LSU's store register takes it
     input  wire                  c_take,
@@ -108,7 +108,7 @@ module smolrv64_sq
     output wire                  kc_any,      // an uncommitted entry exists (kc_rob is its slot), ready or not
     output wire [PAW-1:0]        kc_addr,     // ...its PA, for the cosim's retire record
     output wire [63:0]           kc_data,     // ...its value and size, for the cosim's store-data check
-    output wire [1:0]            kc_size,
+    output wire [3:0]            kc_nb,
     input  wire                  k_take,      // commit it
 
     // ---- load disambiguation: a CONFLICT MATRIX, not a compare at issue ----------------
@@ -117,7 +117,7 @@ module smolrv64_sq
     // FLOP. Issue reads a bit.
     //
     // WHY, and it is the whole reason this exists: computing it at issue put smolrv64_lq's acc
-    // pointer at the head of a 36-level, 12x CARRY8 cone -- acc -> sz[acc] -> these 57-bit
+    // pointer at the head of a 36-level, 12x CARRY8 cone -- acc -> nb[acc] -> these 57-bit
     // overlap compares -> ld_block -> x_v -> pt_start -> start_ok -> lsu_done -> m_done ->
     // redirect -> the frontend's target register. WNS -1.698 ns at 166.67 MHz, 18 670
     // failing endpoints, ALL FIVE worst paths sourced at acc. Moving the address off the
@@ -219,7 +219,7 @@ module smolrv64_sq
    reg [NENT-1:0]        tv, flt;            // translated / ...and the translation faulted
    reg [3:0]             fc   [0:NENT-1];
    (* ram_style = "distributed" *) reg [63:0] data [0:NENT-1];   // one write a cycle: the landing below
-   reg [1:0]             sz   [0:NENT-1];
+   reg [3:0]             nb   [0:NENT-1];       // the store's bytes from its address
    reg [NENT-1:0]        unc;
    reg [NENT-1:0]        mem, dw;            // the PA is memory / the access stays inside one doubleword
    reg [PBITS-1:0]       dpr  [0:NENT-1];
@@ -433,13 +433,13 @@ module smolrv64_sq
    // The same landing bypass as c_data: the entry commits in the cycle its bytes are still
    // in wb_q, and data[kc] holds the previous occupant's until the next edge.
    assign kc_data= (ln_v & (ln_idx == kc)) ? ln_data : data[kc];
-   assign kc_size= sz[kc];
+   assign kc_nb  = nb[kc];
    assign c_rob  = rob[ho];
    wire [PAW-1:0] hd_am = addr_m[ho], hd_aw = addr_w[ho];
    assign c_addr = addr_lv[ho] ? hd_aw : hd_am;
    // the landing bypass: the cycle dv rose, the bytes are still in wb_q
    assign c_data = (ln_v & (ln_idx == ho)) ? ln_data : data[ho];
-   assign c_size = sz[ho];
+   assign c_nb   = nb[ho];
    assign c_unc  = unc[ho];
    assign c_fast = mem[ho] & ~unc[ho] & dw[ho];
    // THE FORWARD'S READ, in its start cycle: the load's store, named by the flag's own register (so
@@ -471,20 +471,20 @@ module smolrv64_sq
    // retires, so the live region cannot cycle past the load's tag.
    localparam [12:0] SQ_ONE = 13'd1;   // width-matched, not a bare literal
 
-   // Byte ranges [a, a + (1<<size)) overlap unless one ends at or before the other begins.
-   // ONE definition, used at both matrix-update sites (rule C1) -- a predicate written twice
+   // Byte ranges [a, a + n) overlap unless one ends at or before the other begins (a load's n is
+   // 1 << size, a store's its count; a store of no bytes overlaps nothing). ONE definition, used at both matrix-update sites (rule C1) -- a predicate written twice
    // only has to be updated wrong once. THE RANGES ARE PAGE OFFSETS, VA[11:0] = PA[11:0]: no
    // queued access crosses a page (M faults it), so two in one page compare exactly, two
    // synonyms of one physical page (which share the offset) can never miss each other, and the
    // test needs no translation -- it runs the cycle the VA arrives, whatever the walker does.
    function ovl_ab;
       input [11:0] la; input [1:0] ls;
-      input [11:0] sa; input [1:0] ss;
+      input [11:0] sa; input [3:0] sn;
       reg [12:0] l_lo, l_hi, s_lo, s_hi;
       begin
          l_lo = {1'b0, la};  l_hi = l_lo + (SQ_ONE << ls);
-         s_lo = {1'b0, sa};  s_hi = s_lo + (SQ_ONE << ss);
-         ovl_ab = ~((s_hi <= l_lo) | (l_hi <= s_lo));
+         s_lo = {1'b0, sa};  s_hi = s_lo + {9'd0, sn};
+         ovl_ab = (sn != 4'd0) & ~((s_hi <= l_lo) | (l_hi <= s_lo));
       end
    endfunction
 
@@ -541,11 +541,11 @@ module smolrv64_sq
    // address space: an satp write and sfence.vma drain them first. A synonym does not forward.
    function cov_ab;
       input [VAW-12:0] lp; input [11:0] la; input [1:0] ls;
-      input [VAW-12:0] sp; input [11:0] sa; input [1:0] ss;
+      input [VAW-12:0] sp; input [11:0] sa; input [3:0] sn;
       reg [3:0] l_lo, l_hi, s_lo, s_hi;
       begin
          l_lo = {1'b0, la[2:0]};  l_hi = l_lo + (4'd1 << ls);
-         s_lo = {1'b0, sa[2:0]};  s_hi = s_lo + (4'd1 << ss);
+         s_lo = {1'b0, sa[2:0]};  s_hi = s_lo + sn;
          cov_ab = (lp == sp) & (s_lo <= l_lo) & (l_hi <= s_hi) & (s_hi <= 4'd8);
       end
    endfunction
@@ -555,8 +555,8 @@ module smolrv64_sq
    integer        fc2;
    always @* for (fc2 = 0; fc2 < NENT; fc2 = fc2 + 1)
       fill_cov[fc2] = (a_v && (fc2[IDXB-1:0] == a_idx))
-                    ? cov_ab(l_fill_vpn, l_fill_off, l_fill_size, {a_bare, a_va[VAW-1:12]}, a_va[11:0], a_size)
-                    : cov_ab(l_fill_vpn, l_fill_off, l_fill_size, {bare[fc2], va[fc2][VAW-1:12]}, va[fc2][11:0], sz[fc2]);
+                    ? cov_ab(l_fill_vpn, l_fill_off, l_fill_size, {a_bare, a_va[VAW-1:12]}, a_va[11:0], a_nb)
+                    : cov_ab(l_fill_vpn, l_fill_off, l_fill_size, {bare[fc2], va[fc2][VAW-1:12]}, va[fc2][11:0], nb[fc2]);
    // a one-hot store mask's index
    function [IDXB-1:0] enc1(input [NENT-1:0] m);
       integer i;
@@ -571,8 +571,8 @@ module smolrv64_sq
    always @* begin
       for (fk = 0; fk < NENT; fk = fk + 1)
          fill_row[fk] = (a_v && (fk[IDXB-1:0] == a_idx))
-                      ? ovl_ab(l_fill_off, l_fill_size, a_va[11:0], a_size)
-                      : (av[fk] & ovl_ab(l_fill_off, l_fill_size, va[fk][11:0], sz[fk]));
+                      ? ovl_ab(l_fill_off, l_fill_size, a_va[11:0], a_nb)
+                      : (av[fk] & ovl_ab(l_fill_off, l_fill_size, va[fk][11:0], nb[fk]));
    end
    // the page bits' writes and the narrowing they schedule (THE PAGE BITS, above)
    always @(posedge clk) begin
@@ -641,7 +641,7 @@ module smolrv64_sq
          // a store's address arriving this cycle against this load: the block RISES (an unknown
          // address becoming a known overlap) in the same edge the matrix's bit does
          wire arr_ov = l_av[gl] & a_v & oldm[a_idx]
-                     & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], a_va[11:0], a_size);
+                     & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], a_va[11:0], a_nb);
          assign arr_acc[gl] = arr_ov & l_acc[gl];
          reg blk_q;  initial blk_q = 1'b0;
          always @(posedge clk)
@@ -661,7 +661,7 @@ module smolrv64_sq
          always @(posedge clk) if (!reset & l_av[gl])
             for (ck = 0; ck < NENT; ck = ck + 1)
                // the offsets' overlap, narrowed by whatever page bits the two have
-               if (oldm[ck] && cf[ck] != (av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], sz[ck])
+               if (oldm[ck] && cf[ck] != (av[ck] & ovl_ab(l_off[gl*12 +: 12], l_size[gl*2 +: 2], va[ck][11:0], nb[ck])
                                           & (~lpv[gl] | ~spv[ck] | (lpg[gl] == spg[ck]))))
                   $fatal(1, "smolrv64_sq: load %0d's overlap with older store %0d reads %b", gl, ck, cf[ck]);
 `endif
@@ -800,9 +800,9 @@ module smolrv64_sq
          if (a_v)
             for (li = 0; li < LQN; li = li + 1) begin
                conf[li][a_idx] <= l_av[li]
-                                & ovl_ab(l_off[li*12 +: 12], l_size[li*2 +: 2], a_va[11:0], a_size);
+                                & ovl_ab(l_off[li*12 +: 12], l_size[li*2 +: 2], a_va[11:0], a_nb);
                cov[li][a_idx]  <= cov_ab(l_vpn[li*(VAW-11) +: VAW-11], l_off[li*12 +: 12], l_size[li*2 +: 2],
-                                         {a_bare, a_va[VAW-1:12]}, a_va[11:0], a_size);
+                                         {a_bare, a_va[VAW-1:12]}, a_va[11:0], a_nb);
             end
          // A LOAD's address arrives: its ROW, against every live store. Written second, so
          // it wins the one cell both updates can touch -- and it must, because the column
@@ -842,9 +842,9 @@ module smolrv64_sq
 
          // address only. The data comes from the snoop or the data read.
          if (a_v) begin
-            addr_lv[a_idx] <= 1'b0;  va[a_idx] <= a_va;  sz[a_idx] <= a_size;  av[a_idx] <= 1'b1;  bare[a_idx] <= a_bare;
+            addr_lv[a_idx] <= 1'b0;  va[a_idx] <= a_va;  nb[a_idx] <= a_nb;  av[a_idx] <= 1'b1;  bare[a_idx] <= a_bare;
             unc[a_idx]  <= a_unc;  tv[a_idx] <= a_tv;  flt[a_idx] <= a_flt;  fc[a_idx] <= a_fc;
-            mem[a_idx]  <= a_mem;  dw[a_idx] <= ({1'b0, a_va[2:0]} + (4'd1 << a_size)) <= 4'd8;
+            mem[a_idx]  <= a_mem;  dw[a_idx] <= ({1'b0, a_va[2:0]} + a_nb) <= 4'd8;
          end
          // the data read: the pick is a register, the value is in the cycle it is read (dv) and
          // lands from wb_q the cycle after (the landing, below)
@@ -1008,7 +1008,7 @@ module smolrv64_sq
          $fatal(1, "smolrv64_sq: entry %0d filled and translated in one cycle", w_idx);
       // The alias test compares page offsets, which is exact only because no access that reaches
       // memory crosses a page (one that would faults on its address alone, in its entry).
-      if (a_v & ~a_flt & (({1'b0, a_va[11:0]} + (13'd1 << a_size)) > 13'h1000))
+      if (a_v & ~a_flt & (({1'b0, a_va[11:0]} + {9'd0, a_nb}) > 13'h1000))
          $fatal(1, "smolrv64_sq: store entry %0d at va %h crosses a page", a_idx, a_va);
       if (l_fill & ~l_fill_flt & (({1'b0, l_fill_off} + (13'd1 << l_fill_size)) > 13'h1000))
          $fatal(1, "smolrv64_sq: load entry %0d at offset %h crosses a page", l_fill_ix, l_fill_off);

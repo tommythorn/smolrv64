@@ -64,7 +64,7 @@ module smolrv64_lsu
     input  wire            pt_v,
     input  wire            pt_store,       // 1 = store draining from smolrv64_sq, 0 = load from smolrv64_lq
     input  wire [PAW-1:0]     pt_pa,          // physical: translated when the op executed
-    input  wire [1:0]      pt_size,
+    input  wire [3:0]      pt_nb,          // its bytes: a load's 1 << size, a store's count
     input  wire [63:0]     pt_data,        // store data
     input  wire            pt_signed,      // load formatting
     input  wire            pt_fp,
@@ -75,7 +75,7 @@ module smolrv64_lsu
     // (sp_done, when smolrv64_sq frees the entry: until then the store is still a live entry there).
     input  wire            sp_go,
     input  wire [PAW-1:0]     sp_pa,
-    input  wire [1:0]      sp_size,
+    input  wire [3:0]      sp_nb,          // its bytes from sp_pa, 1 to 8
     input  wire [63:0]     sp_data,
     output wire            sp_busy,        // it holds a store
     output wire            sp_done,        // ...and the D$ takes it this cycle
@@ -206,7 +206,7 @@ module smolrv64_lsu
     // reference model reports the exact address.  Unused outside cosim (DCE'd).
     output reg  [PAW-1:0]     cos_pa,
     output reg  [1:0]      cos_kind,      // 0 = none, 1 = load, 2 = store
-    output reg  [63:0]     cos_data,      // a plain store's value (raw rs2) and log2 size; size 4'hF = not a
+    output reg  [63:0]     cos_data,      // a plain store's value (raw rs2) and its bytes; 4'hF = not a
     output reg  [3:0]      cos_size,      //   plain store's write (load, AMO's RMW, SC, cbo): not data-checked
     output wire [5:0]      ld_infl,        // fast-path loads in flight: tags whose D$ response or store-queue forward is due (MEM_LDINFL; counters only)
     output wire            ld_sent,        // a fast-path load starts (MEM_LDSENT; counters only)
@@ -346,7 +346,6 @@ module smolrv64_lsu
    // boff/wend/alignment below are correct from it.
    wire        sel_pt      = (st == S_IDLE) ? pt_start : src_pt;
    wire [63:0] eff_vaddr   = sel_pt ? {8'd0, pt_pa}  : req_vaddr;
-   wire [1:0]  eff_size    = sel_pt ? pt_size        : req_size;
    // The store data is REGISTERED at the handoff (st_data_q): the queue pops its entry then,
    // so the head has moved on by the time the write is presented.
    reg  [63:0] st_data_q;
@@ -359,14 +358,14 @@ module smolrv64_lsu
    wire        eff_signed  = sel_pt ? pt_signed      : req_signed;
    wire        eff_fp      = sel_pt ? pt_fp          : req_fp;
 
-   wire [3:0]  nb       = 4'd1 << eff_size;   // the access that STARTS: M's or the port's
+   wire [3:0]  req_nb   = 4'd1 << req_size;
+   wire [3:0]  nb       = sel_pt ? pt_nb : req_nb;   // the access that STARTS: M's or the port's bytes
    // M'S OWN FAULT TESTS USE M'S OWN WIDTH. They used `nb`, which follows sel_pt, i.e. in
    // S_IDLE the port's grant: in the cycle a queued access is granted, M's translate pass
    // judged its page crossing with the port's size -- wrong on its face, and it was also
    // the door the store queue's head walked through into M's completion (head -> l_block
    // -> the queue's candidate -> pt_start -> sel_pt -> nb -> xpage -> xo_ok -> done):
    // 5667 near-critical endpoints in the 2026-09-04 build C.
-   wire [3:0]  req_nb   = 4'd1 << req_size;
    wire        wr_class = req_store | (req_amo & ~is_lr);   // store-class for translation/faults
 
    // ------------------------------------------------------------ translation
@@ -566,19 +565,14 @@ module smolrv64_lsu
       if (sp_go) begin
          sp_a  <= sp_pa & PA_DWM;
          sp_wd <= sp_data << {sp_pa[2:0], 3'b000};
-         case (sp_size)
-            2'd0: sp_wm <= 8'h01 << sp_pa[2:0];
-            2'd1: sp_wm <= 8'h03 << sp_pa[2:0];
-            2'd2: sp_wm <= 8'h0f << sp_pa[2:0];
-            default: sp_wm <= 8'hff;
-         endcase
+         sp_wm <= (8'hff >> (4'd8 - sp_nb)) << sp_pa[2:0];
       end
    end
    always @(posedge clk) if (!reset) begin
       if (sp_go & sp_v & ~sp_done)
          $fatal(1, "smolrv64_lsu: a store handed to the store register while it still holds one (pa %h)", sp_a);
-      if (sp_go & ((({1'b0, sp_pa[2:0]} + (4'd1 << sp_size)) > 4'd8) | ~((sp_pa >= LSU_DRAM_BASE) | (sp_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]))))
-         $fatal(1, "smolrv64_lsu: the store register takes only a store to memory inside one doubleword (pa %h size %0d)", sp_pa, sp_size);
+      if (sp_go & ((({1'b0, sp_pa[2:0]} + sp_nb) > 4'd8) | (sp_nb == 4'd0) | ~((sp_pa >= LSU_DRAM_BASE) | (sp_pa[PAW-1:LRAM_LG2] == LRAM_BASE[PAW-1:LRAM_LG2]))))
+         $fatal(1, "smolrv64_lsu: the store register takes only a store to memory inside one doubleword, of at least a byte (pa %h bytes %0d)", sp_pa, sp_nb);
       if (sp_v & ((st == S_ARD) | amo_go | (st_go & run_cbo)))
          $fatal(1, "smolrv64_lsu: the store register holds a store under an atomic or a CBO (state %0d)", st);
    end
@@ -957,7 +951,7 @@ module smolrv64_lsu
                 cos_data      <= pt_start ? pt_data : req_st_data;
                 // a cbo is a store class with no data of its own (cbo.zero: the reference sees eight
                 // 8-byte stores, the DUT one line operation of size field 0): not data-checked
-                cos_size      <= ((pt_start ? pt_store : req_store) & ~eff_cbo) ? {2'b0, eff_size} : 4'hF;
+                cos_size      <= ((pt_start ? pt_store : req_store) & ~eff_cbo) ? nb : 4'hF;
                 xword_q <= xword;
                 nb_q    <= nb;  sgn_q <= eff_signed;  fp_q <= eff_fp;
                 boff_q  <= xl_can ? boff : 3'd0;   // AMO/CBO keep their own addressing
@@ -1001,7 +995,7 @@ module smolrv64_lsu
                      if (take_next) begin                 // the next queued store, from here
                         own_pt <= 1'b1; own_pt_st <= 1'b1; src_pt <= 1'b1;
                         nc_q <= pt_unc; mem_runcached <= pt_unc; mem_q <= pa_mem;
-                        cos_pa <= pt_pa; cos_kind <= 2'd2; cos_data <= pt_data; cos_size <= {2'b0, pt_size};
+                        cos_pa <= pt_pa; cos_kind <= 2'd2; cos_data <= pt_data; cos_size <= pt_nb;
                         xword_q <= xword; nb_q <= nb; boff_q <= xl_can ? boff : 3'd0;
                         pa2_q <= (pt_pa & PA_DWM) + PA_DW;
                         pa_q  <= xl_can ? (pt_pa & PA_DWM) : pt_pa;

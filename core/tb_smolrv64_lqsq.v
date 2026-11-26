@@ -76,9 +76,9 @@ module tb;
    wire             sq_av_any, lq_av_any;
    wire             sq_d_ready, sq_c_v, sq_c_unc, ld_older, sq_kc_v, sq_kc_any;
    wire [ROBB-1:0]  sq_kc_rob;  wire [PAW-1:0] sq_kc_addr;
-   wire [63:0]      sq_kc_data; wire [1:0] sq_kc_size;
+   wire [63:0]      sq_kc_data; wire [3:0] sq_kc_nb;
    wire [IDXB-1:0]  sq_d_idx;  wire [IDXB:0] sq_d_tag;  wire [ROBB-1:0] sq_c_rob;
-   wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [1:0] sq_c_size;  wire [IDXB:0] sq_occ;
+   wire [PAW-1:0]   sq_c_addr;  wire [63:0] sq_c_data;  wire [3:0] sq_c_nb;  wire [IDXB:0] sq_occ;
 
    wire [NENT-1:0] lq_kmask_nc, sq_kmask_nc;   // the kill is not exercised here
    wire            sq_c_fast_nc;               // the core's store register is not modelled: every drain is a handoff and a free
@@ -107,12 +107,12 @@ module tb;
    smolrv64_sq #(.NENT(NENT),.IDXB(IDXB),.PAW(PAW),.PBITS(PBITS),.ROBB(ROBB),.NWB(NWB),.LQN(NENT),.LQIB(IDXB)) u_sq
      (.clk(clk),.reset(reset),
       .d_alloc(sq_d_alloc),.d_seq(8'd0),.d_rob(sq_d_rob),.d_dpreg(sq_d_dpreg),.d_rdy(sq_d_rdy),.d_rank(1'b0),.d_ready(sq_d_ready),.d_free(sq_free),.d_idx(sq_d_idx),.d_tag(sq_d_tag), .av_any(sq_av_any),.uf_any(sq_uf_any),.ar({NENT{1'b1}}),.pk_v(sq_pk_v),.pk_idx(sq_pk_idx),.pk_seq(sq_pk_seq),
-      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_size(sq_a_size),.a_unc(sq_a_unc),.a_mem(1'b1),
+      .a_v(sq_a_v),.a_idx(sq_a_idx),.a_addr(sq_a_addr),.a_va(39'(sq_a_addr)), .a_tv(1'b1),.a_flt(1'b0),.a_fc(4'd0),.a_nb(4'd1 << sq_a_size),.a_unc(sq_a_unc),.a_mem(1'b1),
       .r_v(sq_r_v),.r_preg(sq_r_preg),.r_data(rfv[sq_r_preg]),
       .wb_v(wb_v),.wb_preg(wb_preg),.wb_data(wb_data),.wb_dq({(NWB*64){1'b0}}),
-      .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_size(sq_c_size),.c_unc(sq_c_unc),
+      .c_v(sq_c_v),.c_rob(sq_c_rob),.c_addr(sq_c_addr),.c_data(sq_c_data),.c_nb(sq_c_nb),.c_unc(sq_c_unc),
       .c_fast(sq_c_fast_nc),.c_take(sq_c_take),.c_done(sq_c_take),
-      .kc_v(sq_kc_v),.kc_any(sq_kc_any),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_size(sq_kc_size),.k_take(sq_k_take),
+      .kc_v(sq_kc_v),.kc_any(sq_kc_any),.kc_rob(sq_kc_rob),.kc_addr(sq_kc_addr),.kc_data(sq_kc_data),.kc_nb(sq_kc_nb),.k_take(sq_k_take),
       .l_off(e_off),.l_size(e_size),.l_tag(e_tag),.l_av(e_av),.l_wt(e_wt),.l_acc(e_acc),.l_unk_q(sq_unk_q),.l_viol(sq_viol),.l_arr_q(sq_arr_q),.l_res_c(sq_res_c),.l_res_a(sq_res_a),
       .l_fill(lq_a_v),.l_fill_ix(lq_a_idx),.l_fill_go(lq_a_v & lq_a_sent),.l_cancel(sq_l_cancel),.l_fill_off(lq_a_pa[11:0]),.l_fill_size(lq_a_size), .l_fill_flt(1'b0), .l_fill_tv(1'b1), .l_fill_pa(lq_a_pa),
       .l_vpn({(NENT*28){1'b0}}),.l_fill_vpn(28'd0),.a_bare(1'b0),.l_fwd(l_fwd_nc),.f_go(1'b0),.f_lix({IDXB{1'b0}}),.f_data(f_data_nc),.f_sbo(f_sbo_nc),

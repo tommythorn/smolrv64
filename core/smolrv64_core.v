@@ -1896,7 +1896,7 @@ module smolrv64_core
    wire [ROB_IDXB-1:0] sq_c_rob;
    wire [PABITS-1:0]   sq_c_addr;
    wire [63:0]         sq_c_data;
-   wire [1:0]          sq_c_size;
+   wire [3:0]          sq_c_nb;
    wire                lsu_pt_done, lsu_pt_ack, lsu_pt_is_store, lsu_pt_ld_done, lsu_pt_ld_kill, lsu_xo_v, lsu_xo_unc, lsu_xo_mem;
    wire                lsu_pt_fast_done;  wire [LQ_IB-1:0] lsu_pt_rtag;   // the fast path's landing, by tag
    wire [PABITS-1:0]   lsu_xo_pa;
@@ -1952,7 +1952,7 @@ module smolrv64_core
    wire [6:0]          sq_err;    wire [15:0] lsu_err_u;
    wire                sq_kc_any;
    wire                sq_kc_v;   wire [ROB_IDXB-1:0] sq_kc_rob;  wire [PABITS-1:0] sq_kc_addr;
-   wire [63:0]         sq_kc_data; wire [1:0] sq_kc_size;   // the cosim's store-data check
+   wire [63:0]         sq_kc_data; wire [3:0] sq_kc_nb;   // the cosim's store-data check
    wire [ROB_IDXB-1:0] rob_irr_idx;  wire rob_irr_v;
    wire sq_k_take = sq_kc_v & rob_irr_v & (sq_kc_rob == rob_irr_idx);
    // The queue HANDS a store OFF to the store register or the port, and FREES it when memory has
@@ -2027,12 +2027,12 @@ module smolrv64_core
       .d_ready(sq_d_ready), .d_free(sq_free), .d_idx(sq_d_idx), .d_tag(sq_d_tag), .av_any(sq_av_any),
       .uf_any(sq_uf_any), .ar(sa_v), .pk_v(sq_pk_v), .pk_idx(sq_pk_idx), .pk_seq(sq_pk_seq),
       .a_v(m_sq_fill), .a_idx(m_sq_tag), .a_addr(lsu_xo_pa), .a_va(m_addr[38:0]), .a_tv(lsu_xo_tv | lsu_xo_flt),
-      .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_size(m_mem_size),
+      .a_flt(lsu_xo_flt), .a_fc(lsu_xo_fc), .a_nb(4'd1 << m_mem_size),
       .a_unc(lsu_xo_unc), .a_mem(lsu_xo_mem), .r_v(sq_r_v), .r_preg(sq_r_preg), .r_data(prf_sq),
       .wb_v(wkv), .wb_preg(wkp), .wb_data({wb_fe, wb_ld, l_wbv}), .wb_dq({128'd0, l_qvalv}),
       .c_v(sq_c_v), .c_rob(sq_c_rob), .c_addr(sq_c_addr), .c_data(sq_c_data),
-      .c_size(sq_c_size), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
-      .kc_v(sq_kc_v), .kc_any(sq_kc_any), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_size(sq_kc_size), .k_take(sq_k_take),
+      .c_nb(sq_c_nb), .c_unc(sq_c_unc), .c_fast(sq_c_fast), .c_take(sq_c_take), .c_done(sq_c_done),
+      .kc_v(sq_kc_v), .kc_any(sq_kc_any), .kc_rob(sq_kc_rob), .kc_addr(sq_kc_addr), .kc_data(sq_kc_data), .kc_nb(sq_kc_nb), .k_take(sq_k_take),
       // THE ALIAS TEST LIVES HERE, not at issue: smolrv64_lq exports its entries, smolrv64_sq keeps
       // a conflict matrix updated wherever an address arrives, and issue reads a flop.
       .l_off(lq_e_off), .l_size(lq_e_size), .l_tag(lq_e_tag), .l_av(lq_e_av),
@@ -2606,9 +2606,9 @@ module smolrv64_core
       .req_xlate(m_st_nb | m_ld_nb), .req_early(lq_b_early), .xo_pa(lsu_xo_pa), .xo_unc(lsu_xo_unc), .xo_mem(lsu_xo_mem), .xo_v(lsu_xo_v), .xo_flt(lsu_xo_flt), .xo_fc(lsu_xo_fc),
       .xo_early(lsu_xo_early),
       .pt_v(pt_v), .pt_store(pt_store),
-      .sp_go(sq_sp_go), .sp_pa(sq_c_addr), .sp_size(sq_c_size), .sp_data(sq_c_data),
+      .sp_go(sq_sp_go), .sp_pa(sq_c_addr), .sp_nb(sq_c_nb), .sp_data(sq_c_data),
       .sp_busy(lsu_sp_busy), .sp_done(lsu_sp_done),
-      .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_size(pt_store ? sq_c_size : lq_x_size),
+      .pt_pa(pt_store ? sq_c_addr : lq_x_pa), .pt_nb(pt_store ? sq_c_nb : (4'd1 << lq_x_size)),
       .pt_data(sq_c_data), .pt_signed(lq_x_signed), .pt_fp(lq_x_fp),
       .pt_unc(pt_store ? sq_c_unc : lq_x_unc), .pt_done(lsu_pt_done),
       .pt_ack(lsu_pt_ack), .pt_is_store(lsu_pt_is_store), .pt_ld_done(lsu_pt_ld_done), .pt_ld_kill(lsu_pt_ld_kill),
@@ -4915,7 +4915,7 @@ module smolrv64_core
          cs_mkind[rsi(sq_kc_rob)] <= 2'd2;
          cs_mpa[rsi(sq_kc_rob)]   <= sq_kc_addr;
          cs_mdata[rsi(sq_kc_rob)] <= sq_kc_data;
-         cs_msz[rsi(sq_kc_rob)]   <= {2'b0, sq_kc_size};
+         cs_msz[rsi(sq_kc_rob)]   <= sq_kc_nb;
       end
       // A LANDING LOAD'S EFFECT COMES FROM THE ENTRY THAT OWNS IT. This read lsu_cos_*,
       // justified as "they are still this load's values when it lands: the LSU is
@@ -4994,7 +4994,7 @@ module smolrv64_core
                             : (cs_hl[gs] | hit_md | hit_fp) ? {PABITS{1'b0}}
                             : hit_m  ? lsu_cos_pa : cs_mpa[rsi(ix)];
       assign cs_mdata_h[gs] = hit_sq ? sq_kc_data : hit_m ? lsu_cos_data : cs_mdata[rsi(ix)];
-      assign cs_msz_h[gs]   = hit_sq ? {2'b0, sq_kc_size} : hit_m ? lsu_cos_size : cs_msz[rsi(ix)];
+      assign cs_msz_h[gs]   = hit_sq ? sq_kc_nb : hit_m ? lsu_cos_size : cs_msz[rsi(ix)];
       assign retire_pc[gs*PCW +: PCW]  = cs_pc[rsi(ix)];
       assign retire_insn[gs*32 +: 32]  = cs_insn[rsi(ix)];
       assign rf_we[gs]                 = rc_v[gs] & rc_rdv[gs];

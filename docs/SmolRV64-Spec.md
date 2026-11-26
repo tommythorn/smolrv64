@@ -2654,7 +2654,7 @@ tracers and stats are gated.
 a retiring instruction was its kind and PA only: a store that landed the right address with
 wrong bytes or wrong byte enables corrupted both memories in silence and surfaced, if ever, as
 an unrelated fault much later. Now the reference reads back the aligned 64-bit word after each
-RAM store (`mem_rdback`, `mem_size`), the DUT reports the raw value and log2 size of every
+RAM store (`mem_rdback`, `mem_size`), the DUT reports the raw value and byte count of every
 plain store (the store queue's committing entry through its landing bypass, or the LSU's
 M-path store), and `probe_cosim.cpp` requires the sizes to agree and every byte lane the DUT
 wrote within that word to equal the reference word's byte. An AMO's read-modify-write, an SC,
