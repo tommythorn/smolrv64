@@ -74,7 +74,7 @@ endfunction
 
 // THE MOVES, the vector unit's instructions (unmasked: vm = 1). vmv.v.v/.x/.i (vs2 is not read, as
 // Simmerv), vmv<nr>r.v (nr = 1, 2, 4 or 8, neither group past v31), vmv.s.x (vs2 = 0) and vmv.x.s
-// (vs1 = 0). Every other vector arithmetic instruction is illegal.
+// (vs1 = 0). With the integer operations below, every other vector arithmetic instruction is illegal.
 function automatic is_vmvv(input [31:0] i);        // vmv.v.v (OPIVV), vmv.v.i (OPIVI), vmv.v.x (OPIVX)
    is_vmvv = is_opv(i) & (i[31:25] == 7'b0101111)
            & ((i[14:12] == 3'b000) | (i[14:12] == 3'b011) | (i[14:12] == 3'b100));
@@ -94,19 +94,35 @@ endfunction
 function automatic is_vmvxs(input [31:0] i);       // vmv.x.s: OPMVV
    is_vmvxs = is_opv(i) & (i[31:25] == 7'b0100001) & (i[14:12] == 3'b010) & (i[19:15] == 5'd0);
 endfunction
-function automatic is_vmv(input [31:0] i);
-   is_vmv = is_vmvv(i) | is_vmvr(i) | is_vmvsx(i) | is_vmvxs(i);
+// THE INTEGER OPERATIONS (unmasked: vm = 1), OPIVV (funct3 000), OPIVX (100) and OPIVI (011) of
+// vadd, vsub (no .vi), vrsub (no .vv), vminu/vmin/vmaxu/vmax (no .vi), vand, vor, vxor, vsll, vsrl
+// and vsra: vd = vs2 op (vs1, the scalar or the immediate), element by element at SEW
+function automatic is_viop(input [31:0] i);
+   reg [5:0] f6;
+   reg [2:0] f;
+   begin
+      f6 = i[31:26];  f = i[14:12];
+      is_viop = is_opv(i) & i[25] & ((f == 3'b000) | (f == 3'b100) | (f == 3'b011))
+              & ((f6 == 6'b000000) | ((f6 == 6'b000010) & (f != 3'b011)) | ((f6 == 6'b000011) & (f != 3'b000))
+                 | ((f6[5:2] == 4'b0001) & (f != 3'b011)) | (f6 == 6'b001001) | (f6 == 6'b001010)
+                 | (f6 == 6'b001011) | (f6 == 6'b100101) | (f6 == 6'b101000) | (f6 == 6'b101001));
+   end
 endfunction
-// a move whose scalar comes from an x register: uop 0 moves it into the hidden register VH0 (an
+// the vector unit's single-width instructions, the moves and the integer operations: one uop a
+// register they write
+function automatic is_vmv(input [31:0] i);
+   is_vmv = is_vmvv(i) | is_vmvr(i) | is_vmvsx(i) | is_vmvxs(i) | is_viop(i);
+endfunction
+// one whose scalar comes from an x register: uop 0 moves it into the hidden register VH0 (an
 // FMV.D.X, through a lane like any int-to-FP op), the vector uops read it there
 function automatic vmv_x(input [31:0] i);
-   vmv_x = (is_vmvv(i) & (i[14:12] == 3'b100)) | is_vmvsx(i);
+   vmv_x = ((is_vmvv(i) | is_viop(i)) & (i[14:12] == 3'b100)) | is_vmvsx(i);
 endfunction
 localparam [6:0] VH0 = 7'd96;                      // the first hidden register
-// the registers a move writes: nr, LMUL (1 for a fractional one), or 1
+// the registers one writes: nr, LMUL (1 for a fractional one), or 1
 function automatic [3:0] vmv_regs(input [31:0] i, input [VST_W-1:0] s);
    vmv_regs = is_vmvr(i) ? {1'b0, i[17:15]} + 4'd1
-            : (is_vmvv(i) & ~s[7]) ? (4'd1 << s[6:5]) : 4'd1;
+            : ((is_vmvv(i) | is_viop(i)) & ~s[7]) ? (4'd1 << s[6:5]) : 4'd1;
 endfunction
 
 // THE WHOLE-REGISTER LOADS AND STORES, vl<nf>re<eew>.v and vs<nf>r.v (nf = 1, 2, 4 or 8, the group

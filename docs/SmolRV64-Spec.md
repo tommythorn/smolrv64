@@ -1224,8 +1224,11 @@ committed version, `csrr vtype` the committed vtype. Directed test: `core/direct
 **The vector file and the moves.** The vector registers rename into SH_V, 64 registers of 128 bits
 (`vrf`, a LUTRAM read at the F port's tags). The vector unit is the F stage's: one uop a cycle,
 in-core, single-cycle. Its instructions are the moves: `vmv.v.v`, `vmv.v.x`, `vmv.v.i`,
-`vmv<nr>r.v`, `vmv.s.x` and `vmv.x.s` (unmasked; any other vector arithmetic is illegal, as is a
-move at vill). A move is a uop a register it writes (LMUL, or nr), each keeping the instruction's
+`vmv<nr>r.v`, `vmv.s.x` and `vmv.x.s`, and the integer operations: `vadd`, `vsub`, `vrsub`,
+`vand`, `vor`, `vxor`, `vminu`, `vmin`, `vmaxu`, `vmax`, `vsll`, `vsrl` and `vsra` in their `.vv`,
+`.vx` and `.vi` forms, vd = vs2 op (vs1, the scalar, or simm5; uimm5 for the shifts) by element of
+SEW (unmasked; any other vector arithmetic is illegal, as is any of these at vill). One is a uop a
+register it writes (LMUL, or nr), each keeping the instruction's
 word (the last retires it) with its place, `{vz, SEW, the register of the group}`, in the record's
 immediate, which the F side's payload carries. A scalar from an x register is moved in first by
 an FMV.D.X uop into VH0, through a lane as any int-to-FP op. A vector uop's sources, the F
@@ -1238,8 +1241,8 @@ else the old destination's. The result lands through `icr` like the in-core FP o
 vector file, and its tag wakes on the FE port; `vmv.x.s` returns element 0 sign-extended into an
 x register. A vector instruction's last uop sets VS Dirty and clears vstart as it retires. The
 lockstep compares every vector register a uop writes, all 16 bytes, against Simmerv's after its
-instruction (`probe_vwrite`; `+vw_corrupt=<n>` is the check's self-test). Directed test:
-`core/directed/vmv.S`.
+instruction (`probe_vwrite`; `+vw_corrupt=<n>` is the check's self-test). Directed tests:
+`core/directed/vmv.S`, `core/directed/viop.S`.
 
 **Whole-register loads and stores** (`vl<nf>re<eew>.v`, `vs<nf>r.v`; vtype is not read, so vill
 does not trap them) go through VH0 a chunk of 8 bytes at a time, a chunk two uops: a load's FLD of

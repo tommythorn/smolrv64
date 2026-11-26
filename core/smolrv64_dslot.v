@@ -104,16 +104,17 @@ module smolrv64_dslot
    wire            v_reg = is_vsetx(s_exp) & (s_exp[19:15] != 5'd0) & ~v_vt[8];   // vl = min(rs1, VLMAX)
    wire [7:0]      v_imm = v_vt[8] ? 8'd0 : is_vseti(s_exp) ? (({3'd0, s_exp[19:15]} < v_max) ? {3'd0, s_exp[19:15]} : v_max)
                          : v_max;
-   // a move: its uop 0 moves an x-register scalar in (v_mi), the others are the vector unit's (v_mu),
-   // each writing register r of the destination group
+   // a move or an integer operation: its uop 0 moves an x-register scalar in (v_mi), the others are
+   // the vector unit's (v_mu), each writing register r of the destination group
    wire            v_mv  = ~fault_op & is_vmv(s_exp);
    wire            v_mi  = v_mv & vmv_x(s_exp) & (ux == {UX_W{1'b0}});
    wire            v_mu  = v_mv & ~v_mi;
    wire [VP_W-1:0] v_pos = vpos_of(s_exp, ux, vst);
    wire [4:0]      v_r   = {2'b00, v_pos[2:0]};
    wire            v_xs  = is_vmvxs(s_exp);                             // vmv.x.s: x rd
-   wire            v_vv  = is_vmvv(s_exp) & (s_exp[14:12] == 3'b000);  // vmv.v.v: vs1
-   wire            v_vr  = is_vmvr(s_exp);                             // vmv<nr>r.v: vs2
+   wire            v_io  = is_viop(s_exp);                             // an integer operation
+   wire            v_vv  = (is_vmvv(s_exp) | v_io) & (s_exp[14:12] == 3'b000);  // vmv.v.v, an op's .vv: vs1
+   wire            v_vr  = is_vmvr(s_exp) | v_io;                     // vmv<nr>r.v, an operation: vs2
    wire [`AREG_W-1:0] v_vd  = {2'b10, s_exp[11:7] + v_r},  v_vs1 = {2'b10, s_exp[19:15] + v_r},
                       v_vs2 = {2'b10, s_exp[24:20] + v_r};
    // a whole-register load or store: uop ux is chunk ux[1] of register ux[4:2], its memory access

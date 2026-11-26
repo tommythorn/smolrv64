@@ -973,7 +973,7 @@ module smolrv64_core
       // its VL uop is in flight, which an earlier slot of the group may be.
       wire vu   = q_gc[GC_FC] & is_vecins(q_insn);
       wire v_od = vu & q_rd_v & (q_rd[`AREG_W-1 -: 2] == 2'b10);
-      wire v_rv = vu & (is_vmvv(q_insn) | is_vmvsx(q_insn));
+      wire v_rv = vu & (is_vmvv(q_insn) | is_vmvsx(q_insn) | is_viop(q_insn));
       wire [RN_PBITS-1:0] pold = v_od ? rn_poldv[gs*RN_PBITS +: RN_PBITS] : {RN_PBITS{1'b0}};
       wire [RN_PBITS-1:0] pvl  = v_rv ? {SH_VL, {(RN_IDXB-4){1'b0}}, q_vst[3:0]} : {RN_PBITS{1'b0}};
       reg  bvl;
@@ -3214,7 +3214,8 @@ module smolrv64_core
    // instruction's element r * (16 >> SEW) + (b >> SEW): the new value when that element is at or
    // past vstart and below evl, else the old destination's byte (tail and prestart undisturbed).
    // vmv<nr>r.v writes every element past vstart, vmv.s.x element 0 when vl is not 0, vmv.v.* those
-   // below vl; vmv.x.s returns element 0 sign-extended into an x register.
+   // below vl; vmv.x.s returns element 0 sign-extended into an x register. An integer operation's new
+   // value is vs2 op (vs1, the scalar, or the immediate: simm5, uimm5 for a shift), by element of SEW.
    // A whole-register load's pack merges VH0 into chunk h of its register by element of the encoding's
    // EEW (prestart bytes keep the old), a store's extract returns chunk h into VH0: their place is
    // {vz, h, 0, r}.
@@ -3231,7 +3232,10 @@ module smolrv64_core
    wire         fv_sx  = fv_v & (fv_op6 == 6'b010000) & (fv_f3 == 3'b110);  // vmv.s.x
    wire         fv_nr  = fv_v & (fv_op6 == 6'b100111);                      // vmv<nr>r.v
    wire [8:0]   fv_evl = (fv_nr | fv_pk) ? 9'd256 : fv_sx ? {8'd0, f_vl != 8'd0} : {1'b0, f_vl};
-   wire [63:0]  fv_sc  = (fv_f3 == 3'b011) ? {{59{f_insn[19]}}, f_insn[19:15]} : f_rs1_val;   // .i's, else VH0's
+   wire         fv_io  = fv_v & f_insn[25] & (fv_op6 != 6'b010111) & (fv_op6 != 6'b100111)
+                       & (fv_op6 != 6'b010000);                                  // an integer operation
+   wire         fv_sh  = fv_op6[5];                                              // ...a shift
+   wire [63:0]  fv_sc  = (fv_f3 == 3'b011) ? {{59{f_insn[19] & ~fv_sh}}, f_insn[19:15]} : f_rs1_val;  // .i's, else VH0's
    reg  [127:0] fv_rep;                                              // the scalar at SEW, in every element
    always @* case (fv_sew)
       2'd0:    fv_rep = {16{fv_sc[7:0]}};
@@ -3239,7 +3243,61 @@ module smolrv64_core
       2'd2:    fv_rep = {4{fv_sc[31:0]}};
       default: fv_rep = {2{fv_sc}};
    endcase
-   wire [127:0] fv_new = fv_pk ? {2{f_rs1_val}} : (fv_f3 == 3'b000) ? f_va : fv_nr ? f_vb : fv_rep;
+   wire [127:0] fv_op2 = (fv_f3 == 3'b000) ? f_va : fv_rep;         // an operation's second operand
+   // one element of an operation: x = vs2's, y the second operand's, both zero-extended from 8 << w bits
+   function automatic [63:0] vlane(input [5:0] f6, input [1:0] w, input [63:0] x, input [63:0] y);
+      reg [63:0] sx, sy;
+      reg [5:0]  n;
+      reg        lt, ltu;
+      begin
+         sx = (w == 2'd0) ? {{56{x[7]}}, x[7:0]} : (w == 2'd1) ? {{48{x[15]}}, x[15:0]}
+            : (w == 2'd2) ? {{32{x[31]}}, x[31:0]} : x;
+         sy = (w == 2'd0) ? {{56{y[7]}}, y[7:0]} : (w == 2'd1) ? {{48{y[15]}}, y[15:0]}
+            : (w == 2'd2) ? {{32{y[31]}}, y[31:0]} : y;
+         n  = y[5:0] & ((6'd8 << w) - 6'd1);
+         lt = $signed(sx) < $signed(sy);  ltu = x < y;
+         case (f6)
+           6'b000000: vlane = x + y;
+           6'b000010: vlane = x - y;
+           6'b000011: vlane = y - x;
+           6'b000100: vlane = ltu ? x : y;
+           6'b000101: vlane = lt ? x : y;
+           6'b000110: vlane = ltu ? y : x;
+           6'b000111: vlane = lt ? y : x;
+           6'b001001: vlane = x & y;
+           6'b001010: vlane = x | y;
+           6'b001011: vlane = x ^ y;
+           6'b100101: vlane = x << n;
+           6'b101000: vlane = x >> n;
+           default:   vlane = $signed(sx) >>> n;                     // 101001, vsra
+         endcase
+      end
+   endfunction
+   reg  [127:0] fv_alu;
+   reg  [63:0]  fv_t;
+   integer      fve;
+   always @* begin
+      fv_alu = 128'd0;  fv_t = 64'd0;
+      case (fv_sew)
+        2'd0: for (fve = 0; fve < 16; fve = fve + 1) begin
+                 fv_t = vlane(fv_op6, 2'd0, {56'd0, f_vb[fve*8 +: 8]}, {56'd0, fv_op2[fve*8 +: 8]});
+                 fv_alu[fve*8 +: 8] = fv_t[7:0];
+              end
+        2'd1: for (fve = 0; fve < 8; fve = fve + 1) begin
+                 fv_t = vlane(fv_op6, 2'd1, {48'd0, f_vb[fve*16 +: 16]}, {48'd0, fv_op2[fve*16 +: 16]});
+                 fv_alu[fve*16 +: 16] = fv_t[15:0];
+              end
+        2'd2: for (fve = 0; fve < 4; fve = fve + 1) begin
+                 fv_t = vlane(fv_op6, 2'd2, {32'd0, f_vb[fve*32 +: 32]}, {32'd0, fv_op2[fve*32 +: 32]});
+                 fv_alu[fve*32 +: 32] = fv_t[31:0];
+              end
+        default: for (fve = 0; fve < 2; fve = fve + 1) begin
+                 fv_t = vlane(fv_op6, 2'd3, f_vb[fve*64 +: 64], fv_op2[fve*64 +: 64]);
+                 fv_alu[fve*64 +: 64] = fv_t;
+              end
+      endcase
+   end
+   wire [127:0] fv_new = fv_pk ? {2{f_rs1_val}} : fv_io ? fv_alu : (fv_f3 == 3'b000) ? f_va : fv_nr ? f_vb : fv_rep;
    reg  [127:0] fv_res;
    reg  [7:0]   fv_ei;
    integer      fvb;
