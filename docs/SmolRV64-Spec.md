@@ -1192,8 +1192,10 @@ as one that changes FS does. Directed test: `core/directed/vcsr.S`.
 **Cracking.** An instruction of several uops is cracked where the frontend's bundle register feeds
 the queue (`smolrv64_frontend`): each slot's uop count and the vector decode state before it are
 predecoded as the register loads (`core/smolrv64_vdec.vh`), and the bundle pushes its uops in
-program order, up to FW a cycle, in as many cycles as they need (a bundle of one-uop instructions
-is one push). Each uop is a queue entry with its own seqno, given at the push (the LQ and SQ order
+program order, in as many cycles as they need. A push is either the run of one-uop slots from a
+cursor slot or up to FW uops of the cracked slot at it, so each queue bank's slot and uop are one
+pick by flops; a run stops before a cracked slot. A bundle of one-uop instructions is one push, and
+a cracked instruction costs at most one push more than its uops need. Each uop is a queue entry with its own seqno, given at the push (the LQ and SQ order
 by it), its index, a last bit and the state before its instruction; the slot decoder builds the
 uop's record from the instruction, the index and the state, with the state after the instruction,
 so the head rebuilds it as any record. Every uop but the last commits

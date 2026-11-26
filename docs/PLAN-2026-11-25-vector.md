@@ -239,7 +239,10 @@ directed tests and the lockstep do.
 An instruction that needs more than one uop is cracked where the bundle register (`pb_in`) feeds
 the queue. Each slot's uop count is predecoded when the register loads (from the instruction and
 the decode state, below) and held with the slot. A bundle then pushes in as many cycles as its uops
-need, up to FW uops a cycle, slots and uops in program order; `pb_ready` waits for its last part.
+need, slots and uops in program order; `pb_ready` waits for its last part. A push is the run of
+one-uop slots from the cursor, or up to FW uops of the cracked slot at it: each queue bank's slot
+then comes from flops (`pb_cs`, `pb_cr`, `q_wp`), as without cracking. Packing uops across slots
+put the cursor's running sums in front of the slot decoders (fad8af8a: WNS -1.32 ns, 23 levels).
 Each uop is a queue entry of its own with the instruction's PC and bits, its uop index `ux` and a
 `last` bit, so the queue, the head's rebuild, dispatch, the ROB and the LQ/SQ see ordinary entries.
 

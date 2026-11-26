@@ -304,19 +304,24 @@ module smolrv64_frontend
    reg  [FW-1:0]  pb_sv;                                 // the bundle's slots (slot 0: whenever pb_v)
    // THE CRACKER. Each slot's uop count and the vector decode state before it are predecoded as the
    // register loads (smolrv64_vdec.vh), the state chained through the bundle in program order from
-   // the predecode's own (vsp); the slot's decoder makes the state after it, which its record carries. The bundle then pushes its uops in program order, up to FW a cycle,
-   // in as many cycles as they need: a cursor (pb_cs, pb_cu: the slot and the uop within it) names
-   // where the next push starts, and queue position j takes the slot and uop map_s[j], map_u[j].
-   // A bundle of one-uop instructions is one push, as before. Each uop is a queue entry of its
-   // own, with its own seqno, given here as it is pushed (q_sn): the LQ and SQ order loads against
-   // stores by seqno, so a cracked instruction's loads and stores need their own.
+   // the predecode's own (vsp); the slot's decoder makes the state after it, which its record
+   // carries. The bundle then pushes its uops in program order, in as many cycles as they need, from
+   // a cursor slot (pb_cs). A push is either the run of one-uop slots from the cursor, queue position
+   // j taking slot pb_cs + j, or (pb_cr) up to FW uops of the cracked slot at the cursor, position j
+   // taking its uop pb_cu + j; a run stops before a cracked slot. Each bank's slot and uop are thus
+   // one pick by flops, as without cracking. A bundle of one-uop instructions is one push. Each uop
+   // is a queue entry of its own, with its own seqno, given here as it is pushed (q_sn): the LQ and
+   // SQ order loads against stores by seqno, so a cracked instruction's loads and stores need their
+   // own.
    localparam integer SLB = QLB;                         // a slot of the register
    localparam integer UNB = UX_W + 1;                     // a uop count, 1..32
    reg  [UNB-1:0]   pb_n   [0:QNB-1];                    // slot k's uops (slots FW.. hold one: never read)
    reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state before it
    reg  [UX_W-1:0]  pb_s0  [0:QNB-1];                    // ...and its first uop's position (a whole-register access's, from vstart)
    reg  [SLB-1:0]   pb_cs;                               // the cursor: the slot...
-   reg  [UX_W-1:0]  pb_cu;                               // ...and the uop of it the next push starts at
+   reg              pb_cr;                               // ...it is cracked: the push is its uops...
+   reg  [UX_W-1:0]  pb_cu;                               // ...from this one...
+   reg  [UNB-1:0]   pb_rm;                               // ...of these many left
    reg  [VST_W-1:0] vsp;                                 // the predecode's decode state
    reg  [4:0]       pb_lv;                               // the bundle's last allocated vl version
    reg              pb_al;                               // ...and it allocates one
@@ -332,10 +337,10 @@ module smolrv64_frontend
    reg  [6:0]       pd_vt;                               // the slot's vstart: 0 once a vector instruction is predecoded
    reg  [UX_W:0]    pd_sw;
    reg  [FW-1:0]    pd_al;
-   reg  [UX_W+2:0]  pd_tot;                              // the bundle's uops
+   reg  [FW-1:0]    pd_mul;                              // the valid slots of more than one uop
    integer          pk;
    always @* begin
-      pd_vs[0] = vsp;  pd_tot = 0;
+      pd_vs[0] = vsp;
       for (pk = 0; pk < FW; pk = pk + 1) begin
          // a fetch-fault pseudo-op (slot 0), an RVC instruction, and any while VS is Off (a vector one
          // traps then) are one uop and change nothing
@@ -349,39 +354,45 @@ module smolrv64_frontend
             pd_n[pk] = uop_count(dq_inst[pk*32 +: 32], pd_vs[pk], pd_vt);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
             pd_vs[pk+1] = vst_after(dq_inst[pk*32 +: 32], pd_vs[pk]);
          end
-         if ((pk == 0) | dq_sv[pk]) pd_tot = pd_tot + {2'b00, pd_n[pk]};
+         pd_mul[pk] = ((pk == 0) | (dq_sv[pk] & dq_valid)) & (pd_n[pk] != 1);
       end
    end
-   // the push: position j's slot and uop, counted from the cursor through the valid slots
-   reg  [SLB-1:0]   map_s [0:QNB-1];
-   reg  [UX_W-1:0]  map_u [0:QNB-1];
-   reg  [QNB-1:0]   map_v;
-   reg  [UX_W+2:0]  rem_t;                               // the bundle's uops left, from the cursor
-   reg  [SLB-1:0]   nx_s;                                // the cursor after a partial push
-   reg  [UX_W-1:0]  nx_u;
-   reg  [UX_W+2:0]  acc, rk;
+   // the push from the cursor: the positions it takes (pv), the slot after it (p_ns), and the cursor
+   // there (p_n*: the push from it finishes the bundle when no cracked slot follows a run, or when no
+   // slot follows a cracked slot's last FW uops); a cracked slot with more than FW uops left stays
+   localparam [UNB-1:0] FWU = FW;
+   reg  [FW-1:0]    pb_mul;                              // the bundle's valid slots of more than one uop
+   reg  [QNB-1:0]   pv;
+   reg  [SLB:0]     p_ns;
+   reg              p_run, p_one, p_ncr, p_nfin, p_aft;
+   reg  [UX_W-1:0]  p_ncu;
+   reg  [UNB-1:0]   p_nrm;
    integer          mj, mk;
    always @* begin
-      acc = 0;  map_v = {QNB{1'b0}};  nx_s = pb_cs;  nx_u = pb_cu;
-      for (mj = 0; mj < QNB; mj = mj + 1) begin map_s[mj] = {SLB{1'b0}};  map_u[mj] = {UX_W{1'b0}}; end
-      for (mk = 0; mk < FW; mk = mk + 1) begin
-         rk = (~pb_sv[mk] | (mk < pb_cs)) ? 0 : (mk == pb_cs) ? {1'b0, pb_n[mk]} - {2'b00, pb_cu} : {1'b0, pb_n[mk]};
-         for (mj = 0; mj < QNB; mj = mj + 1)
-            if ((mj < FW) && (mj >= acc) && (mj < acc + rk)) begin
-               map_v[mj] = 1'b1;  map_s[mj] = mk[SLB-1:0];
-               map_u[mj] = ((mk == pb_cs) ? pb_cu : {UX_W{1'b0}}) + mj[UX_W-1:0] - acc[UX_W-1:0];
-            end
-         // the cursor after a push of FW: the uop at position FW
-         if ((FW >= acc) && (FW < acc + rk)) begin
-            nx_s = mk[SLB-1:0];
-            nx_u = ((mk == pb_cs) ? pb_cu : {UX_W{1'b0}}) + FW[UX_W-1:0] - acc[UX_W-1:0];
+      pv = {QNB{1'b0}};  p_run = 1'b1;  p_ns = {1'b0, pb_cs} + 1'b1;
+      for (mj = 0; mj < FW; mj = mj + 1) begin
+         p_one = 1'b0;
+         for (mk = 0; mk < FW; mk = mk + 1) if (mk == pb_cs + mj) p_one = pb_sv[mk] & ~pb_mul[mk];
+         p_run = p_run & p_one;
+         if (pb_cr) pv[mj] = mj < pb_rm;
+         else begin
+            pv[mj] = p_run;
+            if (p_run) p_ns = {1'b0, pb_cs} + mj[SLB:0] + 1'b1;
          end
-         acc = acc + rk;
       end
-      rem_t = acc;
+      p_ncr = 1'b0;  p_ncu = {UX_W{1'b0}};  p_nrm = 1;  p_nfin = 1'b1;  p_aft = 1'b0;
+      for (mk = 0; mk < FW; mk = mk + 1) begin
+         if (mk == p_ns) begin p_ncr = pb_mul[mk];  p_ncu = pb_s0[mk];  p_nrm = pb_n[mk]; end
+         if ((mk >= p_ns) & pb_mul[mk]) p_nfin = 1'b0;
+         if ((mk > pb_cs) & pb_sv[mk]) p_aft = 1'b1;
+      end
+      if (p_ncr) begin
+         p_nfin = p_nrm <= FWU;
+         for (mk = 0; mk < FW; mk = mk + 1) if ((mk > p_ns) & pb_sv[mk]) p_nfin = 1'b0;
+      end
    end
    wire           q_push  = q_room & pb_v & pb_go;
-   wire [FW-1:0]  q_wr    = {FW{q_push}} & map_v[FW-1:0];   // the positions pushed this cycle: 0..n-1
+   wire [FW-1:0]  q_wr    = {FW{q_push}} & pv[FW-1:0];   // the positions pushed this cycle: 0..n-1
    function automatic [CW-1:0] cnt(input [FW-1:0] v);
       integer i;
       begin cnt = {CW{1'b0}}; for (i = 0; i < FW; i = i + 1) cnt = cnt + {{(CW-1){1'b0}}, v[i]}; end
@@ -428,10 +439,15 @@ module smolrv64_frontend
       if (pb_ready) begin
          for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k];  pb_s0[k] <= pd_s0[k]; end
          for (k = FW; k < QNB; k = k + 1) begin pb_n[k] <= 1;  pb_vst[k] <= {VST_W{1'b0}};  pb_s0[k] <= {UX_W{1'b0}}; end
-         pb_cs <= {SLB{1'b0}};  pb_cu <= {UX_W{1'b0}};
-         pb_fin <= (pd_tot <= FW);  pb_al <= |pd_al;  pb_lv <= pd_vs[FW][4:0];
+         pb_cs <= {SLB{1'b0}};  pb_cr <= pd_mul[0];  pb_cu <= pd_s0[0];  pb_rm <= pd_n[0];  pb_mul <= pd_mul;
+         pb_fin <= pd_mul[0] ? ((pd_n[0] <= FWU) & ~|(dq_sv[FW-1:1] & {(FW-1){dq_valid}})) : ~|pd_mul;
+         pb_al <= |pd_al;  pb_lv <= pd_vs[FW][4:0];
       end else if (q_push) begin
-         pb_cs <= nx_s;  pb_cu <= nx_u;  pb_fin <= ((rem_t - FW) <= FW);
+         if (pb_cr & (pb_rm > FWU)) begin
+            pb_cu <= pb_cu + FWU[UX_W-1:0];  pb_rm <= pb_rm - FWU;  pb_fin <= ((pb_rm - FWU) <= FWU) & ~p_aft;
+         end else begin
+            pb_cs <= p_ns[SLB-1:0];  pb_cr <= p_ncr;  pb_cu <= p_ncu;  pb_rm <= p_nrm;  pb_fin <= p_nfin;
+         end
       end
       // The data load whenever the register is free: pb_v alone says it holds a bundle, so its
       // enable waits on no fetch verdict (dq_valid fanned out to ~1,100 flops' enables).
@@ -457,23 +473,23 @@ module smolrv64_frontend
    generate for (gk = 0; gk < QNB; gk = gk + 1) begin: sl
       localparam [QLB-1:0] B = gk;
       wire [QLB-1:0]  j = B - q_wp[QLB-1:0];             // the queue position landing in this bank...
-      wire [SLB-1:0]  js = map_s[j];                      // ...is uop map_u[j] of slot map_s[j]
-      wire [UX_W-1:0] ju = map_u[j];
+      wire [SLB-1:0]  js = pb_cr ? pb_cs : pb_cs + j;     // ...is the cracked slot's uop pb_cu + j, or slot pb_cs + j
+      wire [UX_W-1:0] ju = pb_cr ? pb_cu + {{(UX_W-QLB){1'b0}}, j} : pb_s0[js];
       wire [PDW-1:0]  pdet;  wire [PCW-1:0] pc;  wire [31:0] inst;  wire [SEQW-1:0] seq_f;
       wire [1:0]      pk;    wire fault_op;    wire imm_wide;
       assign {pdet, pc, inst, seq_f, pk, fault_op} = pb_in[js];
       wire [SEQW-1:0] seq = q_sn + {{(SEQW-QLB){1'b0}}, j};
-      wire            ul  = ({1'b0, ju} == pb_n[js] - 1'b1);
+      wire            ul  = ~pb_cr | ({{(UNB-QLB){1'b0}}, j} == pb_rm - 1'b1);
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK)) u_ds
 `ifdef SMOLRV64_ORACLE_FE
         (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_otgt[js]), .fault_op(fault_op),
 `else
         (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_tgt), .fault_op(fault_op),
 `endif
-         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off), .vs_off(vs_off), .ux(ju + pb_s0[js]), .ul(ul), .vst(pb_vst[js]),
+         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off), .vs_off(vs_off), .ux(ju), .ul(ul), .vst(pb_vst[js]),
          .q_rvc(1'b0), .q_pnpc({PCW{1'b0}}), .q_illegal(1'b0), .q_mis_taken(1'b0), .q_mis_nt(1'b0), .q_gc(16'd0),
          .qrec(q_wd[gk*QRW +: QRW]), .rec(q_fwd[gk*IRW +: IRW]), .imm_wide(imm_wide));
-      assign q_bv[gk] = q_push & map_v[j];
+      assign q_bv[gk] = q_push & pv[j];
       assign q_wpos[gk*QAW +: QAW] = q_wp + {{(QAW-QLB){1'b0}}, j};
       always @(posedge clk) if (!reset & q_bv[gk] & imm_wide)
          $fatal(1, "smolrv64_frontend: slot %0d's immediate (insn %08x at %h) does not fit the record's 32 bits", js, inst, pc);
