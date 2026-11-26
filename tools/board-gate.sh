@@ -10,6 +10,10 @@
 #   VGA=0 ...                                         # boot without the graphics console (default VGA=1)
 #   LAT=0 ...                                         # skip the memory-latency chase after the stress
 #
+# The boards are independent and gate at the same time, each from its own result directory or
+# from one they share (2g and 4g program the same RK bitstream):
+#   BOARD=2g tools/board-gate.sh R & BOARD=4g tools/board-gate.sh R & BOARD=hdmi tools/board-gate.sh R-hdmi_xcku5p & wait
+#
 # PASS = `login:` reached with ZERO faults, AND (since 2026-09-17) a bounded USERSPACE STRESS
 # over ssh (Geekbench 5 for STRESS_S seconds) that produces no fault in dmesg or on the console:
 # the committed IW=2 stack passed at login and crashed GB5 6.9 h later (an instruction page
@@ -38,7 +42,7 @@ REPO=$(pwd); UB=$REPO/workloads/ubuntu
 MAIN=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')
 . "$REPO/tools/boards.sh" || { echo "BOARD=$BOARD: 2g, 4g or hdmi"; exit 2; }
 PLAT=$REPO/$PLAT
-export JTAG DTB DTB_ADDR=$DTBA
+export JTAG DTB=${DTB:-ubuntu-nfs.dtb} DTB_ADDR=$DTBA
 CON=${CON:-$UB/screenlog.0}
 [ -f "$CON" ] || CON=$(git -C "$REPO" worktree list | head -1 | awk '{print $1}')/workloads/ubuntu/screenlog.0
 # With several boards on one host, CON (the console log) and SCREEN (the `screen` session on
@@ -57,6 +61,8 @@ fi
 # never off the host's NFS peer list, which names every board.
 con_ip() { tail -c +$(( ${1:-0} + 1 )) "$CON" | tr -d '\r' | grep -aoE 'ipaddr=192\.168\.1\.[0-9]+' | tail -1 | cut -d= -f2; }
 RES=${1:?result dir}; BOOT_WAIT=${BOOT_WAIT:-1800}; mkdir -p "$RES"
+# A named board's logs and device tree go in a directory of its own under the result directory.
+LOG=$RES${BOARD:+/$BOARD}; mkdir -p "$LOG"
 # The bitstream: BIT=, else the one banked in the result directory (tools/gate.sh puts it there),
 # else the platform's last build -- which is only this result's when the same tree built it.
 [ -z "${BIT:-}" ] && [ -f "$RES/$PROJ.bit" ] && BIT=$(cd "$RES" && pwd)/$PROJ.bit
@@ -110,13 +116,13 @@ stress() {
    # (observed: a `bash` of the command's group parenting a Geekbench in a session of its own),
    # and a group kill on that pid reaches nothing.
    timeout $(( ${STRESS_S:-900} + 120 )) ssh -o BatchMode=yes -o ServerAliveInterval=30 tommy@$ip \
-      "cd ~/Geekbench-5.4.1-LinuxRISCVPreview && rm -f /var/tmp/gate-stress.pid && setsid sh -c 'echo \$\$ > /var/tmp/gate-stress.pid; exec ./geekbench_riscv64' > /var/tmp/gate-stress.log 2>&1 < /dev/null & sleep 3; P=\$(cat /var/tmp/gate-stress.pid); t=0; while kill -0 \$P 2>/dev/null && [ \$t -lt ${STRESS_S:-900} ]; do sleep 5; t=\$((t+5)); done; if kill -0 \$P 2>/dev/null; then kill -- -\$P; sleep 5; kill -9 -- -\$P 2>/dev/null; RC=124; else RC=0; fi; sleep 2; echo RC=\$RC left=\$(ps -o pid= -s \$P 2>/dev/null | wc -l); dmesg | tail -n +$((pre_d+1)) | grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG'" > "$RES/stress.log" 2>&1
-   rc=$(grep -o 'RC=[0-9]*' "$RES/stress.log" | tail -1 | cut -d= -f2)
-   faults=$(( $(grep -cE 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG' "$RES/stress.log") ))
+      "cd ~/Geekbench-5.4.1-LinuxRISCVPreview && rm -f /var/tmp/gate-stress.pid && setsid sh -c 'echo \$\$ > /var/tmp/gate-stress.pid; exec ./geekbench_riscv64' > /var/tmp/gate-stress.log 2>&1 < /dev/null & sleep 3; P=\$(cat /var/tmp/gate-stress.pid); t=0; while kill -0 \$P 2>/dev/null && [ \$t -lt ${STRESS_S:-900} ]; do sleep 5; t=\$((t+5)); done; if kill -0 \$P 2>/dev/null; then kill -- -\$P; sleep 5; kill -9 -- -\$P 2>/dev/null; RC=124; else RC=0; fi; sleep 2; echo RC=\$RC left=\$(ps -o pid= -s \$P 2>/dev/null | wc -l); dmesg | tail -n +$((pre_d+1)) | grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG'" > "$LOG/stress.log" 2>&1
+   rc=$(grep -o 'RC=[0-9]*' "$LOG/stress.log" | tail -1 | cut -d= -f2)
+   faults=$(( $(grep -cE 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|is not a head|NETDEV WATCHDOG' "$LOG/stress.log") ))
    faults=$(( faults + $(tail -c +$((pre_c+1)) "$CON" | tr -d '\r' | grep -acE "$BAD") ))
    echo "stress: rc=${rc:-?} (124 = ran the whole budget) faults=$faults  subtests: $(timeout 20 ssh -o BatchMode=yes tommy@$ip 'grep -c "^  Running" /var/tmp/gate-stress.log' 2>/dev/null)"
    if [ "$faults" -eq 0 ] && { [ "${rc:-1}" = 124 ] || [ "${rc:-1}" = 0 ]; }; then errlog || return 1; return 0; fi
-   grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$RES/stress.log" | head -4
+   grep -E 'Oops|BUG:|Unable to handle|unhandled signal|segfault|cause:|NETDEV' "$LOG/stress.log" | head -4
    echo "BOARD: FAIL (stress: rc=${rc:-?} faults=$faults)"; return 1
 }
 # ---- the integrity log (rv_errlog; docs/SmolRV64-Spec.md) --------------------------------------
@@ -143,14 +149,14 @@ latency() {
    [ -n "${ip:-}" ] || find_ip || { echo "latency: no ssh to the board"; return 0; }
    tar -C "$REPO/tools/board/membench" -cf - Makefile chase2.c pmu.h | timeout 300 ssh -o BatchMode=yes tommy@$ip \
       'D=/var/tmp/gate-latency; rm -rf $D && mkdir -p $D && tar -C $D -xf - && make -s -C $D chase2 >/dev/null && sleep 30 && for k in 16 256 4096; do for r in 1 2 3; do $D/chase2 $k 1 1000000; done; done' \
-      > "$RES/latency.txt" 2>&1
+      > "$LOG/latency.txt" 2>&1
    # Three runs a size, the fastest kept with its own miss rates: a background process that runs
    # during one of them evicts lines a 16 KiB chase never loses by itself.
    awk '/ KiB k=1 / { for (i = 2; i <= NF; i++) { if ($i == "cycles/step") x = $(i-1); if ($i == "DCMISS") y = $(i-1); if ($i == "DTLB_MISS") z = $(i-1) }
                      if (!($1 in c) || x < c[$1]) { c[$1] = x; m[$1] = y; t[$1] = z } }
         END { if (!(16 in c) || !(256 in c) || !(4096 in c) || m[256] < 0.1 || t[4096] < 0.1) { print "latency: unavailable (latency.txt)"; exit }
               h = c[16]; d = h + (c[256] - h) / m[256]; f = (c[4096] - h - m[4096] * (d - h)) / t[4096]
-              printf "latency: D$ hit %.1f cycles, D$ miss %.1f (256 KiB, %.2f misses a load), a first-level dTLB miss +%.1f (4 MiB, %.2f a load); chase2, user-mode cycles\n", h, d, m[256], f, t[4096] }' "$RES/latency.txt"
+              printf "latency: D$ hit %.1f cycles, D$ miss %.1f (256 KiB, %.2f misses a load), a first-level dTLB miss +%.1f (4 MiB, %.2f a load); chase2, user-mode cycles\n", h, d, m[256], f, t[4096] }' "$LOG/latency.txt"
 }
 if [ -n "${STRESS_ONLY:-}" ]; then RES=${1:?result dir}; mkdir -p "$RES"; stress && { echo "BOARD: PASS (stress only)"; exit 0; }; exit 1; fi
 
@@ -186,8 +192,10 @@ for c in $(con_ip 0); do
       PRE=$(wc -c < "$CON");;
    esac
 done
-( cd "$PLAT" && timeout 900 make program ${BIT:+BIT=$BIT} ) > "$RES/program.log" 2>&1
-grep -qi "programmed successfully" "$RES/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$RES/program.log"; exit 1; }
+# Boards program one at a time: program.tcl's connect_hw_server reaches every cable through the
+# one hw_server on localhost:3121, which the first Vivado to connect starts.
+( cd "$PLAT" && flock /tmp/smolrv64-jtag.lock timeout 900 make program ${BIT:+BIT=$BIT} ) > "$LOG/program.log" 2>&1
+grep -qi "programmed successfully" "$LOG/program.log" || { echo "BOARD: FAIL (program)"; tail -5 "$LOG/program.log"; exit 1; }
 echo "programmed ${BIT:-impl_1}"
 # The monitor's banner names the bitstream just programmed; wait for it past the offset (the
 # console log flushes late) and hand it to ubuntu-boot.sh, whose model-string stamp otherwise
@@ -211,16 +219,17 @@ case "${RTL_BANNER:-}" in
 esac
 export RTL_BANNER
 # every device tree's model string names the LOADED bitstream (its banner), never the tree's
-# commit: `make dtbs RTL=` for the variants, ubuntu-boot.sh again for the one it boots
-( cd "$UB" && touch ubuntu-nfs.dts.in && make dtbs RTL="$RTL_BANNER" ) > "$RES/dtbs.log" 2>&1 \
-   || { echo "BOARD: FAIL (dtbs)"; tail -3 "$RES/dtbs.log"; exit 1; }
+# commit: `make dtbs RTL=` writes the variants into the tree, and the board's own is copied to its
+# log directory before another gate's banner can replace it; that copy is the one it boots.
+( cd "$UB" && flock "$UB" sh -c 'touch ubuntu-nfs.dts.in && make dtbs RTL="$1" && cp "$2" "$3/"' - "$RTL_BANNER" "$DTB" "$(realpath "$LOG")" ) > "$LOG/dtbs.log" 2>&1 \
+   || { echo "BOARD: FAIL (dtbs)"; tail -3 "$LOG/dtbs.log"; exit 1; }
 XMODEM=""
 if [ -n "${BOARD:-}" ]; then
    # A named board boots over TFTP, as the monitor's `go` does: this tree's payload and the board's
    # device tree go to coffee's /srv/tftp/$BOARD with the boot.txt `go $BOARD` runs: 19.7 MB in a
    # few seconds; XMODEM at the console's bit rate takes a minute or two. VGA=1 turns the scanout on, as ubuntu-boot.sh does.
    T=/srv/tftp/$BOARD
-   cp "$UB/fw_payload.bin" "$T/fw_payload.bin" && cp "$UB/$DTB" "$T/smolrv64.dtb" \
+   cp "$UB/fw_payload.bin" "$T/fw_payload.bin" && cp "$LOG/$DTB" "$T/smolrv64.dtb" \
       || { echo "BOARD: FAIL (staging $T)"; exit 1; }
    { echo "# The gate's boot of $RTL_BANNER from $REPO ($DTB), staged by tools/board-gate.sh."
      echo "N80000000 fw_payload.bin"; echo "N$DTBA smolrv64.dtb"
@@ -228,7 +237,7 @@ if [ -n "${BOARD:-}" ]; then
      # the device tree that mode at the jump (workloads/monitor/video.c); VGA=0 turns it off
      [ "$VGA" = 0 ] && echo "WW10005000 0"
      echo "X80000000 0 $DTBA"; } > "$T/boot.txt"
-   cp "$T/boot.txt" "$RES/boot.txt"
+   cp "$T/boot.txt" "$LOG/boot.txt"
    # the mode first: the monitor answers a V line with "locked" once the pixel clock runs
    if [ "$VGA" != 0 ] && [ "$VGA" != 1 ]; then
       VL=$(tools/vga-mode.py "$VGA" | grep '^V ') || { echo "BOARD: FAIL (no mode $VGA)"; exit 1; }
@@ -251,8 +260,8 @@ else
 fi
 if [ -n "${XMODEM:-}" ]; then
    # the payload and device tree over XMODEM (ubuntu-boot.sh)
-   ( cd "$UB" && LOG="$CON" timeout 3000 ./ubuntu-boot.sh "$SCREEN" ) > "$RES/upload.log" 2>&1 \
-      || { echo "BOARD: FAIL (upload)"; tail -3 "$RES/upload.log"; exit 1; }
+   ( D=$(realpath "$LOG/$DTB") && cd "$UB" && DTB=$D LOG="$CON" timeout 3000 ./ubuntu-boot.sh "$SCREEN" ) > "$LOG/upload.log" 2>&1 \
+      || { echo "BOARD: FAIL (upload)"; tail -3 "$LOG/upload.log"; exit 1; }
 fi
 fi
 echo "booting, watching past byte $PRE"
@@ -274,7 +283,7 @@ done
 NEW=$(tail -c +$((POS+1)) "$CON" | tr -d '\r')
 # A replayed boot ends where the next programming's monitor banner begins.
 [ -n "${REPLAY:-}" ] && NEW=$(printf '%s' "$NEW" | awk '/smolrv64 monitor/{exit} {print}')
-printf '%s' "$NEW" > "$RES/boot.log"
+printf '%s' "$NEW" > "$LOG/boot.log"
 RTL=$(tail -c +$((PRE+1)) "$CON" | tr -d '\r' | grep -aoE 'rtl=[0-9a-f]+\+?' | head -1)   # the banner precedes the marker
 FAULTS=$(printf '%s' "$NEW" | grep -acE "$BAD")
 LOGIN=$(printf '%s' "$NEW" | grep -ac "login:")
