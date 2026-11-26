@@ -130,10 +130,11 @@ module smolrv64_prf
          if ((gp >= NR - NF) && (sh == SH_FF)) x = fv[NF + FQ];
       end
       // a read of a shard this port has none of would read 0 silently: a lane names an f-register,
-      // the FP port's second or third operand an integer one, or any port a shard not in use
+      // the FP port's second or third operand an integer one, or any port a shard not in use. The FP
+      // port may name a vector register (a vector uop's), which the F stage reads from the vector file.
       always @(posedge clk)
          if ((ra[gp*PBITS +: PBITS] != {PBITS{1'b0}})
-             & ~((gp < NRI) & (sh < NL[2:0])) & ~((gp >= NR - NF) & ((sh == SH_FL) | (sh == SH_FF))))
+             & ~((gp < NRI) & (sh < NL[2:0])) & ~((gp >= NR - NF) & ((sh == SH_FL) | (sh == SH_FF) | (sh == SH_V))))
             $fatal(1, "smolrv64_prf: read port %0d (the lanes' 0..%0d, the store queue's %0d, the FP port's %0d..%0d) names pr=%h, of a shard it does not read",
                    gp, 2*NL - 1, 2*NL, 2*NL + 1, 2*NL + 3, ra[gp*PBITS +: PBITS]);
       assign rd[gp] = x;

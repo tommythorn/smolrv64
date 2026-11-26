@@ -269,6 +269,28 @@ static bool store_data_ok(const SimmervRetire& dut, const SimmervRetire& ref) {
     return ok;
 }
 
+// VECTOR REGISTER WRITES. The DUT reports each uop's write of a vector register as it commits
+// (probe_vwrite), ahead of its instruction's probe_retire: they ride with that retire (g_vw_prev, as
+// g_prev waits for its next_pc) and are compared against simmerv's register after its step.
+struct VWrite { uint32_t idx; uint64_t lo, hi; };
+static std::vector<VWrite> g_vw_pend, g_vw_prev;
+static unsigned long long g_vw_checked = 0;
+static bool vregs_ok(const SimmervRetire& dut) {
+    bool ok = true;
+    for (const VWrite& w : g_vw_prev) {
+        uint64_t lo = 0, hi = 0;
+        simmerv_read_vreg(g_ctx, w.idx, &lo, &hi);
+        g_vw_checked++;
+        if (lo != w.lo || hi != w.hi) {
+            std::fprintf(stderr, "cosim: VECTOR REGISTER MISMATCH pc=%016llx v%u dut=%016llx_%016llx ref=%016llx_%016llx\n",
+                         (unsigned long long)dut.pc, w.idx, (unsigned long long)w.hi, (unsigned long long)w.lo,
+                         (unsigned long long)hi, (unsigned long long)lo);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
     simmerv_set_mtime(g_ctx, dut.mtime);
     const unsigned long long MTIP_CAUSE = 0x8000000000000007ULL;
@@ -334,14 +356,15 @@ void step_compare(const SimmervRetire& dut, uint64_t mtimecmp, bool seip) {
         // happened, so a model that reports no access never forces a false abort.
         (dut.mem_kind == 0 || ref.mem_kind == 0 ||
          (dut.mem_kind == ref.mem_kind && dut.mem_pa == ref.mem_pa)) &&
-        store_data_ok(dut, ref);
+        store_data_ok(dut, ref) &&
+        vregs_ok(dut);
 
     g_ring[g_ring_idx] = { dut, ref, true };
     g_ring_idx = (g_ring_idx + 1) % RING_N;
 
     if (g_seqno == 1 || (g_seqno % 1'000'000) == 0)
-        std::fprintf(stderr, "cosim: %llu retirements ok (pc=%016llx) stores checked=%llu unchecked=%llu\n",
-                     (unsigned long long)g_seqno, (unsigned long long)dut.pc, g_st_checked, g_st_unchecked);
+        std::fprintf(stderr, "cosim: %llu retirements ok (pc=%016llx) stores checked=%llu unchecked=%llu vregs=%llu\n",
+                     (unsigned long long)g_seqno, (unsigned long long)dut.pc, g_st_checked, g_st_unchecked, g_vw_checked);
 
     if (!ok) mismatch_abort(dut, ref);
 }
@@ -405,6 +428,16 @@ extern "C" void probe_dump_ring(unsigned long long fetch_pc) {
     std::fflush(stderr);
 }
 
+extern "C" void probe_vwrite(unsigned char idx, unsigned long long lo, unsigned long long hi) {
+    // +vw_corrupt=<n>: flip a bit of the n-th write reported -- the check's own self-test (it must
+    // abort at that write's instruction), not a DUT fault
+    static unsigned long long n = 0;
+    static const unsigned long long corrupt_at =
+        plusarg("vw_corrupt") ? std::strtoull(plusarg("vw_corrupt"), nullptr, 10) : 0ull;
+    if (++n == corrupt_at) hi ^= 1ull << 63;
+    g_vw_pend.push_back({idx, lo, hi});
+}
+
 // DPI callback from backend_top.v (one per committed instruction or trap).
 extern "C" void probe_retire(
     unsigned long long pc,
@@ -451,6 +484,8 @@ extern "C" void probe_retire(
     }
     drain_dma_queue();                  // DMA beats older than the retire just held
     g_prev = e;
+    g_vw_prev.swap(g_vw_pend);          // this retire's vector writes ride with it
+    g_vw_pend.clear();
     g_prev_mtimecmp = mtimecmp;
     g_prev_seip = (seip != 0);
     g_have_prev = true;

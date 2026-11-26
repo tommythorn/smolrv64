@@ -47,7 +47,7 @@ module csr_file
     output wire [6:0]  o_vstart,      // vstart: the element a vector instruction starts at
     input  wire [7:0]  v_vl,          // the committed vl and vtype (vill, vma, vta, vsew, vlmul)
     input  wire [8:0]  v_vtype,
-    input  wire        v_dirty_commit, // a retiring op changed vector state: VS -> Dirty
+    input  wire        v_dirty_commit, // a vector instruction retires: VS -> Dirty, vstart -> 0
     // FP exception-flag accumulation: OR fp_fflags into fcsr.fflags when fp_fflags_we
     // (the flags of the FP ops retiring this cycle, reduced by the caller).
     input  wire        fp_fflags_we,
@@ -1070,6 +1070,8 @@ module csr_file
           (v_dirty_commit | (upd_valid & upd_is_csr & csr_writes & ~trap_v & ~csr_illegal
                              & ((upd_addr==VSTART) | (upd_addr==VXSAT) | (upd_addr==VXRM) | (upd_addr==VCSR)))))
          mstatus[10:9] <= 2'b11;
+      // ...and it completed every element: vstart is 0 (a CSR write, which serialises, never meets it)
+      if (!reset && v_dirty_commit) vstart <= 7'd0;
       // Zicntr counters (off the trap/csr chain so they tick every cycle). mcycle counts
       // clocks; minstret adds the committing checkpoint's instruction count. An M-mode
       // write to mcycle/minstret loads the value a cycle late (cw_*, with the Zihpm counters').

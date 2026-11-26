@@ -33,7 +33,7 @@ module smolrv64_gclass
    wire irqop = (insn[6:2] == 5'b11100) & (insn[14:12] == 3'b000) & (insn[31:20] == 12'h7F0)
               & ~illegal & ~fault;
    wire ord   = is_mem | is_amo | is_mul | is_fp | is_csr | is_serialize | is_fencei | is_cbo
-              | is_branch | is_jump | is_jalr | illegal | fault | irqop;
+              | is_branch | is_jump | is_jalr | illegal | fault | irqop | fp_valid;
    wire cls_f = fp_valid & ~is_mem & ~is_amo & ~illegal & ~fault & ~irqop;
    // an FP op with an integer source (FCVT.fp.int, FMV.fp.X) has no other: it issues in its slot's
    // lane, which reads rs1 and hands the op whole to the F stage

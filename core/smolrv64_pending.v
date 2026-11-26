@@ -5,11 +5,11 @@
 // Dynamic issue makes "how many results are outstanding" unbounded, so readiness is state per
 // register rather than a comparison against the units.
 //
-// TWO TABLES, ONE PER FILE: the integer one holds the lanes' shards (NL x SHN bits), the FP one
-// SH_FL's and SH_FF's (2 x SHN). A register's number says which holds it (shard[2] is the FP
-// file, smolrv64_shards.vh) and where: {the shard's low bits, the index}, the index below SHN.
-// Each read is a mux over its own file's registers alone (192:1 and 128:1 at three lanes), not
-// over every number a register could have.
+// TWO TABLES, ONE PER SIDE: the integer one holds the lanes' shards (NL x SHN bits), the F side's
+// SH_FL's, SH_FF's, the vector file's and the VL file's (4 x SHN). A register's number says which
+// holds it (shard[2] is the F side, smolrv64_shards.vh) and where: {the shard's low bits, the
+// index}, the index below SHN (the VL file's below 16). Each read is a mux over its own side's
+// registers alone, not over every number a register could have.
 module smolrv64_pending
   #(parameter PBITS = 10,
     parameter IDXB  = 7,                  // index bits within a shard, in a register's number
@@ -52,9 +52,9 @@ module smolrv64_pending
 `include "smolrv64_shards.vh"
    localparam integer SB  = $clog2(SHN);           // the index bits a register uses
    localparam integer NI  = NL * SHN;              // the integer table
-   localparam integer NF  = 2 * SHN;               // the FP table: SH_FL, SH_FF
+   localparam integer NF  = 4 * SHN;               // the F side's table: SH_FL, SH_FF, SH_V, SH_VL
    localparam integer IIB = $clog2(NI);
-   localparam integer IFB = SB + 1;
+   localparam integer IFB = SB + 2;
 
    initial begin
       if ((SHN & (SHN - 1)) != 0) $fatal(1, "smolrv64_pending: a shard of %0d registers is not a power of two", SHN);
@@ -74,7 +74,7 @@ module smolrv64_pending
       ix_i = {p[IDXB +: IIB-SB], p[SB-1:0]};
    endfunction
    function automatic [IFB-1:0] ix_f(input [PBITS-1:0] p);
-      ix_f = {p[IDXB], p[SB-1:0]};                  // SH_FL = 4, SH_FF = 5: shard[0]
+      ix_f = {p[IDXB +: 2], p[SB-1:0]};             // SH_FL 4, SH_FF 5, SH_V 6, SH_VL 7: shard[1:0]
    endfunction
 
    // Physical register 0 is architectural x0 and is never allocated, so it is always
@@ -126,7 +126,8 @@ module smolrv64_pending
       begin
          s = p[IDXB +: 3];
          stray = ({1'b0, p[IDXB-1:0]} >= SHN[IDXB:0])
-               | (is_f(p) ? ((s != SH_FL) & (s != SH_FF)) : (s >= NL[2:0]));
+               | ((s == SH_VL) & (p[IDXB-1:0] >= 16))
+               | (is_f(p) ? 1'b0 : (s >= NL[2:0]));
       end
    endfunction
    reg e_zombie, e_realloc;

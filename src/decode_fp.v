@@ -7,6 +7,9 @@
 //      CLASSIFY=9 F2F=10 F2I=11 I2F=12 F2IM=13 (fcvtmod.w.d)   fp_format: FP32=0 FP64=1 FP16=2
 //   int_fmt: INT32=2 INT64=3
 //
+// A vector uop (an OP-V instruction's, not a vset's) is an in-core op of class 10, its operands the
+// vector file's; vmv.x.s writes an integer register.
+//
 // fp_class routes execution: FPU ops go to fp_unit; SGNJ/CMP/MVXF/MVFX/
 // FCLASS/MINMAX/FLI/FROUND are cheap and done in-core -- decode emits the class and
 // the execute stage handles them without the FPU pipeline.
@@ -17,7 +20,7 @@ module decode_fp
    (input  wire [31:0] insn,
     output reg         fp_valid,        // a recognized FP-arith op (not load/store)
     output reg         use_fpu,         // routes to fp_unit
-    output reg  [3:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX 7=FLI 8=FROUND 9=VL
+    output reg  [3:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX 7=FLI 8=FROUND 9=VL 10=V
     output reg  [3:0]  op,
     output reg         op_mod,
     output reg  [2:0]  src_fmt,
@@ -35,7 +38,7 @@ module decode_fp
    localparam       FP32=3'd0, FP64=3'd1, FP16=3'd2;
    localparam [1:0] INT32=2'd2, INT64=2'd3;
    localparam [3:0] C_FPU=4'd0, C_SGNJ=4'd1, C_CMP=4'd2, C_MVXF=4'd3, C_MVFX=4'd4, C_FCLASS=4'd5,
-                    C_MINMAX=4'd6, C_FLI=4'd7, C_FROUND=4'd8, C_VL=4'd9;
+                    C_MINMAX=4'd6, C_FLI=4'd7, C_FROUND=4'd8, C_VL=4'd9, C_V=4'd10;
    localparam [1:0] SZERO=2'd0, SFRS1=2'd1, SFRS2=2'd2, SFRS3=2'd3;
 
    wire [6:0] opcode = insn[6:0];
@@ -65,6 +68,8 @@ module decode_fp
          // a vset's VL uop (core/smolrv64_vdec.vh's internal word, never fetched: no instruction
          // uses this class): vl = min(AVL, VLMAX) from the integer rs1, into the VL file
          fp_valid=1'b1; fp_class=C_VL; op0_int=1'b1; wr_fp=1'b0;
+      end else if ((opcode == 7'b1010111) && (f3 != 3'b111)) begin
+         fp_valid=1'b1; fp_class=C_V; src_fmt=FP64; dst_fmt=FP64; wr_fp=(f3 != 3'b010);
       end else if (opcode == 7'b1010011) begin
          case (op5)
            5'b00000,5'b00001: begin fp_valid=sd;     // FADD / FSUB

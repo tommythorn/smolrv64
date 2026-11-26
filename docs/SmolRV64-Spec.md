@@ -522,15 +522,17 @@ them. Full OoO will need them back.
 
 Architectural registers are a **unified 128-entry space** of 7-bit ids, `{kind, field}`
 (`src/smolrv64_areg.vh`): 0–31 integer, 32–63 FP, 64–95 the vector registers and 96–127 hidden
-FP-kind temporaries that cracked instructions will pass values through (§7.v); bit 5 says a
-register lives in an FP shard. Decode names ids 0–63; the rest belong to the vector increments
-(§7.v). The physical registers are not: f0–f31 rename
-only into the **FP file**, two shards SH_FL and SH_FF, and x1–x31 only into the integer shards.
-A physical register is `{shard[2:0], index}` (`core/smolrv64_shards.vh`): lane k's integer
-shard is k, SH_FL (4) holds the FP loads' destinations and SH_FF (5) the FP ops', so an
-f-register is exactly one with `shard[2]` set. A width-IW core uses lanes 0..IW-1 and the two
-FP shards; rename builds free lists for those alone, and a result routed to any other shard
-is asserted.
+FP-kind registers that cracked instructions pass values through (§7.v; VH0 and VH1 are in use);
+bit 5 says a register lives in an FP shard. The physical registers are not one space: f0–f31
+and the hidden registers rename only into the **FP file**, two shards SH_FL and SH_FF, v0–v31
+only into the **vector file** (SH_V), and x1–x31 only into the integer shards. A physical
+register is `{shard[2:0], index}` (`core/smolrv64_shards.vh`): lane k's integer shard is k,
+SH_FL (4) holds the FP loads' destinations, SH_FF (5) the FP ops', SH_V (6) the vector
+registers (64 of 128 bits) and SH_VL (7) the VL file's 16 entries, which no rename allocates
+(§7.v): `shard[2]` is the F side. A width-IW core uses lanes 0..IW-1 and the F side's shards;
+rename builds free lists for the lanes, SH_FL, SH_FF and SH_V, and a result routed to any other
+shard is asserted. At reset x0–x31, f0–f31 and v0–v31 map to their shards' indices 0–31 and VH0,
+VH1 to SH_FF's 0 and 1, so SH_FF's list starts with 62.
 
 `smolrv64_rename` carries a full speculative/committed split — SMAP/RMAP for the map, and a
 per-shard free list with a speculative head and a committed head. Every source reads SMAP alone
@@ -596,7 +598,9 @@ Camera -0.19%, Gaussian Blur -0.02%, Structure from Motion +0.05%, SQLite +0.05%
 |---|---|---|---|
 | IE, IE2, ... (one per lane) | 64 each | **its lane's write register, alone**: its ALU results and links, its multiplies, its landings (loads, AMOs, CSR reads, FP ops' integer results, divides) | > 32 (integer arch regs) each |
 | FL | 64 | f0–f31 only: **the load landing, alone** (FP loads) | > 32 (FP arch regs). The shard rename runs short of on the FP slices (Camera: every `be:rename` cycle, RENAME-SIM); at 128 those stalls are gone and the cycles move 0.04% at most (Camera, Gaussian Blur, Structure from Motion, PDF Rendering): the window waits on something else instead |
-| FF | 64 | f0–f31 only: **the F stage, alone** (FP results) | > 32 (FP arch regs) |
+| FF | 64 | f0–f31 and the hidden registers: **the F stage, alone** (FP results) | > 32 (FP arch regs) |
+| V | 64 × 128 bits | v0–v31: **the vector unit's landing, alone** (`vrf` in `smolrv64_core`) | > 32 (vector arch regs) |
+| VL | 16 × 8 bits | vl by version, never renamed: the VL uops' landing and `vsetvl`'s fire (`vlf`) | the 16-version ring (§7.v) |
 
 **The FP file is sharded by writer.** An FP load's f-register destination allocates from SH_FL,
 any other's from SH_FF (a trapping FP op too: it writes nothing). A group holds at most one load,
@@ -891,8 +895,8 @@ moves the wall.
 | | `u_iq_i`, `u_iq_i2`, `u_iq_i3` | `u_iq_f` |
 |---|---|---|
 | entries (`NENT`) | 10 each | 8 |
-| sources (`NSRC`) | 2 | 3 |
-| holds | slot A's, B's, C's ALU ops, multiplies, divides, branches, jumps, loads, stores and head ops; slot A's system ops | FP arithmetic |
+| sources (`NSRC`) | 2 | 5: rs1–rs3, a vector uop's old destination and its vl version |
+| holds | slot A's, B's, C's ALU ops, multiplies, divides, branches, jumps, loads, stores and head ops; slot A's system ops | FP arithmetic and vector uops |
 | ordering | **reorders freely** | **reorders freely** |
 | unit | completes at issue -- a CTI the next cycle, from registers, on a port of its own (a mispredict at its squash) -- writes IE, IE2, IE3; a load, store or head op hands its VA to M (§8), a divide its operands to the MD stage, a system op its record and rs1 to the SYSQ | stage F |
 | `unit_busy` | the lane's multiply slot; lane A's, a system op at the ROB head | `j_v & ~j_adv`: the FP select register is full and not draining |
@@ -1099,7 +1103,8 @@ load wins, FP waits. Safe without a ROB walk because an FP op cannot trap (it re
 An FPU result and an in-core compare never land in the same cycle (the compare waits,
 `icr_land`), so each landing result writes its own op's `fflags` into that op's ROB slot.
 Every integer result of the F port -- an in-core compare, FCLASS or FMV.X, and the FPU's own
-FCVT to an integer register -- leaves through that one result register (`icr`), and it lands
+FCVT to an integer register -- leaves through that one result register (`icr`; a vector uop's
+128-bit result too, its high half beside it in `icr_hi`), and it lands
 only while its lane's landing buffer has room (`lb_fe_room`, §8): the FE stream yields to
 the LD stream there. The FPU cannot hold a result, so the register is kept free for it: an
 FPU op with an integer destination starts only while no other is in flight and the register
@@ -1185,19 +1190,23 @@ read-only `vl`, `vtype` (from the committed state: vl 0 and vill until `vset*` d
 as one that changes FS does. Directed test: `core/directed/vcsr.S`.
 
 **Cracking.** An instruction of several uops is cracked where the frontend's bundle register feeds
-the queue (`smolrv64_frontend`): each slot's uop count and the vector decode state after it are
+the queue (`smolrv64_frontend`): each slot's uop count and the vector decode state before it are
 predecoded as the register loads (`core/smolrv64_vdec.vh`), and the bundle pushes its uops in
 program order, up to FW a cycle, in as many cycles as they need (a bundle of one-uop instructions
 is one push). Each uop is a queue entry with its own seqno, given at the push (the LQ and SQ order
-by it), its index and a last bit; the slot decoder builds the uop's record from the instruction,
-the index and the state, so the head rebuilds it as any record. Every uop but the last commits
+by it), its index, a last bit and the state before its instruction; the slot decoder builds the
+uop's record from the instruction, the index and the state, with the state after the instruction,
+so the head rebuilds it as any record. Every uop but the last commits
 without retiring (the ROB's `d_noret`), so minstret, the trap's epc and the lockstep see the
 instruction.
 
-**The decode state** is vtype and vl's version, in program order at the predecode; each ROB entry
-keeps the state after its instruction in a table beside the ROB (a LUTRAM a column). A branch's
-restart restores the frontend's from its entry, a decode redirect from its record, and a squash
-at the head from the committed state, which commit takes from the same table on every port.
+**The decode state** is vtype, vl's version and **vz**, in program order at the predecode; each ROB
+entry keeps the state after its instruction in a table beside the ROB (a LUTRAM a column). vz says
+a vector instruction has been predecoded since the last refetch: vstart is 0 then, else it is the
+CSR's, which changes only by a write (which refetches), a trap and a vector instruction's
+retirement (which clears it). A branch's restart restores the frontend's state from its entry, a
+decode redirect from its record, and a squash at the head from the committed state, which commit
+takes from the same table on every port (a `vsetvl` commits the state it fired with), with vz 0.
 
 **vl is versioned at decode.** A `vset` that sets vl allocates the next version, an entry of the
 VL file (16 of 8 bits, VLMAX is at most 128), in ring order: the predecode holds a bundle while
@@ -1209,6 +1218,26 @@ the version. An unsupported vtype is vill with vl 0, as Simmerv legalizes it. `v
 op: at the head, on a drained machine, it computes vtype from rs2 and vl from rs1, writes the
 next version and rd, and refetches with the new state. `csrr vl` reads the VL file at the
 committed version, `csrr vtype` the committed vtype. Directed test: `core/directed/vset.S`.
+
+**The vector file and the moves.** The vector registers rename into SH_V, 64 registers of 128 bits
+(`vrf`, a LUTRAM read at the F port's tags). The vector unit is the F stage's: one uop a cycle,
+in-core, single-cycle. Its instructions are the moves: `vmv.v.v`, `vmv.v.x`, `vmv.v.i`,
+`vmv<nr>r.v`, `vmv.s.x` and `vmv.x.s` (unmasked; any other vector arithmetic is illegal, as is a
+move at vill). A move is a uop a register it writes (LMUL, or nr), each keeping the instruction's
+word (the last retires it) with its place, `{vz, SEW, the register of the group}`, in the record's
+immediate, which the F side's payload carries. A scalar from an x register is moved in first by
+an FMV.D.X uop into VH0, through a lane as any int-to-FP op. A vector uop's sources, the F
+scheduler's five, are its rs1 (a vector register or VH0), rs2, the register its destination
+displaces (rename's `pold`: the elements it does not write keep their value, tail and prestart
+alike) and the vl version, whose entry a VL uop sets pending at dispatch and clears as it lands.
+Byte b of the result is element `r * (16 >> SEW) + (b >> SEW)` of the instruction: the new value
+at or past vstart and below evl (vl; every element for `vmv<nr>r.v`; element 0 for `vmv.s.x`),
+else the old destination's. The result lands through `icr` like the in-core FP ops, into the
+vector file, and its tag wakes on the FE port; `vmv.x.s` returns element 0 sign-extended into an
+x register. A vector instruction's last uop sets VS Dirty and clears vstart as it retires. The
+lockstep compares every vector register a uop writes, all 16 bytes, against Simmerv's after its
+instruction (`probe_vwrite`; `+vw_corrupt=<n>` is the check's self-test). Directed test:
+`core/directed/vmv.S`.
 
 ## 8. Load/store unit and MMU
 
@@ -2044,7 +2073,7 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `cp[0..IW-1].smap` | `smolrv64_rename` | 64 each, twice at IW=4 (`smap_d`) | 9 | 4 608 | LUTRAM | one copy per rename slot (1W each: the slot's rename, the walk's position, the sweep's lane; a mapping is the XOR of the copies' words), 5*IW reads (the sources and destinations, the commits' dirty tests) and `IW` more in `smap_d` (each writer's address, for the word it stores) |
 | `cp[0..IW-1].rmap` | `smolrv64_rename` | 64 each | 9 | 2 304 | LUTRAM | one copy per commit port (1W each; a mapping is the XOR of the copies' words), 2*IW reads (the commits' registers, for the word each stores; the sweep) |
 | `dirty` | `smolrv64_rename` | 64 | 1 | 64 | flops | the registers the sweep rewrites after a squash |
-| `fl[*].u.bank[*].mem` | `smolrv64_rename` | 64 per shard | 6 | 384 per shard | LUTRAM | one free list per shard in use (lanes 0..IW-1, SH_FL, SH_FF), `next_pow2(IW)` banks each |
+| `fl[*].u.bank[*].mem` | `smolrv64_rename` | 64 per shard | 6 | 384 per shard | LUTRAM | one free list per shard in use (lanes 0..IW-1, SH_FL, SH_FF, SH_V), `next_pow2(IW)` banks each |
 | `col[0..IW-1].mem` | `smolrv64_rob` | 64 each | 25 | 6 400 | LUTRAM | column k, lane k's entries `{pold, noret, rd, prd}`: 1W (lane k's dispatch), 2R (the head's row, the walk's row; the ports rotate them into program order) |
 | `fc` | `smolrv64_rob` | 64 | 2 | 128 | LUTRAM | each row's first column: 1W (dispatch), read at the next head row, `irr`'s, the walk's and the walked-to branch's rows (`hfc`, the head row's, is a flop) |
 | *(two-wide dispatch and retire)* | | | | | | items 10b/10c: on the board since 2026-09-06 (gate W2F, 319cd248), after four silent bitstreams whose renamer Vivado had folded (docs/rtl-rules.md F4/F5) |
@@ -2062,9 +2091,11 @@ shipping configuration (`SIZE_KB`=128, `SMOLRV64_HW`=8, `PAW`=64 into the caches
 | `spl_ld`, `spl_st` | `smolrv64_core` | 16, 16 | 8+274 = 282 | 9 024 | LUTRAM | a lane load's or store's record by LQ/SQ entry: four banks by entry, 1W each (a group's row), 1R at M's pick (§8) |
 | `u_la`, `u_sa` `wb[0..IW-1].mem` | `smolrv64_mwram` (in `smolrv64_core`) | 16, 32 a bank | 64 | 9 216 | LUTRAM | the lanes' arrived VAs, a bank per lane (1W, its lane), 1R at M's pick; `lvt` (2 bits an entry, flops) names the bank that wrote the entry last (§8) |
 | `la_v`, `sa_v` | `smolrv64_core` | 16, 32 | 1 | 48 | flops | an entry's address has arrived and M has not taken it |
-| `u_iq_f` entry | `smolrv64_iq` | 8 | 2+3×9 = 29 | 232 | flops | FP, reorders, `NSRC`=3 (§6.1) |
+| `u_iq_f` entry | `smolrv64_iq` | 8 | 2+5×10 = 52 | 416 | flops | FP and vector uops, reorders, `NSRC`=5 (§6.1) |
+| `vrf` | `smolrv64_core` | 64 | 128 | 8 192 | LUTRAM | the vector file (SH_V): 1W (the vector unit's landing), 3R (the F port's rs1, rs2 and old destination) |
+| `vlf` | `smolrv64_core` | 16 | 8 | 128 | flops | the VL file (SH_VL): written by a VL uop's landing or `vsetvl`'s fire, read by the F port and at the committed version |
 | `plmem` (payload) | `smolrv64_core` | 38 (10+10+10+8) | 274 | 10 412 | LUTRAM | one array per scheduler: 1W dispatch, 1R issue each; the immediate is stored as its low 32 bits, which it sign-extends (the queue's write asserts it), and a fetch fault's address as one bit, set for a straddler's pc+2 (`imm` and `fault_tval` are rebuilt from them) |
-| `ipend`, `fpend` | `smolrv64_pending` | 256, 128 | 1 | 384 | flops | readiness, a table per file indexed by {shard, index}: 23R, 16 that read both and let the number's file pick (the slots' rs1/rs2, 8; the lanes' operands, 8) and 7 of the FP table alone (the slots' rs3, 4; the F FIFO head's sources, 3), and each writeback its own register (the integrity check); 4 sets, 6 clears into the integer table (the lanes', the streams' integer landings) and 2 into the FP (the streams'), bulk-clear |
+| `ipend`, `fpend` | `smolrv64_pending` | 256, 256 | 1 | 512 | flops | readiness, a table per side indexed by {shard, index} (the F side's: SH_FL, SH_FF, SH_V, SH_VL): 33R, 16 that read both and let the number's side pick (the slots' rs1/rs2, 8; the lanes' operands, 8) and 17 of the F side's alone (the slots' rs3, old vd and vl version, 12; the F FIFO head's sources, 5), and each writeback its own register (the integrity check); 4 sets, 6 clears into the integer table (the lanes', the streams' integer landings) and 2 into the F side's (the streams'), bulk-clear |
 | `u_pa` `wb[0..1].mem` | `smolrv64_mwram` (in `smolrv64_lq`) | 16 a bank | 33 (`PABITS`) | 1 056 | LUTRAM | the load queue's PA, a bank per writer (M's fill, the walker's answer), 3R (the start's entry, the landing's two candidates); `lvt` (a bit an entry, flops) names the writer |
 | `pcl[0..IW-1].mem` | `smolrv64_core` | 64 each | 2 | 512 | LUTRAM | which stream produces a pending integer register (§11): 1W each at dispatch, 5R (the schedulers' reported operands) |
 | `hps[0..IW-1].mem` | `smolrv64_core` | 64 each | 48 | 12 288 | LUTRAM | every op's {seq, PC} by ROB row and column: 1W each at dispatch (the tail's row), 1R the head's row; the queue-fault record's PC and seq (a faulting or replaying load or store is the ROB head). `pch` (`smolrv64_lq`, 16 × 8 flops) keeps a load's wait-table bits, which every entry reports |

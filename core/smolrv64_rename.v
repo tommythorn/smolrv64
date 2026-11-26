@@ -50,6 +50,7 @@ module smolrv64_rename
     parameter N_INT = 64,                 // each lane's shard
     parameter N_FL  = 64,                 // the FP loads' shard
     parameter N_FF  = 64,                 // the F stage's shard
+    parameter N_V   = 64,                 // the vector file (SH_V)
     parameter LOWAT = 4,                  // stall fetch when any shard has < LOWAT free
     parameter IW    = 2)                  // the group width -> FLNB = next_pow2(IW) free-list banks
    (input  wire                  clk,
@@ -74,6 +75,8 @@ module smolrv64_rename
     // the mapping slot k's destination displaces (an earlier slot's new register when the group
     // writes it twice): the ROB keeps it, and the walk below puts it back
     output wire [IW*PBITS-1:0]   r_pold,
+    output wire [IW*PBITS-1:0]   r_spold,      // ...the map's read of it, and whether it is an earlier
+    output wire [IW-1:0]         r_bypd,       // slot's new register (a vector uop reads it: readiness)
 
     // ---- commit: the head and the entries behind it, in order ----
     input  wire [IW-1:0]         c_valid,
@@ -101,13 +104,21 @@ module smolrv64_rename
     output wire [7:0]            shard_low);   // per shard, for the hpm counters
 
 `include "smolrv64_shards.vh"
-   function automatic sh_used(input integer sh);   // lanes 0..IW-1 and the two FP shards
-      sh_used = (sh < SH_FL) ? (sh < IW) : ((sh == SH_FL) || (sh == SH_FF));
+   function automatic sh_used(input integer sh);   // lanes 0..IW-1, the two FP shards and the vector file
+      sh_used = (sh < SH_FL) ? (sh < IW) : ((sh == SH_FL) || (sh == SH_FF) || (sh == SH_V));
    endfunction
    localparam integer NB = (IW > 1) ? $clog2(IW) : 1;   // a slot or position number
    localparam integer NS = 3 * IW;                       // the map's source reads
    localparam integer NR = NS + IW;                      // ...and each slot's destination
    localparam integer NAR = 1 << `AREG_W;                 // the architectural registers, every kind
+   localparam integer NHID = 2;                           // the hidden registers in use (VH0, VH1)
+   // THE RESET MAPPING: x0-x31 in SH_IE, f0-f31 in SH_FL and v0-v31 in SH_V at indices 0..31, the
+   // hidden registers in use in SH_FF at 0..NHID-1, any other register at physical 0 (never written)
+   function automatic [PBITS-1:0] map0(input integer j);
+      map0 = (j < 32) ? {SH_IE, j[IDXB-1:0]} : (j < 64) ? {SH_FL, {(IDXB-5){1'b0}}, j[4:0]}
+           : (j < 96) ? {SH_V, {(IDXB-5){1'b0}}, j[4:0]}
+           : (j < 96 + NHID) ? {SH_FF, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}};
+   endfunction
 
    // ---- the map -------------------------------------------------------------------
    // IW COPIES OF THE SPECULATIVE MAP, one write port each: slot k writes copy k (as do the
@@ -154,8 +165,7 @@ module smolrv64_rename
    // (the last commit of r wins).
    reg [PBITS-1:0] cm [0:NAR-1];
    integer cmi;
-   initial for (cmi = 0; cmi < NAR; cmi = cmi + 1)
-      cm[cmi] = (cmi < 32) ? {SH_IE, cmi[IDXB-1:0]} : (cmi < 64) ? {SH_FL, {(IDXB-5){1'b0}}, cmi[4:0]} : {PBITS{1'b0}};
+   initial for (cmi = 0; cmi < NAR; cmi = cmi + 1) cm[cmi] = map0(cmi);
    reg [PBITS-1:0] cm_after [0:NAR-1];
    integer cmr, cmq;
    always @* for (cmr = 0; cmr < NAR; cmr = cmr + 1) begin
@@ -172,12 +182,9 @@ module smolrv64_rename
       (* ram_style = "distributed" *) reg [PBITS-1:0] rmap [0:NAR-1];
       integer j;
       // x0 -> physical 0 (SH_IE index 0), which smolrv64_prf hardwires to read zero and never
-      // writes. Integer registers start in SH_IE, FP registers in SH_FL (see the reset note):
-      // copy 0 holds the mappings, the others zero.
-      localparam [2:0] I_IE = (gc == 0) ? SH_IE : 3'd0, I_FL = (gc == 0) ? SH_FL : 3'd0;
-      // the vector and hidden registers start at physical 0 in every copy until something maps them
+      // writes. Copy 0 holds the reset mappings (map0), the others zero.
       initial for (j = 0; j < NAR; j = j + 1) begin
-         rmap[j] = (gc != 0) ? {PBITS{1'b0}} : (j < 32) ? {I_IE, j[IDXB-1:0]} : (j < 64) ? {I_FL, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}};
+         rmap[j] = (gc != 0) ? {PBITS{1'b0}} : map0(j);
          smap[j] = rmap[j];
       end
       wire sw = r_valid[gc] & r_rd_v[gc] & ~shadowed[gc];   // this slot's mapping is its register's newest
@@ -205,8 +212,7 @@ module smolrv64_rename
       wire [PBITS-1:0] dv [0:3*IW-1];
       if (NR + 2*IW > 15) begin: dmap
          (* ram_style = "distributed" *) reg [PBITS-1:0] smap_d [0:NAR-1];
-         initial for (j = 0; j < NAR; j = j + 1)
-            smap_d[j] = (gc != 0) ? {PBITS{1'b0}} : (j < 32) ? {I_IE, j[IDXB-1:0]} : (j < 64) ? {I_FL, {(IDXB-5){1'b0}}, j[4:0]} : {PBITS{1'b0}};
+         initial for (j = 0; j < NAR; j = j + 1) smap_d[j] = (gc != 0) ? {PBITS{1'b0}} : map0(j);
          always @(posedge clk) if (!reset & s_we[gc]) smap_d[wa] <= wx;
          for (gp = 0; gp < IW; gp = gp + 1) begin: r
             assign dv[gp]        = smap_d[sa[NS + gp]];
@@ -359,6 +365,8 @@ module smolrv64_rename
       end
       assign shadowed[gk] = sh_y;
       assign r_pold[gk*PBITS +: PBITS] = db ? dn : sp[NS + gk];
+      assign r_spold[gk*PBITS +: PBITS] = sp[NS + gk];
+      assign r_bypd[gk] = db;
       // whether commit k's register is still its newest mapping
       assign cc_hit[gk] = cc_v[gk] & (cq[gk] == cc_prd[gk]);
    end endgenerate
@@ -460,13 +468,14 @@ module smolrv64_rename
    localparam integer FLNB = 1 << $clog2(IW);   // free-list banks = next_pow2(IW); >=2
    localparam integer FLLB = $clog2(FLNB);
    localparam integer CW   = $clog2(IW + 1);    // a count of 0..IW
-   // A shard's size, and the first free index at reset: SH_IE and SH_FL hold the reset
-   // mappings of x0-x31 and f0-f31 at indices 0..31, so their lists start at 32.
+   // A shard's size, and the first free index at reset: SH_IE, SH_FL and SH_V hold the reset
+   // mappings of x0-x31, f0-f31 and v0-v31 at indices 0..31, so their lists start at 32, and SH_FF
+   // the hidden registers' at 0..NHID-1.
    function automatic integer n_of(input integer sh);
-      n_of = (sh < SH_FL) ? N_INT : (sh == SH_FL) ? N_FL : N_FF;
+      n_of = (sh < SH_FL) ? N_INT : (sh == SH_FL) ? N_FL : (sh == SH_V) ? N_V : N_FF;
    endfunction
    function automatic integer base_of(input integer sh);
-      base_of = (sh == SH_IE || sh == SH_FL) ? 32 : 0;
+      base_of = (sh == SH_IE || sh == SH_FL || sh == SH_V) ? 32 : (sh == SH_FF) ? NHID : 0;
    endfunction
 
    // Commit and flush can land in the SAME cycle: a mispredicting branch commits while the
@@ -747,9 +756,11 @@ module smolrv64_rename
             $fatal(1, "smolrv64_rename: slot %0d renamed x0", ik);
          if (r_valid[ik] & ~r_cand[ik])
             $fatal(1, "smolrv64_rename: slot %0d renamed and was not a candidate", ik);
-         // an FP-kind register goes to an FP shard, any other register to its slot's lane
-         if (alloc[ik] && (r_rd[ik*`AREG_W + 5] ? ((r_shard[ik*3 +: 3] != SH_FL) && (r_shard[ik*3 +: 3] != SH_FF))
-                                          : (r_shard[ik*3 +: 3] != ik[2:0])))
+         // a vector register goes to the vector file, an FP-kind one to an FP shard, an x-register to its
+         // slot's lane
+         if (alloc[ik] && ((r_rd[ik*`AREG_W + 6 -: 2] == 2'b10) ? (r_shard[ik*3 +: 3] != SH_V)
+                         : r_rd[ik*`AREG_W + 5] ? ((r_shard[ik*3 +: 3] != SH_FL) && (r_shard[ik*3 +: 3] != SH_FF))
+                         : (r_shard[ik*3 +: 3] != ik[2:0])))
             $fatal(1, "smolrv64_rename: slot %0d renames r%0d into shard %0d", ik, r_rd[ik*`AREG_W +: `AREG_W], r_shard[ik*3 +: 3]);
          if (alloc[ik] & ~sh_used(r_shard[ik*3 +: 3]))
             $fatal(1, "smolrv64_rename: slot %0d allocates from shard %0d, which this width does not use",

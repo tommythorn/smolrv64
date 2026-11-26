@@ -2,17 +2,25 @@
 // predecode (smolrv64_frontend), the slot decoders (smolrv64_dslot) and the F stage (smolrv64_core).
 // Included inside a module.
 //
-// THE DECODE STATE (VST_W bits) is {vtype[8:0], vl version[4:0]}: vtype is {vill, vma, vta, vsew[2:0],
-// vlmul[2:0]} (vill alone set when it is), the version names the VL file's entry (its low 4 bits)
-// that holds vl, one bit wider than the ring so a distance between two is exact (rule B8).
-// VLEN is 128.
+// THE DECODE STATE (VST_W bits) is {vz, vtype[8:0], vl version[4:0]}: vtype is {vill, vma, vta,
+// vsew[2:0], vlmul[2:0]} (vill alone set when it is), the version names the VL file's entry (its low
+// 4 bits) that holds vl, one bit wider than the ring so a distance between two is exact (rule B8).
+// vz says a vector instruction has been predecoded since the last refetch, so vstart is 0; else
+// vstart is the CSR's, which only a refetching write or a trap changes. VLEN is 128.
 `include "smolrv64_irec.vh"
 localparam integer VST_W = `SMOLRV64_VST_W;
 localparam integer UX_W  = `SMOLRV64_UX_W;         // a uop's index within its instruction (up to 32)
+localparam integer VS_VZ = VST_W - 1;              // the decode state's vz bit
 localparam [8:0]   VT_VILL = 9'h100;
+localparam [VST_W-1:0] VST_RESET = {1'b0, VT_VILL, 5'd0};
 
 function automatic is_opv(input [31:0] i);         // OP-V: arithmetic and the configuration ops
    is_opv = (i[6:0] == 7'b1010111);
+endfunction
+// a vector instruction: OP-V, or a LOAD-FP/STORE-FP of a vector width (not FLW/FLD/FLH/FLQ's)
+function automatic is_vecins(input [31:0] i);
+   is_vecins = is_opv(i) | (((i[6:2] == 5'b00001) | (i[6:2] == 5'b01001))
+                            & ((i[14:12] == 3'b000) | (i[14] & (i[13:12] != 2'b00))));
 endfunction
 function automatic is_vset(input [31:0] i);        // vsetvli, vsetivli, vsetvl
    is_vset = is_opv(i) & (i[14:12] == 3'b111);
@@ -63,15 +71,57 @@ endfunction
 function automatic vset_alloc(input [31:0] i);
    vset_alloc = is_vset(i) & ~is_vsetvl(i) & ~vset_keep(i);
 endfunction
-// the instruction's uops: a vset that allocates is two (the vl write, then rd), anything else one
-// (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches what follows)
-function automatic [UX_W:0] uop_count(input [31:0] i);
-   uop_count = vset_alloc(i) ? 2 : 1;
+
+// THE MOVES, the vector unit's instructions (unmasked: vm = 1). vmv.v.v/.x/.i (vs2 is not read, as
+// Simmerv), vmv<nr>r.v (nr = 1, 2, 4 or 8, neither group past v31), vmv.s.x (vs2 = 0) and vmv.x.s
+// (vs1 = 0). Every other vector arithmetic instruction is illegal.
+function automatic is_vmvv(input [31:0] i);        // vmv.v.v (OPIVV), vmv.v.i (OPIVI), vmv.v.x (OPIVX)
+   is_vmvv = is_opv(i) & (i[31:25] == 7'b0101111)
+           & ((i[14:12] == 3'b000) | (i[14:12] == 3'b011) | (i[14:12] == 3'b100));
+endfunction
+function automatic is_vmvr(input [31:0] i);        // vmv<nr>r.v: OPIVI, nr - 1 in the immediate
+   reg [5:0] nr;
+   begin
+      nr = {1'b0, i[19:15]} + 6'd1;
+      is_vmvr = is_opv(i) & (i[31:25] == 7'b1001111) & (i[14:12] == 3'b011)
+              & ((i[19:15] == 5'd0) | (i[19:15] == 5'd1) | (i[19:15] == 5'd3) | (i[19:15] == 5'd7))
+              & (({1'b0, i[11:7]} + nr) <= 6'd32) & (({1'b0, i[24:20]} + nr) <= 6'd32);
+   end
+endfunction
+function automatic is_vmvsx(input [31:0] i);       // vmv.s.x: OPMVX
+   is_vmvsx = is_opv(i) & (i[31:25] == 7'b0100001) & (i[14:12] == 3'b110) & (i[24:20] == 5'd0);
+endfunction
+function automatic is_vmvxs(input [31:0] i);       // vmv.x.s: OPMVV
+   is_vmvxs = is_opv(i) & (i[31:25] == 7'b0100001) & (i[14:12] == 3'b010) & (i[19:15] == 5'd0);
+endfunction
+function automatic is_vmv(input [31:0] i);
+   is_vmv = is_vmvv(i) | is_vmvr(i) | is_vmvsx(i) | is_vmvxs(i);
+endfunction
+// a move whose scalar comes from an x register: uop 0 moves it into the hidden register VH0 (an
+// FMV.D.X, through a lane like any int-to-FP op), the vector uops read it there
+function automatic vmv_x(input [31:0] i);
+   vmv_x = (is_vmvv(i) & (i[14:12] == 3'b100)) | is_vmvsx(i);
+endfunction
+localparam [6:0] VH0 = 7'd96;                      // the first hidden register
+// the registers a move writes: nr, LMUL (1 for a fractional one), or 1
+function automatic [3:0] vmv_regs(input [31:0] i, input [VST_W-1:0] s);
+   vmv_regs = is_vmvr(i) ? {1'b0, i[17:15]} + 4'd1
+            : (is_vmvv(i) & ~s[7]) ? (4'd1 << s[6:5]) : 4'd1;
+endfunction
+
+// the instruction's uops, from the decode state before it: a vset that allocates is two (the vl
+// write, then rd); a move one a register it writes, after the scalar's move-in; anything else one
+// (vsetvl too: it is a SYSQ op, which writes the decode state itself and refetches what follows,
+// and a move at vill, which traps)
+function automatic [UX_W:0] uop_count(input [31:0] i, input [VST_W-1:0] s);
+   uop_count = vset_alloc(i) ? 2
+             : (is_vmv(i) & ~s[13]) ? {2'b00, vmv_regs(i, s)} + {{UX_W{1'b0}}, vmv_x(i)} : 1;
 endfunction
 // the decode state after the instruction, from the state before it
 function automatic [VST_W-1:0] vst_after(input [31:0] i, input [VST_W-1:0] s);
-   vst_after = vset_alloc(i) ? {vset_vtype(i), s[4:0] + 5'd1}
-             : (is_vset(i) & ~is_vsetvl(i)) ? {vset_vtype(i), s[4:0]} : s;
+   vst_after = {s[VS_VZ] | is_vecins(i),
+                vset_alloc(i) ? {vset_vtype(i), s[4:0] + 5'd1}
+              : (is_vset(i) & ~is_vsetvl(i)) ? {vset_vtype(i), s[4:0]} : s[VST_W-2:0]};
 endfunction
 
 // THE VL UOP's internal word (uop 0 of a vset that allocates): an OP-FP op of a class no
@@ -105,5 +155,20 @@ function automatic [7:0] vl_of(input [31:0] w, input [63:0] rs1);
         2'd1:    vl_of = ({3'd0, w[19:15]} < m) ? {3'd0, w[19:15]} : m;
         default: vl_of = m;
       endcase
+   end
+endfunction
+// THE MOVE-IN's internal word: FMV.D.X of the instruction's rs1 (its destination is VH0)
+function automatic [31:0] mvin_word(input [31:0] i);
+   mvin_word = {5'b11110, 2'b01, 5'd0, i[19:15], 3'b000, 5'd0, 7'b1010011};
+endfunction
+
+// A VECTOR UOP keeps its instruction's word (the last retires it); what else the F stage needs rides
+// in the record's immediate, the uop's place: {vz, vsew[1:0], the register of the group}
+localparam integer VP_W = 6;
+function automatic [VP_W-1:0] vpos_of(input [31:0] i, input [UX_W-1:0] ux, input [VST_W-1:0] s);
+   reg [UX_W-1:0] r;
+   begin
+      r = ux - {{(UX_W-1){1'b0}}, vmv_x(i)};
+      vpos_of = {s[VS_VZ], s[9:8], r[2:0]};
    end
 endfunction

@@ -301,9 +301,9 @@ module smolrv64_frontend
    reg  [3:0]     pb_cause;
    reg            pb_fhi;
    reg  [FW-1:0]  pb_sv;                                 // the bundle's slots (slot 0: whenever pb_v)
-   // THE CRACKER. Each slot's uop count and the vector decode state after it are predecoded as the
+   // THE CRACKER. Each slot's uop count and the vector decode state before it are predecoded as the
    // register loads (smolrv64_vdec.vh), the state chained through the bundle in program order from
-   // the predecode's own (vsp). The bundle then pushes its uops in program order, up to FW a cycle,
+   // the predecode's own (vsp); the slot's decoder makes the state after it, which its record carries. The bundle then pushes its uops in program order, up to FW a cycle,
    // in as many cycles as they need: a cursor (pb_cs, pb_cu: the slot and the uop within it) names
    // where the next push starts, and queue position j takes the slot and uop map_s[j], map_u[j].
    // A bundle of one-uop instructions is one push, as before. Each uop is a queue entry of its
@@ -312,7 +312,7 @@ module smolrv64_frontend
    localparam integer SLB = QLB;                         // a slot of the register
    localparam integer UNB = UX_W + 1;                     // a uop count, 1..32
    reg  [UNB-1:0]   pb_n   [0:QNB-1];                    // slot k's uops (slots FW.. hold one: never read)
-   reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state after it
+   reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state before it
    reg  [SLB-1:0]   pb_cs;                               // the cursor: the slot...
    reg  [UX_W-1:0]  pb_cu;                               // ...and the uop of it the next push starts at
    reg  [VST_W-1:0] vsp;                                 // the predecode's decode state
@@ -337,7 +337,7 @@ module smolrv64_frontend
          if (((pk == 0) & dq_fault) | ~dq_sv[pk] | (dq_inst[pk*32 +: 2] != 2'b11) | vs_off) begin
             pd_n[pk] = 1;  pd_al[pk] = 1'b0;  pd_vs[pk+1] = pd_vs[pk];
          end else begin
-            pd_n[pk] = uop_count(dq_inst[pk*32 +: 32]);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
+            pd_n[pk] = uop_count(dq_inst[pk*32 +: 32], pd_vs[pk]);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
             pd_vs[pk+1] = vst_after(dq_inst[pk*32 +: 32], pd_vs[pk]);
          end
          if ((pk == 0) | dq_sv[pk]) pd_tot = pd_tot + {2'b00, pd_n[pk]};
@@ -413,11 +413,11 @@ module smolrv64_frontend
       if (reset | redirect)  pb_v <= 1'b0;
       else if (pb_load)       pb_v <= 1'b1;
       else if (q_push & pb_fin) pb_v <= 1'b0;
-      if (reset)              vsp <= {VT_VILL, 5'd0};
+      if (reset)              vsp <= VST_RESET;
       else if (redirect)      vsp <= redirect_vst;
       else if (pb_load)       vsp <= pd_vs[FW];
       if (pb_ready) begin
-         for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k+1]; end
+         for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k]; end
          for (k = FW; k < QNB; k = k + 1) begin pb_n[k] <= 1;  pb_vst[k] <= {VST_W{1'b0}}; end
          pb_cs <= {SLB{1'b0}};  pb_cu <= {UX_W{1'b0}};
          pb_fin <= (pd_tot <= FW);  pb_al <= |pd_al;  pb_lv <= pd_vs[FW][4:0];
@@ -518,7 +518,7 @@ module smolrv64_frontend
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hd
         (.pdet(r_pdet), .pc(r_pc), .inst(r_inst), .seq_in(r_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
          .fault_op(r_fault), .cause(r_fault_cause), .fault_hi(r_fault_hi), .fs_off(1'b0),
-         .vs_off(1'b0), .ux(r_ux), .ul(r_ul), .vst(r_vst),
+         .vs_off(1'b0), .ux(r_ux), .ul(r_ul), .vst(r_vsb),
          .q_rvc(r_rvc), .q_pnpc(r_pred_npc), .q_illegal(r_illegal), .q_mis_taken(r_mis_taken),
          .q_mis_nt(r_mis_nt), .q_gc(r_gc), .qrec(), .rec(ql[gk]), .imm_wide());
    end endgenerate
@@ -534,7 +534,7 @@ module smolrv64_frontend
    smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hh
      (.pdet(hq_pdet), .pc(hq_pc), .inst(hq_inst), .seq_in(hq_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
       .fault_op(hq_fault), .cause(hq_fault_cause), .fault_hi(hq_fault_hi), .fs_off(1'b0),
-      .vs_off(1'b0), .ux(hq_ux), .ul(hq_ul), .vst(hq_vst),
+      .vs_off(1'b0), .ux(hq_ux), .ul(hq_ul), .vst(hq_vsb),
       .q_rvc(hq_rvc), .q_pnpc(hq_pred_npc), .q_illegal(hq_illegal), .q_mis_taken(hq_mis_taken),
       .q_mis_nt(hq_mis_nt), .q_gc(hq_gc), .qrec(), .rec(h_rec), .imm_wide());
    `IR_DECL(h_)
