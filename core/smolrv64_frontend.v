@@ -47,6 +47,9 @@ module smolrv64_frontend
     // ---- redirect (from M: mispredict, trap, xret, fence.i) ----
     input  wire                    redirect,
     input  wire                    fs_off,            // mstatus.FS is Off: an FP op decodes illegal
+    input  wire                    vs_off,            // mstatus.VS is Off: a vector instruction decodes illegal
+    input  wire [`SMOLRV64_VST_W-1:0] redirect_vst,   // the vector decode state the redirect restores
+    input  wire [4:0]              cmt_ver,           // the committed vl version (the ring's oldest live entry)
     input  wire [5*IW+5:0]         crd,               // the dispatch credits: CRW bits (smolrv64_credits.vh)
     output wire                    hd_v,              // the queue head has an instruction...
     output wire                    hd_take,           // ...and pops it this cycle
@@ -212,8 +215,11 @@ module smolrv64_frontend
    // advance) is the register's load. A bundle in the register dies with the queue on a
    // redirect -- it is younger than the redirecting op by the same argument (rule I11).
    // Cost: one cycle of fetch-to-decode latency, visible only when the queue is empty.
+`include "smolrv64_vdec.vh"
    reg            pb_v;
-   wire           pb_ready = ~pb_v | q_room;             // empty, or draining into the queue now
+   reg            pb_fin;                                // the bundle's uops left fit one push
+   wire           pb_go;                                 // the bundle's push may go (the vl ring has room)
+   wire           pb_ready = ~pb_v | (q_room & pb_fin & pb_go);   // empty, or pushing its last part now
    wire fire = pb_ready & dq_valid;    // fetch handshake: a bundle enters the register
 
    // The interrupt pseudo-op is consumed by fetch HERE, on the queue push -- not by
@@ -295,8 +301,78 @@ module smolrv64_frontend
    reg  [3:0]     pb_cause;
    reg            pb_fhi;
    reg  [FW-1:0]  pb_sv;                                 // the bundle's slots (slot 0: whenever pb_v)
-   wire           q_push  = q_room & pb_v;
-   wire [FW-1:0]  q_wr    = {FW{q_push}} & pb_sv;        // the slots pushed this cycle: 0..n-1
+   // THE CRACKER. Each slot's uop count and the vector decode state after it are predecoded as the
+   // register loads (smolrv64_vdec.vh), the state chained through the bundle in program order from
+   // the predecode's own (vsp). The bundle then pushes its uops in program order, up to FW a cycle,
+   // in as many cycles as they need: a cursor (pb_cs, pb_cu: the slot and the uop within it) names
+   // where the next push starts, and queue position j takes the slot and uop map_s[j], map_u[j].
+   // A bundle of one-uop instructions is one push, as before. Each uop is a queue entry of its
+   // own, with its own seqno, given here as it is pushed (q_sn): the LQ and SQ order loads against
+   // stores by seqno, so a cracked instruction's loads and stores need their own.
+   localparam integer SLB = QLB;                         // a slot of the register
+   localparam integer UNB = UX_W + 1;                     // a uop count, 1..32
+   reg  [UNB-1:0]   pb_n   [0:QNB-1];                    // slot k's uops (slots FW.. hold one: never read)
+   reg  [VST_W-1:0] pb_vst [0:QNB-1];                    // ...and the decode state after it
+   reg  [SLB-1:0]   pb_cs;                               // the cursor: the slot...
+   reg  [UX_W-1:0]  pb_cu;                               // ...and the uop of it the next push starts at
+   reg  [VST_W-1:0] vsp;                                 // the predecode's decode state
+   reg  [4:0]       pb_lv;                               // the bundle's last allocated vl version
+   reg              pb_al;                               // ...and it allocates one
+   reg  [SEQW-1:0]  q_sn;                                // the next entry's seqno
+   // the ring of vl versions holds 16: a bundle that allocates pushes once its last version is
+   // within 15 of the committed one (the entry it takes is free once the version before it commits)
+   wire [4:0]       pb_ld = pb_lv - cmt_ver;
+   assign pb_go = ~pb_al | (pb_ld < 5'd16);
+   // the predecode, from fetch's slots as the register loads
+   reg  [UNB-1:0]   pd_n   [0:FW-1];
+   reg  [VST_W-1:0] pd_vs  [0:FW];
+   reg  [FW-1:0]    pd_al;
+   reg  [UX_W+2:0]  pd_tot;                              // the bundle's uops
+   integer          pk;
+   always @* begin
+      pd_vs[0] = vsp;  pd_tot = 0;
+      for (pk = 0; pk < FW; pk = pk + 1) begin
+         // a fetch-fault pseudo-op (slot 0), an RVC instruction, and any while VS is Off (a vector one
+         // traps then) are one uop and change nothing
+         if (((pk == 0) & dq_fault) | ~dq_sv[pk] | (dq_inst[pk*32 +: 2] != 2'b11) | vs_off) begin
+            pd_n[pk] = 1;  pd_al[pk] = 1'b0;  pd_vs[pk+1] = pd_vs[pk];
+         end else begin
+            pd_n[pk] = uop_count(dq_inst[pk*32 +: 32]);  pd_al[pk] = vset_alloc(dq_inst[pk*32 +: 32]);
+            pd_vs[pk+1] = vst_after(dq_inst[pk*32 +: 32], pd_vs[pk]);
+         end
+         if ((pk == 0) | dq_sv[pk]) pd_tot = pd_tot + {2'b00, pd_n[pk]};
+      end
+   end
+   // the push: position j's slot and uop, counted from the cursor through the valid slots
+   reg  [SLB-1:0]   map_s [0:QNB-1];
+   reg  [UX_W-1:0]  map_u [0:QNB-1];
+   reg  [QNB-1:0]   map_v;
+   reg  [UX_W+2:0]  rem_t;                               // the bundle's uops left, from the cursor
+   reg  [SLB-1:0]   nx_s;                                // the cursor after a partial push
+   reg  [UX_W-1:0]  nx_u;
+   reg  [UX_W+2:0]  acc, rk;
+   integer          mj, mk;
+   always @* begin
+      acc = 0;  map_v = {QNB{1'b0}};  nx_s = pb_cs;  nx_u = pb_cu;
+      for (mj = 0; mj < QNB; mj = mj + 1) begin map_s[mj] = {SLB{1'b0}};  map_u[mj] = {UX_W{1'b0}}; end
+      for (mk = 0; mk < FW; mk = mk + 1) begin
+         rk = (~pb_sv[mk] | (mk < pb_cs)) ? 0 : (mk == pb_cs) ? {1'b0, pb_n[mk]} - {2'b00, pb_cu} : {1'b0, pb_n[mk]};
+         for (mj = 0; mj < QNB; mj = mj + 1)
+            if ((mj < FW) && (mj >= acc) && (mj < acc + rk)) begin
+               map_v[mj] = 1'b1;  map_s[mj] = mk[SLB-1:0];
+               map_u[mj] = ((mk == pb_cs) ? pb_cu : {UX_W{1'b0}}) + mj[UX_W-1:0] - acc[UX_W-1:0];
+            end
+         // the cursor after a push of FW: the uop at position FW
+         if ((FW >= acc) && (FW < acc + rk)) begin
+            nx_s = mk[SLB-1:0];
+            nx_u = ((mk == pb_cs) ? pb_cu : {UX_W{1'b0}}) + FW[UX_W-1:0] - acc[UX_W-1:0];
+         end
+         acc = acc + rk;
+      end
+      rem_t = acc;
+   end
+   wire           q_push  = q_room & pb_v & pb_go;
+   wire [FW-1:0]  q_wr    = {FW{q_push}} & map_v[FW-1:0];   // the positions pushed this cycle: 0..n-1
    function automatic [CW-1:0] cnt(input [FW-1:0] v);
       integer i;
       begin cnt = {CW{1'b0}}; for (i = 0; i < FW; i = i + 1) cnt = cnt + {{(CW-1){1'b0}}, v[i]}; end
@@ -336,7 +412,18 @@ module smolrv64_frontend
    always @(posedge clk) begin
       if (reset | redirect)  pb_v <= 1'b0;
       else if (pb_load)       pb_v <= 1'b1;
-      else if (q_push)       pb_v <= 1'b0;
+      else if (q_push & pb_fin) pb_v <= 1'b0;
+      if (reset)              vsp <= {VT_VILL, 5'd0};
+      else if (redirect)      vsp <= redirect_vst;
+      else if (pb_load)       vsp <= pd_vs[FW];
+      if (pb_ready) begin
+         for (k = 0; k < FW; k = k + 1) begin pb_n[k] <= pd_n[k];  pb_vst[k] <= pd_vs[k+1]; end
+         for (k = FW; k < QNB; k = k + 1) begin pb_n[k] <= 1;  pb_vst[k] <= {VST_W{1'b0}}; end
+         pb_cs <= {SLB{1'b0}};  pb_cu <= {UX_W{1'b0}};
+         pb_fin <= (pd_tot <= FW);  pb_al <= |pd_al;  pb_lv <= pd_vs[FW][4:0];
+      end else if (q_push) begin
+         pb_cs <= nx_s;  pb_cu <= nx_u;  pb_fin <= ((rem_t - FW) <= FW);
+      end
       // The data load whenever the register is free: pb_v alone says it holds a bundle, so its
       // enable waits on no fetch verdict (dq_valid fanned out to ~1,100 flops' enables).
       if (pb_ready) begin
@@ -358,26 +445,29 @@ module smolrv64_frontend
    wire [QNB*QRW-1:0] q_wd;
    wire [QNB*IRW-1:0] q_fwd;                            // ...and the whole record (the shadow's, below)
    wire [QNB-1:0]     q_bv;                             // the bank takes a record this cycle
-   wire [QNB-1:0]     pb_svq = {{(QNB-FW){1'b0}}, pb_sv};
    generate for (gk = 0; gk < QNB; gk = gk + 1) begin: sl
       localparam [QLB-1:0] B = gk;
-      wire [QLB-1:0]  j = B - q_wp[QLB-1:0];             // the bundle's slot landing in this bank
-      wire [PDW-1:0]  pdet;  wire [PCW-1:0] pc;  wire [31:0] inst;  wire [SEQW-1:0] seq;
+      wire [QLB-1:0]  j = B - q_wp[QLB-1:0];             // the queue position landing in this bank...
+      wire [SLB-1:0]  js = map_s[j];                      // ...is uop map_u[j] of slot map_s[j]
+      wire [UX_W-1:0] ju = map_u[j];
+      wire [PDW-1:0]  pdet;  wire [PCW-1:0] pc;  wire [31:0] inst;  wire [SEQW-1:0] seq_f;
       wire [1:0]      pk;    wire fault_op;    wire imm_wide;
-      assign {pdet, pc, inst, seq, pk, fault_op} = pb_in[j];
+      assign {pdet, pc, inst, seq_f, pk, fault_op} = pb_in[js];
+      wire [SEQW-1:0] seq = q_sn + {{(SEQW-QLB){1'b0}}, j};
+      wire            ul  = ({1'b0, ju} == pb_n[js] - 1'b1);
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK)) u_ds
 `ifdef SMOLRV64_ORACLE_FE
-        (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_otgt[j]), .fault_op(fault_op),
+        (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_otgt[js]), .fault_op(fault_op),
 `else
         (.pdet(pdet), .pc(pc), .inst(inst), .seq_in(seq), .pk(pk), .tgt(pb_tgt), .fault_op(fault_op),
 `endif
-         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off),
+         .cause(pb_cause), .fault_hi(pb_fhi), .fs_off(fs_off), .vs_off(vs_off), .ux(ju), .ul(ul), .vst(pb_vst[js]),
          .q_rvc(1'b0), .q_pnpc({PCW{1'b0}}), .q_illegal(1'b0), .q_mis_taken(1'b0), .q_mis_nt(1'b0), .q_gc(16'd0),
          .qrec(q_wd[gk*QRW +: QRW]), .rec(q_fwd[gk*IRW +: IRW]), .imm_wide(imm_wide));
-      assign q_bv[gk] = q_push & pb_svq[j];
+      assign q_bv[gk] = q_push & map_v[j];
       assign q_wpos[gk*QAW +: QAW] = q_wp + {{(QAW-QLB){1'b0}}, j};
       always @(posedge clk) if (!reset & q_bv[gk] & imm_wide)
-         $fatal(1, "smolrv64_frontend: slot %0d's immediate (insn %08x at %h) does not fit the record's 32 bits", j, inst, pc);
+         $fatal(1, "smolrv64_frontend: slot %0d's immediate (insn %08x at %h) does not fit the record's 32 bits", js, inst, pc);
    end endgenerate
    // THE LANES ROTATE. Instruction j of a group goes to lane (lc + j) % IW, lc being the lane the
    // next instruction takes, so consecutive instructions go to consecutive lanes whatever the
@@ -428,6 +518,7 @@ module smolrv64_frontend
       smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hd
         (.pdet(r_pdet), .pc(r_pc), .inst(r_inst), .seq_in(r_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
          .fault_op(r_fault), .cause(r_fault_cause), .fault_hi(r_fault_hi), .fs_off(1'b0),
+         .vs_off(1'b0), .ux(r_ux), .ul(r_ul), .vst(r_vst),
          .q_rvc(r_rvc), .q_pnpc(r_pred_npc), .q_illegal(r_illegal), .q_mis_taken(r_mis_taken),
          .q_mis_nt(r_mis_nt), .q_gc(r_gc), .qrec(), .rec(ql[gk]), .imm_wide());
    end endgenerate
@@ -443,6 +534,7 @@ module smolrv64_frontend
    smolrv64_dslot #(.PCW(PCW), .SEQW(SEQW), .PDW(PDW), .DCR_HIT(DCR_HIT), .DCR_BACK(DCR_BACK), .QHEAD(1)) u_hh
      (.pdet(hq_pdet), .pc(hq_pc), .inst(hq_inst), .seq_in(hq_seq), .pk(2'd0), .tgt({PCW{1'b0}}),
       .fault_op(hq_fault), .cause(hq_fault_cause), .fault_hi(hq_fault_hi), .fs_off(1'b0),
+      .vs_off(1'b0), .ux(hq_ux), .ul(hq_ul), .vst(hq_vst),
       .q_rvc(hq_rvc), .q_pnpc(hq_pred_npc), .q_illegal(hq_illegal), .q_mis_taken(hq_mis_taken),
       .q_mis_nt(hq_mis_nt), .q_gc(hq_gc), .qrec(), .rec(h_rec), .imm_wide());
    `IR_DECL(h_)
@@ -450,6 +542,9 @@ module smolrv64_frontend
    wire [CW-1:0]  q_pop;                          // entries leaving this cycle (the group's take)
    wire [CW-1:0]  q_pushn = cnt(q_wr);            // entries pushed
    always @(posedge clk) begin
+      if (reset)         q_sn <= {SEQW{1'b0}};
+      else if (redirect) q_sn <= redirect_seq;
+      else               q_sn <= q_sn + {{(SEQW-CW){1'b0}}, q_pushn};
       if (reset | redirect) begin
          q_cnt <= {(QAW+1){1'b0}}; q_rp <= {QAW{1'b0}}; q_wp <= {QAW{1'b0}};
       end else begin

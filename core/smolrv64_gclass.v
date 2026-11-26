@@ -46,10 +46,12 @@ module smolrv64_gclass
    wire mul_l = is_mul & ~insn[14] & ~illegal & ~fault & ~irqop;
    wire cls_m = is_mul &  insn[14] & ~illegal & ~fault & ~irqop;
    `include "smolrv64_sysop.vh"
+   `include "smolrv64_vdec.vh"
    // SYSTEM (the irqop included), FENCE and FENCE.I (MISC-MEM funct3 00x; CBO is 010), and an
    // instruction that traps at dispatch: each goes alone, so in slot A, issues in lane A, which hands
    // its record and rs1 to the SYSQ, and fires at the ROB head from the SYSQ's flops
-   wire cls_s = sysop(insn[14:0]) | ((insn[6:2] == 5'b00011) & (insn[14:13] == 2'b00))
+   // (and vsetvl, whose vtype comes from a register: it writes the decode state at the head)
+   wire cls_s = sysop(insn[14:0]) | ((insn[6:2] == 5'b00011) & (insn[14:13] == 2'b00)) | is_vsetvl(insn)
               | illegal | fault;
    // a plain load or store (integer or FP) generates its address in its slot's lane; an AMO,
    // LR/SC and a CBO stay on the ordered memory pipe

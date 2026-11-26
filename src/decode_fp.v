@@ -17,7 +17,7 @@ module decode_fp
    (input  wire [31:0] insn,
     output reg         fp_valid,        // a recognized FP-arith op (not load/store)
     output reg         use_fpu,         // routes to fp_unit
-    output reg  [3:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX 7=FLI 8=FROUND
+    output reg  [3:0]  fp_class,        // 0=FPU 1=SGNJ 2=CMP 3=MVXF 4=MVFX 5=FCLASS 6=MINMAX 7=FLI 8=FROUND 9=VL
     output reg  [3:0]  op,
     output reg         op_mod,
     output reg  [2:0]  src_fmt,
@@ -35,7 +35,7 @@ module decode_fp
    localparam       FP32=3'd0, FP64=3'd1, FP16=3'd2;
    localparam [1:0] INT32=2'd2, INT64=2'd3;
    localparam [3:0] C_FPU=4'd0, C_SGNJ=4'd1, C_CMP=4'd2, C_MVXF=4'd3, C_MVFX=4'd4, C_FCLASS=4'd5,
-                    C_MINMAX=4'd6, C_FLI=4'd7, C_FROUND=4'd8;
+                    C_MINMAX=4'd6, C_FLI=4'd7, C_FROUND=4'd8, C_VL=4'd9;
    localparam [1:0] SZERO=2'd0, SFRS1=2'd1, SFRS2=2'd2, SFRS3=2'd3;
 
    wire [6:0] opcode = insn[6:0];
@@ -61,6 +61,10 @@ module decode_fp
          fp_valid=sd; use_fpu=1'b1; fp_class=C_FPU;
          op = insn[3] ? FNMSUB : FMADD;  op_mod = insn[2];
          op0_sel=SFRS1; op1_sel=SFRS2; op2_sel=SFRS3; wr_fp=1'b1;
+      end else if ((opcode == 7'b1010011) && (op5 == 5'b10111)) begin
+         // a vset's VL uop (core/smolrv64_vdec.vh's internal word, never fetched: no instruction
+         // uses this class): vl = min(AVL, VLMAX) from the integer rs1, into the VL file
+         fp_valid=1'b1; fp_class=C_VL; op0_int=1'b1; wr_fp=1'b0;
       end else if (opcode == 7'b1010011) begin
          case (op5)
            5'b00000,5'b00001: begin fp_valid=sd;     // FADD / FSUB

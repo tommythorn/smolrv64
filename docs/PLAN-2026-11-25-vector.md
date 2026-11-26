@@ -276,8 +276,9 @@ the version; a vector uop names the version it reads in its record, a fourth sou
 scheduler waits on like any other. A version is free when the next one's `vset` commits; the
 predecode stalls when all 16 are live. vl therefore costs no rename-map read.
 
-- `vsetvli rd, rs1` (rs1 != x0): uop 0 is a lane ALU op `rd := minu(rs1, VLMAX)` (VLMAX an
-  immediate), uop 1 hands rs1 to the F stage, which writes `min(rs1, VLMAX)` into the version.
+- `vsetvli rd, rs1` (rs1 != x0): uop 0 hands rs1 to the F stage, which writes `min(rs1, VLMAX)`
+  into the version; uop 1, the last (it retires the instruction), is a lane ALU op
+  `rd := minu(rs1, VLMAX)` (VLMAX an immediate).
 - `vsetivli`, and `vsetvli` with rs1 = x0 and rd != x0: vl is a constant; the same two uops with
   an immediate.
 - `vsetvli x0, x0`: vtype changes, vl is kept: no version is allocated (Simmerv's behaviour; the

@@ -47,7 +47,7 @@ Three architected stages plus a commit point. `F` is itself pipelined internally
 | stage | holds | can stall | can stall others | can restart the pipe |
 |---|---|---|---|---|
 | F | the stream and its predictor, fetch ring window, aligner | yes | no | no |
-| decoupling queue | up to 16 decoded instructions (`SMOLRV64_QD`), each with its dispatch class (`smolrv64_gclass`, evaluated once at decode: scheduler, plain, decode-redirect; FS Off is sampled there, exact since a write to FS refetches) | — | back-pressures F when full | no |
+| decoupling queue | up to 16 decoded instructions or uops of a cracked one (`SMOLRV64_QD`, §7.v), each with its dispatch class (`smolrv64_gclass`, evaluated once at decode: scheduler, plain, decode-redirect; FS Off is sampled there, exact since a write to FS refetches) | — | back-pressures F when full | no |
 | X | one decoded+renamed instruction | yes (`d_hold`) | holds F via `accept` | no |
 | M | one instruction | yes (`m_done` low) | holds X via `m_advance` | **yes** (`redirect`) |
 | C | ROB head | — | `head_block` holds M | no (the redirect fires from M) |
@@ -1183,6 +1183,32 @@ read-only `vl`, `vtype` (from the committed state: vl 0 and vill until `vset*` d
 `vlenb` (16). While VS is Off every vector CSR access is illegal; a write of `vstart`, `vxsat`,
 `vxrm` or `vcsr` sets VS Dirty, and a write that changes VS or `vstart` refetches what follows,
 as one that changes FS does. Directed test: `core/directed/vcsr.S`.
+
+**Cracking.** An instruction of several uops is cracked where the frontend's bundle register feeds
+the queue (`smolrv64_frontend`): each slot's uop count and the vector decode state after it are
+predecoded as the register loads (`core/smolrv64_vdec.vh`), and the bundle pushes its uops in
+program order, up to FW a cycle, in as many cycles as they need (a bundle of one-uop instructions
+is one push). Each uop is a queue entry with its own seqno, given at the push (the LQ and SQ order
+by it), its index and a last bit; the slot decoder builds the uop's record from the instruction,
+the index and the state, so the head rebuilds it as any record. Every uop but the last commits
+without retiring (the ROB's `d_noret`), so minstret, the trap's epc and the lockstep see the
+instruction.
+
+**The decode state** is vtype and vl's version, in program order at the predecode; each ROB entry
+keeps the state after its instruction in a table beside the ROB (a LUTRAM a column). A branch's
+restart restores the frontend's from its entry, a decode redirect from its record, and a squash
+at the head from the committed state, which commit takes from the same table on every port.
+
+**vl is versioned at decode.** A `vset` that sets vl allocates the next version, an entry of the
+VL file (16 of 8 bits, VLMAX is at most 128), in ring order: the predecode holds a bundle while
+its version would be the oldest live one. `vsetvli` and `vsetivli` are two uops: a VL uop (an
+internal OP-FP word, funct5 10111, so it issues in its lane, which hands rs1 to the F stage, whose
+in-core op writes min(AVL, VLMAX) into the version its rd names) and then rd = vl, a plain ALU op
+(`minu rd, rs1, VLMAX`, or the constant). `vsetvli x0, x0` with a legal vtype is one uop and keeps
+the version. An unsupported vtype is vill with vl 0, as Simmerv legalizes it. `vsetvl` is a SYSQ
+op: at the head, on a drained machine, it computes vtype from rs2 and vl from rs1, writes the
+next version and rd, and refetches with the new state. `csrr vl` reads the VL file at the
+committed version, `csrr vtype` the committed vtype. Directed test: `core/directed/vset.S`.
 
 ## 8. Load/store unit and MMU
 

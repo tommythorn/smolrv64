@@ -189,6 +189,9 @@ module smolrv64_core
    wire [SEQW-1:0]          d_seq;
    wire [PDW-1:0]           d_pdet;
    wire [`AREG_W-1:0]       d_rd, d_rs1, d_rs2, d_rs3;
+   wire [`SMOLRV64_UX_W-1:0] d_ux;
+   wire [`SMOLRV64_VST_W-1:0] d_vst;
+   wire                     d_ul, d_is_vec;
    wire [31:0]              d_imm32;
    wire [5:0]               d_alu_op;
    wire                     d_alu_w, d_alu_uw, d_op2_imm, d_res_link;
@@ -301,6 +304,7 @@ module smolrv64_core
    reg                      fe_red_q;
    reg [PCW-1:0]            fe_red_tgt_q;
    reg [SEQW-1:0]           fe_red_seq_q;
+   reg [VST_W-1:0]          fe_red_vst_q;          // the vector decode state the redirect restores
    // dec_red_q shadows the decode-redirect exactly as redirect_q shadows the backend
    // redirect: the frontend flush + fetch resteer land one cycle late (registered fe_red_q),
    // so the cycle AFTER dec_red the frontend still holds the stale wrong-path slots. dec_red
@@ -313,6 +317,7 @@ module smolrv64_core
       else       fe_red_q <= fe_red_pulse;
       fe_red_tgt_q <= fe_red_tgt;
       fe_red_seq_q <= fe_red_seq;
+      fe_red_vst_q <= fe_red_vst;
       dec_red_q    <= reset ? 1'b0 : dec_red;
    end
 
@@ -323,6 +328,7 @@ module smolrv64_core
      (.clk(clk), .reset(reset), .accept(accept), .consume(fe_consume),
       .d_valid(fe_dv), .d_rec(fe_rec), .d_fc(fe_fc),
       .fs_off(fs_off), .crd(crd), .hd_v(fe_hd_v), .hd_take(fe_hd_take), .hd_gc(fe_hd_gc), .hd_lane(fe_hd_lane),
+      .vs_off(vs_off), .redirect_vst(fe_red_vst_q), .cmt_ver(cmt_vst[4:0]),
       .redirect(fe_red_q), .redirect_pc(fe_red_tgt_q), .redirect_seq(fe_red_seq_q), .redirect_rsp(fe_red_rsp_q), .redirect_ghr(fe_red_ghr_q),
       .irq_inject(irq_inject), .irq_taken(irq_taken), .fe_dq_valid(fe_dq_valid),
       .imem_addr(imem_va), .imem_ipc(), .imem_pa(imem_addr), .imem_xlvl(immu_lvl),
@@ -469,6 +475,7 @@ module smolrv64_core
    // (RN_NINT, RN_NFL, RN_NFF, RN_IDXB, RN_PBITS; the schedulers' NI, IBI, NF, IBF below)
 `include "smolrv64_geom.vh"
 `include "smolrv64_shards.vh"
+`include "smolrv64_vdec.vh"
    localparam integer NL = IW;                     // the lanes: slot k's ALU-class ops go to lane k
    function automatic [3:0] ones_nl(input [NL-1:0] v);   // how many of the lanes' bits are set
       integer i;
@@ -864,7 +871,7 @@ module smolrv64_core
    // one serialises and fires at the ROB head from the SYSQ's flops.
    `include "smolrv64_sysop.vh"
    function is_sysq(input [31:0] i, input ill, input flt);
-      is_sysq = sysop(i[14:0]) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00)) | ill | flt;
+      is_sysq = sysop(i[14:0]) | ((i[6:2] == 5'b00011) & (i[14:13] == 2'b00)) | is_vsetvl(i) | ill | flt;
    endfunction
    wire d_cls_s = d_gq[GC_S];
    wire d_cls_l = d_gq[GC_L];
@@ -912,6 +919,8 @@ module smolrv64_core
    wire [ROB_CB-1:0]      s_pos [0:IW-1];           // the slot's program position in the group
    wire [IW-1:0]          s_clsbad;                 // its queue class is not its decoded fields' (the check with the orphan store's)
    wire [15:0]            s_gc [0:IW-1];
+   wire [IW-1:0]          s_ul, s_isvec;            // the slot's uop retires its instruction; ...is a vector instruction's
+   wire [VST_W-1:0]       s_vst [0:IW-1];           // the vector decode state after its instruction
    genvar gs;
    generate for (gs = 0; gs < IW; gs = gs + 1) begin: sl
       `IR_DECL(q_)
@@ -925,6 +934,7 @@ module smolrv64_core
       end
       wire st_nb = q_gc[GC_ST], ld_nb = q_gc[GC_LD];
       assign s_gc[gs] = q_gc;
+      assign s_ul[gs] = q_ul;  assign s_isvec[gs] = q_is_vec;  assign s_vst[gs] = q_vst;
       assign s_clsbad[gs] = fe_dv[gs] & ((st_nb != (q_is_store & ~q_is_amo & ~q_is_cbo))
                                         | (ld_nb != (q_is_mem & ~q_is_store & ~q_is_amo & ~q_is_cbo)));
       wire [2:0] shard = shard_of(`AR_FPK(q_rd), q_is_mem, LANE);
@@ -1105,8 +1115,8 @@ module smolrv64_core
    function automatic is_hop(input [31:0] i);       // an AMO, LR/SC or CBO: a head op
       is_hop = (i[6:2] == 5'b01011) | ((i[6:2] == 5'b00011) & (i[14:12] == 3'b010));
    endfunction
-   function automatic is_i2fop(input [31:0] i);     // FCVT.fp.int, FMV.fp.X: decode_fp's op0_int
-      is_i2fop = (i[6:0] == 7'b1010011) & ((i[31:27] == 5'b11010) | (i[31:27] == 5'b11110));
+   function automatic is_i2fop(input [31:0] i);     // FCVT.fp.int, FMV.fp.X, a VL uop: decode_fp's op0_int
+      is_i2fop = (i[6:0] == 7'b1010011) & ((i[31:27] == 5'b11010) | (i[31:27] == 5'b11110) | (i[31:27] == 5'b10111));
    endfunction
    // a lane op that does not complete in its execute cycle: no write, wake or ROB completion there
    // (a system op completes when the SYSQ fires it, an int-to-FP op when the F stage lands it)
@@ -2226,7 +2236,9 @@ module smolrv64_core
       // prd is ZERO when nothing is written: rename drives r_prd unconditionally, and
       // `d_prd != 0` is what replaces the stored rd_v bit.
       .d_valid(s_takev), .d_fc(fe_fc), .d_rd(s_rdv), .d_prd(s_prd_gv),
-      .d_noret({{(IW-1){1'b0}}, d_is_irqop}),          // the interrupt pseudo-op goes alone
+      // a cracked instruction's uops but its last, and the interrupt pseudo-op (which goes alone), commit
+      // without retiring an instruction
+      .d_noret(~s_ul | {{(IW-1){1'b0}}, d_is_irqop}),
       .d_ready(rob_readyv), .d_idx(rob_d_idxv),
       .w_v(rob_wv), .w_ix(rob_wix),
       .h_fin(cf_red_fire | (m_red_fire & ~m_trap) | (sy_done & sy_red)),   // the head completes and flushes (a trap never commits)
@@ -2821,7 +2833,9 @@ module smolrv64_core
    reg [3:0]          sy_xcause;
    reg [63:0]         sy_xtval;
    reg                sy_qf;     // the trap is a queue entry's translation fault (the op is a load or store)
-   initial begin sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; sy_rp = 1'b0; sy_qf = 1'b0; sy_instret = 1'b0; end
+   reg                sy_vs;     // a vsetvl: it computes vtype and vl here, writes the VL file and refetches
+   reg [63:0]         sy_src2;   // ...from rs2 (its vtype) and rs1 (sy_src)
+   initial begin sy_vs = 1'b0; sy_v = 1'b0; sy_head_q = 1'b0; sy_xt = 1'b0; sy_fn = 1'b0; sy_fi = 1'b0; sy_rp = 1'b0; sy_qf = 1'b0; sy_instret = 1'b0; end
    // A QUEUE ENTRY WHOSE TRANSLATION FAULTED TRAPS FROM HERE. It never completes (a load is never
    // sent, a store never commits), so its op reaches the ROB head and stays; its record then loads
    // the SYSQ as a trap from dispatch does, and fires through sy_fire, the one trap gate. The SYSQ
@@ -2886,7 +2900,7 @@ module smolrv64_core
    wire sy_xfire   = sy_fire & sy_xt;                    // ...a trap from dispatch: csr_file's xtrap
    // csr_file leaves its xtrap input out of redir_valid/redir_is_trap (a combinational loop
    // otherwise), so a trap from dispatch is its own redirect here, as M's data fault is.
-   wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi | sy_rp);  // trap, xret, illegal CSR, fence.i, a replay: a redirect
+   wire sy_red     = sy_fire & (csr_redir_v | sy_xt | sy_fi | sy_rp | sy_vs);  // trap, xret, illegal CSR, fence.i, a replay, vsetvl: a redirect
    wire sy_trap    = sy_fire & (csr_redir_trap | sy_xt | sy_rp);  // ...that is an exception or a replay: kill, no result
    assign rp_fire  = sy_fire & sy_rp;
 `ifndef SYNTHESIS
@@ -2912,6 +2926,7 @@ module smolrv64_core
          sy_src <= ya_csr_func[2] ? {59'b0, ya_imm[16:12]} : l_xs1[0];
          sy_pc <= ya_pc; sy_seq <= ya_seq; sy_insn <= ya_insn;
          sy_xt <= ya_trap;  sy_rp <= 1'b0;
+         sy_vs <= ~ya_trap & is_vsetvl(ya_insn);  sy_src2 <= l_rs2[0];
          sy_fn <= ~ya_trap & (ya_insn[6:2] == 5'b00011);
          sy_fi <= ~ya_trap & (ya_insn[6:2] == 5'b00011) & ya_insn[12];
          sy_xcause <= ya_fault ? ya_fault_cause : 4'd2;
@@ -2924,7 +2939,7 @@ module smolrv64_core
          sy_instret <= 1'b0;
          sy_pc  <= {{(PCW-39){qfr_pc[38]}}, qfr_pc};
          sy_seq <= qfr_seq;
-         sy_xt <= ~qfr_rp;  sy_rp <= qfr_rp;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;
+         sy_xt <= ~qfr_rp;  sy_rp <= qfr_rp;  sy_fn <= 1'b0;  sy_fi <= 1'b0;  sy_qf <= 1'b1;  sy_vs <= 1'b0;
          sy_xcause <= qfr_fc;
          sy_xtval  <= qfr_va;
       end
@@ -2954,6 +2969,23 @@ module smolrv64_core
                 xtrap_v & m_done_red, sy_xfire);
    end
 
+
+   // VSETVL at the head: vtype from rs2 (vill if a reserved bit is set or VLMAX is 0), vl from rs1 (as
+   // vsetvli's forms: rs1 = x0 and rd != x0 is VLMAX, both x0 keep vl), into the version after the
+   // committed one (the machine is drained, so no other is live). Its rd takes the CSR read's place.
+   wire [7:0]       sv_max  = vlmax_of(sy_src2[7:0]);
+   wire             sv_ill  = (sy_src2[63:8] != 56'd0) | (sv_max == 8'd0);
+   wire             sv_keep = (sy_insn[19:15] == 5'd0) & (sy_insn[11:7] == 5'd0);
+   wire [63:0]      sv_avl  = (sy_insn[19:15] != 5'd0) ? sy_src : ~64'd0;
+   wire [7:0]       sv_vl   = sv_ill ? 8'd0 : sv_keep ? vlf[cmt_vst[3:0]] : (sv_avl < {56'd0, sv_max}) ? sv_avl[7:0] : sv_max;
+   wire [VST_W-1:0] sv_vst  = {sv_ill ? VT_VILL : {1'b0, sy_src2[7:0]}, cmt_vst[4:0] + 5'd1};
+   wire             sv_we   = sy_fire & sy_vs;
+   wire [63:0]      sy_rdata = sy_vs ? {56'd0, sv_vl} : csr_rdata;   // the SYSQ op's result into lane A
+   // ...and its decode state, which its entry's (the predecode's) does not have: commit takes this
+   reg              svx_v;
+   reg [ROB_IDXB-1:0] svx_rob;
+   reg [VST_W-1:0]  svx_vst;
+   initial svx_v = 1'b0;
 
    function [63:0] fpsel; input [1:0] s; input [63:0] a, b, c;
       fpsel = (s==2'd1) ? a : (s==2'd2) ? b : (s==2'd3) ? c : 64'd0; endfunction
@@ -3149,6 +3181,7 @@ module smolrv64_core
         4'd6: fi_res = fi_mm[63:0];                                                   // FMIN/FMAX(M) -> fp
         4'd7: fi_res = fi_isd ? fli_d(f_insn[19:15]) : {32'hffffffff, fli_s(f_insn[19:15])};  // FLI -> fp
         4'd8: fi_res = fi_rn[63:0];                                                   // FROUND(NX) -> fp
+        4'd9: fi_res = {56'd0, vl_of(f_insn, f_rs1_val)};                             // a VL uop -> the VL file
         default: fi_res = 64'd0;
       endcase
    end
@@ -3706,9 +3739,10 @@ module smolrv64_core
       .redir_is_trap(csr_redir_trap), .csr_illegal(csr_illegal),
       .o_satp(mmu_satp), .o_priv(mmu_priv), .o_ifx_d(csr_ifx_d), .o_dpriv(mmu_dpriv), .o_pm_u(csr_pm_u),
       .o_sum(mmu_sum), .o_mxr(mmu_mxr), .o_frm(csr_frm), .o_fs_off(fs_off),
-      // the vector state: no vector instruction decodes yet, so vl and vtype are their reset
-      // values (vl 0, vill) and nothing retires that changes it
-      .o_vs_off(vs_off), .o_vstart(csr_vstart), .v_vl(8'd0), .v_vtype(9'h100), .v_dirty_commit(1'b0),
+      // the committed vector state: vl from the VL file at the committed version, vtype; VS goes
+      // Dirty as a vector instruction's uop commits, on any commit port (rule C6)
+      .o_vs_off(vs_off), .o_vstart(csr_vstart), .v_vl(vlf[cmt_vst[3:0]]), .v_vtype(cmt_vst[13:5]),
+      .v_dirty_commit(|rc_vec),
       .fp_fflags_we(|ret_fflags), .fp_fflags(ret_fflags),
       // mstatus.FS -> Dirty when an op that changes FP state RETIRES, on ANY commit port: one
       // that wrote an f-register (arch 32..63: FP arith, the in-core FP writers, FP loads; not
@@ -3745,7 +3779,7 @@ module smolrv64_core
       // unit's redirect and trap-target logic -- with the full m_done, build D of 2026-09-04
       // had 1357 near-critical endpoints starting at m_addr: dTLB compare -> lsu_done ->
       // m_done -> upd_valid -> mepc/priv -> the vectored trap-target adder -> fe_red_tgt_q.
-      .upd_valid(sy_fire & ~sy_xt & ~sy_fn & ~sy_rp), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
+      .upd_valid(sy_fire & ~sy_xt & ~sy_fn & ~sy_rp & ~sy_vs), .upd_is_csr(sy_is_csr), .upd_func(sy_func),   // the SYSQ's flops (C3 step 3)
       .upd_addr(sy_addr),
       .upd_src(sy_src),
       .upd_pc(sy_pc));
@@ -3793,6 +3827,22 @@ module smolrv64_core
    // cycle no longer displaces it and there is nothing to hold.
    wire        fp_land  = fp_complete;
    wire        fp_wb    = fp_land & ft_rd_v;
+   // THE VL FILE: vl by version (smolrv64_vdec.vh), written by the F stage's VL uops alone, which name
+   // their entry in rd (VL_ID + the version) and write no register
+   reg  [7:0]  vlf [0:15];
+   integer     vlk;
+   initial for (vlk = 0; vlk < 16; vlk = vlk + 1) vlf[vlk] = 8'd0;
+   wire        vl_we    = fp_land & ~ft_rd_v & (ft_rd[6:4] == VL_ID[6:4]);
+   // ...and by vsetvl's SYSQ fire, on a drained machine (no VL uop in flight: asserted)
+   always @(posedge clk)
+      if (vl_we)      vlf[ft_rd[3:0]] <= fl_data[7:0];
+      else if (sv_we) vlf[sv_vst[3:0]] <= sv_vl;
+   always @(posedge clk) if (!reset & vl_we & sv_we)
+      $fatal(1, "smolrv64_core: a VL uop lands as vsetvl fires");
+   always @(posedge clk) begin
+      if (reset | (svx_v & |(rc_v & rc_svx))) svx_v <= 1'b0;
+      if (sv_we) begin svx_v <= 1'b1;  svx_rob <= sy_rob;  svx_vst <= sv_vst; end
+   end
    always @(posedge clk) if (!reset) begin
       // The tag is the only thing naming the destination now, so a result that arrives
       // unowned would write a live register silently instead of being caught by fb_busy.
@@ -4109,7 +4159,10 @@ module smolrv64_core
    assign fe_red_pulse = m_red_fire | sy_red | fr_set | dec_red;
    assign fe_red_tgt   = (m_red_fire | sy_red) ? redirect_target : fr_set ? cf_target     : dec_red_tgt;
    assign fe_red_seq   = (m_red_fire | sy_red) ? redirect_seq    : fr_set ? (cf_seq + 1'b1) : dec_red_seq;
+   // at the head everything older has committed and the redirecting op changes no vector state
+   wire [VST_W-1:0] fe_red_vst = (m_red_fire | sy_red) ? (sv_we ? sv_vst : cmt_vst) : fr_set ? cf_vst : dr_vst;
    assign redirect_target  = (sy_fire & sy_rp) ? sy_pc                      // a replay: the load again
+                           : sv_we             ? (sy_pc + PC4)             // vsetvl: refetch after it
                            : (sy_fire & sy_fi) ? (sy_pc + PC4)             // fence.i: refetch after it
                            : (csr_red | sy_red) ? csr_redir_tgt
                            :           (m_pc + (m_rvc ? PC2 : PC4));
@@ -4472,7 +4525,7 @@ module smolrv64_core
          // the SYSQ's result drains in lane A alone (p1), so only lane A's slot carries it
          wire [2+RN_PBITS+64+ROB_IDXB-1:0] lpe = {lv_, lv_, lb_prd[glp*LBN + hh], lb_hd, lb_rob[glp*LBN + hh]};
          if (glp == 0) begin: g_sy
-            assign lp[glp] = lb_any[glp] ? lpe : {sy_wr, sy_done, sy_prd, csr_rdata, sy_rob};
+            assign lp[glp] = lb_any[glp] ? lpe : {sy_wr, sy_done, sy_prd, sy_rdata, sy_rob};
          end else begin: g_nsy
             assign lp[glp] = lpe;
          end
@@ -4589,6 +4642,37 @@ module smolrv64_core
       always @(posedge clk) if (!reset && rc_v[gff] && (ffv_c[c] != rob_ffv[rc_sx[gff]]))
          $fatal(1, "smolrv64_core: commit port %0d's ROB entry %0d: its flags landed %b, the record says %b", gff, rc_idx[gff], ffv_c[c], rob_ffv[rc_sx[gff]]);
    end endgenerate
+   // THE VECTOR DECODE STATE OF EVERY ENTRY (docs/PLAN-2026-11-25-vector.md §7.2): the state after
+   // its instruction, as the predecode gave it, a LUTRAM a column like the flags'. A branch's restart
+   // restores the frontend's from its entry (rule D14: the redirecting instruction's own snapshot);
+   // the committed state follows the commits, and a squash at the head restores that.
+   wire [VST_W:0]             vt_c [0:IW-1];   // the head's row, by column: {a vector instruction, its state}
+   wire [VST_W:0]             vt_r [0:IW-1];   // the restarting branch's row, by column
+   wire [ROB_IDXB-ROB_CB-2:0] cf_row = cf_rob[ROB_IDXB-1:ROB_CB+1];
+   generate for (gff = 0; gff < IW; gff = gff + 1) begin: vtc
+      (* ram_style = "distributed" *) reg [VST_W:0] vt [0:ROB_ROWS-1];
+      integer vi;
+      initial for (vi = 0; vi < ROB_ROWS; vi = vi + 1) vt[vi] = {(VST_W+1){1'b0}};
+      always @(posedge clk) if (s_takev[gff]) vt[s_rob[gff][ROB_IDXB-1:ROB_CB+1]] <= {s_isvec[gff], s_vst[gff]};
+      assign vt_c[gff] = vt[rc_row];
+      assign vt_r[gff] = vt[cf_row];
+   end endgenerate
+   reg  [VST_W-1:0] cmt_vst;                    // the committed decode state
+   reg  [VST_W-1:0] cmt_n;
+   reg  [IW-1:0]    rc_vec;                     // commit port k's entry is a vector instruction's
+   reg  [IW-1:0]    rc_svx;                     // ...is the vsetvl that fired
+   integer          vtk;
+   always @* begin
+      cmt_n = cmt_vst;
+      for (vtk = 0; vtk < IW; vtk = vtk + 1) begin
+         rc_svx[vtk] = svx_v & (rc_idx[vtk] == svx_rob);
+         rc_vec[vtk] = rc_v[vtk] & vt_c[rc_idx[vtk][ROB_CB-1:0]][VST_W];
+         if (rc_v[vtk]) cmt_n = rc_svx[vtk] ? svx_vst : vt_c[rc_idx[vtk][ROB_CB-1:0]][VST_W-1:0];
+      end
+   end
+   initial cmt_vst = {VT_VILL, 5'd0};
+   always @(posedge clk) cmt_vst <= reset ? {VT_VILL, 5'd0} : cmt_n;
+   wire [VST_W-1:0] cf_vst = vt_r[cf_rob[ROB_CB-1:0]][VST_W-1:0];
    reg  [4:0] ret_fflags;
    integer    ffh;
    always @* begin
@@ -4633,7 +4717,7 @@ module smolrv64_core
       // completes in its second cycle at head (m_head_q) and reads csr_rdata live then, so
       // `time`/`cycle` are one tick past the pulse's value. Ordered after the arm above so
       // it wins. (Found by the 300 M cosim: rdtime retired as t, computed with t+1.)
-      if (sy_wr) cs_val[rsi(sy_rob)] <= csr_rdata;
+      if (sy_wr) cs_val[rsi(sy_rob)] <= sy_rdata;
       if (m_valid && m_unit_ok && !m_unit_done_q && !m_ld_nb) begin
          // A BUFFERED STORE HAS NO MEMORY EFFECT YET. Its M pass only translates, so
          // lsu_cos_* still hold the PREVIOUS access's values -- reporting them here would
@@ -4717,7 +4801,7 @@ module smolrv64_core
       wire hit_sq  = sq_k_take & (sq_kc_rob == ix);
       wire hit_fp  = fp_land & (ft_rob == ix);
       wire hit_md  = md_wb & (md_rob == ix);
-      assign cs_val_h[gs]   = hit_csr ? csr_rdata     // the CSR read's value at its write
+      assign cs_val_h[gs]   = hit_csr ? sy_rdata      // the SYSQ op's value at its write
                             : hit_sq ? 64'd0          // a store writes no register
                             : hit_ld ? lsu_rd_val
                             : cs_hl[gs] ? cs_hl_v[gs]
@@ -5177,15 +5261,18 @@ module smolrv64_core
    wire [IW-1:0] s_dr = s_takev & s_dcr;
    reg  [PCW-1:0]  dr_tgt;
    reg  [SEQW-1:0] dr_seq;
+   reg  [VST_W-1:0] dr_vst;
    reg  [PDW-1:0]  dr_pdet;
    reg  [1:0]      dr_ccls;
    reg  [PCW-1:0]  dr_pc;
    reg             dr_rvc;
    integer         drk;
    always @* begin
+      dr_vst = s_vst[0];
       dr_tgt = s_tgt[0];  dr_seq = s_seq[0];  dr_pdet = s_pdet[0];  dr_ccls = s_ccls[0];  dr_pc = s_pc[0];  dr_rvc = s_insn[0][1:0] != 2'b11;
       for (drk = IW - 1; drk >= 0; drk = drk - 1)
          if (s_dr[drk]) begin
+            dr_vst = s_vst[drk];
             dr_tgt = s_tgt[drk];  dr_seq = s_seq[drk];  dr_pdet = s_pdet[drk];  dr_ccls = s_ccls[drk];
             dr_pc = s_pc[drk];  dr_rvc = s_insn[drk][1:0] != 2'b11;
          end
