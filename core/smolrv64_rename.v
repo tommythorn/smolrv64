@@ -185,7 +185,7 @@ module smolrv64_rename
       // writes. Copy 0 holds the reset mappings (RN_MAP0), the others zero.
       initial for (j = 0; j < NAR; j = j + 1) begin
          rmap[j] = (gc != 0) ? {PBITS{1'b0}} : `RN_MAP0(j);
-         smap[j] = rmap[j];
+         smap[j] = (gc != 0) ? {PBITS{1'b0}} : `RN_MAP0(j);   // the expression again: another array's value is ignored too
       end
       wire sw = r_valid[gc] & r_rd_v[gc] & ~shadowed[gc];   // this slot's mapping is its register's newest
       wire ww = w_v[gc] & ~w_shad[gc];
